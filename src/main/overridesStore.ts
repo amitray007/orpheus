@@ -73,6 +73,30 @@ export function validateCustomCliFlagsValue(v: unknown, errorPrefix: string): vo
   }
 }
 
+const ENV_VAR_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/**
+ * Shared validator for a customEnvVars Record<string, string> value — reused
+ * by claudeSettings.ts's global-settings validatePatch and by the project and
+ * workspace overrides stores' validateExtra (below, via
+ * claudeProjectSettings.ts / claudeWorkspaceSettings.ts), so the shape rule
+ * lives in exactly one place across all three scopes. Requires a non-array
+ * object whose keys are valid env var names and whose values are strings.
+ */
+export function validateCustomEnvVarsValue(v: unknown, errorPrefix: string): void {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+    throw new Error(`${errorPrefix}: customEnvVars must be a Record<string, string>`)
+  }
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (!ENV_VAR_KEY_RE.test(k)) {
+      throw new Error(`${errorPrefix}: customEnvVars key "${k}" is not a valid env var name`)
+    }
+    if (typeof val !== 'string') {
+      throw new Error(`${errorPrefix}: customEnvVars value for "${k}" must be a string`)
+    }
+  }
+}
+
 export type OverridesStoreConfig<IdKey extends string, Overrides> = {
   /** Table name, e.g. 'claude_project_settings' */
   table: string

@@ -1,4 +1,8 @@
-import { createOverridesStore, validateCustomCliFlagsValue } from './overridesStore'
+import {
+  createOverridesStore,
+  validateCustomCliFlagsValue,
+  validateCustomEnvVarsValue
+} from './overridesStore'
 import type { ClaudeWorkspaceSettings, ClaudeWorkspaceSettingsOverrides } from '../shared/types'
 
 // ---------------------------------------------------------------------------
@@ -6,9 +10,10 @@ import type { ClaudeWorkspaceSettings, ClaudeWorkspaceSettingsOverrides } from '
 // claude_workspace_settings. See overridesStore.ts for the shared
 // get/update/cache-invalidate implementation.
 //
-// Like the project store, the workspace store adds customCliFlags on top of
-// the shared {model, permissionMode, effort} trio (syntax-only, per the
-// design doc) — workspace scope is the highest-precedence flag tier.
+// Like the project store, the workspace store adds customCliFlags and
+// customEnvVars on top of the shared {model, permissionMode, effort} trio
+// (syntax-only, per the design doc) — workspace scope is the
+// highest-precedence tier for both.
 // ---------------------------------------------------------------------------
 
 const store = createOverridesStore<
@@ -22,6 +27,9 @@ const store = createOverridesStore<
   validateExtra: (patch) => {
     if ('customCliFlags' in patch && patch.customCliFlags != null) {
       validateCustomCliFlagsValue(patch.customCliFlags, 'claudeWorkspaceSettings')
+    }
+    if ('customEnvVars' in patch && patch.customEnvVars != null) {
+      validateCustomEnvVarsValue(patch.customEnvVars, 'claudeWorkspaceSettings')
     }
   }
 })

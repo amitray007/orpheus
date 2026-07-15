@@ -3,11 +3,9 @@
 //
 // Workspace-scope Settings popover, opened from the Settings gear beside the
 // Workbench opener in WorkspaceTitleBar (see docs/superpowers/specs/
-// 2026-07-15-workspace-settings-popover-design.md). Unit 3 of that design:
-// FLAGS ONLY — the Plugins toggle (Loco channel) + the Custom CLI flags
-// editor, at workspace scope. Custom env vars are a separate, later unit (see
-// the design doc's "Scope note" — flags and env vars are deliberately
-// separable).
+// 2026-07-15-workspace-settings-popover-design.md). Sections: the Plugins
+// toggle (Loco channel), the Custom CLI flags editor, and the Custom env vars
+// editor — all at workspace scope.
 //
 // Follows the repo's established anchored-popover pattern (useAnchoredPopover
 // + a portaled interactive Overlay) — copied from TreeOptionsPopover.tsx, the
@@ -27,7 +25,7 @@ import { Gear } from '@phosphor-icons/react'
 import { flagName } from '@shared/cliFlags'
 import type { ClaudeWorkspaceSettings, ClaudeWorkspaceSettingsOverrides } from '@shared/types'
 import { Overlay } from '../ui/Overlay'
-import { Eyebrow, Toggle, CliFlagsEditor } from './settings/primitives'
+import { Eyebrow, Toggle, CliFlagsEditor, CustomEnvVarsEditor } from './settings/primitives'
 import { useAnchoredPopover } from '../workbench/useAnchoredPopover'
 
 /** The flag name + full entry the Plugins toggle is sugar over. Repeating
@@ -43,6 +41,13 @@ const LOCO_FLAG_ENTRY = `${LOCO_FLAG_NAME} server:loco`
 // flicker fixed in f621921f (reverted 4440db8a, reapplied 3676a313 — current
 // HEAD).
 const EMPTY_FLAGS: string[] = []
+
+// Same stable-fallback rationale as EMPTY_FLAGS, for CustomEnvVarsEditor's
+// `value` prop — a fresh `{}` literal allocated inline every render would
+// give the editor's resync effect (`useEffect(() => setRows(...), [value])`)
+// a new dependency identity every render, refiring the resync and destroying
+// in-progress typing/focus. Module-level singleton so the reference is stable.
+const EMPTY_ENV_VARS: Record<string, string> = {}
 
 /** Loads global + project customCliFlags so the popover's CliFlagsEditor can
  *  render them muted in the command preview (CliFlagsEditor's
@@ -167,6 +172,63 @@ function useWorkspaceCliFlags(workspaceId: string): {
   }
 }
 
+/** Loads + patches this workspace's customEnvVars override — same shape as
+ *  useWorkspaceCliFlags above, minus the derived-toggle bit (env vars have no
+ *  Plugins-toggle sugar). Isolated into its own hook for the same reason. */
+function useWorkspaceEnvVars(workspaceId: string): {
+  envVarsValue: Record<string, string>
+  loading: boolean
+  setEnvVars: (v: Record<string, string>) => void
+} {
+  const [settings, setSettings] = useState<ClaudeWorkspaceSettings | null>(null)
+  const [localEnvVars, setLocalEnvVars] = useState<Record<string, string>>(EMPTY_ENV_VARS)
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.claudeWorkspaceSettings
+      .get(workspaceId)
+      .then((s) => {
+        if (cancelled) return
+        setSettings(s)
+        setLocalEnvVars(s.overrides.customEnvVars ?? EMPTY_ENV_VARS)
+      })
+      .catch((err) => console.error('[WorkspaceSettingsPopover] env vars load failed', err))
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId])
+
+  const patch = useCallback(
+    (update: ClaudeWorkspaceSettingsOverrides): void => {
+      window.api.claudeWorkspaceSettings.update(workspaceId, update).catch((err) => {
+        console.error('[WorkspaceSettingsPopover] env vars update failed; refetching', err)
+        window.api.claudeWorkspaceSettings
+          .get(workspaceId)
+          .then((s) => {
+            setSettings(s)
+            setLocalEnvVars(s.overrides.customEnvVars ?? EMPTY_ENV_VARS)
+          })
+          .catch(console.error)
+      })
+    },
+    [workspaceId]
+  )
+
+  const setEnvVars = useCallback(
+    (v: Record<string, string>) => {
+      setLocalEnvVars(v)
+      patch({ customEnvVars: Object.keys(v).length > 0 ? v : undefined })
+    },
+    [patch]
+  )
+
+  return {
+    envVarsValue: localEnvVars,
+    loading: settings === null,
+    setEnvVars
+  }
+}
+
 export function WorkspaceSettingsPopover({
   workspaceId,
   projectId,
@@ -177,11 +239,19 @@ export function WorkspaceSettingsPopover({
   const { flagsValue, loading, setFlags, locoEnabled, setLocoEnabled } =
     useWorkspaceCliFlags(workspaceId)
   const inheritedFlags = useInheritedCliFlags(projectId)
+  const { envVarsValue, loading: envVarsLoading, setEnvVars } = useWorkspaceEnvVars(workspaceId)
 
   // Stable identity for CliFlagsEditor's `value` prop — see EMPTY_FLAGS above.
   const cliFlagsValue = useMemo(
     () => (flagsValue.length > 0 ? flagsValue : EMPTY_FLAGS),
     [flagsValue]
+  )
+
+  // Stable identity for CustomEnvVarsEditor's `value` prop — see
+  // EMPTY_ENV_VARS above.
+  const envVarsFieldValue = useMemo(
+    () => (Object.keys(envVarsValue).length > 0 ? envVarsValue : EMPTY_ENV_VARS),
+    [envVarsValue]
   )
 
   return (
@@ -210,7 +280,7 @@ export function WorkspaceSettingsPopover({
         <div
           role="dialog"
           aria-label="Workspace Settings"
-          className={loading ? 'opacity-50 pointer-events-none' : undefined}
+          className={loading || envVarsLoading ? 'opacity-50 pointer-events-none' : undefined}
         >
           <Eyebrow className="mb-2">Plugins</Eyebrow>
           <div className="flex items-center justify-between gap-6 py-1">
@@ -227,6 +297,11 @@ export function WorkspaceSettingsPopover({
             inheritedFlags={inheritedFlags}
             placeholder="--dangerously-load-development-channels server:loco"
           />
+
+          <div className="my-3 border-t border-border-default/60" />
+
+          <Eyebrow className="mb-2">Custom env vars</Eyebrow>
+          <CustomEnvVarsEditor value={envVarsFieldValue} onChange={setEnvVars} />
 
           {isDirty && (
             <>

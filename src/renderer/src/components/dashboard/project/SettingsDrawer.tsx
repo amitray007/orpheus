@@ -10,7 +10,7 @@ import {
   type ClaudeProjectSettings,
   type ClaudeProjectSettingsOverrides
 } from '@shared/types'
-import { Select, CliFlagsEditor } from '../settings/primitives'
+import { Select, CliFlagsEditor, CustomEnvVarsEditor } from '../settings/primitives'
 import { Overlay } from '@/components/ui/Overlay'
 import { WorkspaceCreationSettings } from './WorkspaceCreationSettings'
 
@@ -59,6 +59,13 @@ type EffortOption = (typeof EFFORT_OPTIONS)[number]['value']
 // React.memo (shallow prop compare). Module-level singleton so the reference
 // never changes across renders — see composed props below via useMemo.
 const EMPTY_FLAGS: string[] = []
+
+// Same stable-fallback rationale as EMPTY_FLAGS above, for CustomEnvVarsEditor's
+// `value` prop — a fresh `{}` literal allocated inline every render would give
+// the editor's `useEffect(() => setRows(recordToRows(value)), [value])` a new
+// dependency identity every render, refiring the resync and destroying
+// in-progress typing/focus. Module-level singleton so the reference is stable.
+const EMPTY_ENV_VARS: Record<string, string> = {}
 
 interface SettingsDrawerProps {
   projectId: string
@@ -186,7 +193,8 @@ export function SettingsDrawer({
       model: undefined,
       permissionMode: undefined,
       effort: undefined,
-      customCliFlags: undefined
+      customCliFlags: undefined,
+      customEnvVars: undefined
     })
   }
 
@@ -204,6 +212,18 @@ export function SettingsDrawer({
   )
   const handleCliFlagsChange = useCallback(
     (v: string[]) => patch({ customCliFlags: v.length > 0 ? v : undefined }),
+    [patch]
+  )
+
+  // Stable identity for CustomEnvVarsEditor's `value` prop — see
+  // EMPTY_ENV_VARS comment.
+  const envVarsValue = useMemo(
+    () => localOverrides.customEnvVars ?? EMPTY_ENV_VARS,
+    [localOverrides.customEnvVars]
+  )
+  const handleEnvVarsChange = useCallback(
+    (v: Record<string, string>) =>
+      patch({ customEnvVars: Object.keys(v).length > 0 ? v : undefined }),
     [patch]
   )
 
@@ -227,7 +247,8 @@ export function SettingsDrawer({
     (localOverrides.model !== undefined ? 1 : 0) +
     (localOverrides.permissionMode !== undefined ? 1 : 0) +
     (localOverrides.effort !== undefined ? 1 : 0) +
-    ((localOverrides.customCliFlags?.length ?? 0) > 0 ? 1 : 0)
+    ((localOverrides.customCliFlags?.length ?? 0) > 0 ? 1 : 0) +
+    (Object.keys(localOverrides.customEnvVars ?? {}).length > 0 ? 1 : 0)
   const hasAnyOverride = overrideCount > 0
 
   return (
@@ -342,6 +363,17 @@ export function SettingsDrawer({
                 inheritedFlags={inheritedCliFlags}
                 placeholder="--dangerously-load-development-channels server:loco"
               />
+            </div>
+          </section>
+
+          <section className="flex flex-col mt-4 border-t border-border-default/40">
+            <header className="px-4 pt-5 pb-2">
+              <span className="text-xs font-semibold text-text-primary uppercase tracking-wider">
+                Custom environment variables
+              </span>
+            </header>
+            <div className="px-4 pb-5">
+              <CustomEnvVarsEditor value={envVarsValue} onChange={handleEnvVarsChange} />
             </div>
           </section>
 

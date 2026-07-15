@@ -17,7 +17,7 @@ import { getClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getWorkspace } from './workspaces'
 import { encodePathToClaudeDir } from './claudeProjectDir'
 import { FLAG_DELIMITER, mergeFlagScopes, parseFlagEntry } from '../shared/cliFlags'
-import { validateCustomCliFlagsValue } from './overridesStore'
+import { validateCustomCliFlagsValue, validateCustomEnvVarsValue } from './overridesStore'
 
 // One-way-true cache for session JSONL existence checks.
 // Key: `${cwd}:${sessionId}`. Once a JSONL is confirmed to exist (true), it
@@ -639,19 +639,7 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
     }
   }
   if ('customEnvVars' in patch) {
-    const v = patch.customEnvVars
-    if (v === null || typeof v !== 'object' || Array.isArray(v)) {
-      throw new Error('claudeSettings: customEnvVars must be a Record<string, string>')
-    }
-    const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
-    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-      if (!KEY_RE.test(k)) {
-        throw new Error(`claudeSettings: customEnvVars key "${k}" is not a valid env var name`)
-      }
-      if (typeof val !== 'string') {
-        throw new Error(`claudeSettings: customEnvVars value for "${k}" must be a string`)
-      }
-    }
+    validateCustomEnvVarsValue(patch.customEnvVars, 'claudeSettings')
   }
   if ('customCliFlags' in patch) {
     validateCustomCliFlagsValue(patch.customCliFlags, 'claudeSettings')
@@ -712,10 +700,12 @@ export function composeClaudeLaunch(
   // into its own local instead.
   let s = global
   let projectCustomFlags: string[] = []
+  let projectEnvVars: Record<string, string> = {}
   if (projectId) {
     const proj = getClaudeProjectSettings(projectId)
     const ov = proj.overrides
     projectCustomFlags = ov.customCliFlags ?? []
+    projectEnvVars = ov.customEnvVars ?? {}
     if (Object.keys(ov).length > 0) {
       s = {
         ...s,
@@ -731,10 +721,12 @@ export function composeClaudeLaunch(
   // same reason as projectCustomFlags above — it's captured into its own
   // local and merged via mergeFlagScopes (below), not last-wins replacement.
   let workspaceCustomFlags: string[] = []
+  let workspaceEnvVars: Record<string, string> = {}
   if (workspaceId) {
     const ws = getClaudeWorkspaceSettings(workspaceId)
     const wov = ws.overrides
     workspaceCustomFlags = wov.customCliFlags ?? []
+    workspaceEnvVars = wov.customEnvVars ?? {}
     if (Object.keys(wov).length > 0) {
       s = {
         ...s,
@@ -1123,12 +1115,22 @@ export function composeClaudeLaunch(
   // Env-var controls (v66) — General / Model behavior
   if (s.lowPowerMode) env['CLAUDE_CODE_LOW_POWER_MODE'] = '1'
 
-  // Custom env vars — merged last; user's keys win on conflict here. Note
-  // this is only the layering within composeClaudeLaunch's own `env` output:
+  // Custom env vars — merged last-wins across all three scopes (global →
+  // project → workspace, lowest precedence first; workspace wins on same-key
+  // conflict), then that combined map is applied last within compose's own
+  // `env` output so user keys win over the typed emissions above. Note this
+  // is only the layering within composeClaudeLaunch's own `env` output:
   // downstream, buildMountEnv (orpheusSurfaceAdapter.ts:118-120) spreads
   // authEnv AFTER launch.env when assembling the final mount env, so auth
-  // keys (e.g. ANTHROPIC_API_KEY) still win over these custom values.
-  for (const [k, v] of Object.entries(s.customEnvVars)) {
+  // keys (e.g. ANTHROPIC_API_KEY) still win over these custom values. Unlike
+  // customCliFlags, this is a plain Record spread (last-wins), not an
+  // append/override algebra — so it's fine to combine scopes with a single
+  // object spread rather than mergeFlagScopes.
+  for (const [k, v] of Object.entries({
+    ...global.customEnvVars,
+    ...projectEnvVars,
+    ...workspaceEnvVars
+  })) {
     if (k && typeof v === 'string') env[k] = v
   }
 

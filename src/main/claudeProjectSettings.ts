@@ -1,4 +1,8 @@
-import { createOverridesStore, validateCustomCliFlagsValue } from './overridesStore'
+import {
+  createOverridesStore,
+  validateCustomCliFlagsValue,
+  validateCustomEnvVarsValue
+} from './overridesStore'
 import type { ClaudeProjectSettings, ClaudeProjectSettingsOverrides } from '../shared/types'
 
 // ---------------------------------------------------------------------------
@@ -7,8 +11,9 @@ import type { ClaudeProjectSettings, ClaudeProjectSettingsOverrides } from '../s
 // get/update/cache-invalidate implementation.
 //
 // Like the workspace store (claudeWorkspaceSettings.ts), this store passes
-// validateExtra — it adds customCliFlags on top of the shared
-// {model, permissionMode, effort} trio (syntax-only, per the design doc).
+// validateExtra — it adds customCliFlags and customEnvVars on top of the
+// shared {model, permissionMode, effort} trio (syntax-only, per the design
+// doc).
 // ---------------------------------------------------------------------------
 
 const store = createOverridesStore<
@@ -22,6 +27,9 @@ const store = createOverridesStore<
   validateExtra: (patch) => {
     if ('customCliFlags' in patch && patch.customCliFlags != null) {
       validateCustomCliFlagsValue(patch.customCliFlags, 'claudeProjectSettings')
+    }
+    if ('customEnvVars' in patch && patch.customEnvVars != null) {
+      validateCustomEnvVarsValue(patch.customEnvVars, 'claudeProjectSettings')
     }
   }
 })

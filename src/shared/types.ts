@@ -717,6 +717,9 @@ export type ClaudeProjectSettingsOverrides = {
   // Custom CLI flags (project scope) — merged with global scope via
   // mergeFlagScopes at launch (append; project wins on same-name conflict).
   customCliFlags?: string[]
+  // Custom env vars (project scope) — merged with global scope as a plain
+  // Record spread, last-wins (unlike flags, no append/override algebra).
+  customEnvVars?: Record<string, string>
 }
 
 export type ClaudeProjectSettings = {
@@ -737,6 +740,10 @@ export type ClaudeWorkspaceSettingsOverrides = {
   // via mergeFlagScopes at launch (append; workspace wins on same-name
   // conflict, highest precedence of the three).
   customCliFlags?: string[]
+  // Custom env vars (workspace scope) — merged with global + project scope
+  // as a plain Record spread, last-wins (unlike flags, no append/override
+  // algebra); workspace wins on same-key conflict, highest precedence.
+  customEnvVars?: Record<string, string>
 }
 
 export type ClaudeWorkspaceSettings = {

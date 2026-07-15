@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
-import { CaretDown, CaretRight, Trash, Plus } from '@phosphor-icons/react'
+import { CaretDown, CaretRight } from '@phosphor-icons/react'
 import type { ClaudeGlobalSettings, ClaudeLogLevel } from '@shared/types'
 import {
   SettingRow,
@@ -9,151 +9,10 @@ import {
   NumberInput,
   SectionTitle,
   Eyebrow,
-  CliFlagsEditor
+  CliFlagsEditor,
+  CustomEnvVarsEditor
 } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
-
-// ---------------------------------------------------------------------------
-// CustomEnvVarsEditor — inline key/value editor for raw env vars
-// ---------------------------------------------------------------------------
-
-const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
-
-type EnvRow = { id: string; key: string; value: string }
-
-function recordToRows(record: Record<string, string>): EnvRow[] {
-  return Object.entries(record).map(([key, value]) => ({ id: crypto.randomUUID(), key, value }))
-}
-
-function rowsToRecord(rows: EnvRow[]): Record<string, string> {
-  const result: Record<string, string> = {}
-  for (const { key, value } of rows) {
-    if (key.trim()) result[key.trim()] = value
-  }
-  return result
-}
-
-interface CustomEnvVarsEditorProps {
-  value: Record<string, string>
-  onChange: (next: Record<string, string>) => void
-}
-
-function CustomEnvVarsEditor({ value, onChange }: CustomEnvVarsEditorProps): React.JSX.Element {
-  const [rows, setRows] = useState<EnvRow[]>(() => recordToRows(value))
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- controlled input sync from prop; key= reset would require caller changes
-    setRows(recordToRows(value))
-  }, [value])
-
-  function saveRows(next: EnvRow[]): void {
-    setRows(next)
-    onChange(rowsToRecord(next))
-  }
-
-  function updateRow(idx: number, field: 'key' | 'value', val: string): void {
-    const next = rows.map((r, i) => (i === idx ? { ...r, [field]: val } : r))
-    setRows(next)
-  }
-
-  function commitRow(idx: number): void {
-    const row = rows[idx]
-    if (!row) return
-    if (!row.key.trim()) {
-      const next = rows.filter((_, i) => i !== idx)
-      saveRows(next)
-      return
-    }
-    onChange(rowsToRecord(rows))
-  }
-
-  function removeRow(idx: number): void {
-    saveRows(rows.filter((_, i) => i !== idx))
-  }
-
-  function addRow(): void {
-    setRows((prev) => [...prev, { id: crypto.randomUUID(), key: '', value: '' }])
-  }
-
-  if (rows.length === 0) {
-    return (
-      <div className="flex flex-col gap-2">
-        <p className="text-xs text-text-muted italic">
-          No custom variables. Click + Add to define one.
-        </p>
-        <button
-          type="button"
-          onClick={addRow}
-          className="self-start flex items-center gap-1.5 text-xs text-accent hover:opacity-80 transition-opacity"
-        >
-          <Plus size={12} weight="bold" />
-          Add
-        </button>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex flex-col gap-2">
-      {rows.map((row, idx) => {
-        const keyInvalid = row.key.trim() !== '' && !KEY_RE.test(row.key.trim())
-        return (
-          <div key={row.id} className="flex items-center gap-2">
-            <input
-              type="text"
-              aria-label="Environment variable name"
-              value={row.key}
-              onChange={(e) => updateRow(idx, 'key', e.target.value)}
-              onBlur={() => commitRow(idx)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
-                if (e.key === 'Escape') {
-                  updateRow(idx, 'key', row.key)
-                  ;(e.currentTarget as HTMLInputElement).blur()
-                }
-              }}
-              placeholder="KEY_NAME"
-              className={`w-40 px-2.5 py-1.5 rounded-md text-xs bg-surface-raised border text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text ${keyInvalid ? 'border-red-500/60' : 'border-border-default'}`}
-            />
-            <span className="text-xs text-text-muted">=</span>
-            <input
-              type="text"
-              aria-label="Environment variable value"
-              value={row.value}
-              onChange={(e) => updateRow(idx, 'value', e.target.value)}
-              onBlur={() => commitRow(idx)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
-                if (e.key === 'Escape') {
-                  updateRow(idx, 'value', row.value)
-                  ;(e.currentTarget as HTMLInputElement).blur()
-                }
-              }}
-              placeholder="value"
-              className="flex-1 min-w-0 px-2.5 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text"
-            />
-            <button
-              type="button"
-              onClick={() => removeRow(idx)}
-              className="text-text-muted hover:text-red-400 transition-colors flex-shrink-0"
-              aria-label="Remove row"
-            >
-              <Trash size={13} />
-            </button>
-          </div>
-        )
-      })}
-      <button
-        type="button"
-        onClick={addRow}
-        className="self-start flex items-center gap-1.5 text-xs text-accent hover:opacity-80 transition-opacity mt-1"
-      >
-        <Plus size={12} weight="bold" />
-        Add
-      </button>
-    </div>
-  )
-}
 
 // ---------------------------------------------------------------------------
 // ExtraBodyJsonInput — textarea with JSON validation on blur

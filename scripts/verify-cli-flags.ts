@@ -726,4 +726,102 @@ function roundTripThroughZsh(tokens: string[]): string[] {
   console.log('✓ transport: empty ORPHEUS_CLAUDE_FLAGS yields an empty flags array in the script')
 }
 
+// ---------------------------------------------------------------------------
+// customEnvVars — scope layering + validation contract.
+//
+// Like the validatePatch-equivalent section above, these mirror the contract
+// rather than importing the main-process modules (overridesStore.ts pulls in
+// better-sqlite3 at module load and cannot run under this plain-Node harness).
+// The rules mirrored here are overridesStore.ts's validateCustomEnvVarsValue
+// and composeClaudeLaunch's three-scope env merge — keep them in sync.
+//
+// Env vars merge with a PLAIN last-wins Record spread, deliberately unlike
+// customCliFlags' append/override algebra (mergeFlagScopes). That difference
+// is the thing most likely to be "fixed" into a bug later, so it's asserted.
+// ---------------------------------------------------------------------------
+
+const ENV_VAR_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+function validateEnvVarsContract(v: unknown, errorPrefix: string): void {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+    throw new Error(`${errorPrefix}: customEnvVars must be a Record<string, string>`)
+  }
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (!ENV_VAR_KEY_RE.test(k)) {
+      throw new Error(`${errorPrefix}: customEnvVars key "${k}" is not a valid env var name`)
+    }
+    if (typeof val !== 'string') {
+      throw new Error(`${errorPrefix}: customEnvVars value for "${k}" must be a string`)
+    }
+  }
+}
+
+/** Mirrors composeClaudeLaunch's three-scope env merge (lowest precedence
+ *  first). Plain spread — NOT mergeFlagScopes. */
+function mergeEnvScopes(
+  global: Record<string, string>,
+  project: Record<string, string>,
+  workspace: Record<string, string>
+): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries({ ...global, ...project, ...workspace })) {
+    if (k && typeof v === 'string') env[k] = v
+  }
+  return env
+}
+
+{
+  // Precedence: workspace > project > global on the same key; each scope's
+  // unique keys all survive.
+  const merged = mergeEnvScopes(
+    { SHARED: 'g', ONLY_G: 'g' },
+    { SHARED: 'p', ONLY_P: 'p' },
+    { SHARED: 'w', ONLY_W: 'w' }
+  )
+  assert.deepEqual(merged, {
+    SHARED: 'w',
+    ONLY_G: 'g',
+    ONLY_P: 'p',
+    ONLY_W: 'w'
+  })
+  console.log('✓ env: workspace > project > global on conflict; unique keys survive')
+}
+
+{
+  // Two-scope and empty-scope cases degrade cleanly.
+  assert.deepEqual(mergeEnvScopes({ A: 'g' }, {}, {}), { A: 'g' })
+  assert.deepEqual(mergeEnvScopes({}, { A: 'p' }, {}), { A: 'p' })
+  assert.deepEqual(mergeEnvScopes({}, {}, { A: 'w' }), { A: 'w' })
+  assert.deepEqual(mergeEnvScopes({ A: 'g' }, {}, { A: 'w' }), { A: 'w' })
+  assert.deepEqual(mergeEnvScopes({}, {}, {}), {})
+  console.log('✓ env: empty/partial scope combinations')
+}
+
+{
+  // A key present at a lower scope with an EMPTY-STRING value at a higher
+  // scope must be overridden to '' — empty string is a legitimate value, not
+  // an absence. (A `v || fallback` style merge would silently regress this.)
+  assert.deepEqual(mergeEnvScopes({ A: 'g' }, {}, { A: '' }), { A: '' })
+  console.log('✓ env: empty-string value at a higher scope overrides, not falls back')
+}
+
+{
+  // Validation contract: shape + key-name + value-type rules, with the
+  // errorPrefix naming the scope that rejected.
+  assert.doesNotThrow(() => validateEnvVarsContract({ FOO: 'bar', _X: '1' }, 'claudeSettings'))
+  assert.throws(
+    () => validateEnvVarsContract(['nope'], 'claudeSettings'),
+    /must be a Record<string, string>/
+  )
+  assert.throws(
+    () => validateEnvVarsContract({ '1BAD': 'v' }, 'claudeWorkspaceSettings'),
+    /claudeWorkspaceSettings: customEnvVars key "1BAD" is not a valid env var name/
+  )
+  assert.throws(
+    () => validateEnvVarsContract({ FOO: 5 }, 'claudeProjectSettings'),
+    /claudeProjectSettings: customEnvVars value for "FOO" must be a string/
+  )
+  console.log('✓ env: validation contract (shape, key name, value type, scope prefix)')
+}
+
 console.log('\nAll cli-flags assertions passed.')
