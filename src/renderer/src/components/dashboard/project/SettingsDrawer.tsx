@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type React from 'react'
 import { ArrowCounterClockwise, X } from '@phosphor-icons/react'
 import {
@@ -51,14 +51,6 @@ const EFFORT_OPTIONS = [
 type ModelOption = (typeof MODEL_OPTIONS)[number]['value']
 type PermissionOption = (typeof PERMISSION_OPTIONS)[number]['value']
 type EffortOption = (typeof EFFORT_OPTIONS)[number]['value']
-
-// Stable fallback identity for the CLI flags editor's value/inheritedFlags
-// props. A fresh `[]` literal allocated inline in JSX (`x ?? []`) gets a new
-// reference every render, which defeats CliFlagsEditor's render-time
-// prevValueRef sync guard (reference-compares first) and CliFlagsPreview's
-// React.memo (shallow prop compare). Module-level singleton so the reference
-// never changes across renders — see composed props below via useMemo.
-const EMPTY_FLAGS: string[] = []
 
 interface SettingsDrawerProps {
   projectId: string
@@ -139,35 +131,24 @@ export function SettingsDrawer({
     }
   }, [open, projectId])
 
-  // Stable patch: uses functional setState so it doesn't close over
-  // `localOverrides` — required for the memoized CliFlagsEditor onChange
-  // (below) to stay stable across renders. Mirrors ClaudeDeveloperSection's
-  // patch (~line 863); see the comment there for why stability matters for
-  // memo. The undefined-clears-a-key semantics and the IPC call + error-path
-  // refetch are unchanged from the previous non-memoized version.
-  const patch = useCallback(
-    (update: ClaudeProjectSettingsOverrides): void => {
-      setLocalOverrides((prev) => {
-        const next: ClaudeProjectSettingsOverrides = { ...prev }
-        for (const [k, v] of Object.entries(update)) {
-          if (v === undefined) delete next[k as keyof ClaudeProjectSettingsOverrides]
-          else (next as Record<string, unknown>)[k] = v
-        }
-        return next
-      })
-      window.api.claudeProjectSettings.update(projectId, update).catch((err) => {
-        console.error('[settings-drawer] update failed, refetching', err)
-        window.api.claudeProjectSettings
-          .get(projectId)
-          .then((s) => {
-            setSettings(s)
-            setLocalOverrides(s.overrides)
-          })
-          .catch(console.error)
-      })
-    },
-    [projectId]
-  )
+  function patch(update: ClaudeProjectSettingsOverrides): void {
+    const next: ClaudeProjectSettingsOverrides = { ...localOverrides }
+    for (const [k, v] of Object.entries(update)) {
+      if (v === undefined) delete next[k as keyof ClaudeProjectSettingsOverrides]
+      else (next as Record<string, unknown>)[k] = v
+    }
+    setLocalOverrides(next)
+    window.api.claudeProjectSettings.update(projectId, update).catch((err) => {
+      console.error('[settings-drawer] update failed, refetching', err)
+      window.api.claudeProjectSettings
+        .get(projectId)
+        .then((s) => {
+          setSettings(s)
+          setLocalOverrides(s.overrides)
+        })
+        .catch(console.error)
+    })
+  }
 
   function handleModel(v: ModelOption): void {
     // Guard: separator values start with '__sep' and should never be committed
@@ -189,23 +170,6 @@ export function SettingsDrawer({
       customCliFlags: undefined
     })
   }
-
-  // Stable identities for CliFlagsEditor's props — see EMPTY_FLAGS comment.
-  // Only change reference when the underlying data actually changes, so
-  // CliFlagsEditor's prevValueRef sync and CliFlagsPreview's memo both work.
-  // Must stay above the `if (!open) return null` below — Rules of Hooks.
-  const cliFlagsValue = useMemo(
-    () => localOverrides.customCliFlags ?? EMPTY_FLAGS,
-    [localOverrides.customCliFlags]
-  )
-  const inheritedCliFlags = useMemo(
-    () => globalSettings?.customCliFlags ?? EMPTY_FLAGS,
-    [globalSettings?.customCliFlags]
-  )
-  const handleCliFlagsChange = useCallback(
-    (v: string[]) => patch({ customCliFlags: v.length > 0 ? v : undefined }),
-    [patch]
-  )
 
   if (!open) return null
 
@@ -337,9 +301,9 @@ export function SettingsDrawer({
             </header>
             <div className="px-4 pb-5">
               <CliFlagsEditor
-                value={cliFlagsValue}
-                onChange={handleCliFlagsChange}
-                inheritedFlags={inheritedCliFlags}
+                value={localOverrides.customCliFlags ?? []}
+                onChange={(v) => patch({ customCliFlags: v.length > 0 ? v : undefined })}
+                inheritedFlags={globalSettings?.customCliFlags ?? []}
                 placeholder="--dangerously-load-development-channels server:loco"
               />
             </div>
