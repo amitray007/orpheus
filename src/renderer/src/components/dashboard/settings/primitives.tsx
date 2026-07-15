@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { Overlay } from '@/components/ui/Overlay'
 import { X, Plus, CaretDown, Check } from '@phosphor-icons/react'
@@ -784,7 +784,12 @@ function survivingInheritedTokens(inheritedTokens: string[], ownTokens: string[]
 // ever fail to reconstruct the true merge (defensive — shouldn't happen),
 // fall back to rendering the true merged tokens as a single normal segment
 // so the command shown is always correct even if the emphasis split isn't.
-function CliFlagsPreview({
+// Memoized so the (real) work below — toValidTokens, mergeFlagScopes,
+// survivingInheritedTokens, plus the reconstruction cross-check — only reruns
+// when inheritedFlags/ownRawEntries actually change identity. This only pays
+// off when callers pass stable array references (see SettingsDrawer.tsx's
+// EMPTY_FLAGS + useMemo) — a fresh `?? []` literal every render defeats it.
+const CliFlagsPreview = memo(function CliFlagsPreview({
   inheritedFlags,
   ownRawEntries
 }: CliFlagsPreviewProps): React.JSX.Element | null {
@@ -824,7 +829,7 @@ function CliFlagsPreview({
       )}
     </p>
   )
-}
+})
 
 interface CliFlagRowProps {
   row: FlagRow
@@ -954,13 +959,18 @@ export function CliFlagsEditor({
     }, 0)
   }
 
+  // Stable identity for CliFlagsPreview's ownRawEntries prop — an inline
+  // `.map()` in JSX would allocate a new array every CliFlagsEditor render
+  // (including ones triggered by a sibling settings change in the parent
+  // drawer, since CliFlagsEditor itself isn't memoized), defeating
+  // CliFlagsPreview's memo exactly like the SettingsDrawer-level `?? []`
+  // props did. Only recomputes when localItems' values actually change.
+  const ownRawEntries = useMemo(() => localItems.map((r) => r.value), [localItems])
+
   return (
     <div ref={containerRef} className="flex flex-col gap-2">
       {label && <span className="text-xs font-medium text-text-primary">{label}</span>}
-      <CliFlagsPreview
-        inheritedFlags={inheritedFlags}
-        ownRawEntries={localItems.map((r) => r.value)}
-      />
+      <CliFlagsPreview inheritedFlags={inheritedFlags} ownRawEntries={ownRawEntries} />
       {localItems.length > 0 && (
         <div className="flex flex-col gap-1.5">
           {localItems.map((row, idx) => (
