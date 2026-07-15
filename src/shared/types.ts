@@ -491,6 +491,10 @@ export type ClaudeGlobalSettings = {
   // Custom env vars (v22) — merged last at launch; user's keys win on conflict
   customEnvVars: Record<string, string>
 
+  // Custom CLI flags (global scope) — free-text passthrough flags, appended
+  // after Orpheus's own typed flags at launch. See src/shared/cliFlags.ts.
+  customCliFlags: string[]
+
   // Env-var controls (v23) — General
   disableThinking: boolean
   disableFastMode: boolean
@@ -710,6 +714,9 @@ export type ClaudeProjectSettingsOverrides = {
   model?: string
   permissionMode?: ClaudePermissionMode
   effort?: ClaudeEffort
+  // Custom CLI flags (project scope) — merged with global scope via
+  // mergeFlagScopes at launch (append; project wins on same-name conflict).
+  customCliFlags?: string[]
 }
 
 export type ClaudeProjectSettings = {

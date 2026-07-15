@@ -251,7 +251,7 @@ export function mergeFlagScopes(globalFlags: string[], projectFlags: string[]): 
   return [...survivingGlobal, ...projectEntries].flatMap((e) => e.tokens)
 }
 
-interface FlagTokenGroup {
+export interface FlagTokenGroup {
   name: string
   tokens: string[]
 }
@@ -264,8 +264,13 @@ interface FlagTokenGroup {
  * value-shaped tokens with no preceding flag (malformed input) is dropped —
  * mergeFlagScopes only ever receives well-formed output from parseFlagEntry,
  * so this is a defensive fallback, not a real code path.
+ *
+ * Exported (in addition to its use inside mergeFlagScopes) so other callers
+ * that need to re-group an already-tokenized 0x1F-delimited flags string by
+ * flag name — e.g. src/main/ipc/claudeSettings.ts's footer Model/Effort chip
+ * reconcile logic — reuse this instead of re-deriving the same grouping rules.
  */
-function groupTokensByFlag(tokens: string[]): FlagTokenGroup[] {
+export function groupTokensByFlag(tokens: string[]): FlagTokenGroup[] {
   const groups: FlagTokenGroup[] = []
   for (const token of tokens) {
     if (token.startsWith('-')) {
@@ -284,3 +289,54 @@ function groupTokensByFlag(tokens: string[]): FlagTokenGroup[] {
 // Re-exported for callers that want to distinguish a parse failure without a
 // duplicated type guard.
 export { isFlagParseError }
+
+// ---------------------------------------------------------------------------
+// Composed-flags-string readers.
+//
+// `composeClaudeLaunch`'s `flags` output (src/main/claudeSettings.ts) is a
+// single FLAG_DELIMITER-joined string — the exact wire format that reaches
+// resources/orpheus-claude.sh via ORPHEUS_CLAUDE_FLAGS. Any main-process code
+// that needs to read a value back out of that composed string (footer
+// Model/Effort chips, session model-resolution fallback, the dirty-diff
+// reconcile logic) MUST go through these two functions rather than hand-
+// rolling a regex against the string — a regex assuming whitespace-
+// separated flags silently breaks against the 0x1F format (this bit us once:
+// four separate call sites regexed the composed string assuming
+// whitespace-joined flags after the transport moved to 0x1F, all silently
+// returning no-match). One parser, reused everywhere the composed string is
+// read back.
+// ---------------------------------------------------------------------------
+
+/**
+ * Splits a composed `flags` string (FLAG_DELIMITER-joined, as produced by
+ * composeClaudeLaunch) back into its argv token array. The empty string
+ * (compose's empty-default invariant) yields `[]`, not `['']`.
+ */
+export function splitFlagString(flags: string): string[] {
+  return flags === '' ? [] : flags.split(FLAG_DELIMITER)
+}
+
+/**
+ * Finds the value of a named flag (canonical form WITH leading dashes, e.g.
+ * '--model') anywhere in a composed flags string — position-independent,
+ * unlike a start-anchored regex. Handles both the space-separated form
+ * (`--model`, `opus` as two tokens) and the `=`-joined form (`--model=opus`
+ * as one token, via the same splitting flagName()/parseFlagEntry use).
+ * Returns null if the flag is absent, or if present with no value (e.g. a
+ * bare boolean flag like `--debug`).
+ */
+export function findFlagValue(flags: string, name: string): string | null {
+  const groups = groupTokensByFlag(splitFlagString(flags))
+  const group = groups.find((g) => g.name === name)
+  if (!group) return null
+
+  const first = group.tokens[0]
+  const eqIdx = first.indexOf('=')
+  if (eqIdx !== -1) {
+    // '=`-joined form: the value is everything after the first '=' in the
+    // single token, e.g. '--model=opus' -> 'opus'.
+    return first.slice(eqIdx + 1)
+  }
+  // Space-separated form: the value is the next token, if any.
+  return group.tokens.length > 1 ? group.tokens[1] : null
+}
