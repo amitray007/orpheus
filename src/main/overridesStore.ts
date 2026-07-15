@@ -83,10 +83,9 @@ export type OverridesStoreConfig<IdKey extends string, Overrides> = {
   /**
    * Optional per-store validation for keys beyond the shared
    * {model, permissionMode, effort} trio, run AFTER validateBasePatch. This
-   * is how a store adds its own scope-specific keys (e.g. the project store's
-   * customCliFlags) WITHOUT loosening validateBasePatch, which stays shared
-   * and unchanged — critically, the workspace store passes no validateExtra
-   * and so keeps its current three-key-only validation exactly as before.
+   * is how a store adds its own scope-specific keys (e.g. the project and
+   * workspace stores' customCliFlags) WITHOUT loosening validateBasePatch,
+   * which stays shared and unchanged.
    */
   validateExtra?: (patch: Overrides) => void
 }

@@ -6,11 +6,9 @@ import type { ClaudeProjectSettings, ClaudeProjectSettingsOverrides } from '../s
 // claude_project_settings. See overridesStore.ts for the shared
 // get/update/cache-invalidate implementation.
 //
-// The project store is the ONLY overridesStore consumer that passes
+// Like the workspace store (claudeWorkspaceSettings.ts), this store passes
 // validateExtra — it adds customCliFlags on top of the shared
 // {model, permissionMode, effort} trio (syntax-only, per the design doc).
-// The workspace store (claudeWorkspaceSettings.ts) passes none, so it keeps
-// its current three-key-only validation exactly as before.
 // ---------------------------------------------------------------------------
 
 const store = createOverridesStore<

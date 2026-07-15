@@ -216,14 +216,21 @@ const REPEATABLE = new Set([
   '--betas',
   '--mcp-config',
   '--tools',
-  '--file'
+  '--file',
+  // REPEATABLE by an asymmetry argument, not a confirmed variadic CLI surface
+  // (verified safe to repeat against claude 2.1.210 — see the workspace
+  // settings popover design doc's merge section): if claude internally
+  // last-wins, the highest scope still wins since its tokens are appended
+  // last, so REPEATABLE is never worse than override.
+  '--dangerously-load-development-channels'
 ])
 
 /**
- * Merges global-scope and project-scope flag argv token lists into one argv
- * token list, per the design doc's rule: append, but project wins on
+ * Merges N scopes' flag argv token lists into one argv token list, lowest
+ * precedence first (e.g. global, then project, then workspace), per the
+ * design doc's rule: append, but a later scope wins over an earlier one on
  * same-name conflict — except for REPEATABLE flags, which accumulate from
- * both scopes instead of the later one replacing the earlier one.
+ * every scope instead of the later one replacing the earlier ones.
  *
  * Inputs are argv TOKEN arrays already produced by parseFlagEntry (i.e. one
  * flag entry may already be flattened into multiple tokens); this function
@@ -236,19 +243,34 @@ const REPEATABLE = new Set([
  * flag boundaries (a token starting with `-` begins a new entry's name; any
  * immediately following non-dash-prefixed tokens are that flag's values).
  *
- * Order: surviving global tokens first, then project tokens. Unknown flags
- * default to override (the safer, common-case behavior).
+ * Implemented as a pairwise left fold over `mergeTwoFlagScopes`, lowest scope
+ * first, so the two-scope case (global, project) is byte-identical to the
+ * original binary implementation — existing call sites keep working
+ * unchanged. Order: surviving-earlier-scope tokens first, then later-scope
+ * tokens. Unknown flags default to override (the safer, common-case
+ * behavior).
  */
-export function mergeFlagScopes(globalFlags: string[], projectFlags: string[]): string[] {
-  const globalEntries = groupTokensByFlag(globalFlags)
-  const projectEntries = groupTokensByFlag(projectFlags)
-  const projectNames = new Set(projectEntries.map((e) => e.name))
+export function mergeFlagScopes(...scopes: string[][]): string[] {
+  if (scopes.length === 0) return []
+  return scopes.reduce((merged, next) => mergeTwoFlagScopes(merged, next))
+}
 
-  const survivingGlobal = globalEntries.filter(
-    (e) => REPEATABLE.has(e.name) || !projectNames.has(e.name)
+/**
+ * The pairwise merge step `mergeFlagScopes` folds over: merges a lower-
+ * precedence scope's tokens with a higher-precedence scope's tokens, higher
+ * wins on same-name conflict except for REPEATABLE flags (see
+ * `mergeFlagScopes`'s doc comment for the full rule).
+ */
+function mergeTwoFlagScopes(lowerFlags: string[], higherFlags: string[]): string[] {
+  const lowerEntries = groupTokensByFlag(lowerFlags)
+  const higherEntries = groupTokensByFlag(higherFlags)
+  const higherNames = new Set(higherEntries.map((e) => e.name))
+
+  const survivingLower = lowerEntries.filter(
+    (e) => REPEATABLE.has(e.name) || !higherNames.has(e.name)
   )
 
-  return [...survivingGlobal, ...projectEntries].flatMap((e) => e.tokens)
+  return [...survivingLower, ...higherEntries].flatMap((e) => e.tokens)
 }
 
 export interface FlagTokenGroup {

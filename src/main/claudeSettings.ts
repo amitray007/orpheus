@@ -726,10 +726,15 @@ export function composeClaudeLaunch(
     }
   }
 
-  // Workspace overrides sit above project overrides — highest precedence before CLI flags
+  // Workspace overrides sit above project overrides — highest precedence before CLI flags.
+  // customCliFlags is deliberately NOT spread into `s` here either, for the
+  // same reason as projectCustomFlags above — it's captured into its own
+  // local and merged via mergeFlagScopes (below), not last-wins replacement.
+  let workspaceCustomFlags: string[] = []
   if (workspaceId) {
     const ws = getClaudeWorkspaceSettings(workspaceId)
     const wov = ws.overrides
+    workspaceCustomFlags = wov.customCliFlags ?? []
     if (Object.keys(wov).length > 0) {
       s = {
         ...s,
@@ -827,19 +832,25 @@ export function composeClaudeLaunch(
     }
   }
 
-  // customCliFlags (global + project scope; workspace scope does NOT
-  // participate — see the design doc's non-goals). Each stored entry is a
-  // raw user-typed string (e.g. "--model opus"); flatten to argv tokens via
-  // parseFlagEntry before merging scopes, then append the merged tokens
-  // AFTER all of Orpheus's own typed flags above, so a user's override wins
-  // by last-flag-wins in claude's own parser (intentional — the escape hatch
-  // is an escape hatch). validatePatch already guarantees every stored entry
-  // parses cleanly; entries that somehow fail here (e.g. stale/corrupt DB
-  // data written before this validation existed) are skipped rather than
-  // throwing, since a malformed flag must never block the whole launch.
+  // customCliFlags (global + project + workspace scope — see
+  // docs/superpowers/specs/2026-07-15-workspace-settings-popover-design.md,
+  // which supersedes the earlier "workspace scope does NOT participate"
+  // non-goal). Each stored entry is a raw user-typed string (e.g.
+  // "--model opus"); flatten to argv tokens via parseFlagEntry before merging
+  // scopes, then append the merged tokens AFTER all of Orpheus's own typed
+  // flags above, so a user's override wins by last-flag-wins in claude's own
+  // parser (intentional — the escape hatch is an escape hatch). validatePatch
+  // already guarantees every stored entry parses cleanly; entries that
+  // somehow fail here (e.g. stale/corrupt DB data written before this
+  // validation existed) are skipped rather than throwing, since a malformed
+  // flag must never block the whole launch. mergeFlagScopes takes scopes
+  // lowest-precedence-first, so workspace (highest) goes last.
   const globalCustomTokens = global.customCliFlags.flatMap(flagEntryToTokens)
   const projectCustomTokens = projectCustomFlags.flatMap(flagEntryToTokens)
-  flagTokens.push(...mergeFlagScopes(globalCustomTokens, projectCustomTokens))
+  const workspaceCustomTokens = workspaceCustomFlags.flatMap(flagEntryToTokens)
+  flagTokens.push(
+    ...mergeFlagScopes(globalCustomTokens, projectCustomTokens, workspaceCustomTokens)
+  )
 
   const flags = flagTokens.join(FLAG_DELIMITER)
 

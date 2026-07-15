@@ -733,6 +733,10 @@ export type ClaudeWorkspaceSettingsOverrides = {
   model?: string
   permissionMode?: ClaudePermissionMode
   effort?: ClaudeEffort
+  // Custom CLI flags (workspace scope) — merged with global + project scope
+  // via mergeFlagScopes at launch (append; workspace wins on same-name
+  // conflict, highest precedence of the three).
+  customCliFlags?: string[]
 }
 
 export type ClaudeWorkspaceSettings = {

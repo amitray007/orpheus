@@ -184,6 +184,92 @@ function tokensOf(...raws: string[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// mergeFlagScopes — N-ary (global + project + workspace). Scopes are passed
+// lowest-precedence-first, so workspace goes last and wins. See
+// docs/superpowers/specs/2026-07-15-workspace-settings-popover-design.md.
+// ---------------------------------------------------------------------------
+
+{
+  // Non-repeatable flag across three scopes: the highest scope (workspace) wins.
+  const merged = mergeFlagScopes(
+    tokensOf('--model opus'),
+    tokensOf('--model sonnet'),
+    tokensOf('--model haiku')
+  )
+  assert.deepEqual(merged, ['--model', 'haiku'])
+  console.log('✓ merge(3): workspace overrides project overrides global')
+}
+
+{
+  // The motivating case: a development channel set at BOTH project and
+  // workspace scope. --dangerously-load-development-channels is REPEATABLE,
+  // so both survive — and the workspace's token is LAST, which is what makes
+  // the REPEATABLE choice safe under either of claude's possible internal
+  // semantics (accumulate => both load; last-wins => workspace still wins).
+  const merged = mergeFlagScopes(
+    [],
+    tokensOf('--dangerously-load-development-channels server:api'),
+    tokensOf('--dangerously-load-development-channels server:loco')
+  )
+  assert.deepEqual(merged, [
+    '--dangerously-load-development-channels',
+    'server:api',
+    '--dangerously-load-development-channels',
+    'server:loco'
+  ])
+  console.log('✓ merge(3): dev channels accumulate, workspace token last')
+}
+
+{
+  // Mixed three-scope matrix: repeatable accumulates across all three;
+  // non-repeatable resolves to the highest scope; each scope's unique flag
+  // survives; ordering stays lowest-scope-first.
+  const merged = mergeFlagScopes(
+    tokensOf('--add-dir /g', '--model opus', '--debug'),
+    tokensOf('--add-dir /p', '--model sonnet'),
+    tokensOf('--add-dir /w', '--model haiku', '--effort high')
+  )
+  assert.deepEqual(merged, [
+    '--add-dir',
+    '/g',
+    '--debug',
+    '--add-dir',
+    '/p',
+    '--add-dir',
+    '/w',
+    '--model',
+    'haiku',
+    '--effort',
+    'high'
+  ])
+  console.log('✓ merge(3): full mixed matrix across global/project/workspace')
+}
+
+{
+  // A middle scope may be empty without disturbing precedence.
+  const merged = mergeFlagScopes(
+    tokensOf('--model opus'),
+    [],
+    tokensOf('--dangerously-load-development-channels server:loco')
+  )
+  assert.deepEqual(merged, [
+    '--model',
+    'opus',
+    '--dangerously-load-development-channels',
+    'server:loco'
+  ])
+  console.log('✓ merge(3): empty middle scope')
+}
+
+{
+  // Arity edge cases: the variadic signature must degrade cleanly.
+  assert.deepEqual(mergeFlagScopes(), [])
+  assert.deepEqual(mergeFlagScopes(tokensOf('--debug')), ['--debug'])
+  assert.deepEqual(mergeFlagScopes([], [], []), [])
+  console.log('✓ merge(n): zero/one/all-empty scope arities')
+}
+
+// ---------------------------------------------------------------------------
 // validatePatch-equivalent — src/main/claudeSettings.ts's validatePatch and
 // overridesStore.ts's validateCustomCliFlagsValue both delegate straight to
 // parseFlagEntry per-entry (syntax only, see the module-level doc comment in
