@@ -5,11 +5,12 @@ import {
   CLAUDE_MODEL_OPTIONS,
   CLAUDE_MODEL_ALIAS_START_INDEX,
   type ClaudeEffort,
+  type ClaudeGlobalSettings,
   type ClaudePermissionMode,
   type ClaudeProjectSettings,
   type ClaudeProjectSettingsOverrides
 } from '@shared/types'
-import { Select } from '../settings/primitives'
+import { Select, CliFlagsEditor } from '../settings/primitives'
 import { Overlay } from '@/components/ui/Overlay'
 import { WorkspaceCreationSettings } from './WorkspaceCreationSettings'
 
@@ -104,6 +105,9 @@ export function SettingsDrawer({
 }: SettingsDrawerProps): React.JSX.Element | null {
   const [settings, setSettings] = useState<ClaudeProjectSettings | null>(null)
   const [localOverrides, setLocalOverrides] = useState<ClaudeProjectSettingsOverrides>({})
+  // Global settings, fetched alongside project settings — needed only to
+  // render inherited CLI flags (muted) in the CliFlagsEditor preview.
+  const [globalSettings, setGlobalSettings] = useState<ClaudeGlobalSettings | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -116,6 +120,12 @@ export function SettingsDrawer({
         setLocalOverrides(s.overrides)
       })
       .catch((err) => console.error('[settings-drawer] failed to load', err))
+    window.api.claudeSettings
+      .get()
+      .then((s) => {
+        if (!cancelled) setGlobalSettings(s)
+      })
+      .catch((err) => console.error('[settings-drawer] failed to load global settings', err))
     return () => {
       cancelled = true
     }
@@ -153,7 +163,12 @@ export function SettingsDrawer({
   }
 
   function resetAll(): void {
-    patch({ model: undefined, permissionMode: undefined, effort: undefined })
+    patch({
+      model: undefined,
+      permissionMode: undefined,
+      effort: undefined,
+      customCliFlags: undefined
+    })
   }
 
   if (!open) return null
@@ -175,7 +190,8 @@ export function SettingsDrawer({
   const overrideCount =
     (localOverrides.model !== undefined ? 1 : 0) +
     (localOverrides.permissionMode !== undefined ? 1 : 0) +
-    (localOverrides.effort !== undefined ? 1 : 0)
+    (localOverrides.effort !== undefined ? 1 : 0) +
+    ((localOverrides.customCliFlags?.length ?? 0) > 0 ? 1 : 0)
   const hasAnyOverride = overrideCount > 0
 
   return (
@@ -276,6 +292,22 @@ export function SettingsDrawer({
           </section>
 
           <WorkspaceCreationSettings projectId={projectId} />
+
+          <section className="flex flex-col mt-4 border-t border-border-default/40">
+            <header className="px-4 pt-5 pb-2">
+              <span className="text-xs font-semibold text-text-primary uppercase tracking-wider">
+                Custom CLI flags
+              </span>
+            </header>
+            <div className="px-4 pb-5">
+              <CliFlagsEditor
+                value={localOverrides.customCliFlags ?? []}
+                onChange={(v) => patch({ customCliFlags: v.length > 0 ? v : undefined })}
+                inheritedFlags={globalSettings?.customCliFlags ?? []}
+                placeholder="--dangerously-load-development-channels server:loco"
+              />
+            </div>
+          </section>
 
           <section className="flex flex-col mt-4 border-t border-border-default/40">
             <header className="px-4 pt-5 pb-2">

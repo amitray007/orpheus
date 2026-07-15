@@ -3,6 +3,7 @@ import type React from 'react'
 import { Overlay } from '@/components/ui/Overlay'
 import { X, Plus, CaretDown, Check } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS, CLAUDE_MODEL_ALIAS_START_INDEX } from '@shared/types'
+import { parseFlagEntry, mergeFlagScopes, isFlagParseError } from '@shared/cliFlags'
 import { playSound } from '../../../lib/sound'
 import { useFocusOnMount } from '@/lib/useFocusOnMount'
 
@@ -672,6 +673,272 @@ export function RuleListEditor({
       >
         <Plus size={11} weight="bold" />
         Add rule
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// CliFlagsEditor — add/remove free-text CLI flag entries, with live syntax
+// validation (parseFlagEntry) and a live command preview (mergeFlagScopes).
+//
+// Copies RuleListEditor's proven mechanics: crypto.randomUUID() row ids (so
+// React never misplaces focus/selection across a reorder), render-time
+// prevValueRef sync (never fights an in-progress edit), commit-on-blur/Enter,
+// drop-empty-on-commit, Escape-removes-row, and a containerRef-scoped
+// focus-on-add so multiple CliFlagsEditor mounts (global + project) never
+// steal focus from each other.
+//
+// Unlike RuleListEditor, each row is validated live via parseFlagEntry —
+// syntax only, never "unknown flag" (see cliFlags.ts's module doc). An
+// invalid row stays visible with its error but is excluded from onChange
+// until it's fixed or removed, so the user is never fighting a revert.
+// ---------------------------------------------------------------------------
+
+export interface CliFlagsEditorProps {
+  value: string[]
+  onChange: (v: string[]) => void
+  /** Flags inherited from a higher scope, rendered muted in the preview. Optional. */
+  inheritedFlags?: string[]
+  label?: string
+  placeholder?: string
+}
+
+// Each row needs a stable identity independent of its string value/position —
+// index keys would make React reuse/misplace input DOM nodes (and their focus/
+// selection state) across reorders. crypto.randomUUID() gives each row a
+// value-independent id, generated once per item and threaded alongside it.
+interface FlagRow {
+  id: string
+  value: string
+}
+
+function toFlagRows(values: string[]): FlagRow[] {
+  return values.map((value) => ({ id: crypto.randomUUID(), value }))
+}
+
+/** Flattens a list of raw flag entries into argv tokens, skipping any entry
+ *  that doesn't currently parse (empty or syntactically invalid) — used for
+ *  the live preview, which must never crash on an in-progress invalid row. */
+function toValidTokens(rawEntries: string[]): string[] {
+  return rawEntries.flatMap((raw) => {
+    const parsed = parseFlagEntry(raw)
+    return isFlagParseError(parsed) ? [] : parsed.tokens
+  })
+}
+
+const FLAG_INPUT_BASE_CLASS =
+  'flex-1 px-3 py-1.5 rounded-md text-xs bg-surface-raised border text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono'
+const FLAG_INPUT_VALID_CLASS = 'border-border-default'
+const FLAG_INPUT_INVALID_CLASS = 'border-red-500/60'
+
+interface CliFlagsPreviewProps {
+  inheritedFlags?: string[]
+  ownRawEntries: string[]
+}
+
+// Live preview line: "claude <inherited tokens muted> <own tokens normal>".
+// The overall token SET shown is always the real mergeFlagScopes() result (so
+// an inherited flag overridden by a same-named project flag never appears
+// twice) — the muted/normal split is a simplified visual approximation
+// (inherited-scope's own valid tokens muted, this scope's own valid tokens
+// normal) rather than reaching into mergeFlagScopes' internal grouping, which
+// isn't exposed. Good enough to make append-vs-override legible at a glance.
+function CliFlagsPreview({
+  inheritedFlags,
+  ownRawEntries
+}: CliFlagsPreviewProps): React.JSX.Element | null {
+  const ownTokens = toValidTokens(ownRawEntries)
+  const inheritedTokens = inheritedFlags ? toValidTokens(inheritedFlags) : []
+  const mergedTokens = mergeFlagScopes(inheritedTokens, ownTokens)
+
+  if (mergedTokens.length === 0) {
+    return (
+      <p className="text-xs font-mono text-text-muted overflow-x-auto whitespace-nowrap">claude</p>
+    )
+  }
+
+  // Simplified split for display only — see comment above. The muted segment
+  // is inherited's own tokens; the normal segment is this scope's own tokens.
+  // (At global scope inheritedFlags is undefined, so nothing is muted.)
+  const mutedCount = inheritedFlags ? inheritedTokens.length : 0
+  const mutedSegment = mergedTokens.slice(0, mutedCount)
+  const normalSegment = mergedTokens.slice(mutedCount)
+
+  return (
+    <p className="text-xs font-mono overflow-x-auto whitespace-nowrap">
+      <span className="text-text-primary">claude </span>
+      {mutedSegment.length > 0 && (
+        <span className="text-text-muted">{mutedSegment.join(' ')} </span>
+      )}
+      {normalSegment.length > 0 && (
+        <span className="text-text-primary">{normalSegment.join(' ')}</span>
+      )}
+    </p>
+  )
+}
+
+interface CliFlagRowProps {
+  row: FlagRow
+  onUpdate: (text: string) => void
+  onCommit: () => void
+  onRemove: () => void
+  placeholder?: string
+}
+
+function CliFlagRow({
+  row,
+  onUpdate,
+  onCommit,
+  onRemove,
+  placeholder
+}: CliFlagRowProps): React.JSX.Element {
+  const parsed = row.value.trim() === '' ? null : parseFlagEntry(row.value)
+  const isInvalid = parsed !== null && isFlagParseError(parsed)
+  const errorId = `cli-flag-error-${row.id}`
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center gap-1.5">
+        <input
+          data-cli-flag-input
+          type="text"
+          aria-label="CLI flag"
+          aria-invalid={isInvalid}
+          aria-describedby={isInvalid ? errorId : undefined}
+          value={row.value}
+          onChange={(e) => onUpdate(e.target.value)}
+          onBlur={onCommit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              ;(e.currentTarget as HTMLInputElement).blur()
+            }
+            if (e.key === 'Escape') {
+              onRemove()
+            }
+          }}
+          placeholder={placeholder ?? '--dangerously-load-development-channels server:loco'}
+          className={[
+            FLAG_INPUT_BASE_CLASS,
+            isInvalid ? FLAG_INPUT_INVALID_CLASS : FLAG_INPUT_VALID_CLASS
+          ].join(' ')}
+        />
+        <button
+          type="button"
+          onClick={onRemove}
+          className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          aria-label="Remove flag"
+        >
+          <X size={11} weight="bold" />
+        </button>
+      </div>
+      {isInvalid && (
+        <p id={errorId} className="text-xs text-red-400 mt-0.5">
+          {(parsed as { error: string }).error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+export function CliFlagsEditor({
+  value,
+  onChange,
+  inheritedFlags,
+  label,
+  placeholder
+}: CliFlagsEditorProps): React.JSX.Element {
+  const [localItems, setLocalItems] = useState<FlagRow[]>(() => toFlagRows(value))
+  // Container ref — scopes addItem's focus query to THIS editor instance so
+  // multiple CliFlagsEditor mounts (global + project) never steal focus
+  // across each other.
+  const containerRef = useRef<HTMLDivElement>(null)
+  // Keep in sync with external changes (e.g. initial load). Render-time sync
+  // (not a useEffect) so it never fights an in-progress edit — only syncs
+  // when our local values actually diverge from the incoming prop.
+  const prevValueRef = useRef(value)
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time comparison to avoid a sync effect
+  if (prevValueRef.current !== value) {
+    // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation to track previous value
+    prevValueRef.current = value
+    if (JSON.stringify(localItems.map((r) => r.value)) !== JSON.stringify(value)) {
+      setLocalItems(toFlagRows(value))
+    }
+  }
+
+  // Only rows that are empty (dropped silently) or syntactically valid are
+  // ever propagated — an in-progress invalid row stays in local state (with
+  // its error shown) but is excluded from onChange until fixed or removed,
+  // so the user is never fighting a revert.
+  function commitRows(nextLocal: FlagRow[]): void {
+    setLocalItems(nextLocal)
+    onChange(
+      nextLocal.flatMap((row) => {
+        if (row.value.trim() === '') return []
+        const parsed = parseFlagEntry(row.value)
+        return isFlagParseError(parsed) ? [] : [row.value]
+      })
+    )
+  }
+
+  function commitItem(idx: number): void {
+    const trimmed = localItems[idx].value.trim()
+    const nextLocal = localItems.flatMap((row, i) => {
+      const v = i === idx ? trimmed : row.value
+      return v !== '' ? [{ ...row, value: v }] : []
+    })
+    commitRows(nextLocal)
+  }
+
+  function removeItem(idx: number): void {
+    commitRows(localItems.filter((_, i) => i !== idx))
+  }
+
+  function addItem(): void {
+    const next = [...localItems, { id: crypto.randomUUID(), value: '' }]
+    setLocalItems(next)
+    // Focus the new input on next tick — scoped to this editor's own
+    // container so it can never reach into a sibling CliFlagsEditor.
+    setTimeout(() => {
+      const inputs =
+        containerRef.current?.querySelectorAll<HTMLInputElement>('[data-cli-flag-input]')
+      const last = inputs?.[inputs.length - 1]
+      if (last) last.focus()
+    }, 0)
+  }
+
+  return (
+    <div ref={containerRef} className="flex flex-col gap-2">
+      {label && <span className="text-xs font-medium text-text-primary">{label}</span>}
+      <CliFlagsPreview
+        inheritedFlags={inheritedFlags}
+        ownRawEntries={localItems.map((r) => r.value)}
+      />
+      {localItems.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {localItems.map((row, idx) => (
+            <CliFlagRow
+              key={row.id}
+              row={row}
+              onUpdate={(text) => {
+                const next = [...localItems]
+                next[idx] = { ...next[idx], value: text }
+                setLocalItems(next)
+              }}
+              onCommit={() => commitItem(idx)}
+              onRemove={() => removeItem(idx)}
+              placeholder={placeholder}
+            />
+          ))}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={addItem}
+        aria-label="Add flag"
+        className="inline-flex items-center gap-1 text-xs text-text-muted hover:text-text-primary transition-colors self-start focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded px-1"
+      >
+        <Plus size={11} weight="bold" />
+        Add flag
       </button>
     </div>
   )
