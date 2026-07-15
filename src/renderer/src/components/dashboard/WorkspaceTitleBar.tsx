@@ -29,6 +29,7 @@ import { ClaudeGlyph } from '../workbench/ClaudeGlyph'
 import { useWorkbenchApi, type WorkbenchApi } from '../workbench/workbenchReducer'
 import { WorkbenchTabStrip } from '../workbench/WorkbenchTabStrip'
 import { DEFAULT_WORKBENCH_WIDTH } from '../../lib/workbenchStore'
+import { WorkspaceSettingsPopover } from './WorkspaceSettingsPopover'
 
 // ---------------------------------------------------------------------------
 // Model label helper — derives a short human-readable label from a model ID.
@@ -79,9 +80,20 @@ function shortTokens(n: number): string {
 interface WorkbenchTopBarRegionProps {
   api: WorkbenchApi
   style: React.CSSProperties
+  workspaceId: string
+  projectId: string
+  isDirty: boolean
+  onRestart?: () => void
 }
 
-function WorkbenchTopBarRegion({ api, style }: WorkbenchTopBarRegionProps): React.JSX.Element {
+function WorkbenchTopBarRegion({
+  api,
+  style,
+  workspaceId,
+  projectId,
+  isDirty,
+  onRestart
+}: WorkbenchTopBarRegionProps): React.JSX.Element {
   const isExpanded = api.state === 'expanded'
   const isDormant = api.state === 'dormant'
 
@@ -119,6 +131,17 @@ function WorkbenchTopBarRegion({ api, style }: WorkbenchTopBarRegionProps): Reac
       ].join(' ')}
       style={style}
     >
+      {/* Settings gear — a SIBLING of the dormant/open ternary below, not
+          inside it. The Workbench opener button only renders in the dormant
+          branch (replaced by the tab strip once open), so a Settings button
+          placed inside that ternary would vanish when the Workbench opens.
+          Placed here it persists across both states. */}
+      <WorkspaceSettingsPopover
+        workspaceId={workspaceId}
+        projectId={projectId}
+        isDirty={isDirty}
+        onRestart={onRestart}
+      />
       {isDormant ? (
         <button
           ref={openerRef}
@@ -555,7 +578,16 @@ export function WorkspaceTitleBar({
           Extracted to WorkbenchTopBarRegion; only rendered when the shared
           api exists (it always does inside WorkbenchProvider, but the hook
           is nullable). */}
-      {workbenchApi && <WorkbenchTopBarRegion api={workbenchApi} style={workbenchRegionStyle} />}
+      {workbenchApi && (
+        <WorkbenchTopBarRegion
+          api={workbenchApi}
+          style={workbenchRegionStyle}
+          workspaceId={workspace.id}
+          projectId={workspace.projectId}
+          isDirty={isDirty}
+          onRestart={onRestart}
+        />
+      )}
     </div>
   )
 }
