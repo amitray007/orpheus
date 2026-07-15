@@ -3,6 +3,7 @@ import type React from 'react'
 import { Overlay } from '@/components/ui/Overlay'
 import { X, Plus, CaretDown, Check } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS, CLAUDE_MODEL_ALIAS_START_INDEX } from '@shared/types'
+import { parseFlagEntry, mergeFlagScopes, isFlagParseError, flagName } from '@shared/cliFlags'
 import { playSound } from '../../../lib/sound'
 import { useFocusOnMount } from '@/lib/useFocusOnMount'
 
@@ -672,6 +673,320 @@ export function RuleListEditor({
       >
         <Plus size={11} weight="bold" />
         Add rule
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// CliFlagsEditor — add/remove free-text CLI flag entries, with live syntax
+// validation (parseFlagEntry) and a live command preview (mergeFlagScopes).
+//
+// Copies RuleListEditor's proven mechanics: crypto.randomUUID() row ids (so
+// React never misplaces focus/selection across a reorder), render-time
+// prevValueRef sync (never fights an in-progress edit), commit-on-blur/Enter,
+// drop-empty-on-commit, Escape-removes-row, and a containerRef-scoped
+// focus-on-add so multiple CliFlagsEditor mounts (global + project) never
+// steal focus from each other.
+//
+// Unlike RuleListEditor, each row is validated live via parseFlagEntry —
+// syntax only, never "unknown flag" (see cliFlags.ts's module doc). An
+// invalid row stays visible with its error but is excluded from onChange
+// until it's fixed or removed, so the user is never fighting a revert.
+// ---------------------------------------------------------------------------
+
+export interface CliFlagsEditorProps {
+  value: string[]
+  onChange: (v: string[]) => void
+  /** Flags inherited from a higher scope, rendered muted in the preview. Optional. */
+  inheritedFlags?: string[]
+  label?: string
+  placeholder?: string
+}
+
+// Each row needs a stable identity independent of its string value/position —
+// index keys would make React reuse/misplace input DOM nodes (and their focus/
+// selection state) across reorders. crypto.randomUUID() gives each row a
+// value-independent id, generated once per item and threaded alongside it.
+interface FlagRow {
+  id: string
+  value: string
+}
+
+function toFlagRows(values: string[]): FlagRow[] {
+  return values.map((value) => ({ id: crypto.randomUUID(), value }))
+}
+
+/** Flattens a list of raw flag entries into argv tokens, skipping any entry
+ *  that doesn't currently parse (empty or syntactically invalid) — used for
+ *  the live preview, which must never crash on an in-progress invalid row. */
+function toValidTokens(rawEntries: string[]): string[] {
+  return rawEntries.flatMap((raw) => {
+    const parsed = parseFlagEntry(raw)
+    return isFlagParseError(parsed) ? [] : parsed.tokens
+  })
+}
+
+const FLAG_INPUT_BASE_CLASS =
+  'flex-1 px-3 py-1.5 rounded-md text-xs bg-surface-raised border text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono'
+const FLAG_INPUT_VALID_CLASS = 'border-border-default'
+const FLAG_INPUT_INVALID_CLASS = 'border-red-500/60'
+
+interface CliFlagsPreviewProps {
+  inheritedFlags?: string[]
+  ownRawEntries: string[]
+}
+
+/** Splits a flat inherited-token list back into per-entry chunks so each
+ *  entry's survival can be tested individually against mergeFlagScopes. A
+ *  chunk starts at each token whose canonical name (via flagName) is
+ *  non-empty and runs until the next such token — mirroring the grouping
+ *  mergeFlagScopes itself does internally (name-prefixed token opens a new
+ *  entry; subsequent non-flag tokens are its values). */
+function chunkInheritedTokens(inheritedTokens: string[]): string[][] {
+  const chunks: string[][] = []
+  for (const token of inheritedTokens) {
+    if (flagName(token) !== '') {
+      chunks.push([token])
+    } else if (chunks.length > 0) {
+      chunks[chunks.length - 1].push(token)
+    }
+  }
+  return chunks
+}
+
+/** Determines which inherited entries survive mergeFlagScopes' override rule
+ *  against ownTokens, without duplicating the module-private REPEATABLE set.
+ *  For each inherited entry (in isolation), ask the real merge function
+ *  whether that entry's tokens still precede ownTokens in the result — if so
+ *  it survived (either REPEATABLE, or no same-named own entry exists); if the
+ *  result is exactly ownTokens, the entry was overridden and dropped. This
+ *  keeps REPEATABLE authoritative in cliFlags.ts and immune to drift. */
+function survivingInheritedTokens(inheritedTokens: string[], ownTokens: string[]): string[] {
+  const chunks = chunkInheritedTokens(inheritedTokens)
+  return chunks.flatMap((chunk) => {
+    const result = mergeFlagScopes(chunk, ownTokens)
+    const survived = result.length >= chunk.length && chunk.every((tok, i) => result[i] === tok)
+    return survived ? chunk : []
+  })
+}
+
+// Live preview line: "claude <inherited tokens muted> <own tokens normal>".
+// The displayed token SET always exactly equals the real mergeFlagScopes()
+// result — an inherited flag overridden by a same-named own-scope flag never
+// appears twice. The muted/normal split is computed from the ENTRY lists
+// (survivingInheritedTokens + ownTokens), not by slicing the merged array: a
+// flat slice at inheritedTokens.length is wrong whenever mergeFlagScopes
+// drops an overridden inherited entry, since the surviving-inherited prefix
+// is then shorter than inheritedTokens.length. Per-entry survival is derived
+// from the real mergeFlagScopes (not a duplicated REPEATABLE list) so it
+// tracks cliFlags.ts's override/repeat rules exactly. If the two segments
+// ever fail to reconstruct the true merge (defensive — shouldn't happen),
+// fall back to rendering the true merged tokens as a single normal segment
+// so the command shown is always correct even if the emphasis split isn't.
+function CliFlagsPreview({
+  inheritedFlags,
+  ownRawEntries
+}: CliFlagsPreviewProps): React.JSX.Element | null {
+  const ownTokens = toValidTokens(ownRawEntries)
+  const inheritedTokens = inheritedFlags ? toValidTokens(inheritedFlags) : []
+  const mergedTokens = mergeFlagScopes(inheritedTokens, ownTokens)
+
+  if (mergedTokens.length === 0) {
+    return (
+      <p className="text-xs font-mono text-text-muted overflow-x-auto whitespace-nowrap">claude</p>
+    )
+  }
+
+  // At global scope inheritedFlags is undefined, so nothing is muted.
+  const mutedSegment = inheritedFlags ? survivingInheritedTokens(inheritedTokens, ownTokens) : []
+  const normalSegment = ownTokens
+  const reconstructed = [...mutedSegment, ...normalSegment]
+  const matchesTrueMerge =
+    reconstructed.length === mergedTokens.length &&
+    reconstructed.every((tok, i) => tok === mergedTokens[i])
+
+  // Correctness of the displayed command wins over the emphasis split — if
+  // reconstruction ever disagrees with the real merge, show the true tokens
+  // unsplit rather than risk hiding or duplicating a flag.
+  const [displayMuted, displayNormal]: [string[], string[]] = matchesTrueMerge
+    ? [mutedSegment, normalSegment]
+    : [[], mergedTokens]
+
+  return (
+    <p className="text-xs font-mono overflow-x-auto whitespace-nowrap">
+      <span className="text-text-primary">claude </span>
+      {displayMuted.length > 0 && (
+        <span className="text-text-muted">{displayMuted.join(' ')} </span>
+      )}
+      {displayNormal.length > 0 && (
+        <span className="text-text-primary">{displayNormal.join(' ')}</span>
+      )}
+    </p>
+  )
+}
+
+interface CliFlagRowProps {
+  row: FlagRow
+  onUpdate: (text: string) => void
+  onCommit: () => void
+  onRemove: () => void
+  placeholder?: string
+}
+
+function CliFlagRow({
+  row,
+  onUpdate,
+  onCommit,
+  onRemove,
+  placeholder
+}: CliFlagRowProps): React.JSX.Element {
+  const parsed = row.value.trim() === '' ? null : parseFlagEntry(row.value)
+  const isInvalid = parsed !== null && isFlagParseError(parsed)
+  const errorId = `cli-flag-error-${row.id}`
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center gap-1.5">
+        <input
+          data-cli-flag-input
+          type="text"
+          aria-label="CLI flag"
+          aria-invalid={isInvalid}
+          aria-describedby={isInvalid ? errorId : undefined}
+          value={row.value}
+          onChange={(e) => onUpdate(e.target.value)}
+          onBlur={onCommit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              ;(e.currentTarget as HTMLInputElement).blur()
+            }
+            if (e.key === 'Escape') {
+              onRemove()
+            }
+          }}
+          placeholder={placeholder ?? '--dangerously-load-development-channels server:loco'}
+          className={[
+            FLAG_INPUT_BASE_CLASS,
+            isInvalid ? FLAG_INPUT_INVALID_CLASS : FLAG_INPUT_VALID_CLASS
+          ].join(' ')}
+        />
+        <button
+          type="button"
+          onClick={onRemove}
+          className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          aria-label="Remove flag"
+        >
+          <X size={11} weight="bold" />
+        </button>
+      </div>
+      {isInvalid && (
+        <p id={errorId} className="text-xs text-red-400 mt-0.5">
+          {(parsed as { error: string }).error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+export function CliFlagsEditor({
+  value,
+  onChange,
+  inheritedFlags,
+  label,
+  placeholder
+}: CliFlagsEditorProps): React.JSX.Element {
+  const [localItems, setLocalItems] = useState<FlagRow[]>(() => toFlagRows(value))
+  // Container ref — scopes addItem's focus query to THIS editor instance so
+  // multiple CliFlagsEditor mounts (global + project) never steal focus
+  // across each other.
+  const containerRef = useRef<HTMLDivElement>(null)
+  // Keep in sync with external changes (e.g. initial load). Render-time sync
+  // (not a useEffect) so it never fights an in-progress edit — only syncs
+  // when our local values actually diverge from the incoming prop.
+  const prevValueRef = useRef(value)
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time comparison to avoid a sync effect
+  if (prevValueRef.current !== value) {
+    // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation to track previous value
+    prevValueRef.current = value
+    if (JSON.stringify(localItems.map((r) => r.value)) !== JSON.stringify(value)) {
+      setLocalItems(toFlagRows(value))
+    }
+  }
+
+  // Only rows that are empty (dropped silently) or syntactically valid are
+  // ever propagated — an in-progress invalid row stays in local state (with
+  // its error shown) but is excluded from onChange until fixed or removed,
+  // so the user is never fighting a revert.
+  function commitRows(nextLocal: FlagRow[]): void {
+    setLocalItems(nextLocal)
+    onChange(
+      nextLocal.flatMap((row) => {
+        if (row.value.trim() === '') return []
+        const parsed = parseFlagEntry(row.value)
+        return isFlagParseError(parsed) ? [] : [row.value]
+      })
+    )
+  }
+
+  function commitItem(idx: number): void {
+    const trimmed = localItems[idx].value.trim()
+    const nextLocal = localItems.flatMap((row, i) => {
+      const v = i === idx ? trimmed : row.value
+      return v !== '' ? [{ ...row, value: v }] : []
+    })
+    commitRows(nextLocal)
+  }
+
+  function removeItem(idx: number): void {
+    commitRows(localItems.filter((_, i) => i !== idx))
+  }
+
+  function addItem(): void {
+    const next = [...localItems, { id: crypto.randomUUID(), value: '' }]
+    setLocalItems(next)
+    // Focus the new input on next tick — scoped to this editor's own
+    // container so it can never reach into a sibling CliFlagsEditor.
+    setTimeout(() => {
+      const inputs =
+        containerRef.current?.querySelectorAll<HTMLInputElement>('[data-cli-flag-input]')
+      const last = inputs?.[inputs.length - 1]
+      if (last) last.focus()
+    }, 0)
+  }
+
+  return (
+    <div ref={containerRef} className="flex flex-col gap-2">
+      {label && <span className="text-xs font-medium text-text-primary">{label}</span>}
+      <CliFlagsPreview
+        inheritedFlags={inheritedFlags}
+        ownRawEntries={localItems.map((r) => r.value)}
+      />
+      {localItems.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {localItems.map((row, idx) => (
+            <CliFlagRow
+              key={row.id}
+              row={row}
+              onUpdate={(text) => {
+                const next = [...localItems]
+                next[idx] = { ...next[idx], value: text }
+                setLocalItems(next)
+              }}
+              onCommit={() => commitItem(idx)}
+              onRemove={() => removeItem(idx)}
+              placeholder={placeholder}
+            />
+          ))}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={addItem}
+        aria-label="Add flag"
+        className="inline-flex items-center gap-1 text-xs text-text-muted hover:text-text-primary transition-colors self-start focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded px-1"
+      >
+        <Plus size={11} weight="bold" />
+        Add flag
       </button>
     </div>
   )

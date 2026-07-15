@@ -1236,6 +1236,24 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
       'env override'
     ]
   },
+  {
+    sectionId: 'claude-developer',
+    sectionGroup: 'Claude',
+    sectionLabel: 'Developer',
+    settingId: 'custom-cli-flags',
+    label: 'Custom CLI flags',
+    description: 'Arbitrary flags appended to every claude launch, including undocumented ones.',
+    mapsTo: [],
+    keywords: [
+      'cli flags',
+      'custom flags',
+      'command line flags',
+      'hidden flags',
+      'passthrough',
+      'raw flags',
+      'extra flags'
+    ]
+  },
 
   // ---------------------------------------------------------------------------
   // Claude › About Claude (section-level)

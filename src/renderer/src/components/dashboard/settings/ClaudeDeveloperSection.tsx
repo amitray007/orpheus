@@ -8,7 +8,8 @@ import {
   SegmentedControl,
   NumberInput,
   SectionTitle,
-  Eyebrow
+  Eyebrow,
+  CliFlagsEditor
 } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
@@ -799,6 +800,45 @@ const EnvVarsGroup = memo(function EnvVarsGroup({
   )
 })
 
+// --- Custom CLI flags ---
+
+interface CliFlagsGroupProps {
+  customCliFlags: string[]
+  patch: (p: Partial<ClaudeGlobalSettings>) => void
+}
+
+const CliFlagsGroup = memo(function CliFlagsGroup({
+  customCliFlags,
+  patch
+}: CliFlagsGroupProps): React.JSX.Element {
+  return (
+    <section className="flex flex-col">
+      <Eyebrow className="mb-3">Custom CLI flags</Eyebrow>
+      <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4">
+        <p className="text-xs text-text-muted mb-4">
+          Arbitrary flags appended to every claude launch, after the flags Orpheus builds from the
+          settings above. Power-user override — passed straight through to claude, including flags
+          not documented in{' '}
+          <code className="text-xs font-mono text-text-muted bg-surface-overlay border border-border-default rounded px-1 py-0.5">
+            claude --help
+          </code>
+          . That&apos;s the point: undocumented flags are allowed on purpose. See the{' '}
+          <a
+            href="https://code.claude.com/docs/en/cli-reference"
+            target="_blank"
+            rel="noreferrer"
+            className="text-accent hover:opacity-80 transition-opacity underline underline-offset-2"
+          >
+            claude CLI reference
+          </a>
+          .
+        </p>
+        <CliFlagsEditor value={customCliFlags} onChange={(v) => patch({ customCliFlags: v })} />
+      </div>
+    </section>
+  )
+})
+
 // ---------------------------------------------------------------------------
 // ClaudeDeveloperSection — debug logging, telemetry, experimental flags
 // ---------------------------------------------------------------------------
@@ -903,6 +943,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
         patch={patch}
       />
       <EnvVarsGroup customEnvVars={settings.customEnvVars} patch={patch} />
+      <CliFlagsGroup customCliFlags={settings.customCliFlags} patch={patch} />
     </div>
   )
 }
