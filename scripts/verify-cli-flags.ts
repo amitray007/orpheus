@@ -227,6 +227,80 @@ function validateCustomCliFlagsEntries(entries: string[]): void {
 }
 
 // ---------------------------------------------------------------------------
+// Project-scope validateExtra gate — mirrors src/main/claudeProjectSettings.ts's
+// validateExtra (the `'customCliFlags' in patch && patch.customCliFlags != null`
+// guard) followed by the same array/string-type check and per-entry
+// parseFlagEntry loop that src/main/overridesStore.ts's
+// validateCustomCliFlagsValue performs. Reimplemented inline for the same
+// reason as reconcileFlagsExceptTargetForTest above: claudeProjectSettings.ts
+// and overridesStore.ts both transitively import ./db -> better-sqlite3/
+// electron-adjacent code, which fails under this plain-node harness
+// (ERR_UNSUPPORTED_DIR_IMPORT or similar). This pins the regression fix: an
+// explicit `customCliFlags: undefined` patch (sent when the drawer clears the
+// last custom flag row) must be treated as "clear the override", not
+// rejected as a malformed value.
+// ---------------------------------------------------------------------------
+
+function projectValidateExtraForTest(patch: { customCliFlags?: unknown }): void {
+  if ('customCliFlags' in patch && patch.customCliFlags != null) {
+    const v = patch.customCliFlags
+    if (!Array.isArray(v) || !(v as unknown[]).every((item) => typeof item === 'string')) {
+      throw new Error('claudeProjectSettings: customCliFlags must be a string[]')
+    }
+    for (const entry of v as string[]) {
+      const parsed = parseFlagEntry(entry)
+      if ('error' in parsed) {
+        throw new Error(`customCliFlags entry "${entry}" is invalid — ${parsed.error}`)
+      }
+    }
+  }
+}
+
+{
+  // The regression itself: clearing the last row sends
+  // { customCliFlags: undefined }. This must NOT throw — it's the documented
+  // clear signal for a project-scope override, not a malformed value.
+  assert.doesNotThrow(
+    () => projectValidateExtraForTest({ customCliFlags: undefined }),
+    'an explicit undefined customCliFlags patch must be treated as a clear signal, not rejected'
+  )
+  console.log('✓ project validateExtra: undefined customCliFlags clears without throwing')
+}
+
+{
+  // Normal valid array still passes through untouched.
+  assert.doesNotThrow(() => projectValidateExtraForTest({ customCliFlags: ['--valid flag'] }))
+  console.log('✓ project validateExtra: valid string[] passes')
+}
+
+{
+  // Malformed (non-array) value must still be rejected — the undefined
+  // carve-out must not weaken validation of concrete bad values.
+  assert.throws(() => projectValidateExtraForTest({ customCliFlags: 'not-an-array' }))
+  console.log('✓ project validateExtra: non-array value still rejected')
+}
+
+{
+  // A syntax error inside an array entry must still be caught by this gate.
+  assert.throws(
+    () => projectValidateExtraForTest({ customCliFlags: ['--x "unbalanced'] }),
+    /Unbalanced quote/
+  )
+  console.log('✓ project validateExtra: syntax error inside an entry still caught')
+}
+
+{
+  // Core regression guard, exercised through this specific gate: a hidden/
+  // undocumented flag must still be accepted (syntax-only validation).
+  assert.doesNotThrow(() =>
+    projectValidateExtraForTest({
+      customCliFlags: ['--dangerously-load-development-channels server:loco']
+    })
+  )
+  console.log('✓ project validateExtra: hidden flag accepted through this gate')
+}
+
+// ---------------------------------------------------------------------------
 // Compose-level merge — simulates the seam in composeClaudeLaunch
 // (src/main/claudeSettings.ts) where global.customCliFlags and
 // project.overrides.customCliFlags are each flattened to argv tokens (one

@@ -22,7 +22,7 @@ const store = createOverridesStore<
   idColumn: 'project_id',
   idKey: 'projectId',
   validateExtra: (patch) => {
-    if ('customCliFlags' in patch) {
+    if ('customCliFlags' in patch && patch.customCliFlags != null) {
       validateCustomCliFlagsValue(patch.customCliFlags, 'claudeProjectSettings')
     }
   }
