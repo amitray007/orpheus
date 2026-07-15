@@ -3,6 +3,7 @@ import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 import type { ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 import { parseFlagEntry } from '../shared/cliFlags'
+import { isValidEnvVarKey } from '../shared/envVars'
 
 // ---------------------------------------------------------------------------
 // Generic factory for the claude_{project,workspace}_settings tables.
@@ -73,8 +74,6 @@ export function validateCustomCliFlagsValue(v: unknown, errorPrefix: string): vo
   }
 }
 
-const ENV_VAR_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
-
 /**
  * Shared validator for a customEnvVars Record<string, string> value — reused
  * by claudeSettings.ts's global-settings validatePatch and by the project and
@@ -88,7 +87,7 @@ export function validateCustomEnvVarsValue(v: unknown, errorPrefix: string): voi
     throw new Error(`${errorPrefix}: customEnvVars must be a Record<string, string>`)
   }
   for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-    if (!ENV_VAR_KEY_RE.test(k)) {
+    if (!isValidEnvVarKey(k)) {
       throw new Error(`${errorPrefix}: customEnvVars key "${k}" is not a valid env var name`)
     }
     if (typeof val !== 'string') {

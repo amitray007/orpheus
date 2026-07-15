@@ -4,6 +4,7 @@ import { Overlay } from '@/components/ui/Overlay'
 import { X, Plus, CaretDown, Check, Trash } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS, CLAUDE_MODEL_ALIAS_START_INDEX } from '@shared/types'
 import { parseFlagEntry, mergeFlagScopes, isFlagParseError, flagName } from '@shared/cliFlags'
+import { isValidEnvVarKey } from '@shared/envVars'
 import { playSound } from '../../../lib/sound'
 import { useFocusOnMount } from '@/lib/useFocusOnMount'
 
@@ -1009,8 +1010,6 @@ export function CliFlagsEditor({
 // (WorkspaceSettingsPopover) scope.
 // ---------------------------------------------------------------------------
 
-const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
-
 type EnvRow = { id: string; key: string; value: string }
 
 function recordToRows(record: Record<string, string>): EnvRow[] {
@@ -1091,7 +1090,7 @@ export function CustomEnvVarsEditor({
   return (
     <div className="flex flex-col gap-2">
       {rows.map((row, idx) => {
-        const keyInvalid = row.key.trim() !== '' && !KEY_RE.test(row.key.trim())
+        const keyInvalid = row.key.trim() !== '' && !isValidEnvVarKey(row.key.trim())
         return (
           <div key={row.id} className="flex items-center gap-2">
             <input
