@@ -16,6 +16,7 @@ import { getClaudeProjectSettings } from './claudeProjectSettings'
 import { getClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getWorkspace } from './workspaces'
 import { encodePathToClaudeDir } from './claudeProjectDir'
+import { FLAG_DELIMITER } from '../shared/cliFlags'
 
 // One-way-true cache for session JSONL existence checks.
 // Key: `${cwd}:${sessionId}`. Once a JSONL is confirmed to exist (true), it
@@ -720,7 +721,13 @@ export function composeClaudeLaunch(
   // -------------------------------------------------------------------------
   // 1. CLI flags
   // -------------------------------------------------------------------------
-  const flagParts: string[] = []
+  // A token array, not space-joined strings: each push contributes one or
+  // more argv tokens directly, so a value containing whitespace (e.g. a
+  // custom --append-system-prompt) never has to survive a shell re-split.
+  // The array is joined with FLAG_DELIMITER (0x1F) below and split back into
+  // argv by resources/orpheus-claude.sh via zsh's `${(@ps:\x1f:)VAR}` — see
+  // that script's comment block and src/shared/cliFlags.ts for why.
+  const flagTokens: string[] = []
 
   // --model: always pass when set. Skipping the flag for 'sonnet' (claude's
   // own default) made picking "Sonnet" indistinguishable from "no override",
@@ -728,7 +735,7 @@ export function composeClaudeLaunch(
   // explicit choice. Passing it always also makes the command in scrollback
   // reflect exactly what claude will run with.
   if (s.model) {
-    flagParts.push(`--model ${s.model}`)
+    flagTokens.push('--model', s.model)
   }
 
   // --permission-mode: skip 'default' (claude's default mode)
@@ -736,22 +743,22 @@ export function composeClaudeLaunch(
   const effectivePermissionMode =
     s.permissionMode !== 'default' ? s.permissionMode : s.planModeDefault ? 'plan' : 'default'
   if (effectivePermissionMode !== 'default') {
-    flagParts.push(`--permission-mode ${effectivePermissionMode}`)
+    flagTokens.push('--permission-mode', effectivePermissionMode)
   }
 
   // --effort: skip 'auto' (let claude pick the effort level)
   if (s.effort && s.effort !== 'auto') {
-    flagParts.push(`--effort ${s.effort}`)
+    flagTokens.push('--effort', s.effort)
   }
 
   // --debug: enable verbose debug logging
   if (s.debugLogging) {
-    flagParts.push('--debug')
+    flagTokens.push('--debug')
   }
 
   // --fallback-model: only emit when non-empty
   if (s.fallbackModel && s.fallbackModel.trim() !== '') {
-    flagParts.push(`--fallback-model ${s.fallbackModel.trim()}`)
+    flagTokens.push('--fallback-model', s.fallbackModel.trim())
   }
 
   // --no-chrome: disable claude's browser integration (default is enabled)
@@ -759,7 +766,7 @@ export function composeClaudeLaunch(
   // compose is a no-op until the stable flag name is verified.
   // Uncomment when confirmed:
   // if (!s.browserIntegration) {
-  //   flagParts.push('--no-chrome')
+  //   flagTokens.push('--no-chrome')
   // }
 
   // Session continuity: every workspace ships with a pre-generated UUID
@@ -780,21 +787,30 @@ export function composeClaudeLaunch(
     if (ws?.claudeSessionId) {
       if (sessionJsonlExists(ws.cwd, ws.claudeSessionId)) {
         // Session already exists — normal resume
-        flagParts.push(`--resume ${ws.claudeSessionId}`)
+        flagTokens.push('--resume', ws.claudeSessionId)
       } else if (ws.forkedFromSessionId) {
         // Plan A fork: pre-assign our UUID and branch from parent. Reuse the
         // already-loaded workspace record's field instead of a second DB query.
-        flagParts.push(
-          `--session-id ${ws.claudeSessionId} --resume ${ws.forkedFromSessionId} --fork-session`
+        flagTokens.push(
+          '--session-id',
+          ws.claudeSessionId,
+          '--resume',
+          ws.forkedFromSessionId,
+          '--fork-session'
         )
       } else {
         // Normal first launch
-        flagParts.push(`--session-id ${ws.claudeSessionId}`)
+        flagTokens.push('--session-id', ws.claudeSessionId)
       }
     }
   }
 
-  const flags = flagParts.join(' ')
+  // customCliFlags (global/project scope, merged via mergeFlagScopes) are
+  // NOT wired in yet — that lands in a later unit. This is the seam it will
+  // append to, after Orpheus's own typed flags above (so a user's override
+  // wins by last-flag-wins in claude's own parser).
+
+  const flags = flagTokens.join(FLAG_DELIMITER)
 
   // -------------------------------------------------------------------------
   // 2. settings.json blob (keys with no CLI flag equivalent)
