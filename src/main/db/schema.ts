@@ -323,6 +323,7 @@ export const schema: SchemaDef = {
       auth_foundry_base_url: { type: 'TEXT', notNull: true, default: "''" },
       auth_bedrock_bearer_token: { type: 'TEXT', notNull: true, default: "''" },
       custom_env_vars: { type: 'TEXT', notNull: true, default: "'{}'" },
+      custom_cli_flags: { type: 'TEXT', notNull: true, default: "'[]'" },
       // Env-var controls (v23)
       disable_thinking: bool('disable_thinking', '0'),
       disable_fast_mode: bool('disable_fast_mode', '0'),

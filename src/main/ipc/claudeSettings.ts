@@ -40,6 +40,12 @@ import {
   setDirty
 } from '../workspaceResources'
 import { handle } from './handle'
+import {
+  FLAG_DELIMITER,
+  groupTokensByFlag,
+  splitFlagString,
+  findFlagValue
+} from '../../shared/cliFlags'
 
 function launchEquals(a: ClaudeLaunch, b: ClaudeLaunch): boolean {
   if (a.flags !== b.flags || a.settingsJson !== b.settingsJson) return false
@@ -76,18 +82,22 @@ function recomputeDirty(): void {
   }
 }
 
-// Tokenizes a composed `flags` string into `{ name, raw }` pairs, one per
-// `--flag [value]` occurrence. `raw` is the exact matched substring (leading
-// whitespace trimmed) so tokens can be spliced back into a flags string
-// losslessly — e.g. "--model claude-opus-4-8" or "--debug" (no value).
-function parseFlagTokens(flags: string): Array<{ name: string; raw: string }> {
-  const tokens: Array<{ name: string; raw: string }> = []
-  const re = /(?:^|\s)--([a-zA-Z-]+)(?:\s+(\S+))?/g
-  let match: RegExpExecArray | null
-  while ((match = re.exec(flags)) !== null) {
-    tokens.push({ name: match[1], raw: match[0].trim() })
-  }
-  return tokens
+// Splits a composed `flags` string (0x1F-delimited argv tokens — see
+// src/shared/cliFlags.ts) back into per-flag-name groups, reusing the exact
+// same split + grouping helpers cliFlags.ts exposes for this purpose so this
+// file never re-derives "what counts as a new flag entry" on its own.
+function parseFlagTokens(flags: string): ReturnType<typeof groupTokensByFlag> {
+  return groupTokensByFlag(splitFlagString(flags))
+}
+
+// Canonical flag names (WITH leading dashes, matching flagName()/
+// groupTokensByFlag's output) for the two footer-chip dimensions this module
+// reconciles. --model/--effort are Orpheus's own typed flags emitted by
+// composeClaudeLaunch, never user-authored custom flags, so this static map
+// is safe (not a general flagName-alias mechanism).
+const FOOTER_CHIP_FLAG_NAME: Record<'model' | 'effort', string> = {
+  model: '--model',
+  effort: '--effort'
 }
 
 // Persists a model/effort change made via a footer dropdown chip (Model or
@@ -101,55 +111,70 @@ function parseFlagTokens(flags: string): Array<{ name: string; raw: string }> {
 // show "Restart to apply" afterwards).
 //
 // Algorithm (position-independent, multi-flag-safe — "reconstruct from
-// fresh"): start from `fresh.flags` (guarantees compose's own deterministic
-// token ordering), then for every flag NAME other than `flagName` whose token
-// differs between the OLD snapshot and FRESH (including one having it and the
-// other not), rewrite the working string so that name's token matches OLD's
-// value again — i.e. undo everything fresh changed EXCEPT the one flag we
-// intentionally want reflected. The `flagName` token itself is always left as
-// fresh's value. This guarantees `launchEquals(patchedSnapshot, fresh)` is
-// true iff `flagName` was the ONLY thing that changed since mount: if nothing
-// else changed, every non-`flagName` token is restored to OLD's (== fresh's,
-// since nothing else diverged) value, so patched === fresh. If something else
-// DID change, that other token is deliberately reverted to OLD's stale value,
-// so patched !== fresh and recomputeDirty() below still correctly flags it.
-// Reconstructs `fresh.flags` with every flag NAME other than `flagName`
-// restored to its OLD token text wherever old and fresh disagree (including
-// one side having the flag and the other not). `flagName` itself is always
-// left as fresh's value. See `setWorkspaceSettingAndSuppressDirty` for why.
+// fresh"): start from `fresh.flags`' token groups (guarantees compose's own
+// deterministic token ordering), then for every flag NAME other than
+// `flagName` whose tokens differ between the OLD snapshot and FRESH
+// (including one having it and the other not), rewrite the working group
+// list so that name's tokens match OLD's again — i.e. undo everything fresh
+// changed EXCEPT the one flag we intentionally want reflected. The
+// `flagName` group itself is always left as fresh's tokens. This guarantees
+// `launchEquals(patchedSnapshot, fresh)` is true iff `flagName` was the ONLY
+// thing that changed since mount: if nothing else changed, every
+// non-`flagName` group is restored to OLD's (== fresh's, since nothing else
+// diverged) value, so patched === fresh. If something else DID change, that
+// other group is deliberately reverted to OLD's stale value, so patched !==
+// fresh and recomputeDirty() below still correctly flags it.
+// See `setWorkspaceSettingAndSuppressDirty` for why this exists.
 function reconcileFlagsExceptTarget(
   oldFlags: string,
   freshFlags: string,
   flagName: 'model' | 'effort'
 ): string {
-  const oldByName = new Map(parseFlagTokens(oldFlags).map((t) => [t.name, t.raw]))
-  const freshByName = new Map(parseFlagTokens(freshFlags).map((t) => [t.name, t.raw]))
+  const targetName = FOOTER_CHIP_FLAG_NAME[flagName]
+  const oldGroups = parseFlagTokens(oldFlags)
+  const freshGroups = parseFlagTokens(freshFlags)
+  const oldByName = new Map(oldGroups.map((g) => [g.name, g.tokens]))
+  const freshByName = new Map(freshGroups.map((g) => [g.name, g.tokens]))
   const allNames = new Set([...oldByName.keys(), ...freshByName.keys()])
 
-  let patchedFlags = freshFlags
+  // Start from fresh's own group order/tokens, then override per-name below.
+  const patchedByName = new Map(freshByName)
   for (const name of allNames) {
-    if (name === flagName) continue // leave fresh's value — this is the wanted change
-    const oldRaw = oldByName.get(name)
-    const freshRaw = freshByName.get(name)
-    if (oldRaw === freshRaw) continue // unchanged — nothing to restore
+    if (name === targetName) continue // leave fresh's value — this is the wanted change
+    const oldTokens = oldByName.get(name)
+    const freshTokens = freshByName.get(name)
+    const unchanged =
+      oldTokens !== undefined &&
+      freshTokens !== undefined &&
+      oldTokens.length === freshTokens.length &&
+      oldTokens.every((t, i) => t === freshTokens[i])
+    if (unchanged) continue
 
-    if (freshRaw !== undefined && oldRaw !== undefined) {
-      // Present in both, but differing value — replace fresh's token text
-      // with old's token text.
-      patchedFlags = patchedFlags.replace(freshRaw, oldRaw)
-    } else if (freshRaw !== undefined && oldRaw === undefined) {
-      // Fresh has it, old didn't — remove fresh's token.
-      patchedFlags = patchedFlags.replace(freshRaw, '').trim()
-    } else if (oldRaw !== undefined && freshRaw === undefined) {
-      // Old had it, fresh doesn't — append old's token back (exact insertion
-      // position doesn't matter: this branch only runs when some OTHER flag
-      // already changed, which already makes patched !== fresh, satisfying
-      // the invariant regardless of where we splice it back in).
-      patchedFlags = `${patchedFlags} ${oldRaw}`.trim()
+    if (oldTokens !== undefined) {
+      // Old had it (whether or not fresh does) — restore old's tokens.
+      patchedByName.set(name, oldTokens)
+    } else {
+      // Old didn't have it but fresh does — remove fresh's tokens.
+      patchedByName.delete(name)
     }
   }
-  // Normalize whitespace left behind by removals/replacements.
-  return patchedFlags.replace(/\s+/g, ' ').trim()
+
+  // Rebuild in fresh's group order (stable, deterministic — compose's own
+  // ordering), appending any old-only groups (present in old, absent from
+  // fresh, not the target) at the end; exact position doesn't matter there
+  // since that branch only fires when some OTHER flag already diverged,
+  // which already makes patched !== fresh regardless of splice position.
+  const orderedNames = [...freshGroups.map((g) => g.name)]
+  for (const name of patchedByName.keys()) {
+    if (!orderedNames.includes(name)) orderedNames.push(name)
+  }
+
+  const patchedTokens: string[] = []
+  for (const name of orderedNames) {
+    const tokens = patchedByName.get(name)
+    if (tokens) patchedTokens.push(...tokens)
+  }
+  return patchedTokens.join(FLAG_DELIMITER)
 }
 
 function setWorkspaceSettingAndSuppressDirty(
@@ -233,11 +258,13 @@ export function registerClaudeSettingsIpc(): void {
   // with right now (workspace override → project override → global setting),
   // by reusing composeClaudeLaunch verbatim — the single source of truth for
   // launch composition — instead of duplicating its resolution precedence.
+  // findFlagValue is position-independent (no start-anchor needed, unlike
+  // the old regex) — it finds --model by name wherever it lands in the
+  // composed token stream.
   handle('workspace:getEffectiveModel', (_e, args) => {
     const ws = getWorkspace(args.workspaceId)
     const launch = composeClaudeLaunch(ws?.projectId, args.workspaceId)
-    const m = launch.flags.match(/^--model\s+(\S+)/)
-    return { model: m ? m[1] : '' }
+    return { model: findFlagValue(launch.flags, '--model') ?? '' }
   })
 
   // Footer Effort chip: persist an effort override and suppress the resulting
@@ -249,12 +276,12 @@ export function registerClaudeSettingsIpc(): void {
   })
 
   // Footer Effort chip: read the TRUE effective effort a workspace would launch
-  // with right now, by reusing composeClaudeLaunch verbatim. Not anchored to
-  // start-of-string (unlike model) because --effort is not always flagParts[0].
+  // with right now, by reusing composeClaudeLaunch verbatim. findFlagValue is
+  // position-independent by construction (finds --effort by name wherever it
+  // lands in the composed token stream), so no start-anchor caveat applies.
   handle('workspace:getEffectiveEffort', (_e, args) => {
     const ws = getWorkspace(args.workspaceId)
     const launch = composeClaudeLaunch(ws?.projectId, args.workspaceId)
-    const m = launch.flags.match(/(?:^|\s)--effort\s+(\S+)/)
-    return { effort: m ? m[1] : '' }
+    return { effort: findFlagValue(launch.flags, '--effort') ?? '' }
   })
 }

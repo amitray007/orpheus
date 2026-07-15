@@ -12,6 +12,7 @@ import {
 import { getPricing } from './pricing'
 import { composeClaudeLaunch, getClaudeGlobalSettings } from './claudeSettings'
 import { encodePathToClaudeDir } from './claudeProjectDir'
+import { findFlagValue } from '../shared/cliFlags'
 import {
   branchExists,
   createWorktree,
@@ -1357,9 +1358,9 @@ export function getContextBudget(workspaceId: string): ContextBudgetResult {
   if (ws) {
     try {
       const launch = composeClaudeLaunch(ws.project_id, workspaceId)
-      // The flag is '--model <id>', so extract the value
-      const match = launch.flags.match(/--model\s+(\S+)/)
-      if (match?.[1]) modelFromSettings = match[1]
+      // findFlagValue is the single parser for composed (0x1F-delimited)
+      // flags strings — see src/shared/cliFlags.ts.
+      modelFromSettings = findFlagValue(launch.flags, '--model')
     } catch {
       // ignore — settings DB may not be ready
     }

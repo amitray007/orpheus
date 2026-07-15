@@ -16,7 +16,8 @@ import { getClaudeProjectSettings } from './claudeProjectSettings'
 import { getClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getWorkspace } from './workspaces'
 import { encodePathToClaudeDir } from './claudeProjectDir'
-import { FLAG_DELIMITER } from '../shared/cliFlags'
+import { FLAG_DELIMITER, mergeFlagScopes, parseFlagEntry } from '../shared/cliFlags'
+import { validateCustomCliFlagsValue } from './overridesStore'
 
 // One-way-true cache for session JSONL existence checks.
 // Key: `${cwd}:${sessionId}`. Once a JSONL is confirmed to exist (true), it
@@ -91,6 +92,7 @@ type ClaudeSettingsRow = {
   browser_integration: number
   disabled_mcp_servers: string
   custom_env_vars: string
+  custom_cli_flags: string
   // Env-var controls (v23)
   disable_thinking: number
   disable_fast_mode: number
@@ -233,6 +235,7 @@ function rowToRecord(row: ClaudeSettingsRow): ClaudeGlobalSettings {
     browserIntegration: (row.browser_integration ?? 1) === 1,
     disabledMcpServers: parseJsonArray(row.disabled_mcp_servers),
     customEnvVars: parseJsonRecord(row.custom_env_vars),
+    customCliFlags: parseJsonArray(row.custom_cli_flags),
     // Env-var controls (v23) — General
     disableThinking: row.disable_thinking === 1,
     disableFastMode: row.disable_fast_mode === 1,
@@ -650,11 +653,24 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
       }
     }
   }
+  if ('customCliFlags' in patch) {
+    validateCustomCliFlagsValue(patch.customCliFlags, 'claudeSettings')
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Launch composition
 // ---------------------------------------------------------------------------
+
+// Flattens one raw customCliFlags entry (e.g. "--model opus") into its argv
+// tokens via the shared lexer. Entries are validated at write time
+// (validateCustomCliFlags), so a parse failure here should be unreachable in
+// practice — but launch composition must never throw on stored data, so a
+// failed entry is silently skipped rather than surfaced.
+function flagEntryToTokens(entry: string): string[] {
+  const parsed = parseFlagEntry(entry)
+  return 'error' in parsed ? [] : parsed.tokens
+}
 
 export type ClaudeLaunch = {
   /** Whitespace-separated CLI flags, e.g. "--model opus --permission-mode acceptEdits".
@@ -689,11 +705,17 @@ export function composeClaudeLaunch(
 ): ClaudeLaunch {
   const global = precomputedGlobal ?? getClaudeGlobalSettings()
 
-  // Merge project-level overrides (model, permissionMode, effort) on top of global
+  // Merge project-level overrides (model, permissionMode, effort) on top of
+  // global. customCliFlags is deliberately NOT spread into `s` alongside
+  // these scalar overrides — it needs append/override merge semantics via
+  // mergeFlagScopes (below), not last-wins replacement, so it's captured
+  // into its own local instead.
   let s = global
+  let projectCustomFlags: string[] = []
   if (projectId) {
     const proj = getClaudeProjectSettings(projectId)
     const ov = proj.overrides
+    projectCustomFlags = ov.customCliFlags ?? []
     if (Object.keys(ov).length > 0) {
       s = {
         ...s,
@@ -805,10 +827,19 @@ export function composeClaudeLaunch(
     }
   }
 
-  // customCliFlags (global/project scope, merged via mergeFlagScopes) are
-  // NOT wired in yet — that lands in a later unit. This is the seam it will
-  // append to, after Orpheus's own typed flags above (so a user's override
-  // wins by last-flag-wins in claude's own parser).
+  // customCliFlags (global + project scope; workspace scope does NOT
+  // participate — see the design doc's non-goals). Each stored entry is a
+  // raw user-typed string (e.g. "--model opus"); flatten to argv tokens via
+  // parseFlagEntry before merging scopes, then append the merged tokens
+  // AFTER all of Orpheus's own typed flags above, so a user's override wins
+  // by last-flag-wins in claude's own parser (intentional — the escape hatch
+  // is an escape hatch). validatePatch already guarantees every stored entry
+  // parses cleanly; entries that somehow fail here (e.g. stale/corrupt DB
+  // data written before this validation existed) are skipped rather than
+  // throwing, since a malformed flag must never block the whole launch.
+  const globalCustomTokens = global.customCliFlags.flatMap(flagEntryToTokens)
+  const projectCustomTokens = projectCustomFlags.flatMap(flagEntryToTokens)
+  flagTokens.push(...mergeFlagScopes(globalCustomTokens, projectCustomTokens))
 
   const flags = flagTokens.join(FLAG_DELIMITER)
 
@@ -1166,6 +1197,7 @@ export function updateClaudeGlobalSettings(patch: ClaudeGlobalSettingsPatch): Cl
     browserIntegration: 'browser_integration',
     disabledMcpServers: 'disabled_mcp_servers',
     customEnvVars: 'custom_env_vars',
+    customCliFlags: 'custom_cli_flags',
     // Env-var controls (v23)
     disableThinking: 'disable_thinking',
     disableFastMode: 'disable_fast_mode',

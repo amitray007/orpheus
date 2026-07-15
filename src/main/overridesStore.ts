@@ -2,6 +2,7 @@ import { getDb } from './db'
 import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 import type { ClaudePermissionMode, ClaudeEffort } from '../shared/types'
+import { parseFlagEntry } from '../shared/cliFlags'
 
 // ---------------------------------------------------------------------------
 // Generic factory for the claude_{project,workspace}_settings tables.
@@ -34,7 +35,7 @@ const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
 ]
 const VALID_EFFORTS: ClaudeEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
 
-function validatePatch(patch: BaseOverrides): void {
+function validateBasePatch(patch: BaseOverrides): void {
   if (
     patch.permissionMode !== undefined &&
     !VALID_PERMISSION_MODES.includes(patch.permissionMode)
@@ -49,13 +50,45 @@ function validatePatch(patch: BaseOverrides): void {
   }
 }
 
-export type OverridesStoreConfig<IdKey extends string> = {
+/**
+ * Shared syntax-only validator for a customCliFlags string[] value — reused
+ * by both the project overrides store's validateExtra (below, via
+ * claudeProjectSettings.ts) and claudeSettings.ts's global-settings
+ * validatePatch, so the "syntax only, never flag existence" rule (see the
+ * design doc) lives in exactly one place. Every entry must parse via
+ * parseFlagEntry; hidden/unknown flags always pass — only lexical errors
+ * (unbalanced quote, empty entry, no leading '-') reject.
+ */
+export function validateCustomCliFlagsValue(v: unknown, errorPrefix: string): void {
+  if (!Array.isArray(v) || !(v as unknown[]).every((item) => typeof item === 'string')) {
+    throw new Error(`${errorPrefix}: customCliFlags must be a string[]`)
+  }
+  for (const entry of v as string[]) {
+    const parsed = parseFlagEntry(entry)
+    if ('error' in parsed) {
+      throw new Error(
+        `${errorPrefix}: customCliFlags entry "${entry}" is invalid — ${parsed.error}`
+      )
+    }
+  }
+}
+
+export type OverridesStoreConfig<IdKey extends string, Overrides> = {
   /** Table name, e.g. 'claude_project_settings' */
   table: string
   /** Id column name, e.g. 'project_id' */
   idColumn: string
   /** Key used on the returned record object, e.g. 'projectId' */
   idKey: IdKey
+  /**
+   * Optional per-store validation for keys beyond the shared
+   * {model, permissionMode, effort} trio, run AFTER validateBasePatch. This
+   * is how a store adds its own scope-specific keys (e.g. the project store's
+   * customCliFlags) WITHOUT loosening validateBasePatch, which stays shared
+   * and unchanged — critically, the workspace store passes no validateExtra
+   * and so keeps its current three-key-only validation exactly as before.
+   */
+  validateExtra?: (patch: Overrides) => void
 }
 
 export type OverridesStore<Overrides extends BaseOverrides, Record> = {
@@ -68,8 +101,8 @@ export function createOverridesStore<
   IdKey extends string,
   Overrides extends BaseOverrides,
   Record extends BaseRecord<IdKey, Overrides>
->(config: OverridesStoreConfig<IdKey>): OverridesStore<Overrides, Record> {
-  const { table, idColumn, idKey } = config
+>(config: OverridesStoreConfig<IdKey, Overrides>): OverridesStore<Overrides, Record> {
+  const { table, idColumn, idKey, validateExtra } = config
 
   type Row = { overrides_json: string; updated_at: number } & { [K in string]: unknown }
 
@@ -117,7 +150,8 @@ export function createOverridesStore<
   }
 
   function update(id: string, patch: Overrides): Record {
-    validatePatch(patch)
+    validateBasePatch(patch)
+    validateExtra?.(patch)
 
     const db = getDb()
     const existing = get(id)

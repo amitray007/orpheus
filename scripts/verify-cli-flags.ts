@@ -4,6 +4,9 @@ import {
   parseFlagEntry,
   flagName,
   mergeFlagScopes,
+  groupTokensByFlag,
+  splitFlagString,
+  findFlagValue,
   FLAG_DELIMITER,
   type ParsedFlag,
   type FlagParseError
@@ -181,6 +184,291 @@ function tokensOf(...raws: string[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// validatePatch-equivalent — src/main/claudeSettings.ts's validatePatch and
+// overridesStore.ts's validateCustomCliFlagsValue both delegate straight to
+// parseFlagEntry per-entry (syntax only, see the module-level doc comment in
+// cliFlags.ts). These assertions exercise that exact delegation contract
+// without needing to import the main-process modules themselves (they pull
+// in `electron`/`better-sqlite3` at module load time and cannot run under
+// this plain-Node harness) — parseFlagEntry IS the validation.
+// ---------------------------------------------------------------------------
+
+function validateCustomCliFlagsEntries(entries: string[]): void {
+  for (const entry of entries) {
+    const parsed = parseFlagEntry(entry)
+    if ('error' in parsed) {
+      throw new Error(`customCliFlags entry "${entry}" is invalid — ${parsed.error}`)
+    }
+  }
+}
+
+{
+  // The core regression guard: a hidden/undocumented flag must be ACCEPTED
+  // by validation, never rejected for being "unknown". This is the entire
+  // premise of the feature (see the design doc's problem statement).
+  assert.doesNotThrow(
+    () => validateCustomCliFlagsEntries(['--dangerously-load-development-channels server:loco']),
+    'a hidden flag must pass validation — validation is syntax-only, never existence-based'
+  )
+  console.log('✓ validatePatch-equivalent: hidden flag accepted (core regression guard)')
+}
+
+{
+  // A syntactically-broken entry (unbalanced quote) must be rejected with a
+  // helpful, specific message — not a generic failure.
+  assert.throws(
+    () => validateCustomCliFlagsEntries(['--append-system-prompt "unterminated']),
+    /Unbalanced quote/,
+    'an unbalanced quote must be rejected with a message naming the actual problem'
+  )
+  console.log(
+    '✓ validatePatch-equivalent: syntactically-broken entry rejected with a helpful message'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Compose-level merge — simulates the seam in composeClaudeLaunch
+// (src/main/claudeSettings.ts) where global.customCliFlags and
+// project.overrides.customCliFlags are each flattened to argv tokens (one
+// parseFlagEntry per raw entry, exactly as flagEntryToTokens does) and then
+// combined via mergeFlagScopes, appended AFTER Orpheus's own six typed
+// flags. This can't invoke composeClaudeLaunch directly (electron/db import
+// chain — see above), so it re-creates the exact token-flattening step
+// composeClaudeLaunch performs and asserts on the merged result.
+// ---------------------------------------------------------------------------
+
+function flagEntriesToTokens(entries: string[]): string[] {
+  return entries.flatMap((entry) => {
+    const parsed = parseFlagEntry(entry)
+    assert.ok(!isError(parsed), `fixture entry failed to parse: ${entry}`)
+    return (parsed as ParsedFlag).tokens
+  })
+}
+
+{
+  // Global-only: project has no custom flags, global's pass through untouched.
+  const merged = mergeFlagScopes(flagEntriesToTokens(['--debug', '--add-dir /a']), [])
+  assert.deepEqual(merged, ['--debug', '--add-dir', '/a'])
+  console.log('✓ compose merge: global-only custom flags pass through')
+}
+
+{
+  // Project-only: global has no custom flags, project's pass through untouched.
+  const merged = mergeFlagScopes([], flagEntriesToTokens(['--effort high']))
+  assert.deepEqual(merged, ['--effort', 'high'])
+  console.log('✓ compose merge: project-only custom flags pass through')
+}
+
+{
+  // Both scopes, repeatable flag (--add-dir): accumulates from both scopes
+  // rather than project silently dropping global's directory.
+  const merged = mergeFlagScopes(
+    flagEntriesToTokens(['--add-dir /global']),
+    flagEntriesToTokens(['--add-dir /project'])
+  )
+  assert.deepEqual(merged, ['--add-dir', '/global', '--add-dir', '/project'])
+  console.log('✓ compose merge: both scopes, repeatable flag accumulates')
+}
+
+{
+  // Both scopes, same non-repeatable flag name (conflict): project wins,
+  // global's entry is dropped entirely (not just its value).
+  const merged = mergeFlagScopes(
+    flagEntriesToTokens(['--model opus']),
+    flagEntriesToTokens(['--model sonnet'])
+  )
+  assert.deepEqual(merged, ['--model', 'sonnet'])
+  console.log('✓ compose merge: both scopes, conflicting flag — project wins')
+}
+
+{
+  // Full seam simulation: Orpheus's own typed flags come first, custom
+  // merged tokens are appended after — so a user's --model in custom flags
+  // wins over Orpheus's own --model by last-flag-wins in claude's parser.
+  const orpheusOwnFlagTokens = ['--model', 'sonnet', '--permission-mode', 'acceptEdits']
+  const customTokens = mergeFlagScopes(
+    flagEntriesToTokens(['--model opus']), // global custom flag
+    [] // no project custom flags
+  )
+  const flagTokens = [...orpheusOwnFlagTokens, ...customTokens]
+  assert.deepEqual(flagTokens, [
+    '--model',
+    'sonnet',
+    '--permission-mode',
+    'acceptEdits',
+    '--model',
+    'opus'
+  ])
+  // findFlagValue must resolve to the LAST occurrence semantically (claude's
+  // own parser is last-flag-wins) — but findFlagValue itself returns the
+  // first group match by name since groupTokensByFlag only tracks one entry
+  // per name. This assertion documents that composeClaudeLaunch's ordering
+  // (custom flags appended last) is what makes the escape hatch win in
+  // practice, at the claude-process level — not something findFlagValue
+  // itself needs to resolve.
+  console.log("✓ compose merge: custom flags appended after Orpheus's own typed flags")
+}
+
+// ---------------------------------------------------------------------------
+// findFlagValue / splitFlagString / groupTokensByFlag — the single parser
+// for a COMPOSED (already FLAG_DELIMITER-joined) flags string, as read back
+// by the footer Model/Effort chips (src/main/ipc/claudeSettings.ts) and
+// sessions.ts's model-resolution fallback. This is the exact regression
+// class that broke when the transport moved from whitespace-joined to
+// 0x1F-delimited: four call sites regexed the composed string assuming
+// whitespace separation and silently stopped matching. These assertions
+// pin the 0x1F-native replacement.
+// ---------------------------------------------------------------------------
+
+{
+  const composed = ['--model', 'opus', '--permission-mode', 'acceptEdits', '--effort', 'high'].join(
+    FLAG_DELIMITER
+  )
+  assert.equal(findFlagValue(composed, '--model'), 'opus')
+  assert.equal(findFlagValue(composed, '--effort'), 'high')
+  console.log('✓ findFlagValue: finds a flag by name regardless of position (not just first)')
+}
+
+{
+  // --effort deliberately NOT first, proving no start-anchor assumption survives.
+  const composed = ['--debug', '--effort', 'high', '--model', 'opus'].join(FLAG_DELIMITER)
+  assert.equal(findFlagValue(composed, '--model'), 'opus')
+  assert.equal(findFlagValue(composed, '--effort'), 'high')
+  console.log('✓ findFlagValue: position-independent — no implicit start-of-string anchor')
+}
+
+{
+  // '='-joined form (one token) must resolve identically to the two-token form.
+  const composed = ['--model=opus', '--permission-mode', 'acceptEdits'].join(FLAG_DELIMITER)
+  assert.equal(findFlagValue(composed, '--model'), 'opus')
+  console.log('✓ findFlagValue: handles --model=opus (=-joined) as well as --model opus')
+}
+
+{
+  // Absent flag -> null, not a throw or empty string.
+  const composed = ['--debug'].join(FLAG_DELIMITER)
+  assert.equal(findFlagValue(composed, '--model'), null)
+  assert.equal(findFlagValue('', '--model'), null)
+  console.log('✓ findFlagValue: returns null for an absent flag (including the empty-flags case)')
+}
+
+{
+  // splitFlagString: the empty-default invariant applies here too — '' must
+  // split to [], not [''], or groupTokensByFlag would treat a stray ''
+  // token as a value-with-no-preceding-flag.
+  assert.deepEqual(splitFlagString(''), [])
+  assert.deepEqual(splitFlagString(['--debug', '--model', 'opus'].join(FLAG_DELIMITER)), [
+    '--debug',
+    '--model',
+    'opus'
+  ])
+  console.log(
+    '✓ splitFlagString: empty string yields [], non-empty round-trips through FLAG_DELIMITER'
+  )
+}
+
+{
+  // groupTokensByFlag re-groups a flat composed token stream back into
+  // {name, tokens} entries — the shared primitive both mergeFlagScopes and
+  // the footer-chip reconcile logic build on.
+  const tokens = ['--model', 'opus', '--debug', '--effort', 'high']
+  const groups = groupTokensByFlag(tokens)
+  assert.deepEqual(groups, [
+    { name: '--model', tokens: ['--model', 'opus'] },
+    { name: '--debug', tokens: ['--debug'] },
+    { name: '--effort', tokens: ['--effort', 'high'] }
+  ])
+  console.log('✓ groupTokensByFlag: re-groups a flat token stream by flag name')
+}
+
+// ---------------------------------------------------------------------------
+// Footer-chip reconcile guard — reimplements reconcileFlagsExceptTarget's
+// algorithm (src/main/ipc/claudeSettings.ts) inline, using the SAME shared
+// primitives (splitFlagString + groupTokensByFlag) it's built on, since that
+// module imports `electron`-dependent code (getWorkspace -> workspaces.ts)
+// transitively and cannot run under this harness. This pins the documented
+// contract: after reconciling ONE flag dimension (e.g. model), an unrelated
+// pending dirty delta (e.g. permission-mode changed separately) must survive
+// untouched — proving the reconcile is scoped to exactly the target flag.
+// ---------------------------------------------------------------------------
+
+function reconcileFlagsExceptTargetForTest(
+  oldFlags: string,
+  freshFlags: string,
+  targetName: string
+): string {
+  const oldGroups = groupTokensByFlag(splitFlagString(oldFlags))
+  const freshGroups = groupTokensByFlag(splitFlagString(freshFlags))
+  const oldByName = new Map(oldGroups.map((g) => [g.name, g.tokens]))
+  const freshByName = new Map(freshGroups.map((g) => [g.name, g.tokens]))
+  const allNames = new Set([...oldByName.keys(), ...freshByName.keys()])
+
+  const patchedByName = new Map(freshByName)
+  for (const name of allNames) {
+    if (name === targetName) continue
+    const oldTokens = oldByName.get(name)
+    const freshTokens = freshByName.get(name)
+    const unchanged =
+      oldTokens !== undefined &&
+      freshTokens !== undefined &&
+      oldTokens.length === freshTokens.length &&
+      oldTokens.every((t, i) => t === freshTokens[i])
+    if (unchanged) continue
+
+    if (oldTokens !== undefined) {
+      patchedByName.set(name, oldTokens)
+    } else {
+      patchedByName.delete(name)
+    }
+  }
+
+  const orderedNames = [...freshGroups.map((g) => g.name)]
+  for (const name of patchedByName.keys()) {
+    if (!orderedNames.includes(name)) orderedNames.push(name)
+  }
+
+  const patchedTokens: string[] = []
+  for (const name of orderedNames) {
+    const tokens = patchedByName.get(name)
+    if (tokens) patchedTokens.push(...tokens)
+  }
+  return patchedTokens.join(FLAG_DELIMITER)
+}
+
+{
+  // Only the target flag (model) changed since mount — reconciling model
+  // should produce a result IDENTICAL to fresh (nothing left dirty).
+  const oldSnapshot = ['--model', 'sonnet', '--permission-mode', 'acceptEdits'].join(FLAG_DELIMITER)
+  const fresh = ['--model', 'opus', '--permission-mode', 'acceptEdits'].join(FLAG_DELIMITER)
+  const patched = reconcileFlagsExceptTargetForTest(oldSnapshot, fresh, '--model')
+  assert.equal(patched, fresh, 'reconciling the only changed flag must produce exactly fresh')
+  console.log('✓ reconcile: sole changed flag (model) reconciles to an exact match with fresh')
+}
+
+{
+  // Model changed AND permission-mode changed independently (unrelated
+  // pending dirty delta). Reconciling model must leave permission-mode
+  // reverted to OLD's value, so the patched snapshot still differs from
+  // fresh — i.e. the workspace correctly stays dirty for the UNRELATED change.
+  const oldSnapshot = ['--model', 'sonnet', '--permission-mode', 'default'].join(FLAG_DELIMITER)
+  const fresh = ['--model', 'opus', '--permission-mode', 'acceptEdits'].join(FLAG_DELIMITER)
+  const patched = reconcileFlagsExceptTargetForTest(oldSnapshot, fresh, '--model')
+  assert.notEqual(
+    patched,
+    fresh,
+    'an unrelated pending delta (permission-mode) must NOT be silently absorbed'
+  )
+  // model resolves to fresh's new value (the intended change)...
+  assert.equal(findFlagValue(patched, '--model'), 'opus')
+  // ...but permission-mode is reverted to OLD's stale value, so the genuine
+  // pending delta is still visible to launchEquals() downstream.
+  assert.equal(findFlagValue(patched, '--permission-mode'), 'default')
+  console.log(
+    '✓ reconcile: unrelated pending dirty delta (permission-mode) survives untouched after reconciling model'
+  )
+}
+
+// ---------------------------------------------------------------------------
 // The flags === '' empty-default invariant (claudeSettings.ts:674-676): an
 // empty token array must join to the empty string, so the wrapper script's
 // `[[ -n "${ORPHEUS_CLAUDE_FLAGS:-}" ]]` guard sees it as unset and runs a
@@ -191,6 +479,19 @@ function tokensOf(...raws: string[]): string[] {
   const emptyTokens: string[] = []
   assert.equal(emptyTokens.join(FLAG_DELIMITER), '')
   console.log('✓ invariant: empty token array joins to the empty string')
+}
+
+{
+  // Same invariant, at the customCliFlags seam specifically: empty global +
+  // empty project customCliFlags must merge to an empty token array and
+  // contribute nothing to flagTokens — the seeded-default state (no global
+  // settings changed, no project overrides) must still yield flags === ''.
+  const merged = mergeFlagScopes(flagEntriesToTokens([]), flagEntriesToTokens([]))
+  assert.deepEqual(merged, [])
+  const orpheusOwnFlagTokens: string[] = [] // seeded defaults emit no typed flags either
+  const flagTokens = [...orpheusOwnFlagTokens, ...merged]
+  assert.equal(flagTokens.join(FLAG_DELIMITER), '')
+  console.log("✓ invariant: empty customCliFlags at both scopes preserves the flags === '' default")
 }
 
 // ---------------------------------------------------------------------------
