@@ -3,7 +3,7 @@ import type React from 'react'
 import { Overlay } from '@/components/ui/Overlay'
 import { X, Plus, CaretDown, Check } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS, CLAUDE_MODEL_ALIAS_START_INDEX } from '@shared/types'
-import { parseFlagEntry, mergeFlagScopes, isFlagParseError } from '@shared/cliFlags'
+import { parseFlagEntry, mergeFlagScopes, isFlagParseError, flagName } from '@shared/cliFlags'
 import { playSound } from '../../../lib/sound'
 import { useFocusOnMount } from '@/lib/useFocusOnMount'
 
@@ -737,13 +737,53 @@ interface CliFlagsPreviewProps {
   ownRawEntries: string[]
 }
 
+/** Splits a flat inherited-token list back into per-entry chunks so each
+ *  entry's survival can be tested individually against mergeFlagScopes. A
+ *  chunk starts at each token whose canonical name (via flagName) is
+ *  non-empty and runs until the next such token — mirroring the grouping
+ *  mergeFlagScopes itself does internally (name-prefixed token opens a new
+ *  entry; subsequent non-flag tokens are its values). */
+function chunkInheritedTokens(inheritedTokens: string[]): string[][] {
+  const chunks: string[][] = []
+  for (const token of inheritedTokens) {
+    if (flagName(token) !== '') {
+      chunks.push([token])
+    } else if (chunks.length > 0) {
+      chunks[chunks.length - 1].push(token)
+    }
+  }
+  return chunks
+}
+
+/** Determines which inherited entries survive mergeFlagScopes' override rule
+ *  against ownTokens, without duplicating the module-private REPEATABLE set.
+ *  For each inherited entry (in isolation), ask the real merge function
+ *  whether that entry's tokens still precede ownTokens in the result — if so
+ *  it survived (either REPEATABLE, or no same-named own entry exists); if the
+ *  result is exactly ownTokens, the entry was overridden and dropped. This
+ *  keeps REPEATABLE authoritative in cliFlags.ts and immune to drift. */
+function survivingInheritedTokens(inheritedTokens: string[], ownTokens: string[]): string[] {
+  const chunks = chunkInheritedTokens(inheritedTokens)
+  return chunks.flatMap((chunk) => {
+    const result = mergeFlagScopes(chunk, ownTokens)
+    const survived = result.length >= chunk.length && chunk.every((tok, i) => result[i] === tok)
+    return survived ? chunk : []
+  })
+}
+
 // Live preview line: "claude <inherited tokens muted> <own tokens normal>".
-// The overall token SET shown is always the real mergeFlagScopes() result (so
-// an inherited flag overridden by a same-named project flag never appears
-// twice) — the muted/normal split is a simplified visual approximation
-// (inherited-scope's own valid tokens muted, this scope's own valid tokens
-// normal) rather than reaching into mergeFlagScopes' internal grouping, which
-// isn't exposed. Good enough to make append-vs-override legible at a glance.
+// The displayed token SET always exactly equals the real mergeFlagScopes()
+// result — an inherited flag overridden by a same-named own-scope flag never
+// appears twice. The muted/normal split is computed from the ENTRY lists
+// (survivingInheritedTokens + ownTokens), not by slicing the merged array: a
+// flat slice at inheritedTokens.length is wrong whenever mergeFlagScopes
+// drops an overridden inherited entry, since the surviving-inherited prefix
+// is then shorter than inheritedTokens.length. Per-entry survival is derived
+// from the real mergeFlagScopes (not a duplicated REPEATABLE list) so it
+// tracks cliFlags.ts's override/repeat rules exactly. If the two segments
+// ever fail to reconstruct the true merge (defensive — shouldn't happen),
+// fall back to rendering the true merged tokens as a single normal segment
+// so the command shown is always correct even if the emphasis split isn't.
 function CliFlagsPreview({
   inheritedFlags,
   ownRawEntries
@@ -758,21 +798,29 @@ function CliFlagsPreview({
     )
   }
 
-  // Simplified split for display only — see comment above. The muted segment
-  // is inherited's own tokens; the normal segment is this scope's own tokens.
-  // (At global scope inheritedFlags is undefined, so nothing is muted.)
-  const mutedCount = inheritedFlags ? inheritedTokens.length : 0
-  const mutedSegment = mergedTokens.slice(0, mutedCount)
-  const normalSegment = mergedTokens.slice(mutedCount)
+  // At global scope inheritedFlags is undefined, so nothing is muted.
+  const mutedSegment = inheritedFlags ? survivingInheritedTokens(inheritedTokens, ownTokens) : []
+  const normalSegment = ownTokens
+  const reconstructed = [...mutedSegment, ...normalSegment]
+  const matchesTrueMerge =
+    reconstructed.length === mergedTokens.length &&
+    reconstructed.every((tok, i) => tok === mergedTokens[i])
+
+  // Correctness of the displayed command wins over the emphasis split — if
+  // reconstruction ever disagrees with the real merge, show the true tokens
+  // unsplit rather than risk hiding or duplicating a flag.
+  const [displayMuted, displayNormal]: [string[], string[]] = matchesTrueMerge
+    ? [mutedSegment, normalSegment]
+    : [[], mergedTokens]
 
   return (
     <p className="text-xs font-mono overflow-x-auto whitespace-nowrap">
       <span className="text-text-primary">claude </span>
-      {mutedSegment.length > 0 && (
-        <span className="text-text-muted">{mutedSegment.join(' ')} </span>
+      {displayMuted.length > 0 && (
+        <span className="text-text-muted">{displayMuted.join(' ')} </span>
       )}
-      {normalSegment.length > 0 && (
-        <span className="text-text-primary">{normalSegment.join(' ')}</span>
+      {displayNormal.length > 0 && (
+        <span className="text-text-primary">{displayNormal.join(' ')}</span>
       )}
     </p>
   )
