@@ -1727,6 +1727,46 @@ export type ChipDropdownProps = {
 export type ChipDropdownResult = { kind: 'select'; value: string } | null
 
 // ---------------------------------------------------------------------------
+// Overlay kind: workspaceSettingsCard — the workspace title bar's Settings
+// gear popover (WorkspaceSettingsPopover.tsx), migrated off the in-page
+// `Overlay` component because it opens downward off a title-bar anchor,
+// straight into the live terminal rect (docs/learnings/overlay-child-window-
+// macos.md). Unlike chipPrompt/chipDropdown (transient, promise-settled),
+// this kind is LONG-LIVED like detailsCard: it stays open across many
+// `update()` pushes as the underlying settings/dirty-flag change, AND it's
+// focusable/interactive like chipPrompt (text inputs in the CLI-flags/env-var
+// editors). Props down, events up: the main window owns every
+// `window.api.claudeWorkspaceSettings.*` call and all data hooks; this props
+// bag is a pure serializable snapshot the card renders, and every edit is an
+// `emit(...)` the call site turns back into a hook call + a follow-up
+// `updateWorkspaceSettingsCard` push (mirrors updateDetailsCard).
+// ---------------------------------------------------------------------------
+
+/** One row as edited in the card — matches CliFlagsEditorProps/
+ *  CustomEnvVarsEditorProps' `value` shapes exactly so the kind can pass them
+ *  straight through without reshaping. */
+export type WorkspaceSettingsCardProps = {
+  /** Derived Loco-channel toggle state — `flags.some(flagName(e) === LOCO_FLAG_NAME)`,
+   *  computed by the caller (never independent state) and passed down read-only. */
+  locoEnabled: boolean
+  /** This workspace's raw customCliFlags override entries. */
+  flags: string[]
+  /** Global + project raw flag entries (scope order), rendered muted in the
+   *  command preview alongside `flags`. */
+  inheritedFlags: string[]
+  /** This workspace's raw customEnvVars override. */
+  envVars: Record<string, string>
+  /** True while either the flags or env-vars settings are still loading. */
+  loading: boolean
+  /** Mirrors DetailsCardProps.isDirty — the same "Restart to apply" row. */
+  isDirty: boolean
+}
+
+/** Partial props pushed via `overlay:update` as async loads/edits resolve —
+ *  same shallow-merge contract DetailsCardProps' patches use. */
+export type WorkspaceSettingsCardPatch = Partial<WorkspaceSettingsCardProps>
+
+// ---------------------------------------------------------------------------
 // Workbench Files tab — file tree + viewer data sources (Stage A backend).
 //
 // These feed @pierre/trees (flat `paths: string[]` + per-path git-status

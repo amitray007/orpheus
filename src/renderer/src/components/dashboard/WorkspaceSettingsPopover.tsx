@@ -7,10 +7,26 @@
 // toggle (Loco channel), the Custom CLI flags editor, and the Custom env vars
 // editor — all at workspace scope.
 //
-// Follows the repo's established anchored-popover pattern (useAnchoredPopover
-// + a portaled interactive Overlay) — copied from TreeOptionsPopover.tsx, the
-// closest precedent — rather than radix-ui's Popover, which is a dependency
-// but not what these surfaces use.
+// Ported to the child-window overlay layer (see docs/learnings/overlay-
+// child-window-macos.md). The gear lives in the workspace title bar and opens
+// DOWNWARD (rect.bottom + 4) straight into the live terminal's rect; a
+// same-window DOM node — which is all an in-page `Overlay` (this file's
+// original approach, copied from TreeOptionsPopover.tsx) can ever be — can
+// never paint above the terminal's NSView, so that approach silently rendered
+// behind the terminal. TreeOptionsPopover is NOT a valid precedent here: it
+// lives inside the workbench pane, a flex sibling of the claude column, so
+// its rect geometrically never overlaps the terminal — this popover's rect
+// does. commit 793cbb23 audited this exact confusion; don't repeat it.
+//
+// Props down, events up (the decided architecture — see the overlay-child-
+// window doc + WorkspaceSettingsCard.tsx's header): this component keeps ALL
+// data hooks and every `window.api.claudeWorkspaceSettings.*` call. The
+// overlay kind (WorkspaceSettingsCard) is dumb — it only renders the
+// serializable props pushed via showWorkspaceSettingsCard/
+// updateWorkspaceSettingsCard and emits events, which this component routes
+// back into the hooks below via onWorkspaceSettingsCardEvent, then pushes the
+// resulting state back with updateWorkspaceSettingsCard (mirrors
+// WorkspaceTitleBar's showDetailsCard/updateDetailsCard loop).
 //
 // The Loco toggle is a DERIVED view over customCliFlags, not independent
 // state: it renders `flags.some(flagName(e) === LOCO_FLAG_NAME)` every
@@ -19,14 +35,22 @@
 // fall out of sync (see the design doc's "toggle is a derived view" section).
 // ---------------------------------------------------------------------------
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { Gear } from '@phosphor-icons/react'
 import { flagName } from '@shared/cliFlags'
-import type { ClaudeWorkspaceSettings, ClaudeWorkspaceSettingsOverrides } from '@shared/types'
-import { Overlay } from '../ui/Overlay'
-import { Eyebrow, Toggle, CliFlagsEditor, CustomEnvVarsEditor } from './settings/primitives'
-import { useAnchoredPopover } from '../workbench/useAnchoredPopover'
+import type {
+  ClaudeWorkspaceSettings,
+  ClaudeWorkspaceSettingsOverrides,
+  WorkspaceSettingsCardProps
+} from '@shared/types'
+import {
+  showWorkspaceSettingsCard,
+  updateWorkspaceSettingsCard,
+  hideWorkspaceSettingsCard,
+  workspaceSettingsCardId,
+  onWorkspaceSettingsCardEvent
+} from '@/lib/overlayClient'
 
 /** The flag name + full entry the Plugins toggle is sugar over. Repeating
  *  this flag across scopes is safe (REPEATABLE in cliFlags.ts), so appending
@@ -235,7 +259,10 @@ export function WorkspaceSettingsPopover({
   onRestart,
   isDirty
 }: WorkspaceSettingsPopoverProps): React.JSX.Element {
-  const { open, setOpen, anchorPos, buttonRef, handleTriggerClick } = useAnchoredPopover()
+  const [open, setOpen] = useState(false)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const cardId = workspaceSettingsCardId(workspaceId)
+
   const { flagsValue, loading, setFlags, locoEnabled, setLocoEnabled } =
     useWorkspaceCliFlags(workspaceId)
   const inheritedFlags = useInheritedCliFlags(projectId)
@@ -254,73 +281,106 @@ export function WorkspaceSettingsPopover({
     [envVarsValue]
   )
 
+  function close(): void {
+    setOpen(false)
+    hideWorkspaceSettingsCard(cardId)
+  }
+
+  function handleTriggerClick(e: React.MouseEvent): void {
+    e.stopPropagation()
+    if (open) {
+      close()
+      return
+    }
+    if (!buttonRef.current) return
+    const initialProps: WorkspaceSettingsCardProps = {
+      locoEnabled,
+      flags: cliFlagsValue,
+      inheritedFlags,
+      envVars: envVarsFieldValue,
+      loading: loading || envVarsLoading,
+      isDirty
+    }
+    showWorkspaceSettingsCard(workspaceId, buttonRef.current, initialProps)
+    setOpen(true)
+  }
+
+  // Route the card's emitted events back into the data hooks above, then
+  // push the resulting state back down via updateWorkspaceSettingsCard — the
+  // same "emit -> hook call -> update() push" loop WorkspaceTitleBar's
+  // details popover uses for its Restart chip.
+  useEffect(() => {
+    if (!open) return undefined
+    return onWorkspaceSettingsCardEvent(cardId, {
+      onToggleLoco: setLocoEnabled,
+      onChangeFlags: setFlags,
+      onChangeEnvVars: setEnvVars,
+      onRestart: () => onRestart?.(),
+      onCancel: close
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, cardId, setLocoEnabled, setFlags, setEnvVars, onRestart])
+
+  // Keep the open card's props in sync as the underlying settings/dirty
+  // state changes (async load resolving, an edit landing, isDirty flipping)
+  // — mirrors WorkspaceTitleBar's isDirty->updateDetailsCard effect.
+  useEffect(() => {
+    if (!open) return
+    updateWorkspaceSettingsCard(cardId, {
+      locoEnabled,
+      flags: cliFlagsValue,
+      inheritedFlags,
+      envVars: envVarsFieldValue,
+      loading: loading || envVarsLoading,
+      isDirty
+    })
+  }, [
+    open,
+    cardId,
+    locoEnabled,
+    cliFlagsValue,
+    inheritedFlags,
+    envVarsFieldValue,
+    loading,
+    envVarsLoading,
+    isDirty
+  ])
+
+  // Outside-click dismissal: the card lives in a separate child BrowserWindow,
+  // so the main renderer's document-level listener never sees clicks landing
+  // INSIDE the card — only clicks in the main window (including the
+  // terminal) reach here, which is exactly the "outside" set for this
+  // popover (same pattern as ActionChip's chipPrompt outside-click effect).
+  useEffect(() => {
+    if (!open) return undefined
+    const onPointerDown = (e: PointerEvent): void => {
+      if (buttonRef.current && buttonRef.current.contains(e.target as Node)) return
+      close()
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  // Hide on unmount/workspace change so a stale card never outlives its
+  // owning title bar.
+  useEffect(() => {
+    return () => hideWorkspaceSettingsCard(cardId)
+  }, [cardId])
+
   return (
-    <>
-      <button
-        ref={buttonRef}
-        type="button"
-        onMouseDown={(e) => e.stopPropagation()}
-        onClick={handleTriggerClick}
-        title="Workspace Settings"
-        aria-label="Workspace Settings"
-        aria-expanded={open}
-        className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0 text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-      >
-        <Gear size={14} />
-        <span>Settings</span>
-      </button>
-      <Overlay
-        open={open}
-        interactive
-        onDismiss={() => setOpen(false)}
-        portal
-        className="fixed z-50 w-80 rounded-md border border-border-default bg-surface-overlay shadow-lg p-3"
-        style={anchorPos ?? undefined}
-      >
-        <div
-          role="dialog"
-          aria-label="Workspace Settings"
-          className={loading || envVarsLoading ? 'opacity-50 pointer-events-none' : undefined}
-        >
-          <Eyebrow className="mb-2">Plugins</Eyebrow>
-          <div className="flex items-center justify-between gap-6 py-1">
-            <span className="text-xs text-text-primary select-none">Enable Loco Channel</span>
-            <Toggle value={locoEnabled} onChange={setLocoEnabled} ariaLabel="Enable Loco Channel" />
-          </div>
-
-          <div className="my-3 border-t border-border-default/60" />
-
-          <Eyebrow className="mb-2">Custom CLI flags</Eyebrow>
-          <CliFlagsEditor
-            value={cliFlagsValue}
-            onChange={setFlags}
-            inheritedFlags={inheritedFlags}
-            placeholder="--dangerously-load-development-channels server:loco"
-          />
-
-          <div className="my-3 border-t border-border-default/60" />
-
-          <Eyebrow className="mb-2">Custom env vars</Eyebrow>
-          <CustomEnvVarsEditor value={envVarsFieldValue} onChange={setEnvVars} />
-
-          {isDirty && (
-            <>
-              <div className="my-3 border-t border-border-default/60" />
-              <div className="rounded-md border border-amber-400/30 bg-amber-400/[0.04] px-3 py-2.5 flex items-center gap-3">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
-                <span className="text-sm text-amber-200/90 flex-shrink-0">Settings changed</span>
-                <button
-                  type="button"
-                  onClick={() => onRestart?.()}
-                  className="ml-auto text-sm font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40 rounded"
-                >
-                  Restart to apply
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      </Overlay>
-    </>
+    <button
+      ref={buttonRef}
+      type="button"
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={handleTriggerClick}
+      title="Workspace Settings"
+      aria-label="Workspace Settings"
+      aria-expanded={open}
+      className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0 text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+    >
+      <Gear size={14} />
+      <span>Settings</span>
+    </button>
   )
 }

@@ -25,7 +25,9 @@ import type {
   ChipPromptResult,
   ChipDropdownProps,
   ChipDropdownItem,
-  ChipDropdownResult
+  ChipDropdownResult,
+  WorkspaceSettingsCardProps,
+  WorkspaceSettingsCardPatch
 } from '@shared/types'
 
 export type {
@@ -39,7 +41,9 @@ export type {
   ChipPromptResult,
   ChipDropdownProps,
   ChipDropdownItem,
-  ChipDropdownResult
+  ChipDropdownResult,
+  WorkspaceSettingsCardProps,
+  WorkspaceSettingsCardPatch
 }
 
 // ── Activity state mapping ───────────────────────────────────────────────
@@ -148,7 +152,88 @@ interface ChipDropdownHandlers {
 
 const chipDropdownSettlers = new Map<string, ChipDropdownHandlers>()
 
+// Per-id workspaceSettingsCard event handlers — LONG-LIVED (like
+// handlersById), not promise-settled (like the confirm/chipPrompt/
+// chipDropdown settlers above): the card stays open across many edits, so
+// each emitted event is routed to the call site's current handler for as
+// long as the card is shown, not just once. A given overlay id is never in
+// more than one of these five maps.
+export interface WorkspaceSettingsCardHandlers {
+  onToggleLoco: (value: boolean) => void
+  onChangeFlags: (flags: string[]) => void
+  onChangeEnvVars: (envVars: Record<string, string>) => void
+  onRestart: () => void
+  /** Escape while the card is shown — OverlayRoot emits 'cancel' globally for
+   *  any takesFocus descriptor (see overlay/OverlayRoot.tsx). The call site
+   *  closes the popover the same way outside-click does. */
+  onCancel: () => void
+}
+
+const workspaceSettingsCardHandlers = new Map<string, WorkspaceSettingsCardHandlers>()
+
 let routerInitialized = false
+
+// Extracted from ensureRouter's onEvent callback for the same reason as
+// dispatchWorkspaceSettingsCardEvent below: each per-map dispatch block adds
+// to that callback's cognitive complexity, and adding a fourth pushed it over
+// the ceiling. Returns true if `e` was handled.
+function dispatchChipDropdownEvent(e: OverlayEvent): boolean {
+  const handlers = chipDropdownSettlers.get(e.overlayId)
+  if (!handlers) return false
+  switch (e.type) {
+    case 'select': {
+      const payload = e.payload as { value: string } | undefined
+      if (payload) handlers.onSelect(payload.value)
+      break
+    }
+    case 'cancel':
+      handlers.onCancel()
+      break
+    default:
+      break
+  }
+  return true
+}
+
+// Extracted from ensureRouter's onEvent callback to keep that function's own
+// cognitive complexity under the repo's ceiling — this is a self-contained
+// dispatch for the workspaceSettingsCard event vocabulary only. Returns true
+// if `e` was handled (i.e. an id in workspaceSettingsCardHandlers matched),
+// so the caller knows not to fall through to the hover-bridge handlers below.
+function dispatchWorkspaceSettingsCardEvent(e: OverlayEvent): boolean {
+  const settingsCardHandlers = workspaceSettingsCardHandlers.get(e.overlayId)
+  if (!settingsCardHandlers) return false
+
+  switch (e.type) {
+    case 'toggleLoco': {
+      const payload = e.payload as { value: boolean } | undefined
+      if (payload) settingsCardHandlers.onToggleLoco(payload.value)
+      break
+    }
+    case 'changeFlags': {
+      const payload = e.payload as { flags: string[] } | undefined
+      if (payload) settingsCardHandlers.onChangeFlags(payload.flags)
+      break
+    }
+    case 'changeEnvVars': {
+      const payload = e.payload as { envVars: Record<string, string> } | undefined
+      if (payload) settingsCardHandlers.onChangeEnvVars(payload.envVars)
+      break
+    }
+    case 'restart':
+      settingsCardHandlers.onRestart()
+      break
+    case 'cancel':
+      settingsCardHandlers.onCancel()
+      break
+    case 'exited':
+      workspaceSettingsCardHandlers.delete(e.overlayId)
+      break
+    default:
+      break
+  }
+  return true
+}
 
 function ensureRouter(): void {
   if (routerInitialized) return
@@ -195,22 +280,9 @@ function ensureRouter(): void {
       return
     }
 
-    const chipDropdownHandlers = chipDropdownSettlers.get(e.overlayId)
-    if (chipDropdownHandlers) {
-      switch (e.type) {
-        case 'select': {
-          const payload = e.payload as { value: string } | undefined
-          if (payload) chipDropdownHandlers.onSelect(payload.value)
-          break
-        }
-        case 'cancel':
-          chipDropdownHandlers.onCancel()
-          break
-        default:
-          break
-      }
-      return
-    }
+    if (dispatchChipDropdownEvent(e)) return
+
+    if (dispatchWorkspaceSettingsCardEvent(e)) return
 
     const handlers = handlersById.get(e.overlayId)
     if (!handlers) return
@@ -675,4 +747,74 @@ export function hideChipDropdown(id: string): void {
   } else {
     void window.api.overlay.hide(id).catch(() => {})
   }
+}
+
+// ── Workspace settings card (title bar Settings gear, U-overlay-migration) ─
+//
+// Long-lived + focusable + continuously-mutating — combines detailsCard's
+// update-loop (settings/dirty-flag changes keep pushing new props while it's
+// open) with chipPrompt's focus/input handling (CliFlagsEditor/
+// CustomEnvVarsEditor are real text inputs). Props down, events up: the call
+// site (WorkspaceSettingsPopover.tsx) owns every window.api.
+// claudeWorkspaceSettings.* call; this module only shows/updates the card and
+// routes its emitted events to whatever handlers the call site registered via
+// onWorkspaceSettingsCard.
+
+export function workspaceSettingsCardId(workspaceId: string): string {
+  return `workspaceSettings:${workspaceId}`
+}
+
+/**
+ * Registers the long-lived event handlers for an open workspaceSettingsCard —
+ * mirrors onCardPointer's register/unregister contract. Call once when the
+ * card is shown; unregister on hide/unmount. Handlers can be swapped in place
+ * (e.g. when the call site's callback identities change across renders) since
+ * this just replaces the map entry.
+ */
+export function onWorkspaceSettingsCardEvent(
+  id: string,
+  handlers: WorkspaceSettingsCardHandlers
+): () => void {
+  ensureRouter()
+  workspaceSettingsCardHandlers.set(id, handlers)
+  return () => {
+    const current = workspaceSettingsCardHandlers.get(id)
+    if (current === handlers) workspaceSettingsCardHandlers.delete(id)
+  }
+}
+
+export function showWorkspaceSettingsCard(
+  workspaceId: string,
+  anchorEl: Element,
+  props: WorkspaceSettingsCardProps
+): string {
+  ensureRouter()
+  const id = workspaceSettingsCardId(workspaceId)
+  const descriptor: OverlayDescriptor = {
+    id,
+    kind: 'workspaceSettingsCard',
+    // Gear button sits in the title bar and opens downward, same direction
+    // the retired in-page Overlay used (rect.bottom + 4) — preserved here so
+    // the popover still opens toward the terminal/workbench area below the
+    // bar rather than off-screen upward.
+    placement: {
+      mode: 'anchored',
+      anchorRect: anchorRectFromEl(anchorEl),
+      preferredSide: 'bottom'
+    },
+    props: props as unknown as Record<string, unknown>,
+    acceptsClicks: true,
+    takesFocus: true,
+    ownerWorkspaceId: workspaceId
+  }
+  void window.api.overlay.show(descriptor).catch(() => {})
+  return id
+}
+
+export function updateWorkspaceSettingsCard(id: string, patch: WorkspaceSettingsCardPatch): void {
+  void window.api.overlay.update(id, patch as unknown as Record<string, unknown>).catch(() => {})
+}
+
+export function hideWorkspaceSettingsCard(id: string): void {
+  void window.api.overlay.hide(id).catch(() => {})
 }

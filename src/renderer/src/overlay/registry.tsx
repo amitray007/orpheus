@@ -8,6 +8,7 @@ import { NoticeBanner } from './kinds/NoticeBanner'
 import { ChipTooltip } from './kinds/ChipTooltip'
 import { ChipPrompt } from './kinds/ChipPrompt'
 import { ChipDropdown } from './kinds/ChipDropdown'
+import { WorkspaceSettingsCard } from './kinds/WorkspaceSettingsCard'
 
 export interface OverlayKindProps {
   descriptor: OverlayDescriptor
@@ -26,5 +27,6 @@ export const registry: Record<string, React.ComponentType<OverlayKindProps>> = {
   noticeBanner: NoticeBanner,
   chipTooltip: ChipTooltip,
   chipPrompt: ChipPrompt,
-  chipDropdown: ChipDropdown
+  chipDropdown: ChipDropdown,
+  workspaceSettingsCard: WorkspaceSettingsCard
 }
