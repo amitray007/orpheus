@@ -430,14 +430,6 @@ export function SessionsTab({
         onDateRangeChange={changeDateRange}
       />
 
-      {/* Auto-widen hint: shown when the default date window hid everything and
-          we fell back to "All time" so the list isn't mysteriously empty. */}
-      {autoWidened && dateRange === 'all' && !debouncedSearch && (
-        <p className="text-xs text-text-muted -mt-1">
-          No sessions in the recent window — showing all sessions.
-        </p>
-      )}
-
       <DataTable<SessionRecord>
         columns={columns}
         rows={rows}
