@@ -45,6 +45,80 @@ export const FALLBACK_WORKSPACE_NAME = 'New workspace'
 const MAX_BYTES = 200 * 1024 // 200 KB — bounded read, mirrors src/main/sessions.ts extractTitle
 const MAX_TITLE_LENGTH = 60
 
+/** Bounded read of a transcript file's first MAX_BYTES, split into lines. Throws on IO error. */
+function readTranscriptHeadLines(jsonlPath: string): string[] {
+  const fd = fs.openSync(jsonlPath, 'r')
+  let bytesRead: number
+  const buf = Buffer.allocUnsafe(MAX_BYTES)
+  try {
+    bytesRead = fs.readSync(fd, buf, 0, MAX_BYTES, 0)
+  } finally {
+    fs.closeSync(fd)
+  }
+  const text = buf.slice(0, bytesRead).toString('utf-8')
+  return text.split('\n')
+}
+
+/**
+ * Extract the raw text content from a parsed transcript `message` field:
+ * either a plain string, or the first `{ type: 'text', text }` part of an
+ * array-shaped content. Returns null if neither shape yields text.
+ */
+function extractRawContentText(message: Record<string, unknown>): string | null {
+  const content = message['content']
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return null
+
+  for (const part of content) {
+    if (
+      typeof part === 'object' &&
+      part !== null &&
+      (part as Record<string, unknown>)['type'] === 'text'
+    ) {
+      const t = (part as Record<string, unknown>)['text']
+      if (typeof t === 'string') return t
+    }
+  }
+  return null
+}
+
+/**
+ * Parse one JSONL transcript line and, if it is a non-empty first-user-message
+ * line, return its title-ready (trimmed, length-capped) text. Returns null for
+ * any line that isn't a usable user-message line (caller continues scanning).
+ */
+function titleFromTranscriptLine(line: string): string | null {
+  const trimmed = line.trim()
+  if (!trimmed) return null
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    (parsed as Record<string, unknown>)['type'] !== 'user'
+  ) {
+    return null
+  }
+
+  const message = (parsed as Record<string, unknown>)['message']
+  if (typeof message !== 'object' || message === null) return null
+
+  const raw = extractRawContentText(message as Record<string, unknown>)
+  if (!raw) return null
+
+  const trimmedRaw = raw.trim()
+  if (!trimmedRaw) return null
+  return trimmedRaw.length > MAX_TITLE_LENGTH
+    ? trimmedRaw.slice(0, MAX_TITLE_LENGTH) + '…'
+    : trimmedRaw
+}
+
 /**
  * Extract a session title from a workspace's transcript JSONL: the first
  * ~60 chars of the first `{ type: 'user', message: { content } }` entry.
@@ -66,68 +140,10 @@ export function extractSessionTitle(
   if (jsonlPath == null) return null
 
   try {
-    const fd = fs.openSync(jsonlPath, 'r')
-    let bytesRead: number
-    const buf = Buffer.allocUnsafe(MAX_BYTES)
-    try {
-      bytesRead = fs.readSync(fd, buf, 0, MAX_BYTES, 0)
-    } finally {
-      fs.closeSync(fd)
-    }
-
-    const text = buf.slice(0, bytesRead).toString('utf-8')
-    const lines = text.split('\n')
-
+    const lines = readTranscriptHeadLines(jsonlPath)
     for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(trimmed)
-      } catch {
-        continue
-      }
-
-      if (
-        typeof parsed !== 'object' ||
-        parsed === null ||
-        (parsed as Record<string, unknown>)['type'] !== 'user'
-      ) {
-        continue
-      }
-
-      const message = (parsed as Record<string, unknown>)['message']
-      if (typeof message !== 'object' || message === null) continue
-
-      const content = (message as Record<string, unknown>)['content']
-      let raw: string | null = null
-
-      if (typeof content === 'string') {
-        raw = content
-      } else if (Array.isArray(content)) {
-        for (const part of content) {
-          if (
-            typeof part === 'object' &&
-            part !== null &&
-            (part as Record<string, unknown>)['type'] === 'text'
-          ) {
-            const t = (part as Record<string, unknown>)['text']
-            if (typeof t === 'string') {
-              raw = t
-              break
-            }
-          }
-        }
-      }
-
-      if (raw) {
-        const trimmedRaw = raw.trim()
-        if (!trimmedRaw) continue
-        return trimmedRaw.length > MAX_TITLE_LENGTH
-          ? trimmedRaw.slice(0, MAX_TITLE_LENGTH) + '…'
-          : trimmedRaw
-      }
+      const title = titleFromTranscriptLine(line)
+      if (title != null) return title
     }
   } catch {
     // Any IO / parse error → null, caller falls back down the ladder.

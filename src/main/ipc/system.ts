@@ -138,76 +138,89 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
       const jsonPath = path.join(dir, name + '.json')
 
       const rows = queryDiagnostics({ sinceMs, limit: 100_000 })
+      const txtContent = buildDiagReportText(rows, sinceMs)
 
-      // Build readable .txt report
-      const exportedAt = new Date().toISOString()
-      const rangeStart = new Date(sinceMs).toISOString()
-      const lines: string[] = [
-        `Orpheus Diagnostics Export`,
-        `Exported: ${exportedAt}`,
-        `Range: ${rangeStart} — ${exportedAt}`,
-        `Rows: ${rows.length}`,
-        '',
-        '═'.repeat(72),
-        ''
-      ]
-
-      // Group rows by traceId
-      const traceRows = new Map<string, DiagRow[]>()
-      const nonTraceRows: DiagRow[] = []
-      for (const row of rows) {
-        if (row.traceId) {
-          if (!traceRows.has(row.traceId)) traceRows.set(row.traceId, [])
-          traceRows.get(row.traceId)!.push(row)
-        } else {
-          nonTraceRows.push(row)
-        }
-      }
-
-      // Trace trees section
-      if (traceRows.size > 0) {
-        lines.push('TRACES', '─'.repeat(72), '')
-        for (const [traceId, tRows] of traceRows) {
-          lines.push(`Trace: ${traceId}`)
-          lines.push(formatTraceTree(tRows))
-          lines.push('')
-        }
-      }
-
-      // Flat events section
-      if (nonTraceRows.length > 0) {
-        lines.push('EVENTS', '─'.repeat(72), '')
-        for (const row of nonTraceRows) {
-          lines.push(formatEventLine(row))
-        }
-        lines.push('')
-      }
-
-      const txtContent = lines.join('\n')
-
-      // Write the .txt first, then the .json sidecar. If the JSON write fails
-      // after the txt landed, remove the orphaned txt so we never leave a
-      // half-completed report behind.
-      fs.writeFileSync(txtPath, txtContent, 'utf8')
-      try {
-        fs.writeFileSync(jsonPath, JSON.stringify(rows, null, 2), 'utf8')
-      } catch (jsonErr) {
-        try {
-          fs.unlinkSync(txtPath)
-        } catch {
-          /* best-effort cleanup */
-        }
-        return {
-          ok: false,
-          error: `Report could not be completed (JSON sidecar failed): ${
-            jsonErr instanceof Error ? jsonErr.message : String(jsonErr)
-          }`
-        }
-      }
+      const writeResult = writeDiagReportFiles(txtPath, jsonPath, txtContent, rows)
+      if (!writeResult.ok) return writeResult
 
       return { ok: true, path: txtPath, txtPath, jsonPath }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   })
+}
+
+/** Build the readable .txt diagnostics report body: header, trace trees, flat events. */
+function buildDiagReportText(rows: DiagRow[], sinceMs: number): string {
+  const exportedAt = new Date().toISOString()
+  const rangeStart = new Date(sinceMs).toISOString()
+  const lines: string[] = [
+    `Orpheus Diagnostics Export`,
+    `Exported: ${exportedAt}`,
+    `Range: ${rangeStart} — ${exportedAt}`,
+    `Rows: ${rows.length}`,
+    '',
+    '═'.repeat(72),
+    ''
+  ]
+
+  // Group rows by traceId
+  const traceRows = new Map<string, DiagRow[]>()
+  const nonTraceRows: DiagRow[] = []
+  for (const row of rows) {
+    if (row.traceId) {
+      if (!traceRows.has(row.traceId)) traceRows.set(row.traceId, [])
+      traceRows.get(row.traceId)!.push(row)
+    } else {
+      nonTraceRows.push(row)
+    }
+  }
+
+  // Trace trees section
+  if (traceRows.size > 0) {
+    lines.push('TRACES', '─'.repeat(72), '')
+    for (const [traceId, tRows] of traceRows) {
+      lines.push(`Trace: ${traceId}`)
+      lines.push(formatTraceTree(tRows))
+      lines.push('')
+    }
+  }
+
+  // Flat events section
+  if (nonTraceRows.length > 0) {
+    lines.push('EVENTS', '─'.repeat(72), '')
+    for (const row of nonTraceRows) {
+      lines.push(formatEventLine(row))
+    }
+    lines.push('')
+  }
+
+  return lines.join('\n')
+}
+
+/** Write the .txt report then the .json sidecar. If the JSON write fails after the
+ *  txt landed, removes the orphaned txt so a half-completed report is never left behind. */
+function writeDiagReportFiles(
+  txtPath: string,
+  jsonPath: string,
+  txtContent: string,
+  rows: DiagRow[]
+): { ok: true } | { ok: false; error: string } {
+  fs.writeFileSync(txtPath, txtContent, 'utf8')
+  try {
+    fs.writeFileSync(jsonPath, JSON.stringify(rows, null, 2), 'utf8')
+  } catch (jsonErr) {
+    try {
+      fs.unlinkSync(txtPath)
+    } catch {
+      /* best-effort cleanup */
+    }
+    return {
+      ok: false,
+      error: `Report could not be completed (JSON sidecar failed): ${
+        jsonErr instanceof Error ? jsonErr.message : String(jsonErr)
+      }`
+    }
+  }
+  return { ok: true }
 }

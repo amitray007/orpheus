@@ -8,6 +8,40 @@ const NAME_RE = /^[a-z0-9_-]+$/i
 
 type ProjectContext = { projectId: string; projectName: string }
 
+// Determines transport + url/command for a single server def. `url` wins (transport is
+// 'sse' only if def.transport === 'sse', else 'http'); otherwise a string `command` means
+// 'stdio'; otherwise transport stays 'unknown'.
+function detectMcpTransport(d: Record<string, unknown>): {
+  transport: DiscoveredMcpServer['transport']
+  command: string | undefined
+  url: string | undefined
+} {
+  if (typeof d.url === 'string') {
+    return { transport: d.transport === 'sse' ? 'sse' : 'http', command: undefined, url: d.url }
+  }
+  if (typeof d.command === 'string') {
+    return { transport: 'stdio', command: d.command, url: undefined }
+  }
+  return { transport: 'unknown', command: undefined, url: undefined }
+}
+
+// Extracts def.args as a string[] when present and array-shaped, filtering out non-strings.
+function extractMcpArgs(d: Record<string, unknown>): string[] | undefined {
+  if (!Array.isArray(d.args)) return undefined
+  return d.args.filter((a): a is string => typeof a === 'string')
+}
+
+// Extracts def.env as a Record<string, string> when present and a non-array object,
+// filtering out non-string values.
+function extractMcpEnv(d: Record<string, unknown>): Record<string, string> | undefined {
+  if (!d.env || typeof d.env !== 'object' || Array.isArray(d.env)) return undefined
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(d.env as Record<string, unknown>)) {
+    if (typeof v === 'string') env[k] = v
+  }
+  return env
+}
+
 function parseMcpServers(
   parsed: unknown,
   source: 'user' | 'project',
@@ -22,29 +56,10 @@ function parseMcpServers(
   for (const [name, def] of Object.entries(mcpServers as Record<string, unknown>)) {
     if (!def || typeof def !== 'object') continue
     const d = def as Record<string, unknown>
-    let transport: DiscoveredMcpServer['transport'] = 'unknown'
-    let command: string | undefined
-    let args: string[] | undefined
-    let env: Record<string, string> | undefined
-    let url: string | undefined
 
-    if (typeof d.url === 'string') {
-      url = d.url
-      transport = d.transport === 'sse' ? 'sse' : 'http'
-    } else if (typeof d.command === 'string') {
-      command = d.command
-      transport = 'stdio'
-    }
-
-    if (Array.isArray(d.args)) {
-      args = d.args.filter((a): a is string => typeof a === 'string')
-    }
-    if (d.env && typeof d.env === 'object' && !Array.isArray(d.env)) {
-      env = {}
-      for (const [k, v] of Object.entries(d.env as Record<string, unknown>)) {
-        if (typeof v === 'string') env[k] = v
-      }
-    }
+    const { transport, command, url } = detectMcpTransport(d)
+    const args = extractMcpArgs(d)
+    const env = extractMcpEnv(d)
 
     const entry: DiscoveredMcpServer = {
       name,

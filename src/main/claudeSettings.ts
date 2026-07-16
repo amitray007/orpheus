@@ -410,69 +410,136 @@ const STRING_ARRAY_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
   'disabledMcpServers'
 ]
 
-function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
-  if ('model' in patch) {
-    if (typeof patch.model !== 'string' || patch.model.trim() === '') {
-      throw new Error('claudeSettings: model must be a non-empty string')
+// Throws `claudeSettings: <label> must be a positive integer or null` when the
+// patch has `key` set and its value is neither null nor a positive integer.
+// Used for every numeric key whose validation + message are byte-identical to
+// this pattern. Keys with a different bound or message (compactionThreshold,
+// scrollSpeed, autocompactPctOverride, exitAfterStopDelay,
+// maxWorkspaceDepth/Children) are validated separately below.
+function validatePositiveIntOrNull(
+  patch: ClaudeGlobalSettingsPatch,
+  key: keyof ClaudeGlobalSettingsPatch,
+  label: string
+): void {
+  if (!(key in patch)) return
+  const v = patch[key] as number | null
+  if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+    throw new Error(`claudeSettings: ${label} must be a positive integer or null`)
+  }
+}
+
+// Throws `claudeSettings: <label> must be one of ...` when the patch has `key`
+// set and its value isn't in `validValues`. Used for the six enum keys whose
+// error message format is byte-identical to this pattern.
+function validateEnum<T extends string>(
+  patch: ClaudeGlobalSettingsPatch,
+  key: keyof ClaudeGlobalSettingsPatch,
+  validValues: readonly T[],
+  label: string
+): void {
+  if (!(key in patch)) return
+  if (!validValues.includes(patch[key] as T)) {
+    throw new Error(`claudeSettings: ${label} must be one of ${validValues.join(', ')}`)
+  }
+}
+
+// Throws `claudeSettings: <label> must be a string` when the patch has `key`
+// set and its value isn't a string.
+function validateStringKey(
+  patch: ClaudeGlobalSettingsPatch,
+  key: keyof ClaudeGlobalSettingsPatch,
+  label: string
+): void {
+  if (!(key in patch)) return
+  if (typeof patch[key] !== 'string') {
+    throw new Error(`claudeSettings: ${label} must be a string`)
+  }
+}
+
+// model: non-empty-string check, byte-identical message. Its own helper since
+// no other key shares this exact "non-empty" predicate/message.
+function validateModelKey(patch: ClaudeGlobalSettingsPatch): void {
+  if (!('model' in patch)) return
+  if (typeof patch.model !== 'string' || patch.model.trim() === '') {
+    throw new Error('claudeSettings: model must be a non-empty string')
+  }
+}
+
+// compactionThreshold: positive-integer-or-null PLUS an upper bound of 100,
+// with its own message — deliberately kept separate from
+// validatePositiveIntOrNull per the task instructions.
+function validateCompactionThreshold(patch: ClaudeGlobalSettingsPatch): void {
+  if (!('compactionThreshold' in patch)) return
+  const v = patch.compactionThreshold
+  if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 100)) {
+    throw new Error('claudeSettings: compactionThreshold must be an integer 1–100 or null')
+  }
+}
+
+// extraBodyJson: string check, then (if non-empty after trim) must parse as JSON.
+function validateExtraBodyJson(patch: ClaudeGlobalSettingsPatch): void {
+  if (!('extraBodyJson' in patch)) return
+  const v = patch.extraBodyJson
+  if (typeof v !== 'string') {
+    throw new Error('claudeSettings: extraBodyJson must be a string')
+  }
+  if (v.trim() !== '') {
+    try {
+      JSON.parse(v)
+    } catch {
+      throw new Error('claudeSettings: extraBodyJson must be empty or valid JSON')
     }
   }
-  if ('permissionMode' in patch) {
-    if (!VALID_PERMISSION_MODES.includes(patch.permissionMode as ClaudePermissionMode)) {
-      throw new Error(
-        `claudeSettings: permissionMode must be one of ${VALID_PERMISSION_MODES.join(', ')}`
-      )
-    }
+}
+
+// scrollSpeed: integer 1–20 or null, own message.
+function validateScrollSpeed(patch: ClaudeGlobalSettingsPatch): void {
+  if (!('scrollSpeed' in patch)) return
+  const v = patch.scrollSpeed
+  if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 20)) {
+    throw new Error('claudeSettings: scrollSpeed must be an integer 1–20 or null')
   }
-  if ('effort' in patch) {
-    if (!VALID_EFFORTS.includes(patch.effort as ClaudeEffort)) {
-      throw new Error(`claudeSettings: effort must be one of ${VALID_EFFORTS.join(', ')}`)
-    }
+}
+
+// autocompactPctOverride: integer 0–100 or null (note: lower bound 0, not 1), own message.
+function validateAutocompactPctOverride(patch: ClaudeGlobalSettingsPatch): void {
+  if (!('autocompactPctOverride' in patch)) return
+  const v = patch.autocompactPctOverride
+  if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 100)) {
+    throw new Error('claudeSettings: autocompactPctOverride must be an integer 0–100 or null')
   }
-  if ('outputStyle' in patch) {
-    if (!VALID_OUTPUT_STYLES.includes(patch.outputStyle as ClaudeOutputStyle)) {
-      throw new Error(
-        `claudeSettings: outputStyle must be one of ${VALID_OUTPUT_STYLES.join(', ')}`
-      )
-    }
+}
+
+// exitAfterStopDelay: non-negative integer or null (v < 0, not v < 1), own message.
+function validateExitAfterStopDelay(patch: ClaudeGlobalSettingsPatch): void {
+  if (!('exitAfterStopDelay' in patch)) return
+  const v = patch.exitAfterStopDelay
+  if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 0)) {
+    throw new Error('claudeSettings: exitAfterStopDelay must be a non-negative integer or null')
   }
-  if ('tuiMode' in patch) {
-    if (!VALID_TUI_MODES.includes(patch.tuiMode as ClaudeTuiMode)) {
-      throw new Error(`claudeSettings: tuiMode must be one of ${VALID_TUI_MODES.join(', ')}`)
-    }
+}
+
+// maxWorkspaceDepth / maxWorkspaceChildren: positive integer, NOT nullable
+// (unlike the POSITIVE_INT_OR_NULL family), each with its own message.
+function validateMaxWorkspaceDepth(patch: ClaudeGlobalSettingsPatch): void {
+  if (!('maxWorkspaceDepth' in patch)) return
+  const v = patch.maxWorkspaceDepth
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
+    throw new Error('claudeSettings: maxWorkspaceDepth must be a positive integer')
   }
-  if ('editorMode' in patch) {
-    if (!VALID_EDITOR_MODES.includes(patch.editorMode as ClaudeEditorMode)) {
-      throw new Error(`claudeSettings: editorMode must be one of ${VALID_EDITOR_MODES.join(', ')}`)
-    }
+}
+
+function validateMaxWorkspaceChildren(patch: ClaudeGlobalSettingsPatch): void {
+  if (!('maxWorkspaceChildren' in patch)) return
+  const v = patch.maxWorkspaceChildren
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
+    throw new Error('claudeSettings: maxWorkspaceChildren must be a positive integer')
   }
-  if ('logLevel' in patch) {
-    if (!VALID_LOG_LEVELS.includes(patch.logLevel as ClaudeLogLevel)) {
-      throw new Error(`claudeSettings: logLevel must be one of ${VALID_LOG_LEVELS.join(', ')}`)
-    }
-  }
-  for (const key of BOOLEAN_KEYS) {
-    if (key in patch && typeof patch[key] !== 'boolean') {
-      throw new Error(`claudeSettings: ${key} must be a boolean`)
-    }
-  }
-  if ('maxOutputTokens' in patch) {
-    const v = patch.maxOutputTokens
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: maxOutputTokens must be a positive integer or null')
-    }
-  }
-  if ('maxContextTokens' in patch) {
-    const v = patch.maxContextTokens
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: maxContextTokens must be a positive integer or null')
-    }
-  }
-  if ('compactionThreshold' in patch) {
-    const v = patch.compactionThreshold
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 100)) {
-      throw new Error('claudeSettings: compactionThreshold must be an integer 1–100 or null')
-    }
-  }
+}
+
+// STRING_ARRAY_KEYS loop body, extracted so the loop itself doesn't add
+// nested-if complexity inside validatePatch's own body.
+function validateStringArrayKeys(patch: ClaudeGlobalSettingsPatch): void {
   for (const key of STRING_ARRAY_KEYS) {
     if (key in patch) {
       const v = patch[key]
@@ -481,163 +548,56 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
       }
     }
   }
-  if ('fallbackModel' in patch) {
-    if (typeof patch.fallbackModel !== 'string') {
-      throw new Error('claudeSettings: fallbackModel must be a string')
+}
+
+// BOOLEAN_KEYS loop body, extracted for the same reason.
+function validateBooleanKeys(patch: ClaudeGlobalSettingsPatch): void {
+  for (const key of BOOLEAN_KEYS) {
+    if (key in patch && typeof patch[key] !== 'boolean') {
+      throw new Error(`claudeSettings: ${key} must be a boolean`)
     }
   }
-  if ('bashDefaultTimeoutMs' in patch) {
-    const v = patch.bashDefaultTimeoutMs
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: bashDefaultTimeoutMs must be a positive integer or null')
-    }
-  }
-  if ('bashMaxTimeoutMs' in patch) {
-    const v = patch.bashMaxTimeoutMs
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: bashMaxTimeoutMs must be a positive integer or null')
-    }
-  }
-  if ('bashMaxOutputLength' in patch) {
-    const v = patch.bashMaxOutputLength
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: bashMaxOutputLength must be a positive integer or null')
-    }
-  }
-  if ('toolConcurrency' in patch) {
-    const v = patch.toolConcurrency
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: toolConcurrency must be a positive integer or null')
-    }
-  }
-  if ('maxTurns' in patch) {
-    const v = patch.maxTurns
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: maxTurns must be a positive integer or null')
-    }
-  }
-  if ('maxThinkingTokens' in patch) {
-    const v = patch.maxThinkingTokens
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: maxThinkingTokens must be a positive integer or null')
-    }
-  }
-  if ('fileReadMaxOutputTokens' in patch) {
-    const v = patch.fileReadMaxOutputTokens
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: fileReadMaxOutputTokens must be a positive integer or null')
-    }
-  }
-  if ('globTimeoutSeconds' in patch) {
-    const v = patch.globTimeoutSeconds
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: globTimeoutSeconds must be a positive integer or null')
-    }
-  }
-  if ('apiTimeoutMs' in patch) {
-    const v = patch.apiTimeoutMs
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: apiTimeoutMs must be a positive integer or null')
-    }
-  }
-  if ('maxRetries' in patch) {
-    const v = patch.maxRetries
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: maxRetries must be a positive integer or null')
-    }
-  }
-  if ('httpProxy' in patch) {
-    if (typeof patch.httpProxy !== 'string') {
-      throw new Error('claudeSettings: httpProxy must be a string')
-    }
-  }
-  if ('httpsProxy' in patch) {
-    if (typeof patch.httpsProxy !== 'string') {
-      throw new Error('claudeSettings: httpsProxy must be a string')
-    }
-  }
-  if ('anthropicBetas' in patch) {
-    if (typeof patch.anthropicBetas !== 'string') {
-      throw new Error('claudeSettings: anthropicBetas must be a string')
-    }
-  }
-  if ('extraBodyJson' in patch) {
-    const v = patch.extraBodyJson
-    if (typeof v !== 'string') {
-      throw new Error('claudeSettings: extraBodyJson must be a string')
-    }
-    if (v.trim() !== '') {
-      try {
-        JSON.parse(v)
-      } catch {
-        throw new Error('claudeSettings: extraBodyJson must be empty or valid JSON')
-      }
-    }
-  }
-  if ('scrollSpeed' in patch) {
-    const v = patch.scrollSpeed
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 20)) {
-      throw new Error('claudeSettings: scrollSpeed must be an integer 1–20 or null')
-    }
-  }
-  if ('autoCompactWindow' in patch) {
-    const v = patch.autoCompactWindow
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: autoCompactWindow must be a positive integer or null')
-    }
-  }
-  if ('autocompactPctOverride' in patch) {
-    const v = patch.autocompactPctOverride
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 100)) {
-      throw new Error('claudeSettings: autocompactPctOverride must be an integer 0–100 or null')
-    }
-  }
-  if ('shellOverride' in patch) {
-    if (typeof patch.shellOverride !== 'string') {
-      throw new Error('claudeSettings: shellOverride must be a string')
-    }
-  }
-  if ('shellPrefix' in patch) {
-    if (typeof patch.shellPrefix !== 'string') {
-      throw new Error('claudeSettings: shellPrefix must be a string')
-    }
-  }
-  if ('asyncAgentStallTimeoutMs' in patch) {
-    const v = patch.asyncAgentStallTimeoutMs
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: asyncAgentStallTimeoutMs must be a positive integer or null')
-    }
-  }
-  if ('exitAfterStopDelay' in patch) {
-    const v = patch.exitAfterStopDelay
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 0)) {
-      throw new Error('claudeSettings: exitAfterStopDelay must be a non-negative integer or null')
-    }
-  }
-  if ('maxWorkspaceDepth' in patch) {
-    const v = patch.maxWorkspaceDepth
-    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
-      throw new Error('claudeSettings: maxWorkspaceDepth must be a positive integer')
-    }
-  }
-  if ('maxWorkspaceChildren' in patch) {
-    const v = patch.maxWorkspaceChildren
-    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
-      throw new Error('claudeSettings: maxWorkspaceChildren must be a positive integer')
-    }
-  }
-  if ('toolCallTimeoutMs' in patch) {
-    const v = patch.toolCallTimeoutMs
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: toolCallTimeoutMs must be a positive integer or null')
-    }
-  }
-  if ('maxToolOutputLength' in patch) {
-    const v = patch.maxToolOutputLength
-    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
-      throw new Error('claudeSettings: maxToolOutputLength must be a positive integer or null')
-    }
-  }
+}
+
+function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
+  validateModelKey(patch)
+  validateEnum(patch, 'permissionMode', VALID_PERMISSION_MODES, 'permissionMode')
+  validateEnum(patch, 'effort', VALID_EFFORTS, 'effort')
+  validateEnum(patch, 'outputStyle', VALID_OUTPUT_STYLES, 'outputStyle')
+  validateEnum(patch, 'tuiMode', VALID_TUI_MODES, 'tuiMode')
+  validateEnum(patch, 'editorMode', VALID_EDITOR_MODES, 'editorMode')
+  validateEnum(patch, 'logLevel', VALID_LOG_LEVELS, 'logLevel')
+  validateBooleanKeys(patch)
+  validatePositiveIntOrNull(patch, 'maxOutputTokens', 'maxOutputTokens')
+  validatePositiveIntOrNull(patch, 'maxContextTokens', 'maxContextTokens')
+  validateCompactionThreshold(patch)
+  validateStringArrayKeys(patch)
+  validateStringKey(patch, 'fallbackModel', 'fallbackModel')
+  validatePositiveIntOrNull(patch, 'bashDefaultTimeoutMs', 'bashDefaultTimeoutMs')
+  validatePositiveIntOrNull(patch, 'bashMaxTimeoutMs', 'bashMaxTimeoutMs')
+  validatePositiveIntOrNull(patch, 'bashMaxOutputLength', 'bashMaxOutputLength')
+  validatePositiveIntOrNull(patch, 'toolConcurrency', 'toolConcurrency')
+  validatePositiveIntOrNull(patch, 'maxTurns', 'maxTurns')
+  validatePositiveIntOrNull(patch, 'maxThinkingTokens', 'maxThinkingTokens')
+  validatePositiveIntOrNull(patch, 'fileReadMaxOutputTokens', 'fileReadMaxOutputTokens')
+  validatePositiveIntOrNull(patch, 'globTimeoutSeconds', 'globTimeoutSeconds')
+  validatePositiveIntOrNull(patch, 'apiTimeoutMs', 'apiTimeoutMs')
+  validatePositiveIntOrNull(patch, 'maxRetries', 'maxRetries')
+  validateStringKey(patch, 'httpProxy', 'httpProxy')
+  validateStringKey(patch, 'httpsProxy', 'httpsProxy')
+  validateStringKey(patch, 'anthropicBetas', 'anthropicBetas')
+  validateExtraBodyJson(patch)
+  validateScrollSpeed(patch)
+  validatePositiveIntOrNull(patch, 'autoCompactWindow', 'autoCompactWindow')
+  validateAutocompactPctOverride(patch)
+  validateStringKey(patch, 'shellOverride', 'shellOverride')
+  validateStringKey(patch, 'shellPrefix', 'shellPrefix')
+  validatePositiveIntOrNull(patch, 'asyncAgentStallTimeoutMs', 'asyncAgentStallTimeoutMs')
+  validateExitAfterStopDelay(patch)
+  validateMaxWorkspaceDepth(patch)
+  validateMaxWorkspaceChildren(patch)
+  validatePositiveIntOrNull(patch, 'toolCallTimeoutMs', 'toolCallTimeoutMs')
+  validatePositiveIntOrNull(patch, 'maxToolOutputLength', 'maxToolOutputLength')
   if ('customEnvVars' in patch) {
     validateCustomEnvVarsValue(patch.customEnvVars, 'claudeSettings')
   }
@@ -673,79 +633,117 @@ export type ClaudeLaunch = {
   env: Record<string, string>
 }
 
-/**
- * Read the current ClaudeGlobalSettings (and optional per-project overrides) and
- * produce the three buckets needed to wire them into the claude invocation at
- * workspace launch time.
- *
- * Invariant: for the seeded default state (all fields at DB defaults, no project
- * overrides), flags === '' && settingsJson === '' && env === {}
- * which means the wrapper runs bare `claude` with no extra arguments.
- *
- * @param precomputedGlobal — caller-provided global settings to avoid a redundant
- *   DB fetch when composing for many workspaces in a loop (e.g. recomputeDirty).
- *   Pass undefined to let the function fetch fresh.
- */
-export function composeClaudeLaunch(
-  projectId?: string,
-  workspaceId?: string,
-  precomputedGlobal?: ClaudeGlobalSettings
-): ClaudeLaunch {
-  const global = precomputedGlobal ?? getClaudeGlobalSettings()
-
-  // Merge project-level overrides (model, permissionMode, effort) on top of
-  // global. customCliFlags is deliberately NOT spread into `s` alongside
-  // these scalar overrides — it needs append/override merge semantics via
-  // mergeFlagScopes (below), not last-wins replacement, so it's captured
-  // into its own local instead.
-  let s = global
-  let projectCustomFlags: string[] = []
-  let projectEnvVars: Record<string, string> = {}
-  if (projectId) {
-    const proj = getClaudeProjectSettings(projectId)
-    const ov = proj.overrides
-    projectCustomFlags = ov.customCliFlags ?? []
-    projectEnvVars = ov.customEnvVars ?? {}
-    if (Object.keys(ov).length > 0) {
-      s = {
-        ...s,
-        ...(ov.model !== undefined ? { model: ov.model } : {}),
-        ...(ov.permissionMode !== undefined ? { permissionMode: ov.permissionMode } : {}),
-        ...(ov.effort !== undefined ? { effort: ov.effort } : {})
-      }
-    }
+// Applies a scope's scalar overrides (model, permissionMode, effort) on top
+// of `s` — the exact three-key spread used for both project and workspace
+// override layers. Returns `s` unchanged (by reference) when `ov` is empty,
+// otherwise a new merged object, matching the original inline `if
+// (Object.keys(ov).length > 0) { s = {...} }` behavior exactly.
+function applyScalarOverrides(
+  s: ClaudeGlobalSettings,
+  ov: {
+    model?: string
+    permissionMode?: ClaudePermissionMode
+    effort?: ClaudeEffort
   }
-
-  // Workspace overrides sit above project overrides — highest precedence before CLI flags.
-  // customCliFlags is deliberately NOT spread into `s` here either, for the
-  // same reason as projectCustomFlags above — it's captured into its own
-  // local and merged via mergeFlagScopes (below), not last-wins replacement.
-  let workspaceCustomFlags: string[] = []
-  let workspaceEnvVars: Record<string, string> = {}
-  if (workspaceId) {
-    const ws = getClaudeWorkspaceSettings(workspaceId)
-    const wov = ws.overrides
-    workspaceCustomFlags = wov.customCliFlags ?? []
-    workspaceEnvVars = wov.customEnvVars ?? {}
-    if (Object.keys(wov).length > 0) {
-      s = {
-        ...s,
-        ...(wov.model !== undefined ? { model: wov.model } : {}),
-        ...(wov.permissionMode !== undefined ? { permissionMode: wov.permissionMode } : {}),
-        ...(wov.effort !== undefined ? { effort: wov.effort } : {})
-      }
-    }
+): ClaudeGlobalSettings {
+  if (Object.keys(ov).length === 0) return s
+  return {
+    ...s,
+    ...(ov.model !== undefined ? { model: ov.model } : {}),
+    ...(ov.permissionMode !== undefined ? { permissionMode: ov.permissionMode } : {}),
+    ...(ov.effort !== undefined ? { effort: ov.effort } : {})
   }
+}
 
-  // -------------------------------------------------------------------------
-  // 1. CLI flags
-  // -------------------------------------------------------------------------
-  // A token array, not space-joined strings: each push contributes one or
-  // more argv tokens directly, so a value containing whitespace (e.g. a
-  // custom --append-system-prompt) never has to survive a shell re-split.
-  // The array is joined with FLAG_DELIMITER (0x1F) below and split back into
-  // argv by resources/orpheus-claude.sh via zsh's `${(@ps:\x1f:)VAR}` — see
-  // that script's comment block and src/shared/cliFlags.ts for why.
+type OverrideScope = {
+  s: ClaudeGlobalSettings
+  customFlags: string[]
+  envVars: Record<string, string>
+}
+
+// Merge project-level overrides (model, permissionMode, effort) on top of
+// global. customCliFlags is deliberately NOT spread into `s` alongside
+// these scalar overrides — it needs append/override merge semantics via
+// mergeFlagScopes (below), not last-wins replacement, so it's captured
+// into its own local instead.
+function mergeProjectOverrides(global: ClaudeGlobalSettings, projectId?: string): OverrideScope {
+  if (!projectId) return { s: global, customFlags: [], envVars: {} }
+  const proj = getClaudeProjectSettings(projectId)
+  const ov = proj.overrides
+  return {
+    s: applyScalarOverrides(global, ov),
+    customFlags: ov.customCliFlags ?? [],
+    envVars: ov.customEnvVars ?? {}
+  }
+}
+
+// Workspace overrides sit above project overrides — highest precedence before
+// CLI flags. customCliFlags is deliberately NOT spread into `s` here either,
+// for the same reason as projectCustomFlags above — it's captured into its
+// own local and merged via mergeFlagScopes (below), not last-wins replacement.
+function mergeWorkspaceOverrides(s: ClaudeGlobalSettings, workspaceId?: string): OverrideScope {
+  if (!workspaceId) return { s, customFlags: [], envVars: {} }
+  const ws = getClaudeWorkspaceSettings(workspaceId)
+  const wov = ws.overrides
+  return {
+    s: applyScalarOverrides(s, wov),
+    customFlags: wov.customCliFlags ?? [],
+    envVars: wov.customEnvVars ?? {}
+  }
+}
+
+// Session continuity: every workspace ships with a pre-generated UUID
+// (assigned in createWorkspace). On first launch, no .jsonl exists yet, so
+// we pass --session-id <uuid> to tell claude "create a new session with
+// this ID". On every subsequent launch the .jsonl exists, so we switch to
+// --resume <uuid> which attaches to the existing transcript. This is
+// deterministic and survives Orpheus restarts even if the user quits
+// immediately after the first message.
+//
+// Fork support (Plan A — validated 2025-05): when forked_from_session_id is
+// set, the first launch emits --session-id <our-uuid> --resume <parent-uuid>
+// --fork-session so claude creates an independent branch of the parent
+// transcript under our UUID. Subsequent launches switch to bare --resume
+// once the .jsonl exists (same as any other workspace).
+function pushSessionContinuityFlags(flagTokens: string[], workspaceId?: string): void {
+  if (!workspaceId) return
+  const ws = getWorkspace(workspaceId)
+  if (!ws?.claudeSessionId) return
+  if (sessionJsonlExists(ws.cwd, ws.claudeSessionId)) {
+    // Session already exists — normal resume
+    flagTokens.push('--resume', ws.claudeSessionId)
+  } else if (ws.forkedFromSessionId) {
+    // Plan A fork: pre-assign our UUID and branch from parent. Reuse the
+    // already-loaded workspace record's field instead of a second DB query.
+    flagTokens.push(
+      '--session-id',
+      ws.claudeSessionId,
+      '--resume',
+      ws.forkedFromSessionId,
+      '--fork-session'
+    )
+  } else {
+    // Normal first launch
+    flagTokens.push('--session-id', ws.claudeSessionId)
+  }
+}
+
+// -------------------------------------------------------------------------
+// 1. CLI flags
+// -------------------------------------------------------------------------
+// A token array, not space-joined strings: each push contributes one or
+// more argv tokens directly, so a value containing whitespace (e.g. a
+// custom --append-system-prompt) never has to survive a shell re-split.
+// The array is joined with FLAG_DELIMITER (0x1F) below and split back into
+// argv by resources/orpheus-claude.sh via zsh's `${(@ps:\x1f:)VAR}` — see
+// that script's comment block and src/shared/cliFlags.ts for why.
+function composeFlagTokens(
+  s: ClaudeGlobalSettings,
+  workspaceId: string | undefined,
+  global: ClaudeGlobalSettings,
+  projectCustomFlags: string[],
+  workspaceCustomFlags: string[]
+): string[] {
   const flagTokens: string[] = []
 
   // --model: always pass when set. Skipping the flag for 'sonnet' (claude's
@@ -788,41 +786,7 @@ export function composeClaudeLaunch(
   //   flagTokens.push('--no-chrome')
   // }
 
-  // Session continuity: every workspace ships with a pre-generated UUID
-  // (assigned in createWorkspace). On first launch, no .jsonl exists yet, so
-  // we pass --session-id <uuid> to tell claude "create a new session with
-  // this ID". On every subsequent launch the .jsonl exists, so we switch to
-  // --resume <uuid> which attaches to the existing transcript. This is
-  // deterministic and survives Orpheus restarts even if the user quits
-  // immediately after the first message.
-  //
-  // Fork support (Plan A — validated 2025-05): when forked_from_session_id is
-  // set, the first launch emits --session-id <our-uuid> --resume <parent-uuid>
-  // --fork-session so claude creates an independent branch of the parent
-  // transcript under our UUID. Subsequent launches switch to bare --resume
-  // once the .jsonl exists (same as any other workspace).
-  if (workspaceId) {
-    const ws = getWorkspace(workspaceId)
-    if (ws?.claudeSessionId) {
-      if (sessionJsonlExists(ws.cwd, ws.claudeSessionId)) {
-        // Session already exists — normal resume
-        flagTokens.push('--resume', ws.claudeSessionId)
-      } else if (ws.forkedFromSessionId) {
-        // Plan A fork: pre-assign our UUID and branch from parent. Reuse the
-        // already-loaded workspace record's field instead of a second DB query.
-        flagTokens.push(
-          '--session-id',
-          ws.claudeSessionId,
-          '--resume',
-          ws.forkedFromSessionId,
-          '--fork-session'
-        )
-      } else {
-        // Normal first launch
-        flagTokens.push('--session-id', ws.claudeSessionId)
-      }
-    }
-  }
+  pushSessionContinuityFlags(flagTokens, workspaceId)
 
   // customCliFlags (global + project + workspace scope — see
   // docs/superpowers/specs/2026-07-15-workspace-settings-popover-design.md,
@@ -844,11 +808,54 @@ export function composeClaudeLaunch(
     ...mergeFlagScopes(globalCustomTokens, projectCustomTokens, workspaceCustomTokens)
   )
 
-  const flags = flagTokens.join(FLAG_DELIMITER)
+  return flagTokens
+}
 
-  // -------------------------------------------------------------------------
-  // 2. settings.json blob (keys with no CLI flag equivalent)
-  // -------------------------------------------------------------------------
+// Compose permission arrays: merge stored rules with quick-control toggles,
+// then assemble the settings.json `permissions` object. Extracted from
+// composeSettingsJson's body since it's the single most complex sub-step.
+function composePermissionsObj(s: ClaudeGlobalSettings): Record<string, unknown> {
+  const allowRules = [...s.permissionAllowRules]
+  const askRules = [...s.permissionAskRules]
+  const denyRules = [...s.permissionDenyRules]
+
+  // autoApproveEdits: adds "Edit" to allow list (lets claude edit files without prompting)
+  // Design note: we inject at compose time so the raw stored list stays clean
+  if (s.autoApproveEdits && !allowRules.includes('Edit')) {
+    allowRules.push('Edit')
+  }
+
+  // askDestructiveBash: adds common destructive patterns to the ask list
+  if (s.askDestructiveBash) {
+    const destructivePatterns = [
+      'Bash(rm *)',
+      'Bash(rmdir *)',
+      'Bash(git reset *)',
+      'Bash(git push --force*)',
+      'Bash(git clean *)',
+      'Bash(DROP TABLE*)',
+      'Bash(truncate *)'
+    ]
+    for (const p of destructivePatterns) {
+      if (!askRules.includes(p)) askRules.push(p)
+    }
+  }
+
+  const permissionsObj: Record<string, unknown> = {}
+  if (allowRules.length > 0) permissionsObj['allow'] = allowRules
+  if (askRules.length > 0) permissionsObj['ask'] = askRules
+  if (denyRules.length > 0) permissionsObj['deny'] = denyRules
+  if (s.permissionAdditionalDirs.length > 0) {
+    permissionsObj['additionalDirectories'] = s.permissionAdditionalDirs
+  }
+
+  return permissionsObj
+}
+
+// -------------------------------------------------------------------------
+// 2. settings.json blob (keys with no CLI flag equivalent)
+// -------------------------------------------------------------------------
+function composeSettingsJson(s: ClaudeGlobalSettings): string {
   const settingsObj: Record<string, unknown> = {}
 
   // alwaysThinkingEnabled — only set when true (default is false)
@@ -884,41 +891,7 @@ export function composeClaudeLaunch(
   }
 
   // Permission rules — settings.json keys: permissions.allow / .ask / .deny / .additionalDirectories
-  // Compose permission arrays: merge stored rules with quick-control toggles
-  const allowRules = [...s.permissionAllowRules]
-  const askRules = [...s.permissionAskRules]
-  const denyRules = [...s.permissionDenyRules]
-
-  // autoApproveEdits: adds "Edit" to allow list (lets claude edit files without prompting)
-  // Design note: we inject at compose time so the raw stored list stays clean
-  if (s.autoApproveEdits && !allowRules.includes('Edit')) {
-    allowRules.push('Edit')
-  }
-
-  // askDestructiveBash: adds common destructive patterns to the ask list
-  if (s.askDestructiveBash) {
-    const destructivePatterns = [
-      'Bash(rm *)',
-      'Bash(rmdir *)',
-      'Bash(git reset *)',
-      'Bash(git push --force*)',
-      'Bash(git clean *)',
-      'Bash(DROP TABLE*)',
-      'Bash(truncate *)'
-    ]
-    for (const p of destructivePatterns) {
-      if (!askRules.includes(p)) askRules.push(p)
-    }
-  }
-
-  const permissionsObj: Record<string, unknown> = {}
-  if (allowRules.length > 0) permissionsObj['allow'] = allowRules
-  if (askRules.length > 0) permissionsObj['ask'] = askRules
-  if (denyRules.length > 0) permissionsObj['deny'] = denyRules
-  if (s.permissionAdditionalDirs.length > 0) {
-    permissionsObj['additionalDirectories'] = s.permissionAdditionalDirs
-  }
-
+  const permissionsObj = composePermissionsObj(s)
   if (Object.keys(permissionsObj).length > 0) {
     settingsObj['permissions'] = permissionsObj
   }
@@ -929,13 +902,16 @@ export function composeClaudeLaunch(
     settingsObj['disabledMcpjsonServers'] = s.disabledMcpServers
   }
 
-  const settingsJson = Object.keys(settingsObj).length > 0 ? JSON.stringify(settingsObj) : ''
+  return Object.keys(settingsObj).length > 0 ? JSON.stringify(settingsObj) : ''
+}
 
-  // -------------------------------------------------------------------------
-  // 3. Environment variables
-  // -------------------------------------------------------------------------
-  const env: Record<string, string> = {}
-
+// Top-level UI toggles (native cursor / hide cwd / auto-memory) + the Memory
+// section env vars — first half of the original applyCoreLaunchEnv, split
+// further to stay under the complexity ceiling. Mutates `env` in place.
+function applySurfaceAndMemoryLaunchEnv(
+  env: Record<string, string>,
+  s: ClaudeGlobalSettings
+): void {
   // CLAUDE_CODE_DISABLE_AUTO_MEMORY: set when autoMemory is explicitly false
   if (!s.autoMemory) {
     env['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] = '1'
@@ -964,7 +940,14 @@ export function composeClaudeLaunch(
   if (s.compactionThreshold !== null) {
     env['CLAUDE_CODE_AUTO_COMPACT_THRESHOLD'] = String(s.compactionThreshold)
   }
+}
 
+// Developer section + Tools (v14) env vars — second half of the original
+// applyCoreLaunchEnv. Mutates `env` in place.
+function applyDeveloperAndToolsLaunchEnv(
+  env: Record<string, string>,
+  s: ClaudeGlobalSettings
+): void {
   // Developer section env vars
   if (s.debugLogging && s.logLevel !== 'info') {
     // Only set the log level env var when debug logging is active and non-default
@@ -999,7 +982,23 @@ export function composeClaudeLaunch(
   if (s.bashMaxOutputLength !== null) {
     env['BASH_MAX_OUTPUT_LENGTH'] = String(s.bashMaxOutputLength)
   }
+}
 
+// Memory + Developer + Tools (v14) env vars — the first block of
+// composeLaunchEnv. Delegates to two sub-helpers to stay under the
+// complexity ceiling. Mutates `env` in place.
+function applyCoreLaunchEnv(env: Record<string, string>, s: ClaudeGlobalSettings): void {
+  applySurfaceAndMemoryLaunchEnv(env, s)
+  applyDeveloperAndToolsLaunchEnv(env, s)
+}
+
+// Env-var controls (v23) — General / Memory & Context / Tools. First half of
+// the original applyV23LaunchEnv, split further to stay under the
+// complexity ceiling. Mutates `env` in place.
+function applyV23GeneralAndToolsLaunchEnv(
+  env: Record<string, string>,
+  s: ClaudeGlobalSettings
+): void {
   // Env-var controls (v23) — General
   if (s.disableThinking) env['CLAUDE_CODE_DISABLE_THINKING'] = '1'
   if (s.disableFastMode) env['CLAUDE_CODE_DISABLE_FAST_MODE'] = '1'
@@ -1018,7 +1017,12 @@ export function composeClaudeLaunch(
   if (s.globNoIgnore) env['CLAUDE_CODE_GLOB_NO_IGNORE'] = '1'
   if (s.globTimeoutSeconds !== null)
     env['CLAUDE_CODE_GLOB_TIMEOUT_SECONDS'] = String(s.globTimeoutSeconds)
+}
 
+// Env-var controls (v23) — Developer (Network / Privacy & background /
+// Advanced). Second half of the original applyV23LaunchEnv. Mutates `env`
+// in place.
+function applyV23DeveloperLaunchEnv(env: Record<string, string>, s: ClaudeGlobalSettings): void {
   // Env-var controls (v23) — Developer / Network
   if (s.apiTimeoutMs !== null) env['API_TIMEOUT_MS'] = String(s.apiTimeoutMs)
   if (s.maxRetries !== null) env['CLAUDE_CODE_MAX_RETRIES'] = String(s.maxRetries)
@@ -1034,7 +1038,22 @@ export function composeClaudeLaunch(
   // Env-var controls (v23) — Developer / Advanced
   if (s.anthropicBetas) env['ANTHROPIC_BETAS'] = s.anthropicBetas
   if (s.extraBodyJson) env['CLAUDE_CODE_EXTRA_BODY'] = s.extraBodyJson
+}
 
+// Env-var controls (v23) — full block. Delegates to two sub-helpers to stay
+// under the complexity ceiling. Mutates `env` in place.
+function applyV23LaunchEnv(env: Record<string, string>, s: ClaudeGlobalSettings): void {
+  applyV23GeneralAndToolsLaunchEnv(env, s)
+  applyV23DeveloperLaunchEnv(env, s)
+}
+
+// Env-var controls (v24) — Display/Rendering, General/Model capabilities,
+// Memory & Context. First half of the original applyV24LaunchEnv, split
+// further to stay under the complexity ceiling. Mutates `env` in place.
+function applyV24DisplayAndModelLaunchEnv(
+  env: Record<string, string>,
+  s: ClaudeGlobalSettings
+): void {
   // Env-var controls (v24) — Display / Rendering
   if (s.noFlicker) env['CLAUDE_CODE_NO_FLICKER'] = '1'
   if (s.disableAlternateScreen) env['CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN'] = '1'
@@ -1057,7 +1076,14 @@ export function composeClaudeLaunch(
     env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = String(s.autoCompactWindow)
   if (s.autocompactPctOverride !== null)
     env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'] = String(s.autocompactPctOverride)
+}
 
+// Env-var controls (v24) — Tools/File+Shell, Developer/Network+Privacy.
+// Second half of the original applyV24LaunchEnv. Mutates `env` in place.
+function applyV24ToolsAndDeveloperLaunchEnv(
+  env: Record<string, string>,
+  s: ClaudeGlobalSettings
+): void {
   // Env-var controls (v24) — Tools / File operations & Shell
   if (s.disableFileCheckpointing) env['CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING'] = '1'
   if (s.disableAttachments) env['CLAUDE_CODE_DISABLE_ATTACHMENTS'] = '1'
@@ -1080,7 +1106,18 @@ export function composeClaudeLaunch(
     env['CLAUDE_CODE_EXIT_AFTER_STOP_DELAY'] = String(s.exitAfterStopDelay)
   if (s.disableFeedbackCommand) env['DISABLE_FEEDBACK_COMMAND'] = '1'
   if (s.disableFeedbackSurvey) env['CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY'] = '1'
+}
 
+// Env-var controls (v24) — full block. Delegates to two sub-helpers to stay
+// under the complexity ceiling. Mutates `env` in place.
+function applyV24LaunchEnv(env: Record<string, string>, s: ClaudeGlobalSettings): void {
+  applyV24DisplayAndModelLaunchEnv(env, s)
+  applyV24ToolsAndDeveloperLaunchEnv(env, s)
+}
+
+// Env-var controls (v52) and (v66) — the newest feature toggles. Mutates
+// `env` in place.
+function applyLatestLaunchEnv(env: Record<string, string>, s: ClaudeGlobalSettings): void {
   // Env-var controls (v52) — General / Model behavior
   if (s.disableBundledSkills) env['CLAUDE_CODE_DISABLE_BUNDLED_SKILLS'] = '1'
   if (s.disableWorkflows) env['CLAUDE_CODE_DISABLE_WORKFLOWS'] = '1'
@@ -1114,18 +1151,25 @@ export function composeClaudeLaunch(
 
   // Env-var controls (v66) — General / Model behavior
   if (s.lowPowerMode) env['CLAUDE_CODE_LOW_POWER_MODE'] = '1'
+}
 
-  // Custom env vars — merged last-wins across all three scopes (global →
-  // project → workspace, lowest precedence first; workspace wins on same-key
-  // conflict), then that combined map is applied last within compose's own
-  // `env` output so user keys win over the typed emissions above. Note this
-  // is only the layering within composeClaudeLaunch's own `env` output:
-  // downstream, buildMountEnv (orpheusSurfaceAdapter.ts:118-120) spreads
-  // authEnv AFTER launch.env when assembling the final mount env, so auth
-  // keys (e.g. ANTHROPIC_API_KEY) still win over these custom values. Unlike
-  // customCliFlags, this is a plain Record spread (last-wins), not an
-  // append/override algebra — so it's fine to combine scopes with a single
-  // object spread rather than mergeFlagScopes.
+// Custom env vars — merged last-wins across all three scopes (global →
+// project → workspace, lowest precedence first; workspace wins on same-key
+// conflict), then that combined map is applied last within compose's own
+// `env` output so user keys win over the typed emissions above. Note this
+// is only the layering within composeClaudeLaunch's own `env` output:
+// downstream, buildMountEnv (orpheusSurfaceAdapter.ts:118-120) spreads
+// authEnv AFTER launch.env when assembling the final mount env, so auth
+// keys (e.g. ANTHROPIC_API_KEY) still win over these custom values. Unlike
+// customCliFlags, this is a plain Record spread (last-wins), not an
+// append/override algebra — so it's fine to combine scopes with a single
+// object spread rather than mergeFlagScopes. Mutates `env` in place.
+function applyCustomEnvVars(
+  env: Record<string, string>,
+  global: ClaudeGlobalSettings,
+  projectEnvVars: Record<string, string>,
+  workspaceEnvVars: Record<string, string>
+): void {
   for (const [k, v] of Object.entries({
     ...global.customEnvVars,
     ...projectEnvVars,
@@ -1133,6 +1177,66 @@ export function composeClaudeLaunch(
   })) {
     if (k && typeof v === 'string') env[k] = v
   }
+}
+
+// -------------------------------------------------------------------------
+// 3. Environment variables
+// -------------------------------------------------------------------------
+function composeLaunchEnv(
+  s: ClaudeGlobalSettings,
+  global: ClaudeGlobalSettings,
+  projectEnvVars: Record<string, string>,
+  workspaceEnvVars: Record<string, string>
+): Record<string, string> {
+  const env: Record<string, string> = {}
+  applyCoreLaunchEnv(env, s)
+  applyV23LaunchEnv(env, s)
+  applyV24LaunchEnv(env, s)
+  applyLatestLaunchEnv(env, s)
+  applyCustomEnvVars(env, global, projectEnvVars, workspaceEnvVars)
+  return env
+}
+
+/**
+ * Read the current ClaudeGlobalSettings (and optional per-project overrides) and
+ * produce the three buckets needed to wire them into the claude invocation at
+ * workspace launch time.
+ *
+ * Invariant: for the seeded default state (all fields at DB defaults, no project
+ * overrides), flags === '' && settingsJson === '' && env === {}
+ * which means the wrapper runs bare `claude` with no extra arguments.
+ *
+ * @param precomputedGlobal — caller-provided global settings to avoid a redundant
+ *   DB fetch when composing for many workspaces in a loop (e.g. recomputeDirty).
+ *   Pass undefined to let the function fetch fresh.
+ */
+export function composeClaudeLaunch(
+  projectId?: string,
+  workspaceId?: string,
+  precomputedGlobal?: ClaudeGlobalSettings
+): ClaudeLaunch {
+  const global = precomputedGlobal ?? getClaudeGlobalSettings()
+
+  const projectScope = mergeProjectOverrides(global, projectId)
+  const workspaceScope = mergeWorkspaceOverrides(projectScope.s, workspaceId)
+  const s = workspaceScope.s
+  const projectCustomFlags = projectScope.customFlags
+  const projectEnvVars = projectScope.envVars
+  const workspaceCustomFlags = workspaceScope.customFlags
+  const workspaceEnvVars = workspaceScope.envVars
+
+  const flagTokens = composeFlagTokens(
+    s,
+    workspaceId,
+    global,
+    projectCustomFlags,
+    workspaceCustomFlags
+  )
+  const flags = flagTokens.join(FLAG_DELIMITER)
+
+  const settingsJson = composeSettingsJson(s)
+
+  const env = composeLaunchEnv(s, global, projectEnvVars, workspaceEnvVars)
 
   return { flags, settingsJson, env }
 }

@@ -83,6 +83,128 @@ import { printResult, printKeyValue, printError, printUsageError, printLines } f
 import { resolveFocus } from '../focus.js'
 import type { WorkspaceRecord } from '../reads/db.js'
 
+// ---------------------------------------------------------------------------
+// ws new — helpers
+// ---------------------------------------------------------------------------
+
+type TaskIntentResult = { ok: true } | { ok: false; error: string }
+
+/**
+ * STRICTNESS: require --task XOR --empty/--blank (an agent must declare
+ * intent — see module doc).
+ *
+ * --task is trimmed before the emptiness check: a whitespace-only value
+ * ("   ") was explicitly passed but carries no real task text, so it is
+ * treated as a usage error rather than silently falling through to
+ * "no task declared" (which would produce a confusing generic message)
+ * or silently being accepted as a blank-but-truthy task (which would
+ * create a workspace with a whitespace-only seed prompt). The caller
+ * clearly intended to provide a task — tell them it was blank and to
+ * either provide real text or use --empty.
+ */
+function resolveTaskIntent(flags: Record<string, unknown>): TaskIntentResult {
+  const rawTask = typeof flags.task === 'string' ? flags.task : undefined
+  const trimmedTask = rawTask?.trim()
+  const hasEmpty = flags.empty === true || flags.blank === true
+
+  if (rawTask != null && trimmedTask === '') {
+    return {
+      ok: false,
+      error:
+        'ws new: --task was given but is blank (whitespace-only). ' +
+        'Provide real task text, or use --empty (or --blank) to explicitly create an empty workspace.'
+    }
+  }
+
+  const hasTask = trimmedTask != null && trimmedTask !== ''
+
+  if (!hasTask && !hasEmpty) {
+    return {
+      ok: false,
+      error:
+        'ws new requires declaring intent: pass --task "<work>" to start with a task, ' +
+        'or --empty (or --blank) to explicitly create an empty workspace.'
+    }
+  }
+  if (hasTask && hasEmpty) {
+    return { ok: false, error: 'ws new: pass either --task <text> or --empty/--blank, not both' }
+  }
+
+  return { ok: true }
+}
+
+/** Build the args object for the workspace.create socket call from flags. */
+function buildCreateArgs(
+  flags: Record<string, unknown>,
+  projectId: string,
+  projectCwd: string,
+  focus: boolean
+): Record<string, unknown> {
+  const args: Record<string, unknown> = {
+    projectId,
+    cwd: projectCwd,
+    focus
+  }
+
+  const name = typeof flags.name === 'string' ? flags.name : undefined
+  if (name != null && name !== '') {
+    args.name = name
+  }
+
+  if (flags.fork === true) {
+    args.fork = true
+  }
+
+  if (typeof flags.task === 'string' && flags.task !== '') {
+    args.task = flags.task
+    // --no-submit only makes sense alongside --task (with --empty there is no
+    // seeded text to submit or withhold) — only resolve/send it in this branch,
+    // so passing --no-submit with --empty is silently ignored (documented above).
+    if (flags['no-submit'] === true) {
+      args.submit = false
+    }
+  }
+
+  if (typeof flags.model === 'string' && flags.model !== '') {
+    args.model = flags.model
+  }
+
+  if (typeof flags['permission-mode'] === 'string' && flags['permission-mode'] !== '') {
+    args.permissionMode = flags['permission-mode']
+  }
+
+  if (typeof flags.effort === 'string' && flags.effort !== '') {
+    args.effort = flags.effort
+  }
+
+  return args
+}
+
+/** Print the pretty-mode key/value summary for a newly created workspace. */
+function printNewWorkspaceSummary(ws: WorkspaceRecord): void {
+  // Same field NAMES as the --json `workspace` object (QA fix #5) — only
+  // timestamp formatting differs (ISO string here vs epoch ms in json),
+  // matching the convention `project show` already uses.
+  printKeyValue({
+    id: ws.id,
+    name: ws.name,
+    nameIsAuto: ws.nameIsAuto,
+    projectId: ws.projectId,
+    cwd: ws.cwd,
+    status: ws.status,
+    pinnedAt: ws.pinnedAt != null ? new Date(ws.pinnedAt).toISOString() : null,
+    createdAt: new Date(ws.createdAt).toISOString(),
+    lastOpenedAt: ws.lastOpenedAt != null ? new Date(ws.lastOpenedAt).toISOString() : null,
+    archivedAt: ws.archivedAt != null ? new Date(ws.archivedAt).toISOString() : null,
+    closedAt: ws.closedAt != null ? new Date(ws.closedAt).toISOString() : null,
+    sortOrder: ws.sortOrder,
+    parentWorkspaceId: ws.parentWorkspaceId,
+    forkedFromSessionId: ws.forkedFromSessionId,
+    claudeSessionId: ws.claudeSessionId,
+    lastTitle: ws.lastTitle
+  })
+}
+
 registerCommand('ws new', {
   usage:
     'ws new (--task <text> | --empty) [--no-submit] [--fork] [--name <n>] [--model <m>] [--permission-mode <p>] [--effort <e>] [--project <p>] [--focus | --background]',
@@ -173,38 +295,9 @@ registerCommand('ws new', {
     // STRICTNESS: require --task XOR --empty/--blank (an agent must declare
     // intent — see module doc). Checked before any DB/socket work so the
     // usage error is fast and side-effect-free.
-    //
-    // --task is trimmed before the emptiness check: a whitespace-only value
-    // ("   ") was explicitly passed but carries no real task text, so it is
-    // treated as a usage error rather than silently falling through to
-    // "no task declared" (which would produce a confusing generic message)
-    // or silently being accepted as a blank-but-truthy task (which would
-    // create a workspace with a whitespace-only seed prompt). The caller
-    // clearly intended to provide a task — tell them it was blank and to
-    // either provide real text or use --empty.
-    const rawTask = typeof ctx.flags.task === 'string' ? ctx.flags.task : undefined
-    const trimmedTask = rawTask?.trim()
-    const hasEmpty = ctx.flags.empty === true || ctx.flags.blank === true
-
-    if (rawTask != null && trimmedTask === '') {
-      printUsageError(
-        'ws new: --task was given but is blank (whitespace-only). ' +
-          'Provide real task text, or use --empty (or --blank) to explicitly create an empty workspace.'
-      )
-      return
-    }
-
-    const hasTask = trimmedTask != null && trimmedTask !== ''
-
-    if (!hasTask && !hasEmpty) {
-      printUsageError(
-        'ws new requires declaring intent: pass --task "<work>" to start with a task, ' +
-          'or --empty (or --blank) to explicitly create an empty workspace.'
-      )
-      return
-    }
-    if (hasTask && hasEmpty) {
-      printUsageError('ws new: pass either --task <text> or --empty/--blank, not both')
+    const taskIntent = resolveTaskIntent(ctx.flags)
+    if (!taskIntent.ok) {
+      printUsageError(taskIntent.error)
       return
     }
 
@@ -235,42 +328,7 @@ registerCommand('ws new', {
     }
 
     // Build args for workspace.create
-    const args: Record<string, unknown> = {
-      projectId,
-      cwd: projectCwd,
-      focus
-    }
-
-    const name = typeof ctx.flags.name === 'string' ? ctx.flags.name : undefined
-    if (name != null && name !== '') {
-      args.name = name
-    }
-
-    if (ctx.flags.fork === true) {
-      args.fork = true
-    }
-
-    if (typeof ctx.flags.task === 'string' && ctx.flags.task !== '') {
-      args.task = ctx.flags.task
-      // --no-submit only makes sense alongside --task (with --empty there is no
-      // seeded text to submit or withhold) — only resolve/send it in this branch,
-      // so passing --no-submit with --empty is silently ignored (documented above).
-      if (ctx.flags['no-submit'] === true) {
-        args.submit = false
-      }
-    }
-
-    if (typeof ctx.flags.model === 'string' && ctx.flags.model !== '') {
-      args.model = ctx.flags.model
-    }
-
-    if (typeof ctx.flags['permission-mode'] === 'string' && ctx.flags['permission-mode'] !== '') {
-      args.permissionMode = ctx.flags['permission-mode']
-    }
-
-    if (typeof ctx.flags.effort === 'string' && ctx.flags.effort !== '') {
-      args.effort = ctx.flags.effort
-    }
+    const args = buildCreateArgs(ctx.flags, projectId, projectCwd, focus)
 
     // Send to the app. context is auto-injected with ORPHEUS_WORKSPACE_ID
     // (from socket-client.ts), which the server uses as the fallback parentWorkspaceId.
@@ -293,27 +351,7 @@ registerCommand('ws new', {
     const ws = data.workspace
 
     printResult(data, () => {
-      // Same field NAMES as the --json `workspace` object (QA fix #5) — only
-      // timestamp formatting differs (ISO string here vs epoch ms in json),
-      // matching the convention `project show` already uses.
-      printKeyValue({
-        id: ws.id,
-        name: ws.name,
-        nameIsAuto: ws.nameIsAuto,
-        projectId: ws.projectId,
-        cwd: ws.cwd,
-        status: ws.status,
-        pinnedAt: ws.pinnedAt != null ? new Date(ws.pinnedAt).toISOString() : null,
-        createdAt: new Date(ws.createdAt).toISOString(),
-        lastOpenedAt: ws.lastOpenedAt != null ? new Date(ws.lastOpenedAt).toISOString() : null,
-        archivedAt: ws.archivedAt != null ? new Date(ws.archivedAt).toISOString() : null,
-        closedAt: ws.closedAt != null ? new Date(ws.closedAt).toISOString() : null,
-        sortOrder: ws.sortOrder,
-        parentWorkspaceId: ws.parentWorkspaceId,
-        forkedFromSessionId: ws.forkedFromSessionId,
-        claudeSessionId: ws.claudeSessionId,
-        lastTitle: ws.lastTitle
-      })
+      printNewWorkspaceSummary(ws)
     })
 
     // Surface seed warning separately so it's visible even in pretty mode

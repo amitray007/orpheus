@@ -445,6 +445,29 @@ export function ensureManagedHooks(): void {
   fs.renameSync(tmp, settingsPath)
 }
 
+/** True if `h` is a hook-command object whose command is Orpheus-managed. */
+function isManagedHookEntry(h: unknown): boolean {
+  return (
+    typeof h === 'object' &&
+    h !== null &&
+    typeof (h as Record<string, unknown>)['command'] === 'string' &&
+    isManagedCommand((h as Record<string, unknown>)['command'] as string)
+  )
+}
+
+/** Count Orpheus-managed hook commands within a single settings.json `entry` (an
+ *  element of a hooks[event] array), i.e. entry.hooks that match isManagedHookEntry. */
+function countManagedHooksInEntry(entry: unknown): number {
+  if (typeof entry !== 'object' || entry === null) return 0
+  const hookList = (entry as Record<string, unknown>)['hooks']
+  if (!Array.isArray(hookList)) return 0
+  let count = 0
+  for (const h of hookList) {
+    if (isManagedHookEntry(h)) count++
+  }
+  return count
+}
+
 /**
  * Count the number of Orpheus-managed hook entries currently present in
  * ~/.claude/settings.json. Returns 0 if the file is absent or unreadable.
@@ -461,19 +484,7 @@ export function countManagedHooks(): number {
     for (const eventArr of Object.values(hooksObj as Record<string, unknown>)) {
       if (!Array.isArray(eventArr)) continue
       for (const entry of eventArr) {
-        if (typeof entry !== 'object' || entry === null) continue
-        const hookList = (entry as Record<string, unknown>)['hooks']
-        if (!Array.isArray(hookList)) continue
-        for (const h of hookList) {
-          if (
-            typeof h === 'object' &&
-            h !== null &&
-            typeof (h as Record<string, unknown>)['command'] === 'string' &&
-            isManagedCommand((h as Record<string, unknown>)['command'] as string)
-          ) {
-            count++
-          }
-        }
+        count += countManagedHooksInEntry(entry)
       }
     }
   } catch {

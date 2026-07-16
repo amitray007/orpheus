@@ -374,22 +374,34 @@ async function _runReconcile(): Promise<void> {
 // Core reconcile
 // ---------------------------------------------------------------------------
 
-// INVARIANT: reconcile() must stay await-free between its liveSessionMap/lastRawActed
-// reads and writes; forceReconcile guards against re-entrancy but provides no
-// protection if an await is introduced here.
-function reconcile(): Promise<void> {
-  const t0 = Date.now()
-  // 1. Read all session files
-  let files: string[] = []
+interface WorkspaceRow {
+  id: string
+  name: string
+  status: string
+  claude_session_id: string | null
+  archived_at: number | null
+}
+
+/** Step 1. Read all session filenames (*.json) from SESSIONS_DIR. Empty array on any read error. */
+function readSessionFilenames(): string[] {
   try {
     const entries = fs.readdirSync(SESSIONS_DIR)
-    files = entries.filter((f) => f.endsWith('.json'))
+    return entries.filter((f) => f.endsWith('.json'))
   } catch {
     // Directory doesn't exist or is unreadable — treat as empty
-    files = []
+    return []
   }
+}
 
-  // 2. Parse each file, tolerate torn writes
+/**
+ * Step 2. Parse each session file, tolerate torn writes, and merge with the
+ * last-good in-memory map (liveSessionMap) so a session whose file is
+ * temporarily missing/unreadable but whose process is still alive isn't
+ * dropped. Mutates knownBadSessionFiles (prune stale entries + track/clear
+ * per-file parse-error dedup) and warnedVersions (unknown-version dedup) as
+ * side effects — same as the inline code this replaces.
+ */
+function parseSessionFiles(files: string[]): Map<string, LiveSession> {
   const newMap = new Map<string, LiveSession>()
   const lastGoodMap = new Map<string, LiveSession>(liveSessionMap) // keep old for fallback
 
@@ -456,26 +468,20 @@ function reconcile(): Promise<void> {
     }
   }
 
-  liveSessionMap = newMap
+  return newMap
+}
 
-  // 3. Load owned workspaces from DB
-  let workspaceRows: Array<{
-    id: string
-    name: string
-    status: string
-    claude_session_id: string | null
-    archived_at: number | null
-  }>
-
+/** Step 3. Load owned (session-bearing) workspaces from DB. Returns null on query failure (already logged). */
+function loadOwnedWorkspaceRows(): WorkspaceRow[] | null {
   try {
     const db = getDb()
-    workspaceRows = db
+    return db
       .prepare(
         `SELECT id, name, status, claude_session_id, archived_at
          FROM workspaces
          WHERE claude_session_id IS NOT NULL`
       )
-      .all() as typeof workspaceRows
+      .all() as WorkspaceRow[]
   } catch (err) {
     console.warn('[sessionState] failed to query workspaces:', err)
     logDiagMain({
@@ -484,10 +490,148 @@ function reconcile(): Promise<void> {
       event: DIAG_EVENTS.SESSION_RECONCILE_FAILED,
       data: { err: String(err) }
     })
-    return Promise.resolve()
+    return null
+  }
+}
+
+/**
+ * Step 4a. Compute the file-derived status for a workspace and log on
+ * change (same lastSnapshot-keyed dedup as before). Returns null for the
+ * "status field absent (starting)" case, signaling the caller to skip the
+ * rest of this workspace's processing this tick (mirrors the original
+ * `continue`).
+ */
+function computeAndLogFileStatus(
+  ws: WorkspaceRow,
+  session: LiveSession | undefined,
+  hookStatus: WorkspaceStatus
+): WorkspaceStatus | null {
+  if (!session) {
+    // No session file found
+    const fileStatus: WorkspaceStatus = 'idle'
+    const key = `${fileStatus}|${hookStatus}`
+    if (lastSnapshot.get(ws.id) !== key) {
+      _logWorkspace(ws.id, ws.name, fileStatus, hookStatus, 'no session file', null)
+      lastSnapshot.set(ws.id, key)
+    }
+    return fileStatus
   }
 
-  // 4. For each owned (non-archived) workspace, compute file-derived status and log
+  const pid = session.pid
+  const alive = isAlive(pid)
+
+  if (!alive) {
+    // Process is dead
+    const fileStatus: WorkspaceStatus = 'idle'
+    const key = `${fileStatus}|${hookStatus}`
+    if (lastSnapshot.get(ws.id) !== key) {
+      _logWorkspace(ws.id, ws.name, fileStatus, hookStatus, 'pid dead/gone', session)
+      lastSnapshot.set(ws.id, key)
+    }
+    if (!deadPidReported.has(pid)) {
+      deadPidReported.add(pid)
+      logDiagMain({
+        category: 'anomaly',
+        level: 'debug',
+        event: DIAG_EVENTS.SESSION_DEAD_PID,
+        workspaceId: ws.id,
+        data: { pid }
+      })
+    }
+    return fileStatus
+  }
+
+  if (session.status === null) {
+    // Status field absent (starting) — skip this workspace, leave snapshot untouched
+    return null
+  }
+
+  const fileStatus = _mapFileStatus(session)
+  const key = `${fileStatus}|${hookStatus}`
+  if (lastSnapshot.get(ws.id) !== key) {
+    _logWorkspace(ws.id, ws.name, fileStatus, hookStatus, null, session)
+    lastSnapshot.set(ws.id, key)
+  }
+  return fileStatus
+}
+
+/** Step 4b. Compute rawStatus from the live session (session.status !== null is guaranteed by the caller). */
+function computeRawStatus(session: LiveSession | undefined): string {
+  if (!session || !isAlive(session.pid)) return 'gone'
+  return session.status as string
+}
+
+/** Step 4c. Drive step: act on file→status transitions (not just log them). */
+function driveStatusTransition(
+  ws: WorkspaceRow,
+  rawStatus: string,
+  session: LiveSession | undefined
+): void {
+  if (rawStatus === 'busy' || rawStatus === 'shell') {
+    // Drive in_progress on the first busy/shell transition; skip if already recorded busy.
+    // Normalize the sentinel to the literal 'busy' (not rawStatus) so a
+    // busy→shell→busy sequence doesn't re-fire in_progress or reset busySince.
+    if (lastRawActed.get(ws.id) !== 'busy') {
+      setStatusFromFile(ws.id, 'in_progress')
+      lastRawActed.set(ws.id, 'busy')
+      busySince.set(ws.id, Date.now())
+    }
+    return
+  }
+
+  // Only act on a real transition (avoids fighting the idle watchdog every tick)
+  if (rawStatus !== lastRawActed.get(ws.id)) {
+    let mapped: WorkspaceStatus
+    if (rawStatus === 'idle') {
+      const idleDuration = Date.now() - (session?.statusUpdatedAt ?? Date.now())
+      const threshold =
+        (getAppUiState().staleAfterMinutes ?? UI_STATE_DEFAULTS.staleAfterMinutes) * 60_000
+      mapped = idleDuration >= threshold ? 'idle' : 'awaiting_input'
+    } else if (rawStatus === 'waiting') {
+      mapped = 'attention'
+    } else {
+      // 'gone'
+      mapped = 'idle'
+    }
+    setStatusFromFile(ws.id, mapped)
+    lastRawActed.set(ws.id, rawStatus)
+  }
+}
+
+/**
+ * Step 4d. Session-ready signal: fire once per session lifecycle when the
+ * file first reports a concrete status (busy | idle | waiting | shell).
+ * This allows the loading overlay to dismiss without relying on the
+ * SessionStart hook.
+ */
+function signalSessionReady(ws: WorkspaceRow, rawStatus: string): void {
+  if (
+    rawStatus === 'busy' ||
+    rawStatus === 'idle' ||
+    rawStatus === 'waiting' ||
+    rawStatus === 'shell'
+  ) {
+    if (!readySignaled.has(ws.id)) {
+      readySignaled.add(ws.id)
+      try {
+        sessionReadyHandler?.(ws.id)
+      } catch {
+        /* ignore */
+      }
+    }
+  } else if (rawStatus === 'gone') {
+    // Clear so the next session (--resume with new pid/file) re-signals.
+    readySignaled.delete(ws.id)
+  }
+}
+
+/**
+ * Step 4. For each owned (non-archived) workspace: compute file-derived
+ * status and log, drive status transitions, and fire the ready signal.
+ * Returns the set of active (non-archived, session-bearing-checked)
+ * workspace ids seen this tick, for the pruning step.
+ */
+function reconcileWorkspaces(workspaceRows: WorkspaceRow[]): Set<string> {
   const activeWorkspaceIds = new Set<string>()
   for (const ws of workspaceRows) {
     // Skip archived workspaces
@@ -498,114 +642,22 @@ function reconcile(): Promise<void> {
     const session = liveSessionMap.get(ws.claude_session_id)
     const hookStatus = getWorkspaceActivity(ws.id)
 
-    let fileStatus: WorkspaceStatus
-
-    if (!session) {
-      // No session file found
-      fileStatus = 'idle'
-      const key = `${fileStatus}|${hookStatus}`
-      if (lastSnapshot.get(ws.id) !== key) {
-        _logWorkspace(ws.id, ws.name, fileStatus, hookStatus, 'no session file', null)
-        lastSnapshot.set(ws.id, key)
-      }
-    } else {
-      const pid = session.pid
-      const alive = isAlive(pid)
-
-      if (!alive) {
-        // Process is dead
-        fileStatus = 'idle'
-        const key = `${fileStatus}|${hookStatus}`
-        if (lastSnapshot.get(ws.id) !== key) {
-          _logWorkspace(ws.id, ws.name, fileStatus, hookStatus, 'pid dead/gone', session)
-          lastSnapshot.set(ws.id, key)
-        }
-        if (!deadPidReported.has(pid)) {
-          deadPidReported.add(pid)
-          logDiagMain({
-            category: 'anomaly',
-            level: 'debug',
-            event: DIAG_EVENTS.SESSION_DEAD_PID,
-            workspaceId: ws.id,
-            data: { pid }
-          })
-        }
-      } else if (session.status === null) {
-        // Status field absent (starting) — skip this workspace, leave snapshot untouched
-        continue
-      } else {
-        fileStatus = _mapFileStatus(session)
-        const key = `${fileStatus}|${hookStatus}`
-        if (lastSnapshot.get(ws.id) !== key) {
-          _logWorkspace(ws.id, ws.name, fileStatus, hookStatus, null, session)
-          lastSnapshot.set(ws.id, key)
-        }
-      }
+    const fileStatus = computeAndLogFileStatus(ws, session, hookStatus)
+    if (fileStatus === null) {
+      // Status field absent (starting) — skip this workspace, leave snapshot untouched
+      continue
     }
 
     // --- Drive step: act on file→status transitions (not just log them) ---
-    // Compute rawStatus from the live session
-    let rawStatus: string
-    if (!session || !isAlive(session.pid)) {
-      rawStatus = 'gone'
-    } else {
-      // session.status !== null is guaranteed here (null path hit `continue` above)
-      rawStatus = session.status as string
-    }
-
-    if (rawStatus === 'busy' || rawStatus === 'shell') {
-      // Drive in_progress on the first busy/shell transition; skip if already recorded busy.
-      // Normalize the sentinel to the literal 'busy' (not rawStatus) so a
-      // busy→shell→busy sequence doesn't re-fire in_progress or reset busySince.
-      if (lastRawActed.get(ws.id) !== 'busy') {
-        setStatusFromFile(ws.id, 'in_progress')
-        lastRawActed.set(ws.id, 'busy')
-        busySince.set(ws.id, Date.now())
-      }
-    } else {
-      // Only act on a real transition (avoids fighting the idle watchdog every tick)
-      if (rawStatus !== lastRawActed.get(ws.id)) {
-        let mapped: WorkspaceStatus
-        if (rawStatus === 'idle') {
-          const idleDuration = Date.now() - (session?.statusUpdatedAt ?? Date.now())
-          const threshold =
-            (getAppUiState().staleAfterMinutes ?? UI_STATE_DEFAULTS.staleAfterMinutes) * 60_000
-          mapped = idleDuration >= threshold ? 'idle' : 'awaiting_input'
-        } else if (rawStatus === 'waiting') {
-          mapped = 'attention'
-        } else {
-          // 'gone'
-          mapped = 'idle'
-        }
-        setStatusFromFile(ws.id, mapped)
-        lastRawActed.set(ws.id, rawStatus)
-      }
-    }
-
-    // Session-ready signal: fire once per session lifecycle when the file
-    // first reports a concrete status (busy | idle | waiting). This allows
-    // the loading overlay to dismiss without relying on the SessionStart hook.
-    if (
-      rawStatus === 'busy' ||
-      rawStatus === 'idle' ||
-      rawStatus === 'waiting' ||
-      rawStatus === 'shell'
-    ) {
-      if (!readySignaled.has(ws.id)) {
-        readySignaled.add(ws.id)
-        try {
-          sessionReadyHandler?.(ws.id)
-        } catch {
-          /* ignore */
-        }
-      }
-    } else if (rawStatus === 'gone') {
-      // Clear so the next session (--resume with new pid/file) re-signals.
-      readySignaled.delete(ws.id)
-    }
+    const rawStatus = computeRawStatus(session)
+    driveStatusTransition(ws, rawStatus, session)
+    signalSessionReady(ws, rawStatus)
   }
+  return activeWorkspaceIds
+}
 
-  // Prune entries for archived/removed workspaces to prevent memory leaks
+/** Step 5. Prune entries for archived/removed workspaces to prevent memory leaks. */
+function pruneStaleWorkspaceEntries(activeWorkspaceIds: Set<string>): void {
   for (const key of lastRawActed.keys()) {
     if (!activeWorkspaceIds.has(key)) lastRawActed.delete(key)
   }
@@ -618,20 +670,26 @@ function reconcile(): Promise<void> {
   for (const key of readySignaled) {
     if (!activeWorkspaceIds.has(key)) readySignaled.delete(key)
   }
+}
 
-  // Prune the dead-pid dedup set: once a pid's session file is gone AND the
-  // process is dead, the merge step above (line ~453) stops carrying it
-  // forward in liveSessionMap, so it will never be re-checked by the loop —
-  // without this, deadPidReported would grow unboundedly across the app's
-  // lifetime as workspaces cycle through claude sessions/pids. Keep only
-  // pids that are still tracked by a live (or last-good-fallback) session.
+/**
+ * Step 6. Prune the dead-pid dedup set: once a pid's session file is gone AND
+ * the process is dead, the merge step in parseSessionFiles stops carrying it
+ * forward in liveSessionMap, so it will never be re-checked by the loop —
+ * without this, deadPidReported would grow unboundedly across the app's
+ * lifetime as workspaces cycle through claude sessions/pids. Keep only pids
+ * that are still tracked by a live (or last-good-fallback) session.
+ */
+function pruneDeadPidReported(): void {
   const livePids = new Set<number>()
   for (const session of liveSessionMap.values()) livePids.add(session.pid)
   for (const pid of deadPidReported) {
     if (!livePids.has(pid)) deadPidReported.delete(pid)
   }
+}
 
-  // Emit perf span only when reconcile is slow (>20 ms threshold) to avoid flooding.
+/** Step 7. Emit perf span only when reconcile is slow (>20 ms threshold) to avoid flooding. */
+function emitReconcilePerfSpan(t0: number): void {
   const durationMs = Date.now() - t0
   if (durationMs > 20) {
     logDiagMain({
@@ -642,6 +700,39 @@ function reconcile(): Promise<void> {
       data: { liveCount: liveSessionMap.size }
     })
   }
+}
+
+// INVARIANT: reconcile() must stay await-free between its liveSessionMap/lastRawActed
+// reads and writes; forceReconcile guards against re-entrancy but provides no
+// protection if an await is introduced here.
+function reconcile(): Promise<void> {
+  const t0 = Date.now()
+
+  // 1. Read all session files
+  const files = readSessionFilenames()
+
+  // 2. Parse each file, tolerate torn writes
+  liveSessionMap = parseSessionFiles(files)
+
+  // 3. Load owned workspaces from DB
+  const workspaceRows = loadOwnedWorkspaceRows()
+  if (workspaceRows === null) {
+    return Promise.resolve()
+  }
+
+  // 4. For each owned (non-archived) workspace, compute file-derived status,
+  // log, drive transitions, and signal ready.
+  const activeWorkspaceIds = reconcileWorkspaces(workspaceRows)
+
+  // 5. Prune stale per-workspace dedup/tracking state
+  pruneStaleWorkspaceEntries(activeWorkspaceIds)
+
+  // 6. Prune dead-pid dedup set
+  pruneDeadPidReported()
+
+  // 7. Emit perf span if slow
+  emitReconcilePerfSpan(t0)
+
   return Promise.resolve()
 }
 

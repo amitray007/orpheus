@@ -289,22 +289,110 @@ const VALID_STATUS_POLL_INTERVALS = VALID_STATUS_POLL_INTERVALS_SEC
 // (5/10/15/30 min, 1 hr) so the UI never offers a value the validator rejects.
 const VALID_USAGE_POLL_INTERVALS = VALID_USAGE_POLL_INTERVALS_SEC
 
+// ---------------------------------------------------------------------------
+// Table-driven validators
+//
+// The bulk of validatePatch is a flat sequence of independent per-key checks
+// that fall into a few uniform shapes (enum membership, nullable-string,
+// plain boolean). Each shape is factored into a small helper applied over a
+// table of keys — but ONLY where the predicate + thrown message are
+// byte-for-byte identical across every key in that table. Keys whose check
+// has a different guard (e.g. no `!== undefined`) or message phrasing (e.g.
+// "or null" suffix) are kept as their own standalone block below.
+// ---------------------------------------------------------------------------
+
+// Enum keys that use the `!== undefined` guard and the plain
+// "<label> must be one of <list>" message (no "or null" suffix).
+function validateEnumField<K extends keyof AppUiStatePatch>(
+  patch: AppUiStatePatch,
+  key: K,
+  validValues: readonly AppUiStatePatch[K][],
+  label: string
+): void {
+  const value = patch[key]
+  if (key in patch && value !== undefined) {
+    if (!validValues.includes(value)) {
+      throw new Error(`uiState: ${label} must be one of ${validValues.join(', ')}`)
+    }
+  }
+}
+
+// Nullable-string keys: "<label> must be a string or null", no `undefined` guard.
+function validateNullableStringField<K extends keyof AppUiStatePatch>(
+  patch: AppUiStatePatch,
+  key: K,
+  label: string
+): void {
+  const value = patch[key]
+  if (key in patch) {
+    if (value !== null && typeof value !== 'string') {
+      throw new Error(`uiState: ${label} must be a string or null`)
+    }
+  }
+}
+
+// Plain-boolean keys: "<label> must be a boolean", with `!== undefined` guard.
+function validateBooleanField<K extends keyof AppUiStatePatch>(
+  patch: AppUiStatePatch,
+  key: K,
+  label: string
+): void {
+  const value = patch[key]
+  if (key in patch && value !== undefined) {
+    if (typeof value !== 'boolean') {
+      throw new Error(`uiState: ${label} must be a boolean`)
+    }
+  }
+}
+
+const NULLABLE_STRING_FIELDS: {
+  key: keyof AppUiStatePatch
+  label: string
+}[] = [
+  { key: 'lastProjectId', label: 'lastProjectId' },
+  { key: 'lastWorkspaceId', label: 'lastWorkspaceId' },
+  { key: 'projectsLastProjectId', label: 'projectsLastProjectId' },
+  { key: 'projectsLastWorkspaceId', label: 'projectsLastWorkspaceId' },
+  { key: 'githubUsername', label: 'githubUsername' }
+]
+
+// Note: muteStatusNotifications sits between the two poll-interval checks in
+// validatePatch's original order, so it's validated standalone there rather
+// than folded into this table (keeps the checks in their original sequence).
+const BOOLEAN_FIELDS: { key: keyof AppUiStatePatch; label: string }[] = [
+  { key: 'showWorkspaceFooter', label: 'showWorkspaceFooter' },
+  { key: 'filesAutoSave', label: 'filesAutoSave' },
+  { key: 'gitDiffWrapLines', label: 'gitDiffWrapLines' },
+  { key: 'tokenHoverEnabled', label: 'tokenHoverEnabled' },
+  { key: 'hunkActionsEnabled', label: 'hunkActionsEnabled' },
+  { key: 'showPanesView', label: 'showPanesView' },
+  { key: 'showWorkspacesView', label: 'showWorkspacesView' }
+]
+
+// Numeric-membership keys: "<label> must be one of <list>", requires
+// typeof === 'number' AND membership in the valid-values list.
+function validateNumericEnumField(
+  patch: AppUiStatePatch,
+  key: 'statusPollIntervalSec' | 'usagePollIntervalSec',
+  validValues: readonly number[],
+  label: string
+): void {
+  const value = patch[key]
+  if (key in patch && value !== undefined) {
+    if (typeof value !== 'number' || !validValues.includes(value)) {
+      throw new Error(`uiState: ${label} must be one of ${validValues.join(', ')}`)
+    }
+  }
+}
+
 function validatePatch(patch: AppUiStatePatch): void {
+  // lastViewKind: no `undefined` guard (differs from the enum table below).
   if ('lastViewKind' in patch) {
     if (!VALID_VIEW_KINDS.includes(patch.lastViewKind as AppViewKind)) {
       throw new Error(`uiState: lastViewKind must be one of ${VALID_VIEW_KINDS.join(', ')}`)
     }
   }
-  if ('lastProjectId' in patch) {
-    if (patch.lastProjectId !== null && typeof patch.lastProjectId !== 'string') {
-      throw new Error('uiState: lastProjectId must be a string or null')
-    }
-  }
-  if ('lastWorkspaceId' in patch) {
-    if (patch.lastWorkspaceId !== null && typeof patch.lastWorkspaceId !== 'string') {
-      throw new Error('uiState: lastWorkspaceId must be a string or null')
-    }
-  }
+  // projectsLastViewKind: no `undefined` guard (differs from the enum table below).
   if ('projectsLastViewKind' in patch) {
     if (
       !VALID_PROJECTS_LAST_VIEW_KINDS.includes(patch.projectsLastViewKind as ProjectsLastViewKind)
@@ -314,24 +402,15 @@ function validatePatch(patch: AppUiStatePatch): void {
       )
     }
   }
-  if ('projectsLastProjectId' in patch) {
-    if (patch.projectsLastProjectId !== null && typeof patch.projectsLastProjectId !== 'string') {
-      throw new Error('uiState: projectsLastProjectId must be a string or null')
-    }
+
+  for (const { key, label } of NULLABLE_STRING_FIELDS) {
+    validateNullableStringField(patch, key, label)
   }
-  if ('projectsLastWorkspaceId' in patch) {
-    if (
-      patch.projectsLastWorkspaceId !== null &&
-      typeof patch.projectsLastWorkspaceId !== 'string'
-    ) {
-      throw new Error('uiState: projectsLastWorkspaceId must be a string or null')
-    }
-  }
-  if ('theme' in patch && patch.theme !== undefined) {
-    if (!VALID_THEMES.includes(patch.theme)) {
-      throw new Error(`uiState: theme must be one of ${VALID_THEMES.join(', ')}`)
-    }
-  }
+
+  validateEnumField(patch, 'theme', VALID_THEMES, 'theme')
+
+  // accentColor: nullable enum with a distinct "or null" message suffix —
+  // kept standalone rather than forced into validateEnumField.
   if ('accentColor' in patch && patch.accentColor !== undefined) {
     if (patch.accentColor !== null && !VALID_ACCENT_COLORS.includes(patch.accentColor)) {
       throw new Error(
@@ -339,81 +418,33 @@ function validatePatch(patch: AppUiStatePatch): void {
       )
     }
   }
-  if ('uiFontScale' in patch && patch.uiFontScale !== undefined) {
-    if (!VALID_FONT_SCALES.includes(patch.uiFontScale)) {
-      throw new Error(`uiState: uiFontScale must be one of ${VALID_FONT_SCALES.join(', ')}`)
-    }
+
+  validateEnumField(patch, 'uiFontScale', VALID_FONT_SCALES, 'uiFontScale')
+  validateEnumField(patch, 'soundPack', VALID_SOUND_PACKS, 'soundPack')
+
+  validateNumericEnumField(
+    patch,
+    'statusPollIntervalSec',
+    VALID_STATUS_POLL_INTERVALS,
+    'statusPollIntervalSec'
+  )
+
+  validateBooleanField(patch, 'muteStatusNotifications', 'muteStatusNotifications')
+
+  validateNumericEnumField(
+    patch,
+    'usagePollIntervalSec',
+    VALID_USAGE_POLL_INTERVALS,
+    'usagePollIntervalSec'
+  )
+
+  for (const { key, label } of BOOLEAN_FIELDS) {
+    validateBooleanField(patch, key, label)
   }
-  if ('soundPack' in patch && patch.soundPack !== undefined) {
-    if (!VALID_SOUND_PACKS.includes(patch.soundPack)) {
-      throw new Error(`uiState: soundPack must be one of ${VALID_SOUND_PACKS.join(', ')}`)
-    }
-  }
-  if ('statusPollIntervalSec' in patch && patch.statusPollIntervalSec !== undefined) {
-    if (
-      typeof patch.statusPollIntervalSec !== 'number' ||
-      !VALID_STATUS_POLL_INTERVALS.includes(patch.statusPollIntervalSec)
-    ) {
-      throw new Error(
-        `uiState: statusPollIntervalSec must be one of ${VALID_STATUS_POLL_INTERVALS.join(', ')}`
-      )
-    }
-  }
-  if ('muteStatusNotifications' in patch && patch.muteStatusNotifications !== undefined) {
-    if (typeof patch.muteStatusNotifications !== 'boolean') {
-      throw new Error('uiState: muteStatusNotifications must be a boolean')
-    }
-  }
-  if ('usagePollIntervalSec' in patch && patch.usagePollIntervalSec !== undefined) {
-    if (
-      typeof patch.usagePollIntervalSec !== 'number' ||
-      !VALID_USAGE_POLL_INTERVALS.includes(patch.usagePollIntervalSec)
-    ) {
-      throw new Error(
-        `uiState: usagePollIntervalSec must be one of ${VALID_USAGE_POLL_INTERVALS.join(', ')}`
-      )
-    }
-  }
-  if ('showWorkspaceFooter' in patch && patch.showWorkspaceFooter !== undefined) {
-    if (typeof patch.showWorkspaceFooter !== 'boolean') {
-      throw new Error('uiState: showWorkspaceFooter must be a boolean')
-    }
-  }
-  if ('filesAutoSave' in patch && patch.filesAutoSave !== undefined) {
-    if (typeof patch.filesAutoSave !== 'boolean') {
-      throw new Error('uiState: filesAutoSave must be a boolean')
-    }
-  }
-  if ('gitDiffWrapLines' in patch && patch.gitDiffWrapLines !== undefined) {
-    if (typeof patch.gitDiffWrapLines !== 'boolean') {
-      throw new Error('uiState: gitDiffWrapLines must be a boolean')
-    }
-  }
-  if ('tokenHoverEnabled' in patch && patch.tokenHoverEnabled !== undefined) {
-    if (typeof patch.tokenHoverEnabled !== 'boolean') {
-      throw new Error('uiState: tokenHoverEnabled must be a boolean')
-    }
-  }
-  if ('hunkActionsEnabled' in patch && patch.hunkActionsEnabled !== undefined) {
-    if (typeof patch.hunkActionsEnabled !== 'boolean') {
-      throw new Error('uiState: hunkActionsEnabled must be a boolean')
-    }
-  }
-  if ('showPanesView' in patch && patch.showPanesView !== undefined) {
-    if (typeof patch.showPanesView !== 'boolean') {
-      throw new Error('uiState: showPanesView must be a boolean')
-    }
-  }
-  if ('showWorkspacesView' in patch && patch.showWorkspacesView !== undefined) {
-    if (typeof patch.showWorkspacesView !== 'boolean') {
-      throw new Error('uiState: showWorkspacesView must be a boolean')
-    }
-  }
-  if ('defaultSurface' in patch && patch.defaultSurface !== undefined) {
-    if (!VALID_DEFAULT_SURFACES.includes(patch.defaultSurface)) {
-      throw new Error(`uiState: defaultSurface must be one of ${VALID_DEFAULT_SURFACES.join(', ')}`)
-    }
-  }
+
+  validateEnumField(patch, 'defaultSurface', VALID_DEFAULT_SURFACES, 'defaultSurface')
+
+  // workbenchTreeWidth: numeric range check, one-of-a-kind shape.
   if ('workbenchTreeWidth' in patch && patch.workbenchTreeWidth !== undefined) {
     if (
       typeof patch.workbenchTreeWidth !== 'number' ||
@@ -425,11 +456,7 @@ function validatePatch(patch: AppUiStatePatch): void {
       )
     }
   }
-  if ('githubUsername' in patch && patch.githubUsername !== undefined) {
-    if (patch.githubUsername !== null && typeof patch.githubUsername !== 'string') {
-      throw new Error('uiState: githubUsername must be a string or null')
-    }
-  }
+
   validateFilesViewPatch(patch)
 }
 

@@ -25,6 +25,60 @@ export type GitStatus = {
   deletedFiles: number
 }
 
+/** Parse `git rev-parse --abbrev-ref HEAD` output into a branch name, or null
+ *  for detached HEAD (which reports the literal string "HEAD") or an empty
+ *  result. `result` is null when the rev-parse call itself failed/was skipped. */
+function parseBranchResult(result: { stdout: string } | null): string | null {
+  if (!result) return null
+  const out = result.stdout.trim()
+  return out === 'HEAD' ? null : out || null
+}
+
+/** Parse `git diff --shortstat HEAD` output (e.g. " 2 files changed, 113
+ *  insertions(+), 0 deletions(-)") into insertion/deletion counts. Either
+ *  count may be absent from the output (pure additions / pure deletions). */
+function parseDiffShortstat(result: { stdout: string } | null): {
+  insertions: number
+  deletions: number
+} {
+  let insertions = 0
+  let deletions = 0
+  if (result) {
+    const out = result.stdout
+    const insMatch = out.match(/(\d+)\s+insertion/)
+    const delMatch = out.match(/(\d+)\s+deletion/)
+    if (insMatch) insertions = parseInt(insMatch[1], 10)
+    if (delMatch) deletions = parseInt(delMatch[1], 10)
+  }
+  return { insertions, deletions }
+}
+
+/** Parse `git status --porcelain` output into new/modified/deleted file
+ *  counts, one line per changed path (`XY <path>`). */
+function parsePorcelainCounts(result: { stdout: string } | null): {
+  newFiles: number
+  modifiedFiles: number
+  deletedFiles: number
+} {
+  let newFiles = 0
+  let modifiedFiles = 0
+  let deletedFiles = 0
+  if (result) {
+    for (const line of result.stdout.split('\n')) {
+      if (line.length < 2) continue
+      const xy = line.slice(0, 2)
+      if (xy === '??' || xy[0] === 'A' || xy[1] === 'A') {
+        newFiles++
+      } else if (xy.includes('D')) {
+        deletedFiles++
+      } else if (xy.includes('M')) {
+        modifiedFiles++
+      }
+    }
+  }
+  return { newFiles, modifiedFiles, deletedFiles }
+}
+
 /**
  * Read working-tree git status for the given cwd.
  *
@@ -57,40 +111,9 @@ export async function getGitStatus(cwd: string): Promise<GitStatus | null> {
     execFile('git', ['-C', cwd, 'status', '--porcelain'], { timeout: 2000 }).catch(() => null)
   ])
 
-  let branch: string | null = null
-  if (branchResult) {
-    const out = branchResult.stdout.trim()
-    // Detached HEAD reports literal "HEAD"
-    branch = out === 'HEAD' ? null : out || null
-  }
-
-  let insertions = 0
-  let deletions = 0
-  if (diffResult) {
-    // Output looks like: " 2 files changed, 113 insertions(+), 0 deletions(-)"
-    const out = diffResult.stdout
-    const insMatch = out.match(/(\d+)\s+insertion/)
-    const delMatch = out.match(/(\d+)\s+deletion/)
-    if (insMatch) insertions = parseInt(insMatch[1], 10)
-    if (delMatch) deletions = parseInt(delMatch[1], 10)
-  }
-
-  let newFiles = 0
-  let modifiedFiles = 0
-  let deletedFiles = 0
-  if (porcelainResult) {
-    for (const line of porcelainResult.stdout.split('\n')) {
-      if (line.length < 2) continue
-      const xy = line.slice(0, 2)
-      if (xy === '??' || xy[0] === 'A' || xy[1] === 'A') {
-        newFiles++
-      } else if (xy.includes('D')) {
-        deletedFiles++
-      } else if (xy.includes('M')) {
-        modifiedFiles++
-      }
-    }
-  }
+  const branch = parseBranchResult(branchResult)
+  const { insertions, deletions } = parseDiffShortstat(diffResult)
+  const { newFiles, modifiedFiles, deletedFiles } = parsePorcelainCounts(porcelainResult)
 
   const hasChanges =
     insertions > 0 || deletions > 0 || newFiles > 0 || modifiedFiles > 0 || deletedFiles > 0
@@ -289,6 +312,28 @@ export function listCommits(
   if (!cwd) return []
   const limit = opts?.limit ?? 25
   const offset = opts?.offset ?? 0
+  const args = buildListCommitsArgs(cwd, limit, offset, opts)
+  try {
+    const out = childProcess.execFileSync('git', args, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+      encoding: 'utf-8'
+    })
+    return parseCommitLogOutput(out)
+  } catch {
+    return []
+  }
+}
+
+/** Build the `git log` argv for {@link listCommits}: base args, optional
+ *  branch/date-range/grep filters, then the `--shortstat`/format tail that
+ *  drives {@link parseCommitLogOutput}. */
+function buildListCommitsArgs(
+  cwd: string,
+  limit: number,
+  offset: number,
+  opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
+): string[] {
   const args = ['-C', cwd, 'log']
   if (opts?.branch) args.push(opts.branch)
   if (opts?.sinceMs !== undefined) {
@@ -304,56 +349,69 @@ export function listCommits(
   // SENTINEL prefixes every commit's metadata line so the parser can
   // distinguish it from --shortstat lines that follow ("3 files changed, ...").
   // Without it, multi-line shortstat output would shred line-based splitting.
-  const SENTINEL = '__ORPH_COMMIT__'
   args.push(
     '--shortstat',
     `--max-count=${limit}`,
     `--skip=${offset}`,
-    `--format=${SENTINEL}%H%x09%h%x09%s%x09%an%x09%ae%x09%ct`
+    `--format=${COMMIT_LOG_SENTINEL}%H%x09%h%x09%s%x09%an%x09%ae%x09%ct`
   )
-  try {
-    const out = childProcess.execFileSync('git', args, {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 3000,
-      encoding: 'utf-8'
-    })
-    const commits: GitCommit[] = []
-    let current: GitCommit | null = null
-    // shortstat: " 3 files changed, 124 insertions(+), 38 deletions(-)"
-    // insertions or deletions may be absent (pure additions / pure deletions).
-    const statRe =
-      /(\d+)\s+files?\s+changed(?:,\s*(\d+)\s+insertions?\(\+\))?(?:,\s*(\d+)\s+deletions?\(-\))?/
-    for (const raw of out.split('\n')) {
-      if (raw.startsWith(SENTINEL)) {
-        if (current) commits.push(current)
-        const parts = raw.slice(SENTINEL.length).split('\t')
-        const ts = parseInt(parts[5], 10)
-        current = {
-          fullSha: parts[0] ?? '',
-          sha: parts[1] ?? '',
-          subject: parts[2] ?? '',
-          author: parts[3] ?? '',
-          authorEmail: parts[4] ?? '',
-          timestamp: isNaN(ts) ? 0 : ts * 1000,
-          filesChanged: 0,
-          insertions: 0,
-          deletions: 0
-        }
-        continue
-      }
-      if (!current) continue
-      const m = statRe.exec(raw)
-      if (m) {
-        current.filesChanged = parseInt(m[1] ?? '0', 10) || 0
-        current.insertions = m[2] ? parseInt(m[2], 10) || 0 : 0
-        current.deletions = m[3] ? parseInt(m[3], 10) || 0 : 0
-      }
-    }
-    if (current) commits.push(current)
-    return commits
-  } catch {
-    return []
+  return args
+}
+
+// Shared between buildListCommitsArgs (emitted via --format) and
+// parseCommitLogOutput (matched against each output line) — must stay in sync.
+const COMMIT_LOG_SENTINEL = '__ORPH_COMMIT__'
+
+// shortstat: " 3 files changed, 124 insertions(+), 38 deletions(-)"
+// insertions or deletions may be absent (pure additions / pure deletions).
+const SHORTSTAT_RE =
+  /(\d+)\s+files?\s+changed(?:,\s*(\d+)\s+insertions?\(\+\))?(?:,\s*(\d+)\s+deletions?\(-\))?/
+
+/** Parse a SENTINEL-prefixed metadata line (`%H\t%h\t%s\t%an\t%ae\t%ct`) into
+ *  a fresh {@link GitCommit} with zeroed stat fields — the stats are filled
+ *  in separately once the following --shortstat line (if any) is parsed. */
+function parseCommitSentinelLine(raw: string): GitCommit {
+  const parts = raw.slice(COMMIT_LOG_SENTINEL.length).split('\t')
+  const ts = parseInt(parts[5], 10)
+  return {
+    fullSha: parts[0] ?? '',
+    sha: parts[1] ?? '',
+    subject: parts[2] ?? '',
+    author: parts[3] ?? '',
+    authorEmail: parts[4] ?? '',
+    timestamp: isNaN(ts) ? 0 : ts * 1000,
+    filesChanged: 0,
+    insertions: 0,
+    deletions: 0
   }
+}
+
+/** Apply a matched --shortstat line's counts onto the in-progress commit. */
+function applyShortstatMatch(current: GitCommit, raw: string): void {
+  const m = SHORTSTAT_RE.exec(raw)
+  if (!m) return
+  current.filesChanged = parseInt(m[1] ?? '0', 10) || 0
+  current.insertions = m[2] ? parseInt(m[2], 10) || 0 : 0
+  current.deletions = m[3] ? parseInt(m[3], 10) || 0 : 0
+}
+
+/** Parse the full `git log --shortstat --format=SENTINEL...` stdout into
+ *  commit records — one SENTINEL-prefixed metadata line per commit, optionally
+ *  followed by a --shortstat summary line for that same commit. */
+function parseCommitLogOutput(out: string): GitCommit[] {
+  const commits: GitCommit[] = []
+  let current: GitCommit | null = null
+  for (const raw of out.split('\n')) {
+    if (raw.startsWith(COMMIT_LOG_SENTINEL)) {
+      if (current) commits.push(current)
+      current = parseCommitSentinelLine(raw)
+      continue
+    }
+    if (!current) continue
+    applyShortstatMatch(current, raw)
+  }
+  if (current) commits.push(current)
+  return commits
 }
 
 // ---------------------------------------------------------------------------

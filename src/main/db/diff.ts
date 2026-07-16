@@ -180,6 +180,136 @@ function sameStringSet(a: string[], b: string[]): boolean {
   return sortedA.every((v, i) => v === sortedB[i])
 }
 
+// Columns present in `desired` but missing live → addColumn ops, in desired
+// column order (matches the original single-pass loop exactly).
+function computeAddColumnOps(
+  name: string,
+  desiredColumnNames: string[],
+  liveColumnsByName: Map<string, LiveTable['columns'][number]>
+): PlanOp[] {
+  const ops: PlanOp[] = []
+  for (const colName of desiredColumnNames) {
+    if (!liveColumnsByName.has(colName)) {
+      ops.push({ kind: 'addColumn', table: name, column: colName })
+    }
+  }
+  return ops
+}
+
+// Live columns absent from `desired` → dropColumn ops, but ONLY when the
+// column is explicitly listed in dropColumns; a stray live column not in
+// dropColumns intentionally produces no op at all.
+function computeDropColumnOps(
+  name: string,
+  desiredColumnNames: string[],
+  liveColumns: LiveTable['columns'],
+  dropColumns: Set<string>
+): PlanOp[] {
+  const ops: PlanOp[] = []
+  for (const liveCol of liveColumns) {
+    if (!desiredColumnNames.includes(liveCol.name)) {
+      if (dropColumns.has(liveCol.name)) {
+        ops.push({ kind: 'dropColumn', table: name, column: liveCol.name })
+      }
+      // else: stray live column not in dropColumns → no op at all
+    }
+  }
+  return ops
+}
+
+// FOREIGN KEY set comparison → a rebuild reason string, or null if they match.
+function diffForeignKeys(name: string, desired: TableDef, live: LiveTable): string | null {
+  const desiredForeignKeys = renderDesiredForeignKeys(desired)
+  const liveForeignKeys = extractLiveForeignKeys(live.createSql)
+  if (!sameStringSet(desiredForeignKeys, liveForeignKeys)) {
+    return `${name} FOREIGN KEY definitions differ`
+  }
+  return null
+}
+
+// Compare a single resolved desired column against its live counterpart and
+// return the first-differing reason, in the exact original check order
+// (notNull → type → pk → check → default), or null if all match.
+function diffColumnDefinition(
+  colName: string,
+  resolved: ResolvedColumn,
+  liveCol: LiveTable['columns'][number],
+  createSql: string
+): string | null {
+  if (resolved.notNull !== liveCol.notNull) {
+    return `${colName} NOT NULL differs`
+  }
+  if (normalizeTypeAffinity(resolved.type) !== normalizeTypeAffinity(liveCol.type)) {
+    return `${colName} type differs`
+  }
+  if (resolved.pk !== liveCol.pk) {
+    return `${colName} PRIMARY KEY differs`
+  }
+
+  const liveCheck = extractLiveColumnCheck(createSql, colName)
+  const desiredCheck = resolved.check
+  if ((desiredCheck ?? null) !== (liveCheck ?? null)) {
+    return `${colName} CHECK differs`
+  }
+
+  const liveDefault = normalizeDefault(liveCol.dflt)
+  if (resolved.default !== liveDefault) {
+    return `${colName} DEFAULT differs`
+  }
+
+  return null
+}
+
+// Walk desired columns in order, stopping at the first column-level
+// difference found (matches the original loop's `break` on first reason).
+function findColumnRebuildReason(
+  desiredColumnNames: string[],
+  desired: TableDef,
+  liveColumnsByName: Map<string, LiveTable['columns'][number]>,
+  createSql: string
+): string | null {
+  for (const colName of desiredColumnNames) {
+    const liveCol = liveColumnsByName.get(colName)
+    if (!liveCol) continue // handled by addColumn above
+
+    const resolved = resolveColumnDef(desired.columns[colName])
+    const reason = diffColumnDefinition(colName, resolved, liveCol, createSql)
+    if (reason !== null) return reason
+  }
+  return null
+}
+
+// Index adds: desired indexes missing from live, in desired order.
+function computeAddIndexOps(
+  name: string,
+  desiredIndexNames: string[],
+  liveIndexesByName: Map<string, LiveTable['indexes'][number]>
+): PlanOp[] {
+  const ops: PlanOp[] = []
+  for (const indexName of desiredIndexNames) {
+    if (!liveIndexesByName.has(indexName)) {
+      ops.push({ kind: 'addIndex', table: name, index: indexName })
+    }
+  }
+  return ops
+}
+
+// Index drops: live non-auto indexes absent from desired, in live order.
+function computeDropIndexOps(
+  name: string,
+  desiredIndexNames: string[],
+  liveIndexes: LiveTable['indexes']
+): PlanOp[] {
+  const ops: PlanOp[] = []
+  for (const liveIndex of liveIndexes) {
+    if (liveIndex.auto) continue
+    if (!desiredIndexNames.includes(liveIndex.name)) {
+      ops.push({ kind: 'dropIndex', table: name, index: liveIndex.name })
+    }
+  }
+  return ops
+}
+
 function diffTable(name: string, desired: TableDef, live: LiveTable | null): PlanOp[] {
   if (live === null) {
     return [{ kind: 'createTable', table: name }]
@@ -189,63 +319,18 @@ function diffTable(name: string, desired: TableDef, live: LiveTable | null): Pla
   const liveColumnsByName = new Map(live.columns.map((c) => [c.name, c]))
   const dropColumns = new Set(desired.dropColumns ?? [])
 
-  const addColumnOps: PlanOp[] = []
-  const dropColumnOps: PlanOp[] = []
-  let rebuildReason: string | null = null
+  const addColumnOps = computeAddColumnOps(name, desiredColumnNames, liveColumnsByName)
+  const dropColumnOps = computeDropColumnOps(name, desiredColumnNames, live.columns, dropColumns)
 
-  for (const colName of desiredColumnNames) {
-    if (!liveColumnsByName.has(colName)) {
-      addColumnOps.push({ kind: 'addColumn', table: name, column: colName })
-    }
-  }
+  let rebuildReason: string | null = diffForeignKeys(name, desired, live)
 
-  for (const liveCol of live.columns) {
-    if (!desiredColumnNames.includes(liveCol.name)) {
-      if (dropColumns.has(liveCol.name)) {
-        dropColumnOps.push({ kind: 'dropColumn', table: name, column: liveCol.name })
-      }
-      // else: stray live column not in dropColumns → no op at all
-    }
-  }
-
-  const desiredForeignKeys = renderDesiredForeignKeys(desired)
-  const liveForeignKeys = extractLiveForeignKeys(live.createSql)
-  if (rebuildReason === null && !sameStringSet(desiredForeignKeys, liveForeignKeys)) {
-    rebuildReason = `${name} FOREIGN KEY definitions differ`
-  }
-
-  for (const colName of desiredColumnNames) {
-    if (rebuildReason !== null) break
-    const liveCol = liveColumnsByName.get(colName)
-    if (!liveCol) continue // handled by addColumn above
-
-    const resolved = resolveColumnDef(desired.columns[colName])
-
-    if (resolved.notNull !== liveCol.notNull) {
-      rebuildReason = `${colName} NOT NULL differs`
-      continue
-    }
-    if (normalizeTypeAffinity(resolved.type) !== normalizeTypeAffinity(liveCol.type)) {
-      rebuildReason = `${colName} type differs`
-      continue
-    }
-    if (resolved.pk !== liveCol.pk) {
-      rebuildReason = `${colName} PRIMARY KEY differs`
-      continue
-    }
-
-    const liveCheck = extractLiveColumnCheck(live.createSql, colName)
-    const desiredCheck = resolved.check
-    if ((desiredCheck ?? null) !== (liveCheck ?? null)) {
-      rebuildReason = `${colName} CHECK differs`
-      continue
-    }
-
-    const liveDefault = normalizeDefault(liveCol.dflt)
-    if (resolved.default !== liveDefault) {
-      rebuildReason = `${colName} DEFAULT differs`
-      continue
-    }
+  if (rebuildReason === null) {
+    rebuildReason = findColumnRebuildReason(
+      desiredColumnNames,
+      desired,
+      liveColumnsByName,
+      live.createSql
+    )
   }
 
   const ops: PlanOp[] = []
@@ -258,18 +343,8 @@ function diffTable(name: string, desired: TableDef, live: LiveTable | null): Pla
   const desiredIndexNames = Object.keys(desired.indexes ?? {})
   const liveIndexesByName = new Map(live.indexes.map((idx) => [idx.name, idx]))
 
-  for (const indexName of desiredIndexNames) {
-    if (!liveIndexesByName.has(indexName)) {
-      ops.push({ kind: 'addIndex', table: name, index: indexName })
-    }
-  }
-
-  for (const liveIndex of live.indexes) {
-    if (liveIndex.auto) continue
-    if (!desiredIndexNames.includes(liveIndex.name)) {
-      ops.push({ kind: 'dropIndex', table: name, index: liveIndex.name })
-    }
-  }
+  ops.push(...computeAddIndexOps(name, desiredIndexNames, liveIndexesByName))
+  ops.push(...computeDropIndexOps(name, desiredIndexNames, live.indexes))
 
   return ops
 }

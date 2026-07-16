@@ -203,6 +203,103 @@ function aggregateReason(reasons: WaitReason[]): WaitReason {
 }
 
 // ---------------------------------------------------------------------------
+// Handler helpers
+// ---------------------------------------------------------------------------
+
+type TimeoutResolution = { ok: true; timeoutMs: number } | { ok: false; error: string }
+
+/** Parse --timeout (default: 10 minutes). */
+function resolveTimeoutMs(flags: Record<string, unknown>): TimeoutResolution {
+  const DEFAULT_TIMEOUT_MS = 10 * 60_000
+  if (typeof flags.timeout !== 'string' || flags.timeout === '') {
+    return { ok: true, timeoutMs: DEFAULT_TIMEOUT_MS }
+  }
+  const parsed = parseDurationMs(flags.timeout)
+  if (parsed == null) {
+    return {
+      ok: false,
+      error:
+        `invalid --timeout value: "${flags.timeout}". ` +
+        'Use a duration like 10m, 30s, 1h, or a plain number in milliseconds.'
+    }
+  }
+  return { ok: true, timeoutMs: parsed }
+}
+
+type UntilResolution = { ok: true; until: UntilMode } | { ok: false; error: string }
+
+/** Parse --until (default: 'done' — preserves the historical/default behavior exactly). */
+function resolveUntilMode(flags: Record<string, unknown>): UntilResolution {
+  if (typeof flags.until !== 'string' || flags.until === '') {
+    return { ok: true, until: 'done' }
+  }
+  if (!isValidUntilMode(flags.until)) {
+    return {
+      ok: false,
+      error: `invalid --until value: "${flags.until}". Use one of: ${VALID_UNTIL_MODES.join(', ')}.`
+    }
+  }
+  return { ok: true, until: flags.until }
+}
+
+/** Build the onEvent callback that records per-id WaitReasons as frames arrive. */
+function makeOnEvent(
+  workspaceIds: string[],
+  results: Map<string, WaitReason>
+): (evt: unknown) => void {
+  return (evt: unknown): void => {
+    if (evt == null || typeof evt !== 'object' || !('id' in evt) || !('reason' in evt)) {
+      return
+    }
+    const frame = evt as { id: unknown; reason: unknown; status?: unknown }
+    const id = typeof frame.id === 'string' ? frame.id : null
+    const reason = typeof frame.reason === 'string' ? frame.reason : null
+    if (id == null || reason == null) return
+    if (!workspaceIds.includes(id)) return
+    const validReason: WaitReason = isValidReason(reason) ? reason : 'died'
+    results.set(id, validReason)
+  }
+}
+
+/**
+ * Handle the AppNotRunningError path: app is not running, so the session
+ * cannot be live and every id is reported as 'died' with exit code 13.
+ */
+function printAppNotRunningResult(workspaceIds: string[], jsonMode: boolean): void {
+  if (jsonMode) {
+    const resultsList = workspaceIds.map((id) => ({ id, reason: 'died' }))
+    printResult({ results: resultsList, aggregate: 'died' }, () => {})
+  } else {
+    printLines('error: Orpheus app is not running — session cannot be active (treating as died)')
+    for (const id of workspaceIds) {
+      printLines(`  ${id}  died`)
+    }
+  }
+  process.exitCode = 13
+}
+
+/** Print the final per-id + aggregate result and set the process exit code. */
+function printWaitResult(workspaceIds: string[], results: Map<string, WaitReason>): void {
+  const allReasons = workspaceIds.map((id) => results.get(id)!)
+  const aggregate = aggregateReason(allReasons)
+  const exitCode = REASON_TO_EXIT_CODE[aggregate]
+
+  const resultsList = workspaceIds.map((id) => ({ id, reason: results.get(id)! }))
+
+  printResult({ results: resultsList, aggregate }, () => {
+    // Pretty mode: print per-id outcome then summary
+    for (const { id, reason } of resultsList) {
+      printLines(`  ${id}  ${reason}`)
+    }
+    if (workspaceIds.length > 1) {
+      printLines(`aggregate: ${aggregate}`)
+    }
+  })
+
+  process.exitCode = exitCode
+}
+
+// ---------------------------------------------------------------------------
 // Command registration
 // ---------------------------------------------------------------------------
 
@@ -253,35 +350,21 @@ registerCommand('ws wait', {
     }
 
     // Parse --timeout (default: 10 minutes)
-    const DEFAULT_TIMEOUT_MS = 10 * 60_000
-    let timeoutMs = DEFAULT_TIMEOUT_MS
-    if (typeof ctx.flags.timeout === 'string' && ctx.flags.timeout !== '') {
-      const parsed = parseDurationMs(ctx.flags.timeout)
-      if (parsed == null) {
-        printError(
-          `invalid --timeout value: "${ctx.flags.timeout}". ` +
-            'Use a duration like 10m, 30s, 1h, or a plain number in milliseconds.',
-          { exitCode: 2 }
-        )
-        return
-      }
-      timeoutMs = parsed
+    const timeoutResolution = resolveTimeoutMs(ctx.flags)
+    if (!timeoutResolution.ok) {
+      printError(timeoutResolution.error, { exitCode: 2 })
+      return
     }
+    const timeoutMs = timeoutResolution.timeoutMs
 
     // Parse --until (default: 'done' — preserves the historical/default behavior
     // exactly: resolve as soon as the workspace stops running for any reason).
-    let until: UntilMode = 'done'
-    if (typeof ctx.flags.until === 'string' && ctx.flags.until !== '') {
-      if (!isValidUntilMode(ctx.flags.until)) {
-        printError(
-          `invalid --until value: "${ctx.flags.until}". ` +
-            `Use one of: ${VALID_UNTIL_MODES.join(', ')}.`,
-          { exitCode: 2 }
-        )
-        return
-      }
-      until = ctx.flags.until
+    const untilResolution = resolveUntilMode(ctx.flags)
+    if (!untilResolution.ok) {
+      printError(untilResolution.error, { exitCode: 2 })
+      return
     }
+    const until = untilResolution.until
 
     // Collected per-id results (resolved as frames arrive)
     const results = new Map<string, WaitReason>()
@@ -292,18 +375,7 @@ registerCommand('ws wait', {
     let clientTimeoutHandle: ReturnType<typeof setTimeout> | null = null
     let clientTimedOut = false
 
-    const onEvent = (evt: unknown): void => {
-      if (evt == null || typeof evt !== 'object' || !('id' in evt) || !('reason' in evt)) {
-        return
-      }
-      const frame = evt as { id: unknown; reason: unknown; status?: unknown }
-      const id = typeof frame.id === 'string' ? frame.id : null
-      const reason = typeof frame.reason === 'string' ? frame.reason : null
-      if (id == null || reason == null) return
-      if (!workspaceIds.includes(id)) return
-      const validReason: WaitReason = isValidReason(reason) ? reason : 'died'
-      results.set(id, validReason)
-    }
+    const onEvent = makeOnEvent(workspaceIds, results)
 
     let subscription: { close: () => void; done: Promise<void> } | null = null
 
@@ -318,18 +390,7 @@ registerCommand('ws wait', {
     } catch (err: unknown) {
       if (err instanceof AppNotRunningError) {
         // App is not running; session cannot be live → treat all as died
-        if (ctx.jsonMode) {
-          const resultsList = workspaceIds.map((id) => ({ id, reason: 'died' }))
-          printResult({ results: resultsList, aggregate: 'died' }, () => {})
-        } else {
-          printLines(
-            'error: Orpheus app is not running — session cannot be active (treating as died)'
-          )
-          for (const id of workspaceIds) {
-            printLines(`  ${id}  died`)
-          }
-        }
-        process.exitCode = 13
+        printAppNotRunningResult(workspaceIds, ctx.jsonMode)
         return
       }
       printError(err)
@@ -362,24 +423,7 @@ registerCommand('ws wait', {
       // ids that already have a result are left unchanged regardless of clientTimedOut.
     }
 
-    // Compute aggregate reason and exit code
-    const allReasons = workspaceIds.map((id) => results.get(id)!)
-    const aggregate = aggregateReason(allReasons)
-    const exitCode = REASON_TO_EXIT_CODE[aggregate]
-
-    // Output
-    const resultsList = workspaceIds.map((id) => ({ id, reason: results.get(id)! }))
-
-    printResult({ results: resultsList, aggregate }, () => {
-      // Pretty mode: print per-id outcome then summary
-      for (const { id, reason } of resultsList) {
-        printLines(`  ${id}  ${reason}`)
-      }
-      if (workspaceIds.length > 1) {
-        printLines(`aggregate: ${aggregate}`)
-      }
-    })
-
-    process.exitCode = exitCode
+    // Compute aggregate reason, print results, and set exit code
+    printWaitResult(workspaceIds, results)
   }
 })

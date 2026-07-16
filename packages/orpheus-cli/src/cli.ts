@@ -103,7 +103,12 @@ import {
   printKeyValue
 } from './output.js'
 import { registerCommand, getCommand, hasCommand, getRegistry, flagType } from './registry.js'
-import type { ParsedFlags, CommandContext, FlagDeclarations } from './registry.js'
+import type {
+  ParsedFlags,
+  CommandContext,
+  FlagDeclarations,
+  CommandDescriptor
+} from './registry.js'
 // commandHelp is the rich single-command help renderer, extracted to its own
 // module so commands/help.ts can use it without importing cli.ts (which
 // itself imports commands/* for registration — that was a circular import).
@@ -226,6 +231,148 @@ function parseBooleanFlagValue(v: string): boolean | null {
 }
 
 /**
+ * Stash an unknown flag token into flags._unknown, initializing the array on
+ * first use. Shared by the long-flag and short-flag "unknown" branches, which
+ * are identical.
+ */
+function pushUnknownFlag(token: string, flags: ParsedFlags): void {
+  if (!Array.isArray(flags._unknown)) flags._unknown = []
+  flags._unknown.push(token)
+}
+
+/**
+ * Handle `--key=value` for a flag already split into `k`/`v`. Boolean flags
+ * accept true/false (case-insensitive) and reject anything else (#6, via
+ * parseBooleanFlagValue) into `invalidBooleanValue`; string flags take the
+ * value verbatim. Mutates `flags` and `invalidBooleanValue` in place.
+ */
+function applyEqualsFlag(
+  k: string,
+  v: string,
+  kind: 'boolean' | 'string' | undefined,
+  flags: ParsedFlags,
+  invalidBooleanValue: string[]
+): void {
+  if (kind === 'boolean') {
+    // Boolean flag in =value form: accept true/false, reject anything else (#6).
+    const parsed = parseBooleanFlagValue(v)
+    if (parsed == null) {
+      invalidBooleanValue.push(k)
+    } else {
+      flags[k] = parsed
+    }
+  } else {
+    flags[k] = v
+  }
+}
+
+/**
+ * Handle `--key value` / `-x value` for a string flag `name` at position `i`
+ * in `argv`. The value must not be missing, another flag, or (for --project)
+ * a command token (#11) — isMissingValueFor covers both long and short flag
+ * forms identically. Mutates `flags`/`missingValue` in place and returns the
+ * number of tokens consumed (1 or 2) so the caller can advance `i`.
+ */
+function consumeValueFlag(
+  name: string,
+  argv: string[],
+  i: number,
+  flags: ParsedFlags,
+  missingValue: string[]
+): number {
+  const next = argv[i + 1]
+  if (!isMissingValueFor(name, next)) {
+    flags[name] = next!
+    return 2
+  }
+  missingValue.push(name)
+  return 1
+}
+
+/**
+ * Parse a `--...` long-flag token (already known to start with '--') at
+ * position `i`. Handles `--key=value`, `--key value`, bare boolean flags, and
+ * unknown flags. Mutates `flags`/`missingValue`/`invalidBooleanValue` in
+ * place and returns the number of tokens consumed so the caller can advance
+ * `i`.
+ */
+function parseLongFlagToken(
+  token: string,
+  argv: string[],
+  i: number,
+  kindOf: (name: string) => 'boolean' | 'string' | undefined,
+  flags: ParsedFlags,
+  missingValue: string[],
+  invalidBooleanValue: string[]
+): number {
+  const name = token.slice(2)
+  const eqIdx = name.indexOf('=')
+  if (eqIdx !== -1) {
+    // --key=value
+    const k = name.slice(0, eqIdx)
+    const v = name.slice(eqIdx + 1)
+    applyEqualsFlag(k, v, kindOf(k), flags, invalidBooleanValue)
+    return 1
+  } else if (kindOf(name) === 'string') {
+    // --key value — the value must not be missing, another flag, or (for
+    // --project) a command token (#11)
+    return consumeValueFlag(name, argv, i, flags, missingValue)
+  } else if (kindOf(name) === 'boolean') {
+    flags[name] = true
+    return 1
+  } else {
+    // Unknown flag — stash in _unknown
+    pushUnknownFlag(token, flags)
+    return 1
+  }
+}
+
+/**
+ * Parse a short-flag token (already known to be '-' + exactly one char) at
+ * position `i`. Expands via SHORT_FLAG_MAP, then handles string/boolean/
+ * unknown the same way parseLongFlagToken does for the expanded name.
+ * Mutates `flags`/`missingValue` in place and returns the number of tokens
+ * consumed so the caller can advance `i`.
+ */
+function parseShortFlagToken(
+  token: string,
+  argv: string[],
+  i: number,
+  kindOf: (name: string) => 'boolean' | 'string' | undefined,
+  flags: ParsedFlags,
+  missingValue: string[]
+): number {
+  // Short flag: -j/-p/-h/-v → --json/--project/--help/--version
+  const expanded = SHORT_FLAG_MAP[token[1]!]
+  if (expanded != null) {
+    if (kindOf(expanded) === 'string') {
+      return consumeValueFlag(expanded, argv, i, flags, missingValue)
+    }
+    flags[expanded] = true
+    return 1
+  }
+  pushUnknownFlag(token, flags)
+  return 1
+}
+
+/**
+ * Resolve the command path via longest prefix match (up to 3 tokens) against
+ * registered commands, splitting `args` into the matched command path and
+ * the remaining positionals. At call time we may not yet know per-command
+ * flags, so we do a two-pass: first pass resolves the path, second pass
+ * re-parses if needed (see fullParse).
+ */
+function resolveCommandPath(args: string[]): { commandPath: string | null; positionals: string[] } {
+  for (let len = Math.min(args.length, 3); len >= 1; len--) {
+    const candidate = args.slice(0, len).join(' ')
+    if (hasCommand(candidate)) {
+      return { commandPath: candidate, positionals: args.slice(len) }
+    }
+  }
+  return { commandPath: null, positionals: args }
+}
+
+/**
  * Parse argv (already stripped of node/electron/script path, so starting at
  * the first user token). Extracts global flags, resolves the command path
  * by matching registered commands (longest match first), then collects
@@ -265,66 +412,9 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
       break
     }
     if (token.startsWith('--')) {
-      const name = token.slice(2)
-      const eqIdx = name.indexOf('=')
-      if (eqIdx !== -1) {
-        // --key=value
-        const k = name.slice(0, eqIdx)
-        const v = name.slice(eqIdx + 1)
-        if (kindOf(k) === 'boolean') {
-          // Boolean flag in =value form: accept true/false, reject anything else (#6).
-          const parsed = parseBooleanFlagValue(v)
-          if (parsed == null) {
-            invalidBooleanValue.push(k)
-          } else {
-            flags[k] = parsed
-          }
-        } else {
-          flags[k] = v
-        }
-        i++
-      } else if (kindOf(name) === 'string') {
-        // --key value — the value must not be missing, another flag, or (for
-        // --project) a command token (#11)
-        const next = argv[i + 1]
-        if (!isMissingValueFor(name, next)) {
-          flags[name] = next!
-          i += 2
-        } else {
-          missingValue.push(name)
-          i++
-        }
-      } else if (kindOf(name) === 'boolean') {
-        flags[name] = true
-        i++
-      } else {
-        // Unknown flag — stash in _unknown
-        if (!Array.isArray(flags._unknown)) flags._unknown = []
-        flags._unknown.push(token)
-        i++
-      }
+      i += parseLongFlagToken(token, argv, i, kindOf, flags, missingValue, invalidBooleanValue)
     } else if (token.startsWith('-') && token.length === 2) {
-      // Short flag: -j/-p/-h/-v → --json/--project/--help/--version
-      const expanded = SHORT_FLAG_MAP[token[1]!]
-      if (expanded != null) {
-        if (kindOf(expanded) === 'string') {
-          const next = argv[i + 1]
-          if (!isMissingValueFor(expanded, next)) {
-            flags[expanded] = next!
-            i += 2
-          } else {
-            missingValue.push(expanded)
-            i++
-          }
-        } else {
-          flags[expanded] = true
-          i++
-        }
-      } else {
-        if (!Array.isArray(flags._unknown)) flags._unknown = []
-        flags._unknown.push(token)
-        i++
-      }
+      i += parseShortFlagToken(token, argv, i, kindOf, flags, missingValue)
     } else {
       args.push(token)
       i++
@@ -339,20 +429,7 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
   }
 
   // Resolve command path via longest prefix match against registered commands.
-  // At call time we may not yet know per-command flags, so we do a two-pass:
-  // first pass resolves the path, second pass re-parses if needed.
-  // Here we attempt longest match from the args array.
-  let commandPath: string | null = null
-  let positionals: string[] = args
-
-  for (let len = Math.min(args.length, 3); len >= 1; len--) {
-    const candidate = args.slice(0, len).join(' ')
-    if (hasCommand(candidate)) {
-      commandPath = candidate
-      positionals = args.slice(len)
-      break
-    }
-  }
+  const { commandPath, positionals } = resolveCommandPath(args)
 
   return {
     commandPath,
@@ -570,18 +647,12 @@ Exit codes:
 // ---------------------------------------------------------------------------
 
 /**
- * Main CLI entrypoint. Called by the U13 Electron-as-node shim as:
- *   main(process.argv.slice(2))
- *
- * The argv parameter should already be stripped of the node/electron binary
- * path and the script path — i.e. it starts at the first user-visible token.
+ * Handle --help/-h and --version/-v, plus the truly-bare-invocation case.
+ * Returns true if fully handled (caller must return immediately without
+ * further processing) — mirrors the four early-return branches at the top
+ * of the original main().
  */
-export async function main(argv: string[]): Promise<void> {
-  const parsed = fullParse(argv)
-
-  // Apply global output mode immediately
-  setJsonMode(parsed.jsonMode)
-
+function handleHelpVersionOrBare(argv: string[], parsed: ParseResult): boolean {
   const helpRequested = parsed.flags.help === true
 
   // --help/-h WITH a resolved command → print that command's help (#10),
@@ -590,14 +661,14 @@ export async function main(argv: string[]): Promise<void> {
     const descriptor = getCommand(parsed.commandPath)!
     process.stdout.write(commandHelp(parsed.commandPath, descriptor))
     process.exitCode = 0
-    return
+    return true
   }
 
   // Bare --help/-h → top-level usage. Exit 0: help was explicitly requested.
   if (helpRequested) {
     process.stdout.write(USAGE)
     process.exitCode = 0
-    return
+    return true
   }
 
   // --version/-v (checked before the "bare invocation" fallback below, since
@@ -610,16 +681,27 @@ export async function main(argv: string[]): Promise<void> {
       process.stdout.write(`${VERSION}\n`)
     }
     process.exitCode = 0
-    return
+    return true
   }
 
   // Truly bare invocation (no argv at all) → top-level usage, exit 0.
   if (argv.length === 0) {
     process.stdout.write(USAGE)
     process.exitCode = 0
-    return
+    return true
   }
 
+  return false
+}
+
+/**
+ * Validate the parsed invocation: unknown flags, missing flag values,
+ * invalid boolean flag values, and unknown commands are all usage errors
+ * (exit 2 via printUsageError). Returns true if an error was printed
+ * (caller must return immediately) — mirrors four early-return branches
+ * from the original main().
+ */
+function validateParsedInvocation(parsed: ParseResult): boolean {
   // Unknown flags are a usage error, not silently ignored (#6 — strictness).
   if (Array.isArray(parsed.flags._unknown) && parsed.flags._unknown.length > 0) {
     const names = parsed.flags._unknown.join(', ')
@@ -628,14 +710,14 @@ export async function main(argv: string[]): Promise<void> {
         ? `Run 'orpheus ${parsed.commandPath} -h' for usage.`
         : `Run 'orpheus -h' for usage.`
     printUsageError(`unknown flag: ${names}. ${hint}`)
-    return
+    return true
   }
 
   // A string flag (e.g. --project) was given without a usable value (#11).
   if (Array.isArray(parsed.flags._missingValue) && parsed.flags._missingValue.length > 0) {
     const [first] = parsed.flags._missingValue
     printUsageError(`flag --${first} requires a value`)
-    return
+    return true
   }
 
   // A boolean flag (e.g. --json) was given in `--flag=value` form with a value
@@ -646,7 +728,7 @@ export async function main(argv: string[]): Promise<void> {
   ) {
     const [first] = parsed.flags._invalidBooleanValue
     printUsageError(`flag --${first} must be --${first}, --${first}=true, or --${first}=false`)
-    return
+    return true
   }
 
   // Unknown command
@@ -655,33 +737,64 @@ export async function main(argv: string[]): Promise<void> {
     printUsageError(
       `unknown command: ${attempted || '(none)'}. Run 'orpheus -h' for a list of commands.`
     )
-    return
+    return true
   }
 
-  const descriptor = getCommand(parsed.commandPath)!
+  return false
+}
 
-  // Arity checking (#12): only enforced when the descriptor declares it.
+/**
+ * Arity checking (#12): only enforced when the descriptor declares
+ * minPositionals/maxPositionals. Returns true if a usage error was printed
+ * (caller must return immediately).
+ */
+function checkArity(parsed: ParseResult, descriptor: CommandDescriptor): boolean {
   const positionalCount = parsed.positionals.length
   if (descriptor.minPositionals != null && positionalCount < descriptor.minPositionals) {
     printUsageError(
       `${parsed.commandPath} expects at least ${descriptor.minPositionals} argument(s), got ${positionalCount}. Run 'orpheus ${parsed.commandPath} -h' for usage.`
     )
-    return
+    return true
   }
   if (descriptor.maxPositionals != null && positionalCount > descriptor.maxPositionals) {
     printUsageError(
       `${parsed.commandPath} expects at most ${descriptor.maxPositionals} argument(s), got ${positionalCount}. Run 'orpheus ${parsed.commandPath} -h' for usage.`
     )
-    return
+    return true
   }
+  return false
+}
 
-  const ctx: CommandContext = {
-    positionals: parsed.positionals,
-    flags: parsed.flags,
-    project: parsed.project,
-    jsonMode: parsed.jsonMode
+/**
+ * Dispatch an error caught from the auto-launch retry attempt (the inner
+ * catch of the auto-launch branch in runHandlerWithAutoLaunchRetry). This
+ * path never triggers a further auto-launch/retry — the retry already
+ * happened once, per the original nested catch.
+ */
+function dispatchRetryError(retryErr: unknown): void {
+  if (retryErr instanceof ProjectNotFoundError) {
+    printNotFoundError(retryErr.message)
+  } else if (retryErr instanceof AppNotRunningError) {
+    printError(retryErr)
+  } else if (retryErr instanceof CommandError) {
+    printError(retryErr)
+  } else if (retryErr instanceof OrpheusDataNotFoundError) {
+    printNotFoundError(retryErr.message)
+  } else {
+    printError(retryErr)
   }
+}
 
+/**
+ * Invoke the resolved command's handler, dispatching any thrown error by
+ * type — including the auto-launch + single retry flow for action commands
+ * that hit AppNotRunningError. Mirrors the original main()'s outer
+ * try/catch exactly.
+ */
+async function runHandlerWithAutoLaunchRetry(
+  descriptor: CommandDescriptor,
+  ctx: CommandContext
+): Promise<void> {
   try {
     await descriptor.handler(ctx)
   } catch (err: unknown) {
@@ -703,17 +816,7 @@ export async function main(argv: string[]): Promise<void> {
         // Retry the command once after the app is reachable
         await descriptor.handler(ctx)
       } catch (retryErr: unknown) {
-        if (retryErr instanceof ProjectNotFoundError) {
-          printNotFoundError(retryErr.message)
-        } else if (retryErr instanceof AppNotRunningError) {
-          printError(retryErr)
-        } else if (retryErr instanceof CommandError) {
-          printError(retryErr)
-        } else if (retryErr instanceof OrpheusDataNotFoundError) {
-          printNotFoundError(retryErr.message)
-        } else {
-          printError(retryErr)
-        }
+        dispatchRetryError(retryErr)
       }
     } else if (err instanceof OrpheusDataNotFoundError) {
       printNotFoundError(err.message)
@@ -727,6 +830,36 @@ export async function main(argv: string[]): Promise<void> {
       printError(err)
     }
   }
+}
+
+/**
+ * Main CLI entrypoint. Called by the U13 Electron-as-node shim as:
+ *   main(process.argv.slice(2))
+ *
+ * The argv parameter should already be stripped of the node/electron binary
+ * path and the script path — i.e. it starts at the first user-visible token.
+ */
+export async function main(argv: string[]): Promise<void> {
+  const parsed = fullParse(argv)
+
+  // Apply global output mode immediately
+  setJsonMode(parsed.jsonMode)
+
+  if (handleHelpVersionOrBare(argv, parsed)) return
+  if (validateParsedInvocation(parsed)) return
+
+  const descriptor = getCommand(parsed.commandPath!)!
+
+  if (checkArity(parsed, descriptor)) return
+
+  const ctx: CommandContext = {
+    positionals: parsed.positionals,
+    flags: parsed.flags,
+    project: parsed.project,
+    jsonMode: parsed.jsonMode
+  }
+
+  await runHandlerWithAutoLaunchRetry(descriptor, ctx)
 }
 
 // ---------------------------------------------------------------------------

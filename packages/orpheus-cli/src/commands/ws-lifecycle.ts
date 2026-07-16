@@ -69,6 +69,69 @@ function errorMessage(err: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
+// ws archive — helpers
+// ---------------------------------------------------------------------------
+
+type ArchiveOutcome = { id: string; ok: boolean; error?: string; count?: number }
+
+/** Archive each id in sequence; collect results and any errors. */
+async function archiveEach(ids: string[], recursive: boolean): Promise<ArchiveOutcome[]> {
+  const results: ArchiveOutcome[] = []
+  for (const id of ids) {
+    try {
+      const result = await sendCommand('workspace.archive', { id, recursive })
+      const data = result as { archived: boolean; count?: number } | null
+      results.push({ id, ok: true, count: data?.count })
+    } catch (err) {
+      results.push({ id, ok: false, error: errorMessage(err) })
+    }
+  }
+  return results
+}
+
+/**
+ * In JSON mode, emit all results as an array. Each entry mirrors the text
+ * mode's fields (#13 parity): ok/archived both present so scripts can key
+ * off either name, count included whenever known (not just --recursive).
+ * Sets non-zero exit if any failed: 3 if ALL failures are not-found errors,
+ * 1 otherwise (mirrors printError's per-error classification, aggregated
+ * since this command can batch multiple ids).
+ */
+function printArchiveResultsJson(results: ArchiveOutcome[]): void {
+  printResult(
+    results.map((r) => ({
+      id: r.id,
+      ok: r.ok,
+      archived: r.ok,
+      ...(r.count != null ? { count: r.count } : {}),
+      ...(r.error != null ? { error: r.error } : {})
+    }))
+  )
+  const failures = results.filter((r) => !r.ok)
+  if (failures.length > 0) {
+    process.exitCode = failures.every((r) => isNotFoundError(r.error ?? '')) ? 3 : 1
+  }
+}
+
+/** Pretty mode: print each result, then set exit code if any failed. */
+function printArchiveResultsPretty(results: ArchiveOutcome[], recursive: boolean): void {
+  const failedIds: Array<{ error?: string }> = []
+  for (const r of results) {
+    if (r.ok) {
+      const kv: Record<string, unknown> = { id: r.id, archived: true }
+      if (recursive && r.count != null) kv.count = r.count
+      printKeyValue(kv)
+    } else {
+      process.stderr.write(`error: ${r.id}: ${r.error ?? 'unknown error'}\n`)
+      failedIds.push({ error: r.error })
+    }
+  }
+  if (failedIds.length > 0) {
+    process.exitCode = failedIds.every((r) => isNotFoundError(r.error ?? '')) ? 3 : 1
+  }
+}
+
+// ---------------------------------------------------------------------------
 // ws open
 // ---------------------------------------------------------------------------
 
@@ -162,57 +225,14 @@ registerCommand('ws archive', {
     const recursive = ctx.flags.recursive === true
     const ids = ctx.positionals
 
-    // Archive each id in sequence; collect results and any errors.
-    const results: Array<{ id: string; ok: boolean; error?: string; count?: number }> = []
+    const results = await archiveEach(ids, recursive)
 
-    for (const id of ids) {
-      try {
-        const result = await sendCommand('workspace.archive', { id, recursive })
-        const data = result as { archived: boolean; count?: number } | null
-        results.push({ id, ok: true, count: data?.count })
-      } catch (err) {
-        results.push({ id, ok: false, error: errorMessage(err) })
-      }
-    }
-
-    // In JSON mode, emit all results as an array. Each entry mirrors the text
-    // mode's fields (#13 parity): ok/archived both present so scripts can key
-    // off either name, count included whenever known (not just --recursive).
     if (ctx.jsonMode) {
-      printResult(
-        results.map((r) => ({
-          id: r.id,
-          ok: r.ok,
-          archived: r.ok,
-          ...(r.count != null ? { count: r.count } : {}),
-          ...(r.error != null ? { error: r.error } : {})
-        }))
-      )
-      // Set non-zero exit if any failed: 3 if ALL failures are not-found
-      // errors, 1 otherwise (mirrors printError's per-error classification,
-      // aggregated since this command can batch multiple ids).
-      const failures = results.filter((r) => !r.ok)
-      if (failures.length > 0) {
-        process.exitCode = failures.every((r) => isNotFoundError(r.error ?? '')) ? 3 : 1
-      }
+      printArchiveResultsJson(results)
       return
     }
 
-    // Pretty mode: print each result.
-    const failedIds: Array<{ error?: string }> = []
-    for (const r of results) {
-      if (r.ok) {
-        const kv: Record<string, unknown> = { id: r.id, archived: true }
-        if (recursive && r.count != null) kv.count = r.count
-        printKeyValue(kv)
-      } else {
-        process.stderr.write(`error: ${r.id}: ${r.error ?? 'unknown error'}\n`)
-        failedIds.push({ error: r.error })
-      }
-    }
-    if (failedIds.length > 0) {
-      process.exitCode = failedIds.every((r) => isNotFoundError(r.error ?? '')) ? 3 : 1
-    }
+    printArchiveResultsPretty(results, recursive)
   }
 })
 

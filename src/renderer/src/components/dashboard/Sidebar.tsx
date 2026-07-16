@@ -39,7 +39,7 @@ import {
   gitStatusToCard,
   prToCard
 } from '@/lib/overlayClient'
-import type { HoverCardProps } from '@shared/types'
+import type { HoverCardProps, ContextMenuNativeItem } from '@shared/types'
 import { formatRelativeTime, EMPTY_TITLE_MAP, EMPTY_MTIME_MAP } from './sidebar.helpers'
 import { SectionHeader } from './SidebarNavItems'
 import { CollapsedProjectList } from './CollapsedProjectList'
@@ -73,6 +73,154 @@ interface WorkspaceRowProps {
   onArchive: () => void
   onClose: () => void
   onTogglePin: () => void
+}
+
+/**
+ * Freshness display — live activity time wins; jsonl mtime is the fallback for
+ * workspaces with no activity since launch. Take the max so a freshly loaded
+ * mtime never overrides a more-recent live bump.
+ */
+function computeWorkspaceFreshness(
+  liveActivityAt: number | null,
+  mtimeActivityAt: number | null,
+  nowMs: number
+): { relativeTime: string; isVeryOld: boolean } {
+  const lastActivityAt =
+    liveActivityAt !== null && mtimeActivityAt !== null
+      ? Math.max(liveActivityAt, mtimeActivityAt)
+      : (liveActivityAt ?? mtimeActivityAt)
+  const relativeTime = formatRelativeTime(lastActivityAt, nowMs)
+  const ageMs = lastActivityAt !== null ? nowMs - lastActivityAt : null
+  const isVeryOld = ageMs !== null && ageMs >= 24 * 60 * 60_000
+  return { relativeTime, isVeryOld }
+}
+
+/** Dispatch a native workspace context-menu action string to its callback. */
+function dispatchWorkspaceMenuAction(
+  action: string,
+  callbacks: {
+    onTogglePin: () => void
+    onBeginRename: () => void
+    onClose: () => void
+    onArchive: () => void
+  }
+): void {
+  if (action === 'togglePin') callbacks.onTogglePin()
+  else if (action === 'rename') callbacks.onBeginRename()
+  else if (action === 'close') callbacks.onClose()
+  else if (action === 'archive') callbacks.onArchive()
+}
+
+/** Open the native (Electron) workspace context menu and wire its action callback. Used when the sidebar is too narrow for the in-app popover. */
+function showNativeWorkspaceMenu(
+  isPinned: boolean,
+  isClosed: boolean,
+  isBusy: boolean,
+  callbacks: {
+    onTogglePin: () => void
+    onBeginRename: () => void
+    onClose: () => void
+    onArchive: () => void
+  }
+): void {
+  void window.api.contextMenu
+    .show(nativeWorkspaceMenuItems(isPinned, isClosed, isBusy))
+    .then((action) => {
+      if (!action) return
+      dispatchWorkspaceMenuAction(action, callbacks)
+    })
+}
+
+/** Native (Electron) context-menu item list for a workspace row — same shape/order as the inline literal it replaces. */
+function nativeWorkspaceMenuItems(
+  isPinned: boolean,
+  isClosed: boolean,
+  isBusy: boolean
+): ContextMenuNativeItem[] {
+  return [
+    { label: isPinned ? 'Unpin' : 'Pin', action: 'togglePin' },
+    { label: 'Rename', action: 'rename' },
+    { divider: true },
+    ...(!isClosed && !isBusy ? [{ label: 'Close', action: 'close' }] : []),
+    { label: 'Archive', action: 'archive' }
+  ]
+}
+
+/** In-app ContextMenu item list for a workspace row — same shape/order as the inline literal it replaces. */
+function buildWorkspaceMenuItems(
+  isPinned: boolean,
+  isClosed: boolean,
+  isBusy: boolean,
+  callbacks: {
+    onTogglePin: () => void
+    onBeginRename: () => void
+    onClose: () => void
+    onArchive: () => void
+  }
+): ContextMenuItem[] {
+  return [
+    { label: isPinned ? 'Unpin' : 'Pin', onClick: callbacks.onTogglePin },
+    { label: 'Rename', onClick: callbacks.onBeginRename },
+    { label: '', divider: true, onClick: () => {} },
+    ...(!isClosed && !isBusy ? [{ label: 'Close', onClick: callbacks.onClose }] : []),
+    { label: 'Archive', onClick: callbacks.onArchive }
+  ]
+}
+
+/** Build the hover-popover props for a workspace row, incl. worktree-annotated cwd. */
+function buildWorkspaceHoverCardProps(params: {
+  workspace: WorkspaceRecord
+  title: string
+  activity: ReturnType<typeof useWorkspaceActivity>
+  relativeTime: string
+  gitStatus: ReturnType<typeof useGitStatus>
+  pr: ReturnType<typeof usePr>
+}): HoverCardProps {
+  const { workspace, title, activity, relativeTime, gitStatus, pr } = params
+  return {
+    title,
+    activityLabel: activityToLabel(activity),
+    activityState: activityToState(activity),
+    relativeTime,
+    git: gitStatusToCard(gitStatus),
+    pr: prToCard(pr),
+    cwd: popoverCwdFor(workspace)
+  }
+}
+
+/** Annotate a worktree workspace's cwd with its parent branch for the hover popover. */
+function popoverCwdFor(workspace: WorkspaceRecord): string {
+  return workspace.worktreeParentCwd && workspace.worktreeBranch
+    ? `${workspace.cwd} (${workspace.worktreeBranch})`
+    : workspace.cwd
+}
+
+/** Status icon slot for a workspace row — closed/circle, live activity, or idle stack. Same nested fallback as the inline JSX it replaces. */
+function WorkspaceStatusIcon({
+  isClosed,
+  activity,
+  active
+}: {
+  isClosed: boolean
+  activity: ReturnType<typeof useWorkspaceActivity>
+  active: boolean
+}): React.JSX.Element {
+  if (isClosed) {
+    return <Circle size={11} weight="regular" className="text-text-muted opacity-60" />
+  }
+  if (activity && activity !== 'archived') {
+    return <ActivityIndicator detail={activity} />
+  }
+  return (
+    <Stack
+      size={12}
+      weight={active ? 'fill' : 'regular'}
+      className={[
+        'transition-colors duration-150',
+        active ? 'text-text-primary' : 'text-text-muted group-hover:text-text-secondary'
+      ].join(' ')}
+    />
+  )
 }
 
 const WorkspaceSubRow = memo(function WorkspaceSubRow({
@@ -122,34 +270,24 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     const rect = sidebarBoundsRef?.current?.getBoundingClientRect()
     if (!rect || rect.width < 200) {
       const isPinned = workspace.pinnedAt !== null
-      void window.api.contextMenu
-        .show([
-          { label: isPinned ? 'Unpin' : 'Pin', action: 'togglePin' },
-          { label: 'Rename', action: 'rename' },
-          { divider: true },
-          ...(!isClosed && !isBusy ? [{ label: 'Close', action: 'close' }] : []),
-          { label: 'Archive', action: 'archive' }
-        ])
-        .then((action) => {
-          if (!action) return
-          if (action === 'togglePin') onTogglePin()
-          else if (action === 'rename') onBeginRename()
-          else if (action === 'close') onClose()
-          else if (action === 'archive') onArchive()
-        })
+      showNativeWorkspaceMenu(isPinned, isClosed, isBusy, {
+        onTogglePin,
+        onBeginRename,
+        onClose,
+        onArchive
+      })
       return
     }
     setMenu({ x: e.clientX, y: e.clientY })
   }
 
   const isPinned = workspace.pinnedAt !== null
-  const wsMenuItems: ContextMenuItem[] = [
-    { label: isPinned ? 'Unpin' : 'Pin', onClick: onTogglePin },
-    { label: 'Rename', onClick: onBeginRename },
-    { label: '', divider: true, onClick: () => {} },
-    ...(!isClosed && !isBusy ? [{ label: 'Close', onClick: onClose }] : []),
-    { label: 'Archive', onClick: onArchive }
-  ]
+  const wsMenuItems: ContextMenuItem[] = buildWorkspaceMenuItems(isPinned, isClosed, isBusy, {
+    onTogglePin,
+    onBeginRename,
+    onClose,
+    onArchive
+  })
 
   function handleRenameCommit(): void {
     const trimmed = rename.value.trim()
@@ -158,19 +296,14 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     if (!willCommit) onCancelRename()
   }
 
-  // Freshness display — live activity time wins; jsonl mtime is the fallback for
-  // workspaces with no activity since launch. Take the max so a freshly loaded
-  // mtime never overrides a more-recent live bump.
   const mtimeActivityAt = workspace.claudeSessionId
     ? (sessionMtimeBySessionId.get(workspace.claudeSessionId) ?? null)
     : null
-  const lastActivityAt =
-    liveActivityAt !== null && mtimeActivityAt !== null
-      ? Math.max(liveActivityAt, mtimeActivityAt)
-      : (liveActivityAt ?? mtimeActivityAt)
-  const relativeTime = formatRelativeTime(lastActivityAt, nowMs)
-  const ageMs = lastActivityAt !== null ? nowMs - lastActivityAt : null
-  const isVeryOld = ageMs !== null && ageMs >= 24 * 60 * 60_000
+  const { relativeTime, isVeryOld } = computeWorkspaceFreshness(
+    liveActivityAt,
+    mtimeActivityAt,
+    nowMs
+  )
 
   const hasDetail = gitStatus !== null || pr != null
 
@@ -191,21 +324,14 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     if (!cardAllowed) return
     hoverCard.handleMouseEnter(() => {
       if (!rowRef.current || !cardAllowed) return
-      // For worktree workspaces, annotate cwd with the parent repo path so
-      // the hover popover surfaces the worktree context alongside the cwd.
-      const popoverCwd =
-        workspace.worktreeParentCwd && workspace.worktreeBranch
-          ? `${workspace.cwd} (${workspace.worktreeBranch})`
-          : workspace.cwd
-      const cardProps: HoverCardProps = {
+      const cardProps = buildWorkspaceHoverCardProps({
+        workspace,
         title: dn.text,
-        activityLabel: activityToLabel(activity),
-        activityState: activityToState(activity),
+        activity,
         relativeTime,
-        git: gitStatusToCard(gitStatus),
-        pr: prToCard(pr),
-        cwd: popoverCwd
-      }
+        gitStatus,
+        pr
+      })
       showHoverCard(workspace.id, rowRef.current, cardProps)
     })
   }
@@ -288,20 +414,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
               className="flex items-center justify-center w-3 h-3 flex-shrink-0"
               title={isClosed ? 'Closed — click to reopen' : undefined}
             >
-              {isClosed ? (
-                <Circle size={11} weight="regular" className="text-text-muted opacity-60" />
-              ) : activity && activity !== 'archived' ? (
-                <ActivityIndicator detail={activity} />
-              ) : (
-                <Stack
-                  size={12}
-                  weight={active ? 'fill' : 'regular'}
-                  className={[
-                    'transition-colors duration-150',
-                    active ? 'text-text-primary' : 'text-text-muted group-hover:text-text-secondary'
-                  ].join(' ')}
-                />
-              )}
+              <WorkspaceStatusIcon isClosed={isClosed} activity={activity} active={active} />
             </span>
 
             {/* Title area */}

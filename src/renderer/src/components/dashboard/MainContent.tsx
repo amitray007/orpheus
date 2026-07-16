@@ -31,6 +31,36 @@ function lruPush(list: string[], id: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// KeptState derivation — pure helper for MainContent's "derived state during
+// render" LRU pattern. Extracted only to keep MainContent's cognitive
+// complexity under the lint cap; same inputs/outputs/mutation semantics as
+// the inline block it replaces (still returns a brand new object when (and
+// only when) the active workspace changed, so the caller's `!==` bail-out
+// check for whether to call setKeptState still works identically).
+// ---------------------------------------------------------------------------
+
+interface KeptState {
+  ids: string[]
+  records: Map<string, WorkspaceRecord>
+}
+
+function deriveKeptState(keptState: KeptState, workspace: WorkspaceRecord): KeptState {
+  const wsId = workspace.id
+  if (keptState.ids[0] === wsId && keptState.records.get(wsId) === workspace) {
+    return keptState
+  }
+  const nextRecords = new Map(keptState.records)
+  nextRecords.set(wsId, workspace)
+  const nextIds = keptState.ids[0] === wsId ? keptState.ids : lruPush(keptState.ids, wsId)
+  // Drop evicted ids from the record snapshot.
+  const nextIdsSet = new Set(nextIds)
+  for (const id of keptState.ids) {
+    if (!nextIdsSet.has(id)) nextRecords.delete(id)
+  }
+  return { ids: nextIds, records: nextRecords }
+}
+
+// ---------------------------------------------------------------------------
 // Fallback placeholder (used for error states only)
 // ---------------------------------------------------------------------------
 
@@ -243,17 +273,9 @@ export function MainContent({
   // it bails out and re-renders synchronously with the new state if needed.
   let renderKeptState = keptState
   if (view.kind === 'workspace' && workspace) {
-    const wsId = workspace.id
-    if (keptState.ids[0] !== wsId || keptState.records.get(wsId) !== workspace) {
-      const nextRecords = new Map(keptState.records)
-      nextRecords.set(wsId, workspace)
-      const nextIds = keptState.ids[0] === wsId ? keptState.ids : lruPush(keptState.ids, wsId)
-      // Drop evicted ids from the record snapshot.
-      const nextIdsSet = new Set(nextIds)
-      for (const id of keptState.ids) {
-        if (!nextIdsSet.has(id)) nextRecords.delete(id)
-      }
-      renderKeptState = { ids: nextIds, records: nextRecords }
+    const nextKeptState = deriveKeptState(keptState, workspace)
+    if (nextKeptState !== keptState) {
+      renderKeptState = nextKeptState
       // Schedule the state update so React commits the new keptState.
       // This runs during the render phase which React allows for derived-state
       // updates (equivalent to getDerivedStateFromProps in class components).

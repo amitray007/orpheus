@@ -78,7 +78,7 @@ import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor } from '../shared/types'
-import type { SplitTree, PaneLayout, TerminalRect } from '../shared/types'
+import type { SplitTree, PaneLayout, TerminalRect, TerminalMountResult } from '../shared/types'
 import type { DiagEvent } from '../shared/types'
 import { bootActions, setTerminalAddonRef, registerWebContentsCleanup } from './actions/index'
 import { evictAccumulator } from './actions/session'
@@ -1091,44 +1091,45 @@ function loadTerminalAddon(): GhosttySurfaceAddon {
   }
 }
 
-handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
-  const addon = loadTerminalAddon()
-  ensureTitleCallback(addon)
-  ensureLoadingOverlayWiring(addon)
-  const win = BrowserWindow.fromWebContents(e.sender)
-  if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
-  const nativeHandle = win.getNativeWindowHandle()
+/** True if the workspace no longer exists or has been archived — the shared
+ *  re-validation check run at two points in terminal:mount around await gaps
+ *  where the workspace could have been archived concurrently. */
+function isWorkspaceGone(workspaceId: string): boolean {
+  const wsNow = getWorkspace(workspaceId)
+  return !wsNow || wsNow.archivedAt != null
+}
 
-  // Look up the workspace's projectId for per-project override resolution
-  const ws = getWorkspace(workspaceId)
-  const projectId = ws?.projectId
+type WorktreeReconcileOutcome =
+  | { aborted: false; effectiveCwd: string; reconcileNotice: string | undefined }
+  | { aborted: true; response: Extract<TerminalMountResult, { worktreeError: unknown }> }
 
-  // ── Worktree reconcile (heal-on-mount) ─────────────────────────────────
-  // For worktree-backed workspaces, reconcile the worktree state BEFORE any
-  // native surface operation. This detects and heals stale/missing worktrees.
-  //
-  // We show the loading overlay FIRST (before the potentially multi-second
-  // git operations) so the user never sees a blank pane.
-  //
-  // reconcileWorktree NEVER throws — it returns { ok: false } on all error
-  // paths. If reconcile fails, we return the error without mounting and
-  // without touching the surface, leaving it retryable.
-  let reconcileNotice: string | undefined
-  let effectiveCwd = cwd
-  if (ws?.worktreeParentCwd != null && ws.worktreeBranch != null) {
-    showLoadingOverlay(workspaceId, { title: 'Preparing worktree…' })
-    let r: Awaited<ReturnType<typeof reconcileWorktree>>
-    try {
-      r = await reconcileWorktree({
-        cwd: ws.cwd,
-        worktreeParentCwd: ws.worktreeParentCwd,
-        worktreeBranch: ws.worktreeBranch
-      })
-    } catch (err) {
-      // reconcileWorktree guarantees no throws, but guard anyway so a bug
-      // there cannot propagate to an unrecoverable blank surface.
-      hideLoadingOverlay(workspaceId)
-      return {
+/** Heal-on-mount worktree reconcile. For worktree-backed workspaces, reconcile the
+ *  worktree state BEFORE any native surface operation — detects and heals
+ *  stale/missing worktrees. Shows the loading overlay FIRST (before the
+ *  potentially multi-second git operations) so the user never sees a blank pane.
+ *  reconcileWorktree NEVER throws — it returns { ok: false } on all error paths;
+ *  the try/catch here is a defensive guard against a bug breaking that contract. */
+async function reconcileWorktreeForMount(
+  workspaceId: string,
+  ws: WorkspaceRecord
+): Promise<WorktreeReconcileOutcome> {
+  if (ws.worktreeParentCwd == null || ws.worktreeBranch == null) {
+    return { aborted: false, effectiveCwd: ws.cwd, reconcileNotice: undefined }
+  }
+
+  showLoadingOverlay(workspaceId, { title: 'Preparing worktree…' })
+  let r: Awaited<ReturnType<typeof reconcileWorktree>>
+  try {
+    r = await reconcileWorktree({
+      cwd: ws.cwd,
+      worktreeParentCwd: ws.worktreeParentCwd,
+      worktreeBranch: ws.worktreeBranch
+    })
+  } catch (err) {
+    hideLoadingOverlay(workspaceId)
+    return {
+      aborted: true,
+      response: {
         workspaceId,
         worktreeError: {
           kind: 'parentGone',
@@ -1136,55 +1137,41 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
         }
       }
     }
-    if (!r.ok) {
-      hideLoadingOverlay(workspaceId)
-      return {
+  }
+  if (!r.ok) {
+    hideLoadingOverlay(workspaceId)
+    return {
+      aborted: true,
+      response: {
         workspaceId,
         worktreeError: { kind: r.kind, message: r.message, conflictPath: r.conflictPath }
       }
     }
-    // Reconcile succeeded. Use the reconciled path as mount cwd; if the
-    // worktree was recreated at a suffixed path (slug-2), persist the new cwd.
-    if (r.path !== ws.cwd) {
-      setWorkspaceCwd(workspaceId, r.path)
-    }
-    effectiveCwd = r.path
-    reconcileNotice = r.notice
   }
-
-  // Re-validate: the workspace may have been archived while reconcileWorktree
-  // was in flight (potentially multi-second git operations). Mounting a
-  // gone workspace would recreate its worktree and spawn a zombie claude
-  // process for a row that no longer exists.
-  {
-    const wsNow = getWorkspace(workspaceId)
-    if (!wsNow || wsNow.archivedAt != null) {
-      hideLoadingOverlay(workspaceId)
-      return { workspaceId, aborted: 'gone' as const }
-    }
+  // Reconcile succeeded. Use the reconciled path as mount cwd; if the
+  // worktree was recreated at a suffixed path (slug-2), persist the new cwd.
+  if (r.path !== ws.cwd) {
+    setWorkspaceCwd(workspaceId, r.path)
   }
+  return { aborted: false, effectiveCwd: r.path, reconcileNotice: r.notice }
+}
 
-  // Close the cold-mount PATH race: if the boot-time shell-path spawn hasn't
-  // settled yet, await it now so buildMountEnv can inject ORPHEUS_USER_PATH
-  // instead of forcing the .zshrc fallback (+100–800 ms).
-  if (getCachedShellPath() === null) {
-    await getUserShellPath()
-  }
-
-  // Re-validate again: the workspace may have been archived while
-  // getUserShellPath was in flight. This is the last check before
-  // addon.mount actually spawns the native surface + claude process.
-  {
-    const wsNow = getWorkspace(workspaceId)
-    if (!wsNow || wsNow.archivedAt != null) {
-      hideLoadingOverlay(workspaceId)
-      return { workspaceId, aborted: 'gone' as const }
-    }
-  }
-
-  let launch!: ReturnType<typeof buildMountEnv>['launch']
+/** Compose the launch env + spawn/re-attach the native surface, all as one traced
+ *  span. Mutates `launchOut` (a single-slot box) so the caller can read back the
+ *  composed launch after the trace completes — mirrors the original closure's
+ *  `launch` outer-scope assignment exactly. */
+async function traceTerminalMount(
+  workspaceId: string,
+  projectId: string | undefined,
+  effectiveCwd: string | undefined,
+  nativeHandle: Buffer,
+  addon: GhosttySurfaceAddon,
+  rect: TerminalRect,
+  scaleFactor: number,
+  launchOut: { launch?: ReturnType<typeof buildMountEnv>['launch'] }
+): Promise<{ workspaceId: string; created: boolean }> {
   const _mountStart = Date.now()
-  const result = await diag.trace('terminal.mount', { workspaceId }, (s) => {
+  return diag.trace('terminal.mount', { workspaceId }, (s) => {
     // Compose launch env as a child span nested under terminal.mount.
     // buildMountEnv is sync; use diag.span (not diag.trace).
     let buildResult!: ReturnType<typeof buildMountEnv>
@@ -1204,13 +1191,13 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
       throw err
     }
     const { command, env: surfaceEnv, launch: composedLaunch } = buildResult
-    launch = composedLaunch
+    launchOut.launch = composedLaunch
 
     console.log(
       '[terminal] mount workspaceId=%s flags=%s settingsJson=%s envKeys=%s',
       workspaceId,
-      launch.flags || '(none)',
-      launch.settingsJson || '(none)',
+      composedLaunch.flags || '(none)',
+      composedLaunch.settingsJson || '(none)',
       Object.keys(surfaceEnv).join(',')
     )
 
@@ -1252,20 +1239,13 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     })
     return mountResult
   })
+}
 
-  if (result.created) {
-    logDiagMain({
-      category: 'lifecycle',
-      level: 'info',
-      event: DIAG_EVENTS.TERMINAL_SURFACE_CREATED,
-      workspaceId
-    })
-  }
-
-  // Show the loading overlay only when a new surface was actually created —
-  // re-attaching a hidden surface or a defensive resize means claude is
-  // already running and there's no boot to mask.
-  if (result.created) {
+/** Post-mount overlay handling: show the "Starting workspace" overlay only when a
+ *  new surface was actually created (re-attach/resize of an already-running
+ *  workspace has no boot to mask), and arm the 10s fallback dismissal timer. */
+function handlePostMountOverlay(workspaceId: string, created: boolean): void {
+  if (created) {
     showLoadingOverlay(workspaceId, { title: 'Starting workspace' })
 
     // If the session is already past its starting phase (re-mount of a
@@ -1301,6 +1281,80 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     // is unconditional and handles the non-worktree re-mount path too.
     hideLoadingOverlay(workspaceId)
   }
+}
+
+handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
+  const addon = loadTerminalAddon()
+  ensureTitleCallback(addon)
+  ensureLoadingOverlayWiring(addon)
+  const win = BrowserWindow.fromWebContents(e.sender)
+  if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
+  const nativeHandle = win.getNativeWindowHandle()
+
+  // Look up the workspace's projectId for per-project override resolution
+  const ws = getWorkspace(workspaceId)
+  const projectId = ws?.projectId
+
+  // ── Worktree reconcile (heal-on-mount) ─────────────────────────────────
+  // reconcileWorktreeForMount NEVER throws — it returns aborted:true on all
+  // error paths. If reconcile fails, we return the error without mounting and
+  // without touching the surface, leaving it retryable.
+  let reconcileNotice: string | undefined
+  let effectiveCwd = cwd
+  if (ws) {
+    const outcome = await reconcileWorktreeForMount(workspaceId, ws)
+    if (outcome.aborted) return outcome.response
+    effectiveCwd = outcome.effectiveCwd
+    reconcileNotice = outcome.reconcileNotice
+  }
+
+  // Re-validate: the workspace may have been archived while reconcileWorktree
+  // was in flight (potentially multi-second git operations). Mounting a
+  // gone workspace would recreate its worktree and spawn a zombie claude
+  // process for a row that no longer exists.
+  if (isWorkspaceGone(workspaceId)) {
+    hideLoadingOverlay(workspaceId)
+    return { workspaceId, aborted: 'gone' as const }
+  }
+
+  // Close the cold-mount PATH race: if the boot-time shell-path spawn hasn't
+  // settled yet, await it now so buildMountEnv can inject ORPHEUS_USER_PATH
+  // instead of forcing the .zshrc fallback (+100–800 ms).
+  if (getCachedShellPath() === null) {
+    await getUserShellPath()
+  }
+
+  // Re-validate again: the workspace may have been archived while
+  // getUserShellPath was in flight. This is the last check before
+  // addon.mount actually spawns the native surface + claude process.
+  if (isWorkspaceGone(workspaceId)) {
+    hideLoadingOverlay(workspaceId)
+    return { workspaceId, aborted: 'gone' as const }
+  }
+
+  const launchBox: { launch?: ReturnType<typeof buildMountEnv>['launch'] } = {}
+  const result = await traceTerminalMount(
+    workspaceId,
+    projectId,
+    effectiveCwd,
+    nativeHandle,
+    addon,
+    rect,
+    scaleFactor,
+    launchBox
+  )
+  const launch = launchBox.launch!
+
+  if (result.created) {
+    logDiagMain({
+      category: 'lifecycle',
+      level: 'info',
+      event: DIAG_EVENTS.TERMINAL_SURFACE_CREATED,
+      workspaceId
+    })
+  }
+
+  handlePostMountOverlay(workspaceId, result.created)
 
   // Snapshot the composed launch so we can detect settings drift later.
   setLaunchSnapshot(workspaceId, launch)

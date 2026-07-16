@@ -155,6 +155,172 @@ function isValidUntilMode(v: string): v is UntilMode {
 // branches of the ws-wait status resolution below.
 const BLOCKED_INPUT = 'blocked-input'
 
+/**
+ * Collect the full subtree rooted at `rootId` (BFS over listChildWorkspaces),
+ * returning ids in BFS discovery order (root first). Used by
+ * workspace.archive's recursive mode: callers walk the result in reverse so
+ * children are archived before parents. A visited Set guards against
+ * infinite loops from corrupted parent_workspace_id cycles.
+ */
+function collectWorkspaceSubtreeIds(rootId: string): string[] {
+  const subtreeIds: string[] = []
+  const visited = new Set<string>()
+  const queue: string[] = [rootId]
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    if (visited.has(current)) continue // cycle guard
+    visited.add(current)
+    subtreeIds.push(current)
+    const children = listChildWorkspaces(current)
+    for (const child of children) {
+      if (!visited.has(child.id)) {
+        queue.push(child.id)
+      }
+    }
+  }
+  return subtreeIds
+}
+
+/**
+ * Resolve `workspace.create`'s parent workspace id (explicit arg > caller's
+ * context workspace) and, when an explicit parentWorkspaceId was supplied,
+ * run its two validations before returning it:
+ *   - CROSS-PROJECT VALIDATION — explicit parentWorkspaceId must belong to
+ *     the same project. A crafted parent from a different project could
+ *     bypass depth/children caps (the lineage and children queries are
+ *     project-unaware). context.workspaceId is trusted as the real caller;
+ *     only an explicitly supplied parentWorkspaceId is validated.
+ *   - GUARDRAIL CHECK (children cap / depth cap) — only runs when there is
+ *     an explicit parent, mirroring the original inline `if (parentId != null)`.
+ * Throws the same errors, in the same order, as the original inline code.
+ */
+function resolveAndValidateParentWorkspaceId(
+  args: Record<string, unknown>,
+  context: { workspaceId?: string }
+): string | null {
+  // Determine parent workspace id: explicit arg > caller's context workspace
+  const parentId: string | null =
+    typeof args.parentWorkspaceId === 'string'
+      ? args.parentWorkspaceId
+      : (context?.workspaceId ?? null)
+
+  if (
+    typeof args.parentWorkspaceId === 'string' &&
+    args.parentWorkspaceId !== context?.workspaceId
+  ) {
+    const parentRow = getDb()
+      .prepare('SELECT id, project_id FROM workspaces WHERE id = ? AND archived_at IS NULL')
+      .get(args.parentWorkspaceId) as { id: string; project_id: string } | undefined
+    if (!parentRow) {
+      throw new Error(`parent workspace not found or archived: ${args.parentWorkspaceId}`)
+    }
+    if (parentRow.project_id !== args.projectId) {
+      throw new Error(
+        `parent workspace ${args.parentWorkspaceId} belongs to a different project — ` +
+          `cross-project parenting is not allowed`
+      )
+    }
+  }
+
+  if (parentId != null) {
+    const globalSettings = getClaudeGlobalSettings()
+    const maxChildren = globalSettings.maxWorkspaceChildren ?? 10
+    const maxDepth = globalSettings.maxWorkspaceDepth ?? 3
+
+    // Children check: how many non-archived children does the parent already have?
+    const existingChildren = listChildWorkspaces(parentId)
+    if (existingChildren.length >= maxChildren) {
+      throw new Error(
+        `Max children (${maxChildren}) reached for this workspace. Don't spawn more workspaces — ` +
+          `use subagents (Agent tool) or teammates within an existing workspace instead, ` +
+          `or archive finished workers to free slots.`
+      )
+    }
+
+    // Depth check: how deep in the lineage would the new workspace be?
+    // getWorkspaceLineage returns root→parent chain (inclusive of parent).
+    // The new workspace would be at depth lineage.length + 1.
+    const lineage = getWorkspaceLineage(parentId)
+    const newDepth = lineage.length + 1
+    if (newDepth > maxDepth) {
+      throw new Error(
+        `Max workspace depth (${maxDepth}) would be exceeded. Don't nest workspaces further — ` +
+          `use subagents (Agent tool) or teammates within an existing workspace instead.`
+      )
+    }
+  }
+
+  return parentId
+}
+
+/**
+ * `workspace.create`'s fork support: when --fork is requested, look up the
+ * parent's claudeSessionId to seed forkedFromSessionId. Returns null when
+ * --fork was not requested (args.fork !== true). Throws the same errors, in
+ * the same order, as the original inline code.
+ */
+function resolveForkedFromSessionId(
+  args: Record<string, unknown>,
+  parentId: string | null
+): string | null {
+  if (args.fork !== true) return null
+  if (parentId == null) {
+    throw new Error(
+      '--fork requires a parent workspace. Run from inside a workspace (ORPHEUS_WORKSPACE_ID) or pass --parent.'
+    )
+  }
+  const parentWs = getWorkspace(parentId)
+  if (parentWs == null) {
+    throw new Error(`parent workspace not found: ${parentId}`)
+  }
+  if (parentWs.claudeSessionId == null) {
+    throw new Error(
+      `parent workspace ${parentId} has no claude session yet — cannot fork before a session is established`
+    )
+  }
+  return parentWs.claudeSessionId
+}
+
+/**
+ * Build the workspace-level settings override (model / permissionMode /
+ * effort) from `workspace.create`'s args, validating each field exactly as
+ * the original inline code did. Stored in claude_workspace_settings and
+ * picked up by composeClaudeLaunch. Returns an empty object when no valid
+ * override fields were supplied (caller skips the updateClaudeWorkspaceSettings
+ * call in that case, matching the original `Object.keys(...).length > 0` gate).
+ */
+function buildWorkspaceSettingsOverride(args: Record<string, unknown>): {
+  model?: string
+  permissionMode?: ClaudePermissionMode
+  effort?: ClaudeEffort
+} {
+  const settingsOverride: {
+    model?: string
+    permissionMode?: ClaudePermissionMode
+    effort?: ClaudeEffort
+  } = {}
+  if (typeof args.model === 'string' && args.model !== '') {
+    settingsOverride.model = args.model
+  }
+  const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
+    'default',
+    'acceptEdits',
+    'plan',
+    'bypassPermissions'
+  ]
+  if (
+    typeof args.permissionMode === 'string' &&
+    VALID_PERMISSION_MODES.includes(args.permissionMode as ClaudePermissionMode)
+  ) {
+    settingsOverride.permissionMode = args.permissionMode as ClaudePermissionMode
+  }
+  const VALID_EFFORTS: ClaudeEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
+  if (typeof args.effort === 'string' && VALID_EFFORTS.includes(args.effort as ClaudeEffort)) {
+    settingsOverride.effort = args.effort as ClaudeEffort
+  }
+  return settingsOverride
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch table — one entry per supported CLI action.
 // ---------------------------------------------------------------------------
@@ -183,82 +349,8 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
         .get(args.projectId)
       if (!projectExists) throw new Error(`project not found: ${args.projectId}`)
 
-      // Determine parent workspace id: explicit arg > caller's context workspace
-      const parentId: string | null =
-        typeof args.parentWorkspaceId === 'string'
-          ? args.parentWorkspaceId
-          : (context?.workspaceId ?? null)
-
-      // CROSS-PROJECT VALIDATION — explicit parentWorkspaceId must belong to the same project.
-      // A crafted parent from a different project could bypass depth/children caps (the
-      // lineage and children queries are project-unaware). context.workspaceId is trusted
-      // as the real caller; only an explicitly supplied parentWorkspaceId is validated.
-      if (
-        typeof args.parentWorkspaceId === 'string' &&
-        args.parentWorkspaceId !== context?.workspaceId
-      ) {
-        const parentRow = getDb()
-          .prepare('SELECT id, project_id FROM workspaces WHERE id = ? AND archived_at IS NULL')
-          .get(args.parentWorkspaceId) as { id: string; project_id: string } | undefined
-        if (!parentRow) {
-          throw new Error(`parent workspace not found or archived: ${args.parentWorkspaceId}`)
-        }
-        if (parentRow.project_id !== args.projectId) {
-          throw new Error(
-            `parent workspace ${args.parentWorkspaceId} belongs to a different project — ` +
-              `cross-project parenting is not allowed`
-          )
-        }
-      }
-
-      // GUARDRAIL CHECK — only when there is an explicit parent
-      if (parentId != null) {
-        const globalSettings = getClaudeGlobalSettings()
-        const maxChildren = globalSettings.maxWorkspaceChildren ?? 10
-        const maxDepth = globalSettings.maxWorkspaceDepth ?? 3
-
-        // Children check: how many non-archived children does the parent already have?
-        const existingChildren = listChildWorkspaces(parentId)
-        if (existingChildren.length >= maxChildren) {
-          throw new Error(
-            `Max children (${maxChildren}) reached for this workspace. Don't spawn more workspaces — ` +
-              `use subagents (Agent tool) or teammates within an existing workspace instead, ` +
-              `or archive finished workers to free slots.`
-          )
-        }
-
-        // Depth check: how deep in the lineage would the new workspace be?
-        // getWorkspaceLineage returns root→parent chain (inclusive of parent).
-        // The new workspace would be at depth lineage.length + 1.
-        const lineage = getWorkspaceLineage(parentId)
-        const newDepth = lineage.length + 1
-        if (newDepth > maxDepth) {
-          throw new Error(
-            `Max workspace depth (${maxDepth}) would be exceeded. Don't nest workspaces further — ` +
-              `use subagents (Agent tool) or teammates within an existing workspace instead.`
-          )
-        }
-      }
-
-      // Fork support: look up parent's claudeSessionId when --fork is requested
-      let forkedFromSessionId: string | null = null
-      if (args.fork === true) {
-        if (parentId == null) {
-          throw new Error(
-            '--fork requires a parent workspace. Run from inside a workspace (ORPHEUS_WORKSPACE_ID) or pass --parent.'
-          )
-        }
-        const parentWs = getWorkspace(parentId)
-        if (parentWs == null) {
-          throw new Error(`parent workspace not found: ${parentId}`)
-        }
-        if (parentWs.claudeSessionId == null) {
-          throw new Error(
-            `parent workspace ${parentId} has no claude session yet — cannot fork before a session is established`
-          )
-        }
-        forkedFromSessionId = parentWs.claudeSessionId
-      }
+      const parentId = resolveAndValidateParentWorkspaceId(args, context)
+      const forkedFromSessionId = resolveForkedFromSessionId(args, parentId)
 
       const name = typeof args.name === 'string' && args.name !== '' ? args.name : 'New workspace'
       const ws = createWorkspace({
@@ -271,30 +363,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
 
       // Apply workspace-level settings overrides (model / permissionMode / effort)
       // These are stored in claude_workspace_settings and picked up by composeClaudeLaunch.
-      const settingsOverride: {
-        model?: string
-        permissionMode?: ClaudePermissionMode
-        effort?: ClaudeEffort
-      } = {}
-      if (typeof args.model === 'string' && args.model !== '') {
-        settingsOverride.model = args.model
-      }
-      const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
-        'default',
-        'acceptEdits',
-        'plan',
-        'bypassPermissions'
-      ]
-      if (
-        typeof args.permissionMode === 'string' &&
-        VALID_PERMISSION_MODES.includes(args.permissionMode as ClaudePermissionMode)
-      ) {
-        settingsOverride.permissionMode = args.permissionMode as ClaudePermissionMode
-      }
-      const VALID_EFFORTS: ClaudeEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
-      if (typeof args.effort === 'string' && VALID_EFFORTS.includes(args.effort as ClaudeEffort)) {
-        settingsOverride.effort = args.effort as ClaudeEffort
-      }
+      const settingsOverride = buildWorkspaceSettingsOverride(args)
       if (Object.keys(settingsOverride).length > 0) {
         updateClaudeWorkspaceSettings(ws.id, settingsOverride)
       }
@@ -360,24 +429,9 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
 
       if (recursive) {
         // Collect the full subtree rooted at args.id (BFS), then archive leaves-up.
-        // Self-action guard: refuse if the caller's own workspace is within the subtree.
-        // visited Set prevents infinite loops from corrupted parent_workspace_id cycles.
-        const subtreeIds: string[] = []
-        const visited = new Set<string>()
-        const queue: string[] = [args.id]
-        while (queue.length > 0) {
-          const current = queue.shift()!
-          if (visited.has(current)) continue // cycle guard
-          visited.add(current)
-          subtreeIds.push(current)
-          const children = listChildWorkspaces(current)
-          for (const child of children) {
-            if (!visited.has(child.id)) {
-              queue.push(child.id)
-            }
-          }
-        }
+        const subtreeIds = collectWorkspaceSubtreeIds(args.id)
 
+        // Self-action guard: refuse if the caller's own workspace is within the subtree.
         if (context?.workspaceId != null && subtreeIds.includes(context.workspaceId)) {
           throw new Error(
             `cannot archive your own workspace (id=${context.workspaceId}): it is within the requested subtree`
@@ -671,6 +725,129 @@ function releaseSubscriptionSlot(): void {
   activeSubscriptionCount = Math.max(0, activeSubscriptionCount - 1)
 }
 
+// Result of parsing/validating a /subscribe request body — either the fields
+// handleSubscribe needs to proceed, or the (status, error) pair to respond
+// with (the caller writes the response; this function has no res access).
+type SubscribeRequestParseResult =
+  | { ok: true; workspaceIds: string[]; until: UntilMode; effectiveTimeoutMs: number }
+  | { ok: false; status: number; error: string }
+
+/**
+ * Parse and validate a /subscribe request body: JSON-parse, extract+validate
+ * workspaceIds (non-empty string[]), resolve --until (falls back to 'done'
+ * on anything invalid/missing — the CLI already validates client-side), and
+ * compute the effective server-side timeout (default 5 min, hard-capped at
+ * 1 hour). Behavior-identical to the original inline logic; only the
+ * response-writing was left to the caller since this function doesn't have
+ * access to `res`.
+ */
+function parseSubscribeRequestBody(raw: Buffer): SubscribeRequestParseResult {
+  let body: { workspaceIds?: unknown; timeoutMs?: unknown; until?: unknown }
+  try {
+    body = JSON.parse(raw.toString('utf-8')) as {
+      workspaceIds?: unknown
+      timeoutMs?: unknown
+      until?: unknown
+    }
+  } catch {
+    return { ok: false, status: 400, error: 'invalid JSON body' }
+  }
+
+  const workspaceIds = Array.isArray(body.workspaceIds)
+    ? (body.workspaceIds as unknown[]).filter((x): x is string => typeof x === 'string')
+    : []
+
+  if (workspaceIds.length === 0) {
+    return { ok: false, status: 400, error: 'workspaceIds must be a non-empty string[]' }
+  }
+
+  // --until — how specific a terminal state the caller wants to block for.
+  // 'done' (default) preserves the historical behavior exactly: any non-running
+  // state (awaiting_input, idle, blocked-permission, blocked-input) resolves.
+  // 'input' blocks past awaiting_input/idle until the workspace is genuinely
+  // blocked on the user. 'idle' blocks past awaiting_input until the workspace
+  // is fully idle. The CLI already validates this client-side (exit 2 on a bad
+  // value), so an invalid/missing value here just falls back to the default
+  // rather than erroring the whole subscription.
+  const until: UntilMode =
+    typeof body.until === 'string' && isValidUntilMode(body.until) ? body.until : 'done'
+
+  // Server-side timeout policy:
+  //   - Default (timeoutMs omitted or zero): 5 minutes (300 000 ms)
+  //   - Explicit caller value: respected up to 1 hour hard cap
+  //   - 1 hour cap still accessible for callers that explicitly opt in
+  const SERVER_MAX_TIMEOUT_MS = 60 * 60 * 1000
+  const SERVER_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
+  const requestedTimeout =
+    typeof body.timeoutMs === 'number' && body.timeoutMs > 0
+      ? body.timeoutMs
+      : SERVER_DEFAULT_TIMEOUT_MS
+  const effectiveTimeoutMs = Math.min(requestedTimeout, SERVER_MAX_TIMEOUT_MS)
+
+  return { ok: true, workspaceIds, until, effectiveTimeoutMs }
+}
+
+// ---------------------------------------------------------------------------
+// /cmd — one-shot request/response dispatch helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a JSON response for /cmd, guarding against a client that already
+ * disconnected (writableEnded, or writeHead/end throwing mid-flight) exactly
+ * as every call site's original inline `if (!res.writableEnded) { try {...}
+ * catch { /* client disconnected *\/ } }` did.
+ */
+function writeCmdJsonResponse(res: http.ServerResponse, status: number, payload: unknown): void {
+  if (res.writableEnded) return
+  try {
+    res.writeHead(status, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(payload))
+  } catch {
+    /* client disconnected */
+  }
+}
+
+/**
+ * Resolve the dispatch handler for `action`, mirroring the original inline
+ * lookup exactly: only an own-property hit that is actually a function
+ * counts as a handler (guards against action strings colliding with
+ * Object.prototype members like 'toString').
+ */
+function resolveCmdHandler(
+  dispatch: Record<string, DispatchFn>,
+  action: string
+): DispatchFn | undefined {
+  const handlerCandidate = Object.prototype.hasOwnProperty.call(dispatch, action)
+    ? dispatch[action]
+    : undefined
+  return typeof handlerCandidate === 'function' ? handlerCandidate : undefined
+}
+
+/**
+ * Invoke a resolved /cmd dispatch handler and write its response envelope —
+ * `{ ok: true, data }` on success, `{ ok: false, error }` on a thrown error.
+ * Wrapped in try/catch so a throwing domain function never crashes the
+ * socket; matches the original inline try/catch exactly, including writing
+ * the error envelope with a 200 status (the /cmd contract puts success/
+ * failure in the JSON body, not the HTTP status).
+ */
+async function dispatchCmdAndRespond(
+  handler: DispatchFn,
+  args: Record<string, unknown>,
+  context: { workspaceId?: string },
+  deps: CommandServerDeps,
+  res: http.ServerResponse
+): Promise<void> {
+  try {
+    const data = await handler(args, context, deps)
+    writeCmdJsonResponse(res, 200, { ok: true, data })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error('[commandServer] handler error:', err)
+    writeCmdJsonResponse(res, 200, { ok: false, error: message })
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Server lifecycle
 // ---------------------------------------------------------------------------
@@ -767,57 +944,16 @@ export function startCommandServer(deps: CommandServerDeps): {
         return
       }
 
-      let body: { workspaceIds?: unknown; timeoutMs?: unknown; until?: unknown }
-      try {
-        body = JSON.parse(raw.toString('utf-8')) as {
-          workspaceIds?: unknown
-          timeoutMs?: unknown
-          until?: unknown
-        }
-      } catch {
+      const parsed = parseSubscribeRequestBody(raw)
+      if (!parsed.ok) {
         releaseSlotOnce()
         if (!res.writableEnded) {
-          res.writeHead(400, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ ok: false, error: 'invalid JSON body' }))
+          res.writeHead(parsed.status, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: parsed.error }))
         }
         return
       }
-
-      const workspaceIds = Array.isArray(body.workspaceIds)
-        ? (body.workspaceIds as unknown[]).filter((x): x is string => typeof x === 'string')
-        : []
-
-      if (workspaceIds.length === 0) {
-        releaseSlotOnce()
-        if (!res.writableEnded) {
-          res.writeHead(400, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ ok: false, error: 'workspaceIds must be a non-empty string[]' }))
-        }
-        return
-      }
-
-      // --until — how specific a terminal state the caller wants to block for.
-      // 'done' (default) preserves the historical behavior exactly: any non-running
-      // state (awaiting_input, idle, blocked-permission, blocked-input) resolves.
-      // 'input' blocks past awaiting_input/idle until the workspace is genuinely
-      // blocked on the user. 'idle' blocks past awaiting_input until the workspace
-      // is fully idle. The CLI already validates this client-side (exit 2 on a bad
-      // value), so an invalid/missing value here just falls back to the default
-      // rather than erroring the whole subscription.
-      const until: UntilMode =
-        typeof body.until === 'string' && isValidUntilMode(body.until) ? body.until : 'done'
-
-      // Server-side timeout policy:
-      //   - Default (timeoutMs omitted or zero): 5 minutes (300 000 ms)
-      //   - Explicit caller value: respected up to 1 hour hard cap
-      //   - 1 hour cap still accessible for callers that explicitly opt in
-      const SERVER_MAX_TIMEOUT_MS = 60 * 60 * 1000
-      const SERVER_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
-      const requestedTimeout =
-        typeof body.timeoutMs === 'number' && body.timeoutMs > 0
-          ? body.timeoutMs
-          : SERVER_DEFAULT_TIMEOUT_MS
-      const effectiveTimeoutMs = Math.min(requestedTimeout, SERVER_MAX_TIMEOUT_MS)
+      const { workspaceIds, until, effectiveTimeoutMs } = parsed
 
       // Start streaming response — keep connection open
       res.writeHead(200, {
@@ -930,6 +1066,116 @@ export function startCommandServer(deps: CommandServerDeps): {
       // Only when NONE of the above apply (e.g. the DB row's status is somehow neither
       // live nor a resolvable terminal state) do we force a ground-truth reconcile and,
       // failing that, apply the grace window before ever concluding 'died'.
+      // Resolve deriveReason()'s outcome for the fileStatus === 'unknown' case —
+      // extracted verbatim (see the big comment block above deriveReason for the
+      // full rationale: DB cross-check, ground-truth reconcile, grace window).
+      // Mutates `everSeenAlive` in place exactly as the inline code did (same
+      // Set instance, passed through).
+      async function deriveReasonForUnknownFileStatus(
+        workspaceId: string,
+        waitingFor: string,
+        fromTransition: boolean
+      ): Promise<string> {
+        const ws = getWorkspace(workspaceId)
+
+        if (ws == null) {
+          // Workspace row is gone entirely — cannot be live. Distinguish
+          // "never existed" from "existed and was destroyed": if this
+          // subscription never observed the workspace alive, treat it as
+          // 'not-found' rather than 'died' (matches the subscribe-start
+          // validation above). Otherwise it was alive and is now genuinely
+          // gone → 'died'.
+          return everSeenAlive.has(workspaceId) ? 'died' : 'not-found'
+        }
+        if (ws.archivedAt != null) {
+          // Archived — teardown already happened; treat as died (not a live wait target).
+          return 'died'
+        }
+        if (ws.closedAt != null) {
+          // Deliberately closed — not live, but not a crash either. 'died' is the
+          // closest terminal bucket ws-wait has; the caller closed it on purpose.
+          return 'died'
+        }
+        if (ws.status === 'awaiting_input' || ws.status === 'idle') {
+          // The DB already recorded the turn's terminal outcome (awaiting_input/idle)
+          // via setStatusFromFile before this file read raced past it. Report the
+          // real outcome — never 'died' — even though the file momentarily reads
+          // 'unknown'.
+          return 'done'
+        }
+        if (ws.status === 'attention') {
+          // DB says the workspace is blocked on something; file's waitingFor detail
+          // isn't available in this race, so default to the more common case.
+          return waitingFor.toLowerCase().includes('permission')
+            ? 'blocked-permission'
+            : BLOCKED_INPUT
+        }
+        if (ws.status === 'in_progress') {
+          // DB says the workspace is still actively running — 'unknown' here is a
+          // transient file-read race, not a death. Keep waiting.
+          return ''
+        }
+
+        // GROUND TRUTH before any 'died' conclusion: force a synchronous reconcile
+        // (refreshes liveSessionMap from disk right now, not on the next debounce
+        // tick) and re-read. If the workspace is actually busy/idle/waiting, use
+        // that — it was never dead, just a cold cache.
+        await forceReconcile()
+        const refreshedInfo = getWorkspaceFileInfo(workspaceId)
+        if (refreshedInfo.status === 'busy') {
+          everSeenAlive.add(workspaceId)
+          return ''
+        }
+        if (refreshedInfo.status === 'idle') {
+          everSeenAlive.add(workspaceId)
+          return 'done'
+        }
+        if (refreshedInfo.status === 'waiting') {
+          everSeenAlive.add(workspaceId)
+          const refreshedWaitingFor = (refreshedInfo.waitingFor ?? '').toLowerCase()
+          return refreshedWaitingFor.includes('permission') ? 'blocked-permission' : BLOCKED_INPUT
+        }
+
+        // Second, independent ground-truth source: read the session file straight
+        // off disk, bypassing liveSessionMap entirely, in case the map is still
+        // cold even right after a forced reconcile (e.g. the file only appeared
+        // mid-reconcile, or the pid/sessionId pairing hasn't been observed yet).
+        const syncStatus = getWorkspaceFileStatusSync(workspaceId)
+        if (syncStatus === 'busy') {
+          everSeenAlive.add(workspaceId)
+          return ''
+        }
+        if (syncStatus === 'idle') {
+          everSeenAlive.add(workspaceId)
+          return 'done'
+        }
+        if (syncStatus === 'waiting') {
+          everSeenAlive.add(workspaceId)
+          return BLOCKED_INPUT
+        }
+
+        // Still genuinely unknown after BOTH ground-truth refreshes. Only now
+        // consider 'died' — and only once the subscription's startup grace window
+        // has elapsed. A workspace that was just created/sent-to is transitioning;
+        // giving it a few seconds to flush its first status file prevents the
+        // false-died race this fix targets.
+        const withinGraceWindow = Date.now() - subscriptionStartedAt < SUBSCRIPTION_GRACE_MS
+        if (withinGraceWindow) {
+          return '' // still within grace — not yet terminal
+        }
+
+        // Genuine death = confirmed gone even after ground-truth refresh, AND
+        // either this is a real transition event (the workspace was live and its
+        // status observably changed) or it was previously seen alive and has now
+        // disappeared. Otherwise (initial check, workspace never observed alive,
+        // grace window elapsed with no session ever appearing) keep waiting — the
+        // subscription timeout is the backstop for a workspace that never starts.
+        if (fromTransition || everSeenAlive.has(workspaceId)) {
+          return 'died'
+        }
+        return '' // startup grace — not yet terminal
+      }
+
       async function deriveReason(workspaceId: string, fromTransition: boolean): Promise<string> {
         const info = getWorkspaceFileInfo(workspaceId)
         const fileStatus = info.status
@@ -940,104 +1186,7 @@ export function startCommandServer(deps: CommandServerDeps): {
         }
 
         if (fileStatus === 'unknown') {
-          const ws = getWorkspace(workspaceId)
-
-          if (ws == null) {
-            // Workspace row is gone entirely — cannot be live. Distinguish
-            // "never existed" from "existed and was destroyed": if this
-            // subscription never observed the workspace alive, treat it as
-            // 'not-found' rather than 'died' (matches the subscribe-start
-            // validation above). Otherwise it was alive and is now genuinely
-            // gone → 'died'.
-            return everSeenAlive.has(workspaceId) ? 'died' : 'not-found'
-          }
-          if (ws.archivedAt != null) {
-            // Archived — teardown already happened; treat as died (not a live wait target).
-            return 'died'
-          }
-          if (ws.closedAt != null) {
-            // Deliberately closed — not live, but not a crash either. 'died' is the
-            // closest terminal bucket ws-wait has; the caller closed it on purpose.
-            return 'died'
-          }
-          if (ws.status === 'awaiting_input' || ws.status === 'idle') {
-            // The DB already recorded the turn's terminal outcome (awaiting_input/idle)
-            // via setStatusFromFile before this file read raced past it. Report the
-            // real outcome — never 'died' — even though the file momentarily reads
-            // 'unknown'.
-            return 'done'
-          }
-          if (ws.status === 'attention') {
-            // DB says the workspace is blocked on something; file's waitingFor detail
-            // isn't available in this race, so default to the more common case.
-            return waitingFor.toLowerCase().includes('permission')
-              ? 'blocked-permission'
-              : BLOCKED_INPUT
-          }
-          if (ws.status === 'in_progress') {
-            // DB says the workspace is still actively running — 'unknown' here is a
-            // transient file-read race, not a death. Keep waiting.
-            return ''
-          }
-
-          // GROUND TRUTH before any 'died' conclusion: force a synchronous reconcile
-          // (refreshes liveSessionMap from disk right now, not on the next debounce
-          // tick) and re-read. If the workspace is actually busy/idle/waiting, use
-          // that — it was never dead, just a cold cache.
-          await forceReconcile()
-          const refreshedInfo = getWorkspaceFileInfo(workspaceId)
-          if (refreshedInfo.status === 'busy') {
-            everSeenAlive.add(workspaceId)
-            return ''
-          }
-          if (refreshedInfo.status === 'idle') {
-            everSeenAlive.add(workspaceId)
-            return 'done'
-          }
-          if (refreshedInfo.status === 'waiting') {
-            everSeenAlive.add(workspaceId)
-            const refreshedWaitingFor = (refreshedInfo.waitingFor ?? '').toLowerCase()
-            return refreshedWaitingFor.includes('permission') ? 'blocked-permission' : BLOCKED_INPUT
-          }
-
-          // Second, independent ground-truth source: read the session file straight
-          // off disk, bypassing liveSessionMap entirely, in case the map is still
-          // cold even right after a forced reconcile (e.g. the file only appeared
-          // mid-reconcile, or the pid/sessionId pairing hasn't been observed yet).
-          const syncStatus = getWorkspaceFileStatusSync(workspaceId)
-          if (syncStatus === 'busy') {
-            everSeenAlive.add(workspaceId)
-            return ''
-          }
-          if (syncStatus === 'idle') {
-            everSeenAlive.add(workspaceId)
-            return 'done'
-          }
-          if (syncStatus === 'waiting') {
-            everSeenAlive.add(workspaceId)
-            return BLOCKED_INPUT
-          }
-
-          // Still genuinely unknown after BOTH ground-truth refreshes. Only now
-          // consider 'died' — and only once the subscription's startup grace window
-          // has elapsed. A workspace that was just created/sent-to is transitioning;
-          // giving it a few seconds to flush its first status file prevents the
-          // false-died race this fix targets.
-          const withinGraceWindow = Date.now() - subscriptionStartedAt < SUBSCRIPTION_GRACE_MS
-          if (withinGraceWindow) {
-            return '' // still within grace — not yet terminal
-          }
-
-          // Genuine death = confirmed gone even after ground-truth refresh, AND
-          // either this is a real transition event (the workspace was live and its
-          // status observably changed) or it was previously seen alive and has now
-          // disappeared. Otherwise (initial check, workspace never observed alive,
-          // grace window elapsed with no session ever appearing) keep waiting — the
-          // subscription timeout is the backstop for a workspace that never starts.
-          if (fromTransition || everSeenAlive.has(workspaceId)) {
-            return 'died'
-          }
-          return '' // startup grace — not yet terminal
+          return deriveReasonForUnknownFileStatus(workspaceId, waitingFor, fromTransition)
         }
         if (fileStatus === 'idle') {
           return 'done'
@@ -1241,59 +1390,20 @@ export function startCommandServer(deps: CommandServerDeps): {
         try {
           body = JSON.parse(raw.toString('utf-8')) as CmdBody
         } catch {
-          if (!res.writableEnded) {
-            try {
-              res.writeHead(400, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ ok: false, error: 'invalid JSON body' }))
-            } catch {
-              /* client disconnected */
-            }
-          }
+          writeCmdJsonResponse(res, 400, { ok: false, error: 'invalid JSON body' })
           return
         }
 
         const { action, args = {}, context = {} } = body
 
         // --- Dispatch ---
-        const handlerCandidate = Object.prototype.hasOwnProperty.call(dispatch, action)
-          ? dispatch[action]
-          : undefined
-        const handler = typeof handlerCandidate === 'function' ? handlerCandidate : undefined
+        const handler = resolveCmdHandler(dispatch, action)
         if (!handler) {
-          if (!res.writableEnded) {
-            try {
-              res.writeHead(400, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ ok: false, error: `unknown action: ${action}` }))
-            } catch {
-              /* client disconnected */
-            }
-          }
+          writeCmdJsonResponse(res, 400, { ok: false, error: `unknown action: ${action}` })
           return
         }
 
-        try {
-          // Wrap in try/catch so a throwing domain function never crashes the socket.
-          const data = await handler(args, context, deps)
-          if (!res.writableEnded) {
-            try {
-              res.writeHead(200, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ ok: true, data }))
-            } catch {
-              /* client disconnected */
-            }
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
-          console.error('[commandServer] handler error:', err)
-          if (!res.writableEnded) {
-            try {
-              res.writeHead(200, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ ok: false, error: message }))
-            } catch {
-              /* client disconnected */
-            }
-          }
-        }
+        await dispatchCmdAndRespond(handler, args, context, deps, res)
       } catch (err) {
         // Outer catch: unexpected error in the request handler — swallow to
         // prevent an unhandled rejection from crashing the process.

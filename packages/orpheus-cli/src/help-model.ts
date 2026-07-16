@@ -274,6 +274,83 @@ function argLabelOf(arg: DocArg): string {
   return arg.required ? `<${inner}>` : `[${inner}]`
 }
 
+/** Push the "Global options:" section (text format) onto `lines`. */
+function pushTextGlobalOptions(lines: string[], model: DocModel): void {
+  lines.push('Global options:')
+  for (const f of model.globalFlags) {
+    const label = f.type === 'boolean' ? `--${f.name}` : `--${f.name} ${f.valueHint ?? '<value>'}`
+    lines.push(`  ${label}`)
+    lines.push(`    ${f.desc}`)
+  }
+}
+
+/** Push one command's Arguments block (text format) onto `lines`. */
+function pushTextCommandArgs(lines: string[], cmd: DocCommand): void {
+  if (cmd.args.length === 0) return
+  lines.push('  Arguments:')
+  for (const a of cmd.args) {
+    lines.push(`    ${argLabelOf(a).padEnd(14)}${a.desc}`)
+    if (a.values != null) lines.push(`    ${''.padEnd(14)}values: ${a.values.join(' | ')}`)
+  }
+}
+
+/** Push one command's Flags block (text format) onto `lines`. */
+function pushTextCommandFlags(lines: string[], cmd: DocCommand): void {
+  if (cmd.flags.length === 0) return
+  lines.push('  Flags:')
+  for (const f of cmd.flags) {
+    lines.push(`    ${flagLabelOf(f)}`)
+    if (f.desc !== '') lines.push(`      ${f.desc}`)
+    if (f.values != null) lines.push(`      values: ${f.values.join(' | ')}`)
+    if (f.default != null) lines.push(`      default: ${f.default}`)
+    if (f.notes != null) lines.push(`      note: ${f.notes}`)
+  }
+}
+
+/** Push one command's Examples block (text format) onto `lines`. */
+function pushTextCommandExamples(lines: string[], cmd: DocCommand): void {
+  if (cmd.examples.length === 0) return
+  lines.push('  Examples:')
+  for (const ex of cmd.examples) lines.push(`    ${ex}`)
+}
+
+/** Push a single command's full text-format block onto `lines`. */
+function pushTextCommand(lines: string[], cmd: DocCommand): void {
+  lines.push('')
+  lines.push(`orpheus ${cmd.name}`)
+  if (cmd.description !== '') lines.push(`  ${cmd.description}`)
+  if (cmd.longDesc != null) lines.push(`  ${cmd.longDesc}`)
+  lines.push(`  Usage: ${cmd.usage}`)
+  lines.push(`  Read-only: ${cmd.isRead ? 'yes (never auto-launches the app)' : 'no'}`)
+
+  pushTextCommandArgs(lines, cmd)
+  pushTextCommandFlags(lines, cmd)
+  pushTextCommandExamples(lines, cmd)
+}
+
+/** Push the "Exit codes" section (text format) onto `lines`. */
+function pushTextExitCodes(lines: string[], model: DocModel): void {
+  lines.push('')
+  lines.push('='.repeat(78))
+  lines.push('Exit codes')
+  lines.push('='.repeat(78))
+  for (const ec of model.exitCodes) {
+    lines.push(`  ${String(ec.code).padEnd(4)}${ec.meaning}`)
+  }
+}
+
+/** Push the "Environment variables" section (text format) onto `lines`. */
+function pushTextEnvVars(lines: string[], model: DocModel): void {
+  lines.push('')
+  lines.push('='.repeat(78))
+  lines.push('Environment variables')
+  lines.push('='.repeat(78))
+  for (const ev of model.envVars) {
+    lines.push(`  ${ev.name}`)
+    lines.push(`    ${ev.desc}`)
+  }
+}
+
 /**
  * Render the full doc model as plain, readable text — the `--format text`
  * (default) output of `orpheus help`. Includes every command's full rich
@@ -286,12 +363,7 @@ export function renderDocModelAsText(model: DocModel): string {
   lines.push('Command-line interface for the Orpheus app. Used mainly by AI agents inside')
   lines.push('Orpheus workspaces to orchestrate other workspaces (fan-out).')
   lines.push('')
-  lines.push('Global options:')
-  for (const f of model.globalFlags) {
-    const label = f.type === 'boolean' ? `--${f.name}` : `--${f.name} ${f.valueHint ?? '<value>'}`
-    lines.push(`  ${label}`)
-    lines.push(`    ${f.desc}`)
-  }
+  pushTextGlobalOptions(lines, model)
 
   lines.push('')
   lines.push('='.repeat(78))
@@ -299,54 +371,11 @@ export function renderDocModelAsText(model: DocModel): string {
   lines.push('='.repeat(78))
 
   for (const cmd of model.commands) {
-    lines.push('')
-    lines.push(`orpheus ${cmd.name}`)
-    if (cmd.description !== '') lines.push(`  ${cmd.description}`)
-    if (cmd.longDesc != null) lines.push(`  ${cmd.longDesc}`)
-    lines.push(`  Usage: ${cmd.usage}`)
-    lines.push(`  Read-only: ${cmd.isRead ? 'yes (never auto-launches the app)' : 'no'}`)
-
-    if (cmd.args.length > 0) {
-      lines.push('  Arguments:')
-      for (const a of cmd.args) {
-        lines.push(`    ${argLabelOf(a).padEnd(14)}${a.desc}`)
-        if (a.values != null) lines.push(`    ${''.padEnd(14)}values: ${a.values.join(' | ')}`)
-      }
-    }
-
-    if (cmd.flags.length > 0) {
-      lines.push('  Flags:')
-      for (const f of cmd.flags) {
-        lines.push(`    ${flagLabelOf(f)}`)
-        if (f.desc !== '') lines.push(`      ${f.desc}`)
-        if (f.values != null) lines.push(`      values: ${f.values.join(' | ')}`)
-        if (f.default != null) lines.push(`      default: ${f.default}`)
-        if (f.notes != null) lines.push(`      note: ${f.notes}`)
-      }
-    }
-
-    if (cmd.examples.length > 0) {
-      lines.push('  Examples:')
-      for (const ex of cmd.examples) lines.push(`    ${ex}`)
-    }
+    pushTextCommand(lines, cmd)
   }
 
-  lines.push('')
-  lines.push('='.repeat(78))
-  lines.push('Exit codes')
-  lines.push('='.repeat(78))
-  for (const ec of model.exitCodes) {
-    lines.push(`  ${String(ec.code).padEnd(4)}${ec.meaning}`)
-  }
-
-  lines.push('')
-  lines.push('='.repeat(78))
-  lines.push('Environment variables')
-  lines.push('='.repeat(78))
-  for (const ev of model.envVars) {
-    lines.push(`  ${ev.name}`)
-    lines.push(`    ${ev.desc}`)
-  }
+  pushTextExitCodes(lines, model)
+  pushTextEnvVars(lines, model)
   lines.push('')
 
   return lines.join('\n')
@@ -362,6 +391,111 @@ export function renderDocModelAsText(model: DocModel): string {
  */
 function mdCell(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
+}
+
+/** Push the "## Global options" section (markdown format) onto `lines`. */
+function pushMdGlobalOptions(lines: string[], model: DocModel): void {
+  lines.push('## Global options')
+  lines.push('')
+  lines.push('| Flag | Type | Description |')
+  lines.push('| --- | --- | --- |')
+  for (const f of model.globalFlags) {
+    const label =
+      f.type === 'boolean' ? `\`--${f.name}\`` : `\`--${f.name} ${f.valueHint ?? '<value>'}\``
+    lines.push(`| ${mdCell(label)} | ${f.type} | ${mdCell(f.desc)} |`)
+  }
+  lines.push('')
+}
+
+/** Push one command's Arguments table (markdown format) onto `lines`. */
+function pushMdCommandArgs(lines: string[], cmd: DocCommand): void {
+  if (cmd.args.length === 0) return
+  lines.push('**Arguments:**')
+  lines.push('')
+  lines.push('| Arg | Required | Description | Values |')
+  lines.push('| --- | --- | --- | --- |')
+  for (const a of cmd.args) {
+    lines.push(
+      `| \`${mdCell(argLabelOf(a))}\` | ${a.required ? 'yes' : 'no'} | ${mdCell(a.desc)} | ${a.values != null ? mdCell(a.values.join(', ')) : '—'} |`
+    )
+  }
+  lines.push('')
+}
+
+/** Push one command's Flags table (markdown format) onto `lines`. */
+function pushMdCommandFlags(lines: string[], cmd: DocCommand): void {
+  if (cmd.flags.length === 0) return
+  lines.push('**Flags:**')
+  lines.push('')
+  lines.push('| Flag | Description | Values | Default | Notes |')
+  lines.push('| --- | --- | --- | --- | --- |')
+  for (const f of cmd.flags) {
+    lines.push(
+      `| \`${mdCell(flagLabelOf(f))}\` | ${mdCell(f.desc || '—')} | ${f.values != null ? mdCell(f.values.join(', ')) : '—'} | ${f.default != null ? mdCell(f.default) : '—'} | ${f.notes != null ? mdCell(f.notes) : '—'} |`
+    )
+  }
+  lines.push('')
+}
+
+/** Push one command's Examples block (markdown format) onto `lines`. */
+function pushMdCommandExamples(lines: string[], cmd: DocCommand): void {
+  if (cmd.examples.length === 0) return
+  lines.push('**Examples:**')
+  lines.push('')
+  lines.push('```sh')
+  for (const ex of cmd.examples) lines.push(ex)
+  lines.push('```')
+  lines.push('')
+}
+
+/** Push a single command's full markdown-format section onto `lines`. */
+function pushMdCommand(lines: string[], cmd: DocCommand): void {
+  lines.push(`### \`orpheus ${cmd.name}\``)
+  lines.push('')
+  if (cmd.description !== '') {
+    lines.push(cmd.description)
+    lines.push('')
+  }
+  if (cmd.longDesc != null) {
+    lines.push(cmd.longDesc)
+    lines.push('')
+  }
+  lines.push('```')
+  lines.push(cmd.usage)
+  lines.push('```')
+  lines.push('')
+  lines.push(
+    `Read-only: ${cmd.isRead ? 'yes (never triggers auto-launch of the app)' : 'no (may auto-launch the app if it is not running)'}`
+  )
+  lines.push('')
+
+  pushMdCommandArgs(lines, cmd)
+  pushMdCommandFlags(lines, cmd)
+  pushMdCommandExamples(lines, cmd)
+}
+
+/** Push the "## Exit codes" section (markdown format) onto `lines`. */
+function pushMdExitCodes(lines: string[], model: DocModel): void {
+  lines.push('## Exit codes')
+  lines.push('')
+  lines.push('| Code | Meaning |')
+  lines.push('| --- | --- |')
+  for (const ec of model.exitCodes) {
+    lines.push(`| ${ec.code} | ${mdCell(ec.meaning)} |`)
+  }
+  lines.push('')
+}
+
+/** Push the "## Environment variables" section (markdown format) onto `lines`. */
+function pushMdEnvVars(lines: string[], model: DocModel): void {
+  lines.push('## Environment variables')
+  lines.push('')
+  lines.push('| Variable | Description |')
+  lines.push('| --- | --- |')
+  for (const ev of model.envVars) {
+    lines.push(`| \`${ev.name}\` | ${mdCell(ev.desc)} |`)
+  }
+  lines.push('')
 }
 
 /**
@@ -381,93 +515,17 @@ export function renderDocModelAsMarkdown(model: DocModel): string {
   )
   lines.push('')
 
-  lines.push('## Global options')
-  lines.push('')
-  lines.push('| Flag | Type | Description |')
-  lines.push('| --- | --- | --- |')
-  for (const f of model.globalFlags) {
-    const label =
-      f.type === 'boolean' ? `\`--${f.name}\`` : `\`--${f.name} ${f.valueHint ?? '<value>'}\``
-    lines.push(`| ${mdCell(label)} | ${f.type} | ${mdCell(f.desc)} |`)
-  }
-  lines.push('')
+  pushMdGlobalOptions(lines, model)
 
   lines.push('## Commands')
   lines.push('')
 
   for (const cmd of model.commands) {
-    lines.push(`### \`orpheus ${cmd.name}\``)
-    lines.push('')
-    if (cmd.description !== '') {
-      lines.push(cmd.description)
-      lines.push('')
-    }
-    if (cmd.longDesc != null) {
-      lines.push(cmd.longDesc)
-      lines.push('')
-    }
-    lines.push('```')
-    lines.push(cmd.usage)
-    lines.push('```')
-    lines.push('')
-    lines.push(
-      `Read-only: ${cmd.isRead ? 'yes (never triggers auto-launch of the app)' : 'no (may auto-launch the app if it is not running)'}`
-    )
-    lines.push('')
-
-    if (cmd.args.length > 0) {
-      lines.push('**Arguments:**')
-      lines.push('')
-      lines.push('| Arg | Required | Description | Values |')
-      lines.push('| --- | --- | --- | --- |')
-      for (const a of cmd.args) {
-        lines.push(
-          `| \`${mdCell(argLabelOf(a))}\` | ${a.required ? 'yes' : 'no'} | ${mdCell(a.desc)} | ${a.values != null ? mdCell(a.values.join(', ')) : '—'} |`
-        )
-      }
-      lines.push('')
-    }
-
-    if (cmd.flags.length > 0) {
-      lines.push('**Flags:**')
-      lines.push('')
-      lines.push('| Flag | Description | Values | Default | Notes |')
-      lines.push('| --- | --- | --- | --- | --- |')
-      for (const f of cmd.flags) {
-        lines.push(
-          `| \`${mdCell(flagLabelOf(f))}\` | ${mdCell(f.desc || '—')} | ${f.values != null ? mdCell(f.values.join(', ')) : '—'} | ${f.default != null ? mdCell(f.default) : '—'} | ${f.notes != null ? mdCell(f.notes) : '—'} |`
-        )
-      }
-      lines.push('')
-    }
-
-    if (cmd.examples.length > 0) {
-      lines.push('**Examples:**')
-      lines.push('')
-      lines.push('```sh')
-      for (const ex of cmd.examples) lines.push(ex)
-      lines.push('```')
-      lines.push('')
-    }
+    pushMdCommand(lines, cmd)
   }
 
-  lines.push('## Exit codes')
-  lines.push('')
-  lines.push('| Code | Meaning |')
-  lines.push('| --- | --- |')
-  for (const ec of model.exitCodes) {
-    lines.push(`| ${ec.code} | ${mdCell(ec.meaning)} |`)
-  }
-  lines.push('')
-
-  lines.push('## Environment variables')
-  lines.push('')
-  lines.push('| Variable | Description |')
-  lines.push('| --- | --- |')
-  for (const ev of model.envVars) {
-    lines.push(`| \`${ev.name}\` | ${mdCell(ev.desc)} |`)
-  }
-  lines.push('')
+  pushMdExitCodes(lines, model)
+  pushMdEnvVars(lines, model)
 
   return lines.join('\n')
 }

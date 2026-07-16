@@ -125,6 +125,135 @@ function renderTree(
   }
 }
 
+/** Serialize a single tree node (and its children) with live status + display name overlaid. */
+function serializeTreeNode(
+  node: WorkspaceTreeNode,
+  callerWsId: string | undefined,
+  db: OrpheusDb,
+  projectCache: Map<string, ProjectRecord | null>
+): Record<string, unknown> {
+  const ws = node.workspace
+  return {
+    id: ws.id,
+    name: ws.name,
+    displayName: displayNameOf(ws, db, projectCache),
+    status: effectiveStatus(ws),
+    runStatus: runStatusOf(ws),
+    parentWorkspaceId: ws.parentWorkspaceId,
+    isOwnedChild: callerWsId != null && ws.parentWorkspaceId === callerWsId,
+    children: node.children.map((child) => serializeTreeNode(child, callerWsId, db, projectCache))
+  }
+}
+
+/**
+ * Resolve the flag-selected project id (undefined when --all-projects is set).
+ * Returns { ok: false } if a specific project context was requested but could
+ * not be resolved — the caller should print noProjectMessage() with exit 2.
+ */
+function resolveLsProjectId(
+  ctx: { flags: Record<string, unknown>; project?: string },
+  db: OrpheusDb
+): { ok: true; projectId: string | undefined } | { ok: false } {
+  if (ctx.flags['all-projects'] === true) {
+    return { ok: true, projectId: undefined }
+  }
+  const resolved = resolveContext({ project: ctx.project }, db)
+  if (resolved.projectId == null) {
+    return { ok: false }
+  }
+  return { ok: true, projectId: resolved.projectId }
+}
+
+/** Handle `ws ls --tree`: resolve nodes, print the not-applied note, then render JSON or pretty. */
+function handleTreeMode(
+  projectId: string | undefined,
+  statusFilter: string | undefined,
+  jsonMode: boolean,
+  db: OrpheusDb,
+  projectCache: Map<string, ProjectRecord | null>
+): void {
+  const nodes = projectId != null ? db.buildProjectLineageTree(projectId) : db.buildLineageTree()
+
+  // Filter by status if requested (prune non-matching leaves, keep parents)
+  // For simplicity: if a status filter is active in human mode, print a note.
+  // In JSON mode we suppress the note to keep output parseable.
+  if (statusFilter != null && !jsonMode) {
+    printLines('Note: --status filter is not applied in --tree mode; showing full tree.')
+  }
+
+  const callerWsId = process.env.ORPHEUS_WORKSPACE_ID
+
+  if (jsonMode) {
+    printResult(nodes.map((node) => serializeTreeNode(node, callerWsId, db, projectCache)))
+  } else if (nodes.length === 0) {
+    printLines('  (none)')
+  } else {
+    renderTree(nodes, 0, callerWsId, db, projectCache)
+  }
+}
+
+type WsRow = {
+  id: string
+  name: string
+  status: string
+  parentWorkspaceId: string
+  isOwnedChild: string
+}
+
+/** Handle flat `ws ls`: fetch workspaces, then render JSON or a pretty table. */
+function handleFlatMode(
+  projectId: string | undefined,
+  statusFilter: string | undefined,
+  jsonMode: boolean,
+  db: OrpheusDb,
+  projectCache: Map<string, ProjectRecord | null>
+): void {
+  const workspaces = db.listWorkspaces({
+    projectId,
+    ...(statusFilter != null ? { status: statusFilter as WorkspaceRecord['status'] } : undefined)
+  })
+
+  const callerWsId = process.env.ORPHEUS_WORKSPACE_ID
+
+  if (jsonMode) {
+    printResult(
+      workspaces.map((ws) => ({
+        id: ws.id,
+        name: ws.name,
+        displayName: displayNameOf(ws, db, projectCache),
+        status: effectiveStatus(ws),
+        runStatus: runStatusOf(ws),
+        parentWorkspaceId: ws.parentWorkspaceId,
+        isOwnedChild: callerWsId != null && ws.parentWorkspaceId === callerWsId
+      }))
+    )
+    return
+  }
+
+  const rows: WsRow[] = workspaces.map((ws) => ({
+    id: ws.id,
+    // Truncated for pretty/table display only — the --json branch above
+    // calls displayNameOf() directly and emits the full, untruncated value.
+    name: truncateForDisplay(displayNameOf(ws, db, projectCache), MAX_NAME_COL_WIDTH),
+    status: effectiveStatus(ws),
+    parentWorkspaceId: ws.parentWorkspaceId ?? '',
+    isOwnedChild: callerWsId != null && ws.parentWorkspaceId === callerWsId ? 'yes' : ''
+  }))
+
+  // NAME has no explicit `width` floor here: printTable's width is a
+  // *minimum* (it expands to fit the widest cell), and the `name`
+  // values are already truncated to MAX_NAME_COL_WIDTH above, so the
+  // column naturally caps there without padding short names out to 48
+  // chars unnecessarily.
+  const columns: TableColumn<WsRow>[] = [
+    { key: 'id', header: 'ID', width: 36 },
+    { key: 'name', header: 'NAME' },
+    { key: 'status', header: 'STATUS', width: 14 },
+    { key: 'isOwnedChild', header: 'YOURS', width: 5 }
+  ]
+  printTable(rows, columns)
+}
+
 // ---------------------------------------------------------------------------
 // Command
 // ---------------------------------------------------------------------------
@@ -176,118 +305,21 @@ registerCommand('ws ls', {
     const db = openDb()
     const projectCache = new Map<string, ProjectRecord | null>()
     try {
-      const allProjects = ctx.flags['all-projects'] === true
-
       // Resolve project context unless --all-projects
-      let projectId: string | undefined
-      if (!allProjects) {
-        const resolved = resolveContext({ project: ctx.project }, db)
-        if (resolved.projectId == null) {
-          printError(noProjectMessage(), { exitCode: 2 })
-          return
-        }
-        projectId = resolved.projectId
+      const projectResolution = resolveLsProjectId(ctx, db)
+      if (!projectResolution.ok) {
+        printError(noProjectMessage(), { exitCode: 2 })
+        return
       }
+      const projectId = projectResolution.projectId
 
       // Status filter
       const statusFilter = typeof ctx.flags.status === 'string' ? ctx.flags.status : undefined
 
       if (ctx.flags.tree === true) {
-        // Tree mode
-        let nodes: WorkspaceTreeNode[]
-        if (projectId != null) {
-          nodes = db.buildProjectLineageTree(projectId)
-        } else {
-          nodes = db.buildLineageTree()
-        }
-
-        // Filter by status if requested (prune non-matching leaves, keep parents)
-        // For simplicity: if a status filter is active in human mode, print a note.
-        // In JSON mode we suppress the note to keep output parseable.
-        if (statusFilter != null && !ctx.jsonMode) {
-          printLines('Note: --status filter is not applied in --tree mode; showing full tree.')
-        }
-
-        const callerWsId = process.env.ORPHEUS_WORKSPACE_ID
-
-        if (ctx.jsonMode) {
-          // JSON: serialize tree with live status + display name overlaid
-          function serializeNode(node: WorkspaceTreeNode): Record<string, unknown> {
-            const ws = node.workspace
-            return {
-              id: ws.id,
-              name: ws.name,
-              displayName: displayNameOf(ws, db, projectCache),
-              status: effectiveStatus(ws),
-              runStatus: runStatusOf(ws),
-              parentWorkspaceId: ws.parentWorkspaceId,
-              isOwnedChild: callerWsId != null && ws.parentWorkspaceId === callerWsId,
-              children: node.children.map(serializeNode)
-            }
-          }
-          printResult(nodes.map(serializeNode))
-        } else {
-          if (nodes.length === 0) {
-            printLines('  (none)')
-          } else {
-            renderTree(nodes, 0, callerWsId, db, projectCache)
-          }
-        }
+        handleTreeMode(projectId, statusFilter, ctx.jsonMode, db, projectCache)
       } else {
-        // Flat list mode
-        const workspaces = db.listWorkspaces({
-          projectId,
-          ...(statusFilter != null
-            ? { status: statusFilter as WorkspaceRecord['status'] }
-            : undefined)
-        })
-
-        const callerWsId = process.env.ORPHEUS_WORKSPACE_ID
-
-        if (ctx.jsonMode) {
-          printResult(
-            workspaces.map((ws) => ({
-              id: ws.id,
-              name: ws.name,
-              displayName: displayNameOf(ws, db, projectCache),
-              status: effectiveStatus(ws),
-              runStatus: runStatusOf(ws),
-              parentWorkspaceId: ws.parentWorkspaceId,
-              isOwnedChild: callerWsId != null && ws.parentWorkspaceId === callerWsId
-            }))
-          )
-        } else {
-          type WsRow = {
-            id: string
-            name: string
-            status: string
-            parentWorkspaceId: string
-            isOwnedChild: string
-          }
-
-          const rows: WsRow[] = workspaces.map((ws) => ({
-            id: ws.id,
-            // Truncated for pretty/table display only — the --json branch above
-            // calls displayNameOf() directly and emits the full, untruncated value.
-            name: truncateForDisplay(displayNameOf(ws, db, projectCache), MAX_NAME_COL_WIDTH),
-            status: effectiveStatus(ws),
-            parentWorkspaceId: ws.parentWorkspaceId ?? '',
-            isOwnedChild: callerWsId != null && ws.parentWorkspaceId === callerWsId ? 'yes' : ''
-          }))
-
-          // NAME has no explicit `width` floor here: printTable's width is a
-          // *minimum* (it expands to fit the widest cell), and the `name`
-          // values are already truncated to MAX_NAME_COL_WIDTH above, so the
-          // column naturally caps there without padding short names out to 48
-          // chars unnecessarily.
-          const columns: TableColumn<WsRow>[] = [
-            { key: 'id', header: 'ID', width: 36 },
-            { key: 'name', header: 'NAME' },
-            { key: 'status', header: 'STATUS', width: 14 },
-            { key: 'isOwnedChild', header: 'YOURS', width: 5 }
-          ]
-          printTable(rows, columns)
-        }
+        handleFlatMode(projectId, statusFilter, ctx.jsonMode, db, projectCache)
       }
     } catch (err: unknown) {
       // Explicit --project value that didn't resolve to any project (QA fix #2)

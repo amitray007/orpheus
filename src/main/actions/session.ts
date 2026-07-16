@@ -244,6 +244,94 @@ function extractText(content: unknown): string | null {
   return null
 }
 
+/** Update acc.startedAt / acc.lastMessageAt from a line's timestamp, if valid. */
+function updateTimestampBounds(acc: AccumulatorState, ts: number | null): void {
+  if (ts && !isNaN(ts)) {
+    if (acc.startedAt === null || ts < acc.startedAt) acc.startedAt = ts
+    if (acc.lastMessageAt === null || ts > acc.lastMessageAt) acc.lastMessageAt = ts
+  }
+}
+
+/** Extract sessionId (from system events) and the first-seen model into acc. */
+function updateSessionIdentity(
+  acc: AccumulatorState,
+  parsed: JsonlLine,
+  lineModel: string | null
+): void {
+  if (parsed.type === 'system' && parsed.sessionId) {
+    acc.sessionId = parsed.sessionId
+  }
+  if (lineModel && !acc.model) {
+    acc.model = lineModel
+  }
+}
+
+/** Fold one assistant-turn's usage numbers into acc's running + per-model tallies,
+ *  and overwrite the point-in-time context occupancy field. */
+function accumulateAssistantUsage(
+  acc: AccumulatorState,
+  usage: NonNullable<JsonlLine['message']>['usage'],
+  lineModelKey: string
+): void {
+  if (!usage) return
+  const inp = usage.input_tokens ?? 0
+  const out = usage.output_tokens ?? 0
+  const cacheRead = usage.cache_read_input_tokens ?? 0
+  const cacheCreate = usage.cache_creation_input_tokens ?? 0
+
+  acc.inputTokens += inp
+  acc.outputTokens += out
+  acc.cacheReadTokens += cacheRead
+  acc.cacheCreationTokens += cacheCreate
+
+  // Point-in-time context occupancy: OVERWRITE each turn (not cumulative).
+  // Used for the footer context chip — reflects only the current turn's window.
+  // Includes output: matches claude's /context, where the turn's response is
+  // resident in the window (the next turn's input+cache absorbs it).
+  acc.lastTurnContextTokens = inp + cacheRead + cacheCreate + out
+
+  // Accumulate per-model token tallies for deferred cost computation
+  if (lineModelKey) {
+    let mt = acc.tokensByModel.get(lineModelKey)
+    if (!mt) {
+      mt = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 }
+      acc.tokensByModel.set(lineModelKey, mt)
+    }
+    mt.input += inp
+    mt.output += out
+    mt.cacheRead += cacheRead
+    mt.cacheCreate += cacheCreate
+  }
+}
+
+/** Process an assistant-role line: turn count, usage accounting, last-text capture. */
+function processAssistantLine(
+  acc: AccumulatorState,
+  parsed: JsonlLine,
+  lineModel: string | null,
+  ts: number | null
+): void {
+  acc.turnCount++
+  accumulateAssistantUsage(acc, parsed.message?.usage, lineModel ?? acc.model ?? '')
+
+  const text = extractText(parsed.message?.content)
+  if (text !== null && ts !== null) {
+    acc.lastAssistantText =
+      text.length > MAX_TEXT_PREVIEW_BYTES ? text.slice(0, MAX_TEXT_PREVIEW_BYTES) : text
+    acc.lastAssistantAt = ts
+  }
+}
+
+/** Process a user-role line: last-text capture. */
+function processUserLine(acc: AccumulatorState, parsed: JsonlLine, ts: number | null): void {
+  const text = extractText(parsed.message?.content)
+  if (text !== null && ts !== null) {
+    acc.lastUserText =
+      text.length > MAX_TEXT_PREVIEW_BYTES ? text.slice(0, MAX_TEXT_PREVIEW_BYTES) : text
+    acc.lastUserAt = ts
+  }
+}
+
 /** Process a single complete JSONL line string into the accumulator. */
 function processLine(acc: AccumulatorState, rawLine: string): void {
   const line = rawLine.trim()
@@ -257,73 +345,19 @@ function processLine(acc: AccumulatorState, rawLine: string): void {
   }
 
   const ts = parsed.timestamp ? new Date(parsed.timestamp).getTime() : null
-  if (ts && !isNaN(ts)) {
-    if (acc.startedAt === null || ts < acc.startedAt) acc.startedAt = ts
-    if (acc.lastMessageAt === null || ts > acc.lastMessageAt) acc.lastMessageAt = ts
-  }
-
-  // Session ID and model from system events
-  if (parsed.type === 'system' && parsed.sessionId) {
-    acc.sessionId = parsed.sessionId
-  }
+  updateTimestampBounds(acc, ts)
 
   const lineModel = parsed.message?.model ?? parsed.model ?? null
-  if (lineModel && !acc.model) {
-    acc.model = lineModel
-  }
+  updateSessionIdentity(acc, parsed, lineModel)
 
   // Token accounting from assistant message events
   if (parsed.type === 'assistant' || parsed.message?.role === 'assistant') {
-    acc.turnCount++
-    const usage = parsed.message?.usage
-    if (usage) {
-      const inp = usage.input_tokens ?? 0
-      const out = usage.output_tokens ?? 0
-      const cacheRead = usage.cache_read_input_tokens ?? 0
-      const cacheCreate = usage.cache_creation_input_tokens ?? 0
-
-      acc.inputTokens += inp
-      acc.outputTokens += out
-      acc.cacheReadTokens += cacheRead
-      acc.cacheCreationTokens += cacheCreate
-
-      // Point-in-time context occupancy: OVERWRITE each turn (not cumulative).
-      // Used for the footer context chip — reflects only the current turn's window.
-      // Includes output: matches claude's /context, where the turn's response is
-      // resident in the window (the next turn's input+cache absorbs it).
-      acc.lastTurnContextTokens = inp + cacheRead + cacheCreate + out
-
-      // Accumulate per-model token tallies for deferred cost computation
-      const lineModelKey = lineModel ?? acc.model ?? ''
-      if (lineModelKey) {
-        let mt = acc.tokensByModel.get(lineModelKey)
-        if (!mt) {
-          mt = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 }
-          acc.tokensByModel.set(lineModelKey, mt)
-        }
-        mt.input += inp
-        mt.output += out
-        mt.cacheRead += cacheRead
-        mt.cacheCreate += cacheCreate
-      }
-    }
-
-    const text = extractText(parsed.message?.content)
-    if (text !== null && ts !== null) {
-      acc.lastAssistantText =
-        text.length > MAX_TEXT_PREVIEW_BYTES ? text.slice(0, MAX_TEXT_PREVIEW_BYTES) : text
-      acc.lastAssistantAt = ts
-    }
+    processAssistantLine(acc, parsed, lineModel, ts)
   }
 
   // User messages
   if (parsed.type === 'user' || parsed.message?.role === 'user') {
-    const text = extractText(parsed.message?.content)
-    if (text !== null && ts !== null) {
-      acc.lastUserText =
-        text.length > MAX_TEXT_PREVIEW_BYTES ? text.slice(0, MAX_TEXT_PREVIEW_BYTES) : text
-      acc.lastUserAt = ts
-    }
+    processUserLine(acc, parsed, ts)
   }
 }
 

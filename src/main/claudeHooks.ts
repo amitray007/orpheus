@@ -21,6 +21,62 @@ function eventRank(event: string): number {
   return idx === -1 ? EVENT_ORDER.length : idx
 }
 
+/**
+ * Narrows `parsed.hooks` to a plain object keyed by event name, or returns
+ * null if `parsed` isn't an object or `hooks` isn't a plain object (missing,
+ * non-object, null, or an array all count as invalid).
+ */
+function extractHooksObject(parsed: unknown): Record<string, unknown> | null {
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const hooks = (parsed as Record<string, unknown>)['hooks']
+  if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) return null
+  return hooks as Record<string, unknown>
+}
+
+/**
+ * Parses one matcher-entry (`{ matcher, hooks }`) for a given event into zero
+ * or more `ClaudeHookEntry`s — one per valid hook item in its `hooks` array.
+ * Skips the whole entry if it isn't an object or its `hooks` isn't an array;
+ * skips individual hook items that aren't objects or lack a non-empty `command`.
+ */
+function parseMatcherEntry(
+  matcherEntry: unknown,
+  event: string,
+  matcherEntryIdx: number,
+  base: Omit<
+    ClaudeHookEntry,
+    'event' | 'matcher' | 'type' | 'command' | 'matcherEntryIdx' | 'hookIdx'
+  >
+): ClaudeHookEntry[] {
+  if (typeof matcherEntry !== 'object' || matcherEntry === null) return []
+
+  const me = matcherEntry as Record<string, unknown>
+  const matcher =
+    typeof me['matcher'] === 'string' && me['matcher'].length > 0 ? me['matcher'] : null
+  const hookList = me['hooks']
+  if (!Array.isArray(hookList)) return []
+
+  const entries: ClaudeHookEntry[] = []
+  for (let hookIdx = 0; hookIdx < hookList.length; hookIdx++) {
+    const hook: unknown = hookList[hookIdx]
+    if (typeof hook !== 'object' || hook === null) continue
+    const h = hook as Record<string, unknown>
+    if (typeof h['command'] !== 'string' || h['command'].length === 0) continue
+    const type = typeof h['type'] === 'string' ? h['type'] : 'command'
+
+    entries.push({
+      ...base,
+      event,
+      matcher,
+      type,
+      command: h['command'],
+      matcherEntryIdx,
+      hookIdx
+    })
+  }
+  return entries
+}
+
 function parseHooksFile(
   filePath: string,
   base: Omit<
@@ -44,42 +100,18 @@ function parseHooksFile(
     return []
   }
 
-  if (typeof parsed !== 'object' || parsed === null) return []
-  const hooks = (parsed as Record<string, unknown>)['hooks']
-  if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) return []
+  const hooks = extractHooksObject(parsed)
+  if (hooks === null) return []
 
   const entries: ClaudeHookEntry[] = []
 
-  for (const [event, matcherEntries] of Object.entries(hooks as Record<string, unknown>)) {
+  for (const [event, matcherEntries] of Object.entries(hooks)) {
     if (!Array.isArray(matcherEntries)) continue
 
     for (let matcherEntryIdx = 0; matcherEntryIdx < matcherEntries.length; matcherEntryIdx++) {
-      const matcherEntry: unknown = matcherEntries[matcherEntryIdx]
-      if (typeof matcherEntry !== 'object' || matcherEntry === null) continue
-
-      const me = matcherEntry as Record<string, unknown>
-      const matcher =
-        typeof me['matcher'] === 'string' && me['matcher'].length > 0 ? me['matcher'] : null
-      const hookList = me['hooks']
-      if (!Array.isArray(hookList)) continue
-
-      for (let hookIdx = 0; hookIdx < hookList.length; hookIdx++) {
-        const hook: unknown = hookList[hookIdx]
-        if (typeof hook !== 'object' || hook === null) continue
-        const h = hook as Record<string, unknown>
-        if (typeof h['command'] !== 'string' || h['command'].length === 0) continue
-        const type = typeof h['type'] === 'string' ? h['type'] : 'command'
-
-        entries.push({
-          ...base,
-          event,
-          matcher,
-          type,
-          command: h['command'],
-          matcherEntryIdx,
-          hookIdx
-        })
-      }
+      entries.push(
+        ...parseMatcherEntry(matcherEntries[matcherEntryIdx], event, matcherEntryIdx, base)
+      )
     }
   }
 

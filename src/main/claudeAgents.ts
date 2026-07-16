@@ -76,6 +76,33 @@ function parseFrontmatter(content: string): Record<string, string | string[]> {
 // Frontmatter serialization (inverse of parseFrontmatter)
 // ---------------------------------------------------------------------------
 
+// Formats a single array-valued frontmatter entry into its output lines:
+// inline flow `key: [a, b]` for short lists (<=5 items), block `  - item`
+// form for longer ones. Returns an empty array for an empty list (skip).
+function serializeArrayValue(key: string, value: string[]): string[] {
+  if (value.length === 0) return []
+  // Inline flow for short lists (<=5 items), block for longer
+  if (value.length <= 5) {
+    return [`${key}: [${value.join(', ')}]`]
+  }
+  const lines = [`${key}:`]
+  for (const item of value) {
+    lines.push(`  - ${item}`)
+  }
+  return lines
+}
+
+// Formats a single scalar-valued frontmatter entry into its output line,
+// quoting/escaping when the value contains a colon, hash, or leading
+// whitespace. Returns an empty array for an empty string (skip).
+function serializeScalarValue(key: string, value: string): string[] {
+  if (value === '') return []
+  // Quote if contains colon or hash or starts with whitespace
+  const needsQuotes = value.includes(':') || value.includes('#') || /^\s/.test(value)
+  const serialized = needsQuotes ? `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : value
+  return [`${key}: ${serialized}`]
+}
+
 function serializeFrontmatter(
   record: Record<string, string | string[] | null | undefined>
 ): string {
@@ -83,24 +110,9 @@ function serializeFrontmatter(
   for (const [key, value] of Object.entries(record)) {
     if (value === null || value === undefined) continue
     if (Array.isArray(value)) {
-      if (value.length === 0) continue
-      // Inline flow for short lists (<=5 items), block for longer
-      if (value.length <= 5) {
-        lines.push(`${key}: [${value.join(', ')}]`)
-      } else {
-        lines.push(`${key}:`)
-        for (const item of value) {
-          lines.push(`  - ${item}`)
-        }
-      }
+      lines.push(...serializeArrayValue(key, value))
     } else {
-      if (value === '') continue
-      // Quote if contains colon or hash or starts with whitespace
-      const needsQuotes = value.includes(':') || value.includes('#') || /^\s/.test(value)
-      const serialized = needsQuotes
-        ? `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
-        : value
-      lines.push(`${key}: ${serialized}`)
+      lines.push(...serializeScalarValue(key, value))
     }
   }
   return lines.join('\n')
