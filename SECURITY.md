@@ -46,7 +46,7 @@ it is a real one:
 ## Code Signing
 
 Orpheus is currently **ad-hoc signed and not notarized** by Apple. Distribution is via a
-private Homebrew tap, which installs the app and removes the macOS quarantine flag.
+public Homebrew tap, which installs the app and removes the macOS quarantine flag.
 Developer ID signing and notarization are planned future improvements.
 
 ## Local IPC / Notification Socket

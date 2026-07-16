@@ -1,6 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import type React from 'react'
-import { useFocusOnMount } from '@/lib/useFocusOnMount'
 import {
   DotsThree,
   MagnifyingGlass,
@@ -9,16 +8,20 @@ import {
   Trash,
   GitMerge
 } from '@phosphor-icons/react'
-import type { GitStatus, WorkspaceRecord } from '@shared/types'
+import { WorktreeBadge } from '../WorktreeBadge'
+import type { WorkspaceRecord } from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
-import { Eyebrow, Select } from '../settings/primitives'
+import { Eyebrow, RenameInput, Select } from '../settings/primitives'
 import { resolveWorkspaceName } from '../resolveWorkspaceName'
 import { CommitsTab } from './CommitsTab'
 import { SessionsTab } from './SessionsTab'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useWorkspaceTitle, getTitleSnapshot } from '@/lib/titleStore'
+import { useGitStatus } from '@/lib/gitStore'
+import { useDebouncedValue } from '@/lib/useDebouncedValue'
+import { useInlineRename } from '@/lib/useInlineRename'
 
 // ---------------------------------------------------------------------------
 // Project body — active workspaces on the left, sessions on the right, recent
@@ -97,38 +100,6 @@ interface WorkspacesTabProps {
   onResumedInWorkspace: (workspace: WorkspaceRecord) => void
 }
 
-// Small component so useFocusOnMount fires when the rename input mounts
-function WorkspaceRenameInput({
-  value,
-  onChange,
-  onKeyDown,
-  onBlur,
-  onClick,
-  className
-}: {
-  value: string
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
-  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
-  onBlur: () => void
-  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
-  className: string
-}): React.JSX.Element {
-  const ref = useRef<HTMLInputElement | null>(null)
-  useFocusOnMount(ref)
-  return (
-    <input
-      ref={ref}
-      aria-label="Rename workspace"
-      value={value}
-      onChange={onChange}
-      onKeyDown={onKeyDown}
-      onBlur={onBlur}
-      onClick={onClick}
-      className={className}
-    />
-  )
-}
-
 // ---------------------------------------------------------------------------
 // WorkspaceNameCell — isolated sub-component so useWorkspaceActivity is called
 // as a proper hook (not inside a DataTable render callback). Re-renders only
@@ -176,7 +147,8 @@ const WorkspaceNameCell = memo(function WorkspaceNameCell({
         )}
       </span>
       {renamingId === ws.id ? (
-        <WorkspaceRenameInput
+        <RenameInput
+          ariaLabel="Rename workspace"
           value={renameValue}
           onChange={(e) => setRenameValue(e.target.value)}
           onKeyDown={(e) => {
@@ -198,6 +170,7 @@ const WorkspaceNameCell = memo(function WorkspaceNameCell({
       {isPinned && !renamingId && (
         <PushPin size={10} weight="fill" className="text-accent flex-shrink-0" />
       )}
+      {!renamingId && <WorktreeBadge workspace={ws} />}
     </span>
   )
 })
@@ -247,20 +220,23 @@ const WorkspacesFilterBar = memo(function WorkspacesFilterBar({
 })
 
 // ---------------------------------------------------------------------------
-// BranchCell — git branch display for a workspace row. Memo'd since `gs` only
-// changes when the background git-status fetch for that workspace completes.
+// BranchCell — git branch display for a workspace row. Subscribes directly to
+// the shared gitStore (per-key hook) so it re-renders only when THIS
+// workspace's git status changes — no local per-row fetch, no separate
+// gitByWs state to keep in sync with the global store's push updates.
+// For worktree workspaces, `worktreeBranch` is shown when git status is absent
+// so the branch column is always correct for worktrees.
 // ---------------------------------------------------------------------------
 
-const BranchCell = memo(function BranchCell({
-  gs
-}: {
-  gs: GitStatus | null | undefined
-}): React.JSX.Element {
-  if (!gs?.branch) return <span className="text-text-muted">—</span>
+const BranchCell = memo(function BranchCell({ ws }: { ws: WorkspaceRecord }): React.JSX.Element {
+  const gs = useGitStatus(ws.id)
+  // Prefer live git status branch; fall back to stored worktreeBranch for worktrees.
+  const branch = gs?.branch ?? (ws.worktreeParentCwd ? ws.worktreeBranch : null)
+  if (!branch) return <span className="text-text-muted">—</span>
   return (
-    <span className="inline-flex items-center gap-1 text-xs min-w-0" title={`Branch: ${gs.branch}`}>
+    <span className="inline-flex items-center gap-1 text-xs min-w-0" title={`Branch: ${branch}`}>
       <GitMerge size={11} className="flex-shrink-0 text-text-muted" />
-      <span className="font-mono truncate">{gs.branch}</span>
+      <span className="font-mono truncate">{branch}</span>
     </span>
   )
 })
@@ -392,9 +368,11 @@ export function WorkspacesTab({
   const [activeSortBy, setActiveSortBy] = useState<'lastOpenedAt' | 'messages'>('lastOpenedAt')
   const [activeSortDir, setActiveSortDir] = useState<'asc' | 'desc'>('desc')
   const [renamingId, setRenamingId] = useState<string | null>(null)
-  const [renameValue, setRenameValue] = useState('')
   const [menu, setMenu] = useState<{ x: number; y: number; ws: WorkspaceRecord } | null>(null)
-  const [gitByWs, setGitByWs] = useState<Record<string, GitStatus | null>>({})
+
+  // The workspace currently being renamed (if any) — drives useInlineRename's
+  // currentName so trim/no-op/commit compares against the right row.
+  const renamingWs = renamingId ? (all.find((w) => w.id === renamingId) ?? null) : null
   const [sessionStats, setSessionStats] = useState<
     Record<
       string,
@@ -404,35 +382,17 @@ export function WorkspacesTab({
 
   // Search + filter state
   const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
+  // Lowercasing is this call site's own behavior (not baked into the shared
+  // hook) — the debounced raw value is trimmed + lowercased here, same as the
+  // original setTimeout(() => setDebouncedSearch(search.trim().toLowerCase())).
+  const debouncedSearch = useDebouncedValue(search, 250).trim().toLowerCase()
   const [activityFilter, setActivityFilter] = useState<ActivityFilterKey>('all')
 
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim().toLowerCase()), 250)
-    return () => clearTimeout(t)
-  }, [search])
-
-  // Background git status for visible active rows.
-  useEffect(() => {
-    let cancelled = false
-    for (const ws of active) {
-      if (gitByWs[ws.id] !== undefined) continue
-      window.api.git
-        .status(ws.cwd)
-        .then((s) => {
-          if (cancelled) return
-          setGitByWs((prev) => ({ ...prev, [ws.id]: s }))
-        })
-        .catch(() => {
-          if (cancelled) return
-          setGitByWs((prev) => ({ ...prev, [ws.id]: null }))
-        })
-    }
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active.map((w) => w.id).join('|')])
+  // Git status for visible active rows is served by the global gitStore
+  // (seeded + kept live by Dashboard's shared git:statusChanged push
+  // subscription and belt-and-suspenders imperative fetch). BranchCell calls
+  // useGitStatus directly, so no per-row fetch or local gitByWs state is
+  // needed here.
 
   // Terminal titles are now served by the global titleStore (seeded from Dashboard's
   // hoisted onTitleChanged subscription). WorkspaceNameCell calls useWorkspaceTitle
@@ -474,20 +434,31 @@ export function WorkspacesTab({
     setMenu({ x: rect.right - 180, y: rect.bottom + 4, ws })
   }
 
-  function beginRename(ws: WorkspaceRecord): void {
-    setRenamingId(ws.id)
-    setRenameValue(ws.name)
-  }
+  // currentName tracks whichever workspace is currently being renamed (or ''
+  // when none is) — commit()'s trim/no-op/equality check compares against it.
+  const rename = useInlineRename(renamingWs?.name ?? '', (trimmed) => {
+    if (renamingWs) onRenameWorkspace(renamingWs.id, projectId, trimmed)
+  })
+
+  const beginRename = useCallback(
+    (ws: WorkspaceRecord): void => {
+      setRenamingId(ws.id)
+      rename.seed(ws.name)
+    },
+    [rename]
+  )
 
   const commitRename = useCallback(
     (ws: WorkspaceRecord): void => {
-      const trimmed = renameValue.trim()
-      if (trimmed && trimmed !== ws.name) {
-        onRenameWorkspace(ws.id, projectId, trimmed)
-      }
+      // ws is the row that invoked commit; rename's currentName already tracks
+      // renamingWs (the same row while renamingId === ws.id), so this call is
+      // just the WorkspaceNameCellProps contract — the actual compare/commit
+      // logic lives in useInlineRename, keyed off renamingWs.
+      if (renamingWs?.id !== ws.id) return
+      rename.commit()
       setRenamingId(null)
     },
-    [renameValue, onRenameWorkspace, projectId]
+    [rename, renamingWs]
   )
 
   // Stable handlers passed to memoized children (WorkspacesFilterBar, WorkspacesEmptyState).
@@ -526,7 +497,7 @@ export function WorkspacesTab({
         destructive: true
       }
     ]
-  }, [menu, projectId, onArchiveWorkspace, onToggleWorkspacePin])
+  }, [menu, projectId, onArchiveWorkspace, onToggleWorkspacePin, beginRename])
 
   // Filter active workspaces by activity group and search term.
   const filtered = useMemo(() => {
@@ -587,9 +558,9 @@ export function WorkspacesTab({
           <WorkspaceNameCell
             ws={ws}
             renamingId={renamingId}
-            renameValue={renameValue}
+            renameValue={rename.value}
             sessionStats={sessionStats}
-            setRenameValue={setRenameValue}
+            setRenameValue={rename.setValue}
             commitRename={commitRename}
             setRenamingId={setRenamingId}
           />
@@ -599,7 +570,7 @@ export function WorkspacesTab({
         key: 'branch',
         label: 'Branch',
         width: '140px',
-        render: (ws) => <BranchCell gs={gitByWs[ws.id]} />
+        render: (ws) => <BranchCell ws={ws} />
       },
       {
         key: 'messages',
@@ -625,7 +596,7 @@ export function WorkspacesTab({
         render: (ws) => <WorkspaceActionsButton onClick={(e) => openMenu(e, ws)} />
       }
     ],
-    [gitByWs, renamingId, renameValue, sessionStats, commitRename]
+    [renamingId, rename.value, rename.setValue, sessionStats, commitRename]
   )
 
   // Whether the raw workspace list (before any filtering) has any entries.

@@ -60,9 +60,10 @@ export function shortModel(model: string | null): string {
   const isOpus = m.includes('opus')
   const isSonnet = m.includes('sonnet')
   const isHaiku = m.includes('haiku')
-  if (!isOpus && !isSonnet && !isHaiku) return model
+  const isFable = m.includes('fable')
+  if (!isOpus && !isSonnet && !isHaiku && !isFable) return model
 
-  const family = isOpus ? 'Opus' : isSonnet ? 'Sonnet' : 'Haiku'
+  const family = isOpus ? 'Opus' : isSonnet ? 'Sonnet' : isHaiku ? 'Haiku' : 'Fable'
 
   // Extract version numbers from patterns like:
   //   "claude-opus-4-7"    → "4.7"
@@ -74,7 +75,7 @@ export function shortModel(model: string | null): string {
   // Date-stamped IDs like "claude-sonnet-4-6-20260416" → "Sonnet 4.6"
   const stripped = m
     .replace(/^claude-/, '')
-    .replace(/(opus|sonnet|haiku)-?/, '')
+    .replace(/(opus|sonnet|haiku|fable)-?/, '')
     .replace(/-\d{8}$/, '') // strip trailing date stamp (e.g. 20260416)
     .trim()
 

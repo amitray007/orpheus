@@ -1,0 +1,64 @@
+appId: dev.orpheus.wt
+productName: Orpheus WT
+directories:
+  buildResources: build
+  output: dist-wt
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+asarUnpack:
+  - resources/**
+  - '**/*.node'
+extraResources:
+  - from: packages/ghostty-surface/build/Release/ghostty_native.node
+    to: packages/ghostty-surface/ghostty_native.node
+  - from: resources/ghostty/terminfo
+    to: terminfo
+    filter:
+      - '**/*'
+  - from: resources/ghostty/ghostty
+    to: ghostty
+    filter:
+      - '**/*'
+  - from: resources/orpheus-claude.sh
+    to: orpheus-claude.sh
+  - from: resources/bin/orpheus-notify
+    to: bin/orpheus-notify
+  # Geist Sans TTFs for native popover cards. Packaged at Contents/Resources/fonts/
+  # so registerPopoverFonts() can resolve them via process.resourcesPath.
+  - from: node_modules/geist/dist/fonts/geist-sans
+    to: fonts/geist-sans
+    filter:
+      - '*.ttf'
+  - from: node_modules/geist/dist/fonts/geist-mono
+    to: fonts/geist-mono
+    filter:
+      - '*.ttf'
+mac:
+  icon: build/icon-dev.icns
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    - NSCameraUsageDescription: Application requests access to the device's camera.
+    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
+    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+  notarize: false
+  # Skip electron-builder's internal ad-hoc codesign for the WT build. It races
+  # on this toolchain (intermittent "Application ... could not be found" at the
+  # sign step). scripts/install-mac.mjs re-signs the whole bundle ad-hoc
+  # (codesign --force --deep --sign -) right after install, so the in-builder
+  # sign is redundant here anyway.
+  identity: null
+dmg:
+  artifactName: ${name}-${version}.${ext}
+npmRebuild: false
+# Use the pre-extracted Electron dist from node_modules rather than downloading
+# and re-extracting the zip via app-builder (which fails intermittently on
+# macOS 27 / Xcode Beta due to permission handling in the Go extractor).
+electronDist: node_modules/electron/dist
+# WT builds: install to /Applications/Orpheus WT.app, own data at
+# ~/Library/Application Support/Orpheus WT/. Never released via Homebrew.

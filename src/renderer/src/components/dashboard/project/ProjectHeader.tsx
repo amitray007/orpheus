@@ -12,12 +12,14 @@ import {
   Plus,
   Terminal
 } from '@phosphor-icons/react'
-import type { AppUiState, DetectedApp, GitStatus, ProjectRecord } from '@shared/types'
+import type { DetectedApp, GitStatus, ProjectRecord, WorkspaceRecord } from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { Identicon } from '../../Identicon'
 import { SplitButton } from '../../SplitButton'
 import { Skeleton } from '../../Skeleton'
 import { playSound } from '../../../lib/sound'
+import { NewWorkspaceMenu } from '../NewWorkspaceMenu'
+import { useUiState, updateUiState } from '../../../lib/uiStateStore'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -181,7 +183,9 @@ const ProjectMeta = memo(function ProjectMeta({
 // Right-side action bar: Finder, Editor split-button, Terminal split-button,
 // New-workspace, Settings, and More-actions.
 interface ProjectActionsProps {
+  projectId: string
   projectPath: string
+  workspaceDefaultName: string
   editors: DetectedApp[]
   terminals: DetectedApp[]
   activeEditor: DetectedApp | null
@@ -189,12 +193,15 @@ interface ProjectActionsProps {
   onPickEditor: (name: string) => void
   onPickTerminal: (name: string) => void
   onNewWorkspace: () => void
+  onWorktreeCreated: (workspace: WorkspaceRecord) => void
   onOpenSettings: () => void
   onOpenMenu: (e: React.MouseEvent) => void
 }
 
 const ProjectActions = memo(function ProjectActions({
+  projectId,
   projectPath,
+  workspaceDefaultName,
   editors,
   terminals,
   activeEditor,
@@ -202,6 +209,7 @@ const ProjectActions = memo(function ProjectActions({
   onPickEditor,
   onPickTerminal,
   onNewWorkspace,
+  onWorktreeCreated,
   onOpenSettings,
   onOpenMenu
 }: ProjectActionsProps): React.JSX.Element {
@@ -259,21 +267,27 @@ const ProjectActions = memo(function ProjectActions({
 
       <span className="w-px h-5 bg-border-default mx-1" aria-hidden />
 
-      <button
-        type="button"
-        onClick={onNewWorkspace}
-        aria-label="Create new workspace"
-        className={[
-          'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium',
-          'bg-accent/15 border border-accent/30 text-text-primary',
-          'transition-colors duration-150 cursor-pointer',
-          'hover:bg-accent/25',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
-        ].join(' ')}
+      <NewWorkspaceMenu
+        projectId={projectId}
+        defaultName={workspaceDefaultName}
+        onCreateLocal={onNewWorkspace}
+        onCreated={onWorktreeCreated}
       >
-        <Plus size={12} weight="bold" />
-        New workspace
-      </button>
+        <button
+          type="button"
+          aria-label="Create new workspace"
+          className={[
+            'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium',
+            'bg-accent/15 border border-accent/30 text-text-primary',
+            'transition-colors duration-150 cursor-pointer',
+            'hover:bg-accent/25',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
+          ].join(' ')}
+        >
+          <Plus size={12} weight="bold" />
+          New workspace
+        </button>
+      </NewWorkspaceMenu>
 
       <HeaderIconButton
         onClick={onOpenSettings}
@@ -307,7 +321,11 @@ interface ProjectHeaderProps {
   lastActivityAt: number | null
   /** `null` while project settings are still loading. */
   overrideCount: number | null
+  /** Auto-generated next workspace name (e.g. "Workspace 2"), used to seed the worktree branch slug. */
+  workspaceDefaultName: string
   onNewWorkspace: () => void
+  /** Called after a worktree workspace has been created — navigate to it. */
+  onWorktreeCreated: (workspace: WorkspaceRecord) => void
   onOpenSettings: () => void
   onRequestRemove: () => void
   /** Privacy toggle — suppresses avatar even when URL is cached in the project record. */
@@ -319,7 +337,9 @@ export function ProjectHeader({
   workspaceCount,
   lastActivityAt,
   overrideCount,
+  workspaceDefaultName,
   onNewWorkspace,
+  onWorktreeCreated,
   onOpenSettings,
   onRequestRemove,
   fetchGithubAvatars
@@ -329,7 +349,7 @@ export function ProjectHeader({
   const [pathCopied, setPathCopied] = useState(false)
   const [editors, setEditors] = useState<DetectedApp[]>([])
   const [terminals, setTerminals] = useState<DetectedApp[]>([])
-  const [uiState, setUiState] = useState<AppUiState | null>(null)
+  const uiState = useUiState()
   const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -349,16 +369,11 @@ export function ProjectHeader({
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([
-      window.api.shell.listEditorApps(),
-      window.api.shell.listTerminalApps(),
-      window.api.uiState.get()
-    ])
-      .then(([eds, tms, ui]) => {
+    Promise.all([window.api.shell.listEditorApps(), window.api.shell.listTerminalApps()])
+      .then(([eds, tms]) => {
         if (cancelled) return
         setEditors(eds)
         setTerminals(tms)
-        setUiState(ui)
       })
       .catch((err) => console.error('[project-header] failed to load app prefs', err))
     return () => {
@@ -385,22 +400,12 @@ export function ProjectHeader({
     }
   }, [project.path])
 
-  const pickEditor = useCallback(async (name: string): Promise<void> => {
-    setUiState((prev) => (prev ? { ...prev, preferredEditorApp: name } : prev))
-    try {
-      await window.api.uiState.update({ preferredEditorApp: name })
-    } catch (err) {
-      console.error('[project-header] persist editor pref failed', err)
-    }
+  const pickEditor = useCallback((name: string): void => {
+    updateUiState({ preferredEditorApp: name })
   }, [])
 
-  const pickTerminal = useCallback(async (name: string): Promise<void> => {
-    setUiState((prev) => (prev ? { ...prev, preferredTerminalApp: name } : prev))
-    try {
-      await window.api.uiState.update({ preferredTerminalApp: name })
-    } catch (err) {
-      console.error('[project-header] persist terminal pref failed', err)
-    }
+  const pickTerminal = useCallback((name: string): void => {
+    updateUiState({ preferredTerminalApp: name })
   }, [])
 
   const openMenu = useCallback((e: React.MouseEvent): void => {
@@ -461,7 +466,9 @@ export function ProjectHeader({
         </div>
 
         <ProjectActions
+          projectId={project.id}
           projectPath={project.path}
+          workspaceDefaultName={workspaceDefaultName}
           editors={editors}
           terminals={terminals}
           activeEditor={activeEditor}
@@ -469,6 +476,7 @@ export function ProjectHeader({
           onPickEditor={pickEditor}
           onPickTerminal={pickTerminal}
           onNewWorkspace={onNewWorkspace}
+          onWorktreeCreated={onWorktreeCreated}
           onOpenSettings={onOpenSettings}
           onOpenMenu={openMenu}
         />

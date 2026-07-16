@@ -1,6 +1,7 @@
 // react-doctor configuration (https://react.doctor/docs/configuration)
 //
-// We run react-doctor via `npx react-doctor@latest`; this file is auto-discovered
+// We run react-doctor directly as a devDependency (`bun run doctor` → `react-doctor`,
+// pinned in package.json); this file is auto-discovered
 // at the repo root. It is intentionally a plain default export (no
 // `react-doctor/api` import) so it adds no dependency for our own tsc/eslint.
 //

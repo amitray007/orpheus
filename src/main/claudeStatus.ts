@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron'
 import { getAppUiState } from './uiState'
+import { PUSH_CHANNELS } from '../shared/ipc'
 import type {
   ClaudeStatusSnapshot,
   ClaudeStatusComponent,
@@ -7,6 +8,7 @@ import type {
   ClaudeStatusIndicator,
   ClaudeStatusComponentStatus
 } from '../shared/types'
+import { UI_STATE_DEFAULTS, VALID_STATUS_POLL_INTERVALS_SEC } from '../shared/uiStateDefaults'
 import { Notification } from 'electron'
 
 // ---------------------------------------------------------------------------
@@ -22,12 +24,11 @@ const FETCH_TIMEOUT_MS = 8_000
 const INITIAL_DELAY_MS = 3_000
 
 /** Allowed poll intervals (seconds). */
-const VALID_INTERVALS_SEC = [300, 600, 900, 1800, 3600, 7200, 10800] as const
-const DEFAULT_INTERVAL_SEC = 1800
+const DEFAULT_INTERVAL_SEC = UI_STATE_DEFAULTS.statusPollIntervalSec
 
 function validateIntervalSec(sec: number | undefined): number {
   if (!sec) return DEFAULT_INTERVAL_SEC
-  return (VALID_INTERVALS_SEC as readonly number[]).includes(sec) ? sec : DEFAULT_INTERVAL_SEC
+  return VALID_STATUS_POLL_INTERVALS_SEC.includes(sec) ? sec : DEFAULT_INTERVAL_SEC
 }
 
 // ---------------------------------------------------------------------------
@@ -91,9 +92,9 @@ const firedKeys = new Set<string>()
 // Helpers
 // ---------------------------------------------------------------------------
 
-function broadcast(channel: string, payload: unknown): void {
+function broadcast(snapshot: ClaudeStatusSnapshot): void {
   for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(channel, payload)
+    if (!win.isDestroyed()) win.webContents.send(PUSH_CHANNELS.statusChange, snapshot)
   }
 }
 
@@ -118,7 +119,7 @@ function toComponentStatus(raw: string): ClaudeStatusComponentStatus {
     'major_outage',
     'under_maintenance'
   ]
-  return (known.find((k) => k === raw) ?? 'operational') as ClaudeStatusComponentStatus
+  return known.find((k) => k === raw) ?? 'operational'
 }
 
 /**
@@ -126,7 +127,7 @@ function toComponentStatus(raw: string): ClaudeStatusComponentStatus {
  */
 function toIndicator(raw: string | undefined): ClaudeStatusIndicator {
   const known: ClaudeStatusIndicator[] = ['none', 'minor', 'major', 'critical', 'maintenance']
-  return (known.find((k) => k === raw) ?? 'none') as ClaudeStatusIndicator
+  return known.find((k) => k === raw) ?? 'none'
 }
 
 /**
@@ -181,7 +182,7 @@ function indicatorLabel(indicator: ClaudeStatusIndicator): string {
 // Fetch
 // ---------------------------------------------------------------------------
 
-export async function fetchStatusSnapshot(): Promise<ClaudeStatusSnapshot> {
+async function fetchStatusSnapshot(): Promise<ClaudeStatusSnapshot> {
   const version = app.getVersion()
   const res = await fetch(STATUS_SUMMARY_URL, {
     headers: { 'User-Agent': `Orpheus/${version} (status check)` },
@@ -319,7 +320,7 @@ async function runPoll(): Promise<void> {
 
   // Mark as fetching and broadcast immediately so the chip flips to the spinner
   snapshot = { ...snapshot, isFetching: true }
-  broadcast('status:change', snapshot)
+  broadcast(snapshot)
 
   try {
     const fresh = await fetchStatusSnapshot()
@@ -331,11 +332,11 @@ async function runPoll(): Promise<void> {
       }
     }
 
-    broadcast('status:change', snapshot)
+    broadcast(snapshot)
   } catch (err) {
     console.warn('[claudeStatus] fetch failed:', err)
     snapshot = { ...prevSnapshot, fetchOk: false, isFetching: false }
-    broadcast('status:change', snapshot)
+    broadcast(snapshot)
   }
 }
 

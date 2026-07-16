@@ -27,6 +27,9 @@ type ActionType =
   | 'openInEditor'
   | 'copyPath'
   | 'cancel'
+  | 'modelSelect'
+  | 'effortSelect'
+  | 'dropdown'
   | 'liveUsage'
   | 'liveCost'
   | 'liveStatus'
@@ -41,6 +44,9 @@ const ACTION_TYPE_OPTIONS: { value: ActionType; label: string }[] = [
   { value: 'openInEditor', label: 'Open in Editor' },
   { value: 'copyPath', label: 'Copy path' },
   { value: 'cancel', label: 'Cancel input' },
+  { value: 'modelSelect', label: 'Model selector (built-in)' },
+  { value: 'effortSelect', label: 'Effort selector (built-in)' },
+  { value: 'dropdown', label: 'Dropdown menu' },
   { value: 'liveUsage', label: 'Live indicator — Context usage' },
   { value: 'liveCost', label: 'Live indicator — Cost' },
   { value: 'liveStatus', label: 'Live indicator — Activity status' }
@@ -52,17 +58,22 @@ const VISIBILITY_OPTIONS: { value: FooterActionVisibility; label: string }[] = [
   { value: 'awaitingInput', label: 'Awaiting input' }
 ]
 
+// actionId literals repeated across switch cases and inline actionId
+// comparisons below — hoisted so they're defined once.
+const ACTION_ID_SEND_INPUT = 'terminal.sendInput'
+const ACTION_ID_RENAME = 'workspace.rename'
+
 // Derive the actionId from a type selection
 function actionIdForType(type: ActionType): string {
   switch (type) {
     case 'sendInput':
-      return 'terminal.sendInput'
+      return ACTION_ID_SEND_INPUT
     case 'fork':
       return 'workspace.fork'
     case 'archive':
       return 'workspace.archive'
     case 'rename':
-      return 'workspace.rename'
+      return ACTION_ID_RENAME
     case 'duplicate':
       return 'workspace.duplicate'
     case 'openInFinder':
@@ -73,6 +84,12 @@ function actionIdForType(type: ActionType): string {
       return 'workspace.copyPath'
     case 'cancel':
       return 'terminal.cancel'
+    case 'modelSelect':
+      return 'footer.modelSelect'
+    case 'effortSelect':
+      return 'footer.effortSelect'
+    case 'dropdown':
+      return 'footer.dropdown'
     case 'liveUsage':
       return 'session.getUsage'
     case 'liveCost':
@@ -85,13 +102,13 @@ function actionIdForType(type: ActionType): string {
 // Determine ActionType from a descriptor
 function typeForActionId(actionId: string): ActionType {
   switch (actionId) {
-    case 'terminal.sendInput':
+    case ACTION_ID_SEND_INPUT:
       return 'sendInput'
     case 'workspace.fork':
       return 'fork'
     case 'workspace.archive':
       return 'archive'
-    case 'workspace.rename':
+    case ACTION_ID_RENAME:
       return 'rename'
     case 'workspace.duplicate':
       return 'duplicate'
@@ -103,6 +120,12 @@ function typeForActionId(actionId: string): ActionType {
       return 'copyPath'
     case 'terminal.cancel':
       return 'cancel'
+    case 'footer.modelSelect':
+      return 'modelSelect'
+    case 'footer.effortSelect':
+      return 'effortSelect'
+    case 'footer.dropdown':
+      return 'dropdown'
     case 'session.getUsage':
       return 'liveUsage'
     case 'session.getCost':
@@ -355,6 +378,90 @@ const DuplicateConfig = memo(function DuplicateConfig({
   )
 })
 
+interface DropdownOption {
+  label: string
+  text: string
+  submit: boolean
+}
+
+interface DropdownConfigProps {
+  options: DropdownOption[]
+  setOptions: (v: DropdownOption[]) => void
+}
+
+const DropdownConfig = memo(function DropdownConfig({
+  options,
+  setOptions
+}: DropdownConfigProps): React.JSX.Element {
+  const updateOption = (index: number, patch: Partial<DropdownOption>): void => {
+    setOptions(options.map((o, i) => (i === index ? { ...o, ...patch } : o)))
+  }
+  const removeOption = (index: number): void => {
+    setOptions(options.filter((_, i) => i !== index))
+  }
+  const addOption = (): void => {
+    setOptions([...options, { label: '', text: '', submit: true }])
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-xs text-text-muted bg-surface-overlay/40 border border-border-default/40 rounded-md px-2.5 py-1.5 leading-relaxed">
+        Clicking this chip opens a menu of your own options — pick one to send its text to chat.
+      </div>
+      <div className="flex flex-col gap-2">
+        {options.map((option, index) => (
+          <div
+            key={index}
+            className="flex flex-col gap-1.5 p-2 rounded-md bg-surface-raised border border-border-default"
+          >
+            <div className="flex items-center gap-1.5">
+              <input
+                type="text"
+                aria-label={`Option ${index + 1} label`}
+                value={option.label}
+                onChange={(e) => updateOption(index, { label: e.target.value })}
+                placeholder="Label"
+                className="flex-1 min-w-0 px-2 py-1 rounded-md text-xs bg-surface-overlay border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+              />
+              <button
+                type="button"
+                onClick={() => removeOption(index)}
+                aria-label={`Remove option ${index + 1}`}
+                className="flex-shrink-0 p-1 rounded text-text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors duration-150 cursor-pointer"
+              >
+                <IconByName name="X" size={12} />
+              </button>
+            </div>
+            <input
+              type="text"
+              aria-label={`Option ${index + 1} text`}
+              value={option.text}
+              onChange={(e) => updateOption(index, { text: e.target.value })}
+              placeholder="/copy, @src/file.ts, or any text to send…"
+              className="w-full px-2 py-1 rounded-md text-xs bg-surface-overlay border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono"
+            />
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-text-muted">Submit immediately</span>
+              <Toggle
+                value={option.submit}
+                onChange={(v) => updateOption(index, { submit: v })}
+                ariaLabel={`Option ${index + 1} submit immediately`}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={addOption}
+        className="text-xs text-text-muted hover:text-text-primary transition-colors duration-150 px-2 py-1.5 rounded border border-dashed border-border-default hover:border-border-hover cursor-pointer text-center"
+      >
+        + Add option
+      </button>
+    </div>
+  )
+})
+
 // ---------------------------------------------------------------------------
 // Action buttons row
 // ---------------------------------------------------------------------------
@@ -441,23 +548,30 @@ export function FooterActionEditor({
     action ? typeForActionId(action.actionId) : 'sendInput'
   )
   const [sendText, setSendText] = useState<string>(
-    action?.actionId === 'terminal.sendInput' ? String(action.params.text ?? '') : ''
+    action?.actionId === ACTION_ID_SEND_INPUT ? String(action.params.text ?? '') : ''
   )
   const [submit, setSubmit] = useState<boolean>(
-    action?.actionId === 'terminal.sendInput' ? Boolean(action.params.submit) : true
+    action?.actionId === ACTION_ID_SEND_INPUT ? Boolean(action.params.submit) : true
   )
   const [dupSuffix, setDupSuffix] = useState<string>(
     action?.actionId === 'workspace.duplicate' ? String(action.params.nameSuffix ?? '') : ''
   )
+  const [dropdownOptions, setDropdownOptions] = useState<
+    Array<{ label: string; text: string; submit: boolean }>
+  >(
+    action?.actionId === 'footer.dropdown' && Array.isArray(action.params.options)
+      ? (action.params.options as Array<{ label: string; text: string; submit: boolean }>)
+      : []
+  )
   // Prompt configuration for workspace.rename — label and pre-fill default for
   // the inline popover that collects the new name before invoking.
   const [renamePromptLabel, setRenamePromptLabel] = useState<string>(
-    action?.actionId === 'workspace.rename' && action.prompts?.[0]
+    action?.actionId === ACTION_ID_RENAME && action.prompts?.[0]
       ? action.prompts[0].label
       : 'New name'
   )
   const [renamePromptDefault, setRenamePromptDefault] = useState<string>(
-    action?.actionId === 'workspace.rename' && action.prompts?.[0]
+    action?.actionId === ACTION_ID_RENAME && action.prompts?.[0]
       ? (action.prompts[0].default ?? '{workspaceName}')
       : '{workspaceName}'
   )
@@ -483,18 +597,23 @@ export function FooterActionEditor({
     setLabel(action?.label ?? '')
     setIcon(action?.icon ?? null)
     setActionType(action ? typeForActionId(action.actionId) : 'sendInput')
-    setSendText(action?.actionId === 'terminal.sendInput' ? String(action.params.text ?? '') : '')
-    setSubmit(action?.actionId === 'terminal.sendInput' ? Boolean(action.params.submit) : true)
+    setSendText(action?.actionId === ACTION_ID_SEND_INPUT ? String(action.params.text ?? '') : '')
+    setSubmit(action?.actionId === ACTION_ID_SEND_INPUT ? Boolean(action.params.submit) : true)
     setDupSuffix(
       action?.actionId === 'workspace.duplicate' ? String(action.params.nameSuffix ?? '') : ''
     )
+    setDropdownOptions(
+      action?.actionId === 'footer.dropdown' && Array.isArray(action.params.options)
+        ? (action.params.options as Array<{ label: string; text: string; submit: boolean }>)
+        : []
+    )
     setRenamePromptLabel(
-      action?.actionId === 'workspace.rename' && action.prompts?.[0]
+      action?.actionId === ACTION_ID_RENAME && action.prompts?.[0]
         ? action.prompts[0].label
         : 'New name'
     )
     setRenamePromptDefault(
-      action?.actionId === 'workspace.rename' && action.prompts?.[0]
+      action?.actionId === ACTION_ID_RENAME && action.prompts?.[0]
         ? (action.prompts[0].default ?? '{workspaceName}')
         : '{workspaceName}'
     )
@@ -506,7 +625,9 @@ export function FooterActionEditor({
   // collected at invocation time via the inline prompt popover).
   const labelTrimmed = label.trim()
   const isValid =
-    labelTrimmed.length > 0 && (actionType !== 'sendInput' || sendText.trim().length > 0)
+    labelTrimmed.length > 0 &&
+    (actionType !== 'sendInput' || sendText.trim().length > 0) &&
+    (actionType !== 'dropdown' || dropdownOptions.some((o) => o.label.trim() && o.text.trim()))
 
   const buildDraft = useCallback((): FooterActionDraft => {
     const baseActionId = actionIdForType(actionType)
@@ -530,6 +651,8 @@ export function FooterActionEditor({
     } else if (actionType === 'duplicate') {
       const suffix = dupSuffix.trim()
       params = suffix ? { nameSuffix: suffix } : {}
+    } else if (actionType === 'dropdown') {
+      params = { options: dropdownOptions.filter((o) => o.label.trim() && o.text.trim()) }
     }
 
     return {
@@ -550,6 +673,7 @@ export function FooterActionEditor({
     renamePromptLabel,
     renamePromptDefault,
     dupSuffix,
+    dropdownOptions,
     labelTrimmed,
     icon,
     visibility,
@@ -562,7 +686,9 @@ export function FooterActionEditor({
       setError(
         labelTrimmed.length === 0
           ? 'Label is required.'
-          : 'Text is required for "Send to chat" actions.'
+          : actionType === 'sendInput'
+            ? 'Text is required for "Send to chat" actions.'
+            : 'At least one option with a label and text is required.'
       )
       return
     }
@@ -585,7 +711,7 @@ export function FooterActionEditor({
     } finally {
       setSaving(false)
     }
-  }, [isValid, labelTrimmed, buildDraft, isCreate, scope, scopeId, action, onSave])
+  }, [isValid, labelTrimmed, actionType, buildDraft, isCreate, scope, scopeId, action, onSave])
 
   async function handleDelete(): Promise<void> {
     if (!action) return
@@ -726,6 +852,24 @@ export function FooterActionEditor({
 
           {actionType === 'duplicate' && (
             <DuplicateConfig dupSuffix={dupSuffix} setDupSuffix={setDupSuffix} />
+          )}
+
+          {actionType === 'modelSelect' && (
+            <div className="text-xs text-text-muted bg-surface-overlay/40 border border-border-default/40 rounded-md px-2.5 py-1.5 leading-relaxed">
+              This is a built-in action — clicking it opens the model picker. Label and icon are
+              customizable; behavior is not.
+            </div>
+          )}
+
+          {actionType === 'effortSelect' && (
+            <div className="text-xs text-text-muted bg-surface-overlay/40 border border-border-default/40 rounded-md px-2.5 py-1.5 leading-relaxed">
+              This is a built-in action — clicking it opens the effort picker. Label and icon are
+              customizable; behavior is not.
+            </div>
+          )}
+
+          {actionType === 'dropdown' && (
+            <DropdownConfig options={dropdownOptions} setOptions={setDropdownOptions} />
           )}
 
           {/* Visibility */}

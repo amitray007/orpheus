@@ -2,12 +2,46 @@
 // Build all native Node.js addons using node-gyp targeting the packaged Electron ABI.
 // Add new addon packages to the TARGETS array.
 
-import { execSync } from 'child_process'
+import { execFileSync, execSync } from 'child_process'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
+
+// Self-healing guard: the packaged app needs two native artifacts that are
+// normally produced by `postinstall` (`electron-builder install-app-deps` +
+// `fetch:libghostty`). A `bun install --ignore-scripts` skips that postinstall,
+// leaving `better-sqlite3`'s prebuilt binding and the libghostty xcframework
+// absent — the app then builds but crashes at startup with "Could not locate
+// the bindings file" / missing `ghostty.h`. Rather than fail cryptically later,
+// detect and repair those two here so a local `build:unpack` is self-healing on
+// an --ignore-scripts install. (CI/release use a full install, so this is a
+// fast no-op there.)
+{
+  const { existsSync } = await import('fs')
+  const sqliteBinding = resolve(
+    ROOT,
+    'node_modules/better-sqlite3/build/Release/better_sqlite3.node'
+  )
+  if (!existsSync(sqliteBinding)) {
+    console.warn(
+      '[build-native] better-sqlite3 native binding missing (postinstall was skipped) — running `electron-builder install-app-deps`'
+    )
+    execSync('bunx electron-builder install-app-deps', { cwd: ROOT, stdio: 'inherit' })
+  }
+
+  const ghosttyHeader = resolve(
+    ROOT,
+    'vendor/GhosttyKit.xcframework/macos-arm64_x86_64/Headers/ghostty.h'
+  )
+  if (!existsSync(ghosttyHeader)) {
+    console.warn(
+      '[build-native] libghostty xcframework missing (postinstall was skipped) — running `fetch:libghostty`'
+    )
+    execSync('bash scripts/fetch-libghostty.sh', { cwd: ROOT, stdio: 'inherit' })
+  }
+}
 
 // Each entry is the path to a package dir that contains a binding.gyp.
 const TARGETS = ['packages/ghostty-surface']
@@ -66,13 +100,13 @@ for (const target of TARGETS) {
     '--arch=arm64',
     `--python=${pythonBin}`,
     '--verbose'
-  ].join(' ')
+  ]
 
   try {
     // Step 1: clean + configure (generates the Makefile and build/ skeleton).
-    console.log(`[build-native] $ node-gyp rebuild (clean+configure) ${gypFlags}`)
-    execSync(`${gypBin} clean`, { cwd: pkgDir, stdio: 'inherit' })
-    execSync(`${gypBin} configure ${gypFlags}`, { cwd: pkgDir, stdio: 'inherit' })
+    console.log(`[build-native] $ node-gyp rebuild (clean+configure) ${gypFlags.join(' ')}`)
+    execFileSync(gypBin, ['clean'], { cwd: pkgDir, stdio: 'inherit' })
+    execFileSync(gypBin, ['configure', ...gypFlags], { cwd: pkgDir, stdio: 'inherit' })
 
     // Step 2: pre-create the .deps directory tree that clang's -MMD flag needs.
     // node-gyp's generated Makefile does NOT mkdir -p the .deps/ path before the
@@ -86,8 +120,8 @@ for (const target of TARGETS) {
 
     // Step 3: build (make). Force serial make (JOBS=1): even with the .deps dir
     // pre-created, parallel make can re-race on per-object dep dirs.
-    console.log(`[build-native] $ node-gyp build ${gypFlags}`)
-    execSync(`${gypBin} build ${gypFlags}`, {
+    console.log(`[build-native] $ node-gyp build ${gypFlags.join(' ')}`)
+    execFileSync(gypBin, ['build', ...gypFlags], {
       cwd: pkgDir,
       stdio: 'inherit',
       env: { ...process.env, JOBS: '1' }

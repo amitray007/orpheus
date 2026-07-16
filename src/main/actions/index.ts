@@ -15,6 +15,8 @@ import { register } from './registry'
 import type { ActionResult } from '../../shared/types'
 import { setTerminalAddonRef, getAddonRef, destroyAddonSurface } from './addonSurface'
 
+const TERMINAL_ADDON_NOT_LOADED_ERROR = 'Terminal addon not loaded'
+
 // Session handlers
 import { handleGetMeta, handleGetUsage, handleGetCost, handleGetLastTurn } from './session'
 
@@ -127,7 +129,7 @@ export function bootActions(): void {
     validate: (p) => {
       if (p === null || typeof p !== 'object') return false
       const params = p as Record<string, unknown>
-      return typeof params['name'] === 'string' && (params['name'] as string).trim() !== ''
+      return typeof params['name'] === 'string' && params['name'].trim() !== ''
     },
     handler: handleRename
   })
@@ -195,7 +197,7 @@ export function bootActions(): void {
     },
     handler: async (params, workspaceId): Promise<ActionResult> => {
       const addonRef = getAddonRef()
-      if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
+      if (!addonRef) return { ok: false, code: 'failed', error: TERMINAL_ADDON_NOT_LOADED_ERROR }
       const { sendInput, sendKeys } = await import('./terminal')
       const result = sendInput(addonRef, workspaceId, params['text'] as string)
       if (!result.ok) return result
@@ -218,7 +220,7 @@ export function bootActions(): void {
     },
     handler: async (params, workspaceId): Promise<ActionResult> => {
       const addonRef = getAddonRef()
-      if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
+      if (!addonRef) return { ok: false, code: 'failed', error: TERMINAL_ADDON_NOT_LOADED_ERROR }
       const { sendKeys } = await import('./terminal')
       return sendKeys(
         addonRef,
@@ -238,7 +240,7 @@ export function bootActions(): void {
     validate: () => true,
     handler: async (_params, workspaceId): Promise<ActionResult> => {
       const addonRef = getAddonRef()
-      if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
+      if (!addonRef) return { ok: false, code: 'failed', error: TERMINAL_ADDON_NOT_LOADED_ERROR }
       const { submit } = await import('./terminal')
       return submit(addonRef, workspaceId)
     }
@@ -250,7 +252,7 @@ export function bootActions(): void {
     validate: () => true,
     handler: async (_params, workspaceId): Promise<ActionResult> => {
       const addonRef = getAddonRef()
-      if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
+      if (!addonRef) return { ok: false, code: 'failed', error: TERMINAL_ADDON_NOT_LOADED_ERROR }
       const { clearInput } = await import('./terminal')
       return clearInput(addonRef, workspaceId)
     }
@@ -272,7 +274,7 @@ export function bootActions(): void {
     validate: () => true,
     handler: async (_params, workspaceId): Promise<ActionResult> => {
       const addonRef = getAddonRef()
-      if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
+      if (!addonRef) return { ok: false, code: 'failed', error: TERMINAL_ADDON_NOT_LOADED_ERROR }
       const { cancel } = await import('./terminal')
       return cancel(addonRef, workspaceId)
     }

@@ -1,0 +1,429 @@
+/**
+ * commands/ws-wait.ts — `ws wait <id...>` command implementation (U11).
+ *
+ * Waits for one or more workspaces to reach a terminal activity state, then
+ * exits with a code reflecting the aggregate outcome.
+ *
+ * TRANSPORT
+ * ---------
+ * Uses socket-client.ts subscribe() to open a long-lived POST /subscribe
+ * connection to the running Orpheus app. The server keeps the connection open
+ * and streams newline-delimited JSON frames; each frame carries:
+ *   { id: string, reason: string, status: string }
+ *
+ * When all workspace ids have received a terminal reason, the server closes
+ * the connection; the client's done promise resolves.
+ *
+ * EXIT REASON TAXONOMY
+ * --------------------
+ *   done              → exit code 0   (workspace reached idle; session finished)
+ *   blocked-permission → exit code 10  (waiting for a permission decision)
+ *   blocked-input     → exit code 11  (waiting for user input)
+ *   timeout           → exit code 12  (wait duration elapsed with no terminal state)
+ *   died              → exit code 13  (session file gone / process dead)
+ *   not-found         → exit code 3   (id does not resolve to any workspace at all —
+ *                        distinct from 'died', which means the id was a real,
+ *                        previously-live workspace whose session ended/crashed)
+ *
+ * MULTI-ID AGGREGATION
+ * --------------------
+ * When multiple ids are given, the aggregate exit code uses the HIGHEST priority
+ * reason across all ids. Priority order (highest first):
+ *   died > timeout > not-found > blocked-permission > blocked-input > done
+ *
+ * DECISION: why 'not-found' sits below 'died'/'timeout' but above the
+ * 'blocked-*'/'done' terminal states. A script waiting on N ids wants to know
+ * about the worst outcome. 'died' (a workspace that WAS running and then
+ * vanished/crashed) and 'timeout' (nothing resolved in time) are treated as
+ * the most actionable/urgent failures, so they still win if present. But a
+ * 'not-found' id (bad input — the id never existed) is still a hard error
+ * that must not be masked by a healthy 'done'/'blocked-*' result on another
+ * id in the same invocation — so it outranks those. This keeps `ws wait
+ * <real> <fake>` reporting exit 3 (not-found) rather than silently reporting
+ * exit 0/10/11 from the real id, while still letting a genuine 'died' or
+ * 'timeout' elsewhere take priority since those indicate an active session
+ * failure rather than a typo'd id.
+ *
+ * DURATION PARSING
+ * ----------------
+ * --timeout accepts:
+ *   - Plain integers treated as milliseconds (e.g. --timeout 5000)
+ *   - Duration strings with a single suffix:
+ *       s / sec / secs / second / seconds  → multiply by 1000
+ *       m / min / mins / minute / minutes  → multiply by 60 000
+ *       h / hr / hrs / hour / hours        → multiply by 3 600 000
+ * Default: 10m (600 000 ms).
+ *
+ * --UNTIL — how specific a terminal state to block for
+ * -----------------------------------------------------
+ * The server's default notion of "terminal" (turn complete) is: the workspace
+ * reached ANY non-running state — awaiting_input, idle, or blocked on the user
+ * (permission/input). --until narrows or matches that:
+ *   - done  (DEFAULT) — resolve as soon as the workspace stops running for ANY
+ *     reason (awaiting_input, idle, blocked-permission, blocked-input all
+ *     count). This is the historical/current behavior — unchanged.
+ *   - input — block PAST awaiting_input/idle; only resolve once the workspace
+ *     is genuinely blocked waiting on the USER (blocked-permission or
+ *     blocked-input). "Wait until the agent needs me." If the workspace
+ *     reaches idle/awaiting_input without needing input, keep waiting.
+ *   - idle  — block PAST awaiting_input; only resolve once the workspace is
+ *     fully idle (settled, nothing pending) rather than merely
+ *     awaiting_input (turn-end). "Wait until it's completely settled."
+ * In every mode, a died/not-found/timeout outcome is ALWAYS terminal — --until
+ * only changes which of the "workspace stopped running" states counts as
+ * resolved; it never changes the exit-code taxonomy for a given reason.
+ *
+ * APP NOT RUNNING
+ * ---------------
+ * AppNotRunningError (socket absent / token missing) means the Orpheus app is
+ * not running. A workspace cannot be in an active state without the app, so
+ * ws wait exits with code 13 (died) rather than triggering auto-launch.
+ * This is consistent with the reasoning: the session is certainly not live.
+ * isRead: false is intentional — we do NOT trigger auto-launch for this command
+ * (auto-launch is suppressed by catching AppNotRunningError early in the handler
+ * and exiting with code 13 directly).
+ */
+
+import { registerCommand } from '../registry.js'
+import { subscribe, AppNotRunningError } from '../socket-client.js'
+import { printLines, printResult, printError } from '../output.js'
+
+// ---------------------------------------------------------------------------
+// Duration parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a --timeout value string into milliseconds.
+ * Accepts plain integers (as ms) or duration strings like '10m', '30s', '1h'.
+ * Returns null if the string is invalid or results in a non-positive number.
+ */
+function parseDurationMs(input: string): number | null {
+  const trimmed = input.trim()
+  if (trimmed === '') return null
+
+  // Pure integer → treat as milliseconds
+  if (/^\d+$/.test(trimmed)) {
+    const ms = parseInt(trimmed, 10)
+    return ms > 0 ? ms : null
+  }
+
+  // Duration with suffix
+  const match =
+    /^(\d+(?:\.\d+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)$/i.exec(
+      trimmed
+    )
+  if (!match) return null
+
+  const value = parseFloat(match[1]!)
+  const unit = match[2]!.toLowerCase()
+
+  let ms: number
+  if (unit === 'ms') {
+    ms = value
+  } else if (
+    unit === 's' ||
+    unit === 'sec' ||
+    unit === 'secs' ||
+    unit === 'second' ||
+    unit === 'seconds'
+  ) {
+    ms = value * 1_000
+  } else if (
+    unit === 'm' ||
+    unit === 'min' ||
+    unit === 'mins' ||
+    unit === 'minute' ||
+    unit === 'minutes'
+  ) {
+    ms = value * 60_000
+  } else {
+    // h / hr / hrs / hour / hours
+    ms = value * 3_600_000
+  }
+
+  return ms > 0 ? ms : null
+}
+
+// ---------------------------------------------------------------------------
+// Exit reason → exit code
+// ---------------------------------------------------------------------------
+
+type WaitReason = 'done' | 'blocked-permission' | 'blocked-input' | 'timeout' | 'died' | 'not-found'
+
+const REASON_TO_EXIT_CODE: Record<WaitReason, number> = {
+  done: 0,
+  'blocked-permission': 10,
+  'blocked-input': 11,
+  timeout: 12,
+  died: 13,
+  'not-found': 3
+}
+
+// Priority for aggregate: higher number = higher priority (determines the aggregate exit code).
+// Order (highest first): died > timeout > not-found > blocked-permission > blocked-input > done.
+// See the DECISION note in the file header for the reasoning behind not-found's placement.
+const REASON_PRIORITY: Record<WaitReason, number> = {
+  done: 0,
+  'blocked-input': 1,
+  'blocked-permission': 2,
+  'not-found': 3,
+  timeout: 4,
+  died: 5
+}
+
+function isValidReason(r: string): r is WaitReason {
+  return r in REASON_TO_EXIT_CODE
+}
+
+// ---------------------------------------------------------------------------
+// --until — how specific a terminal state to block for (see file header)
+// ---------------------------------------------------------------------------
+
+type UntilMode = 'done' | 'input' | 'idle'
+
+const VALID_UNTIL_MODES: UntilMode[] = ['done', 'input', 'idle']
+
+function isValidUntilMode(v: string): v is UntilMode {
+  return (VALID_UNTIL_MODES as string[]).includes(v)
+}
+
+/**
+ * Return the aggregate reason from a list of per-id reasons.
+ * Highest-priority reason wins.
+ */
+function aggregateReason(reasons: WaitReason[]): WaitReason {
+  if (reasons.length === 0) return 'done'
+  let best: WaitReason = reasons[0]!
+  for (const r of reasons) {
+    if (REASON_PRIORITY[r] > REASON_PRIORITY[best]) {
+      best = r
+    }
+  }
+  return best
+}
+
+// ---------------------------------------------------------------------------
+// Handler helpers
+// ---------------------------------------------------------------------------
+
+type TimeoutResolution = { ok: true; timeoutMs: number } | { ok: false; error: string }
+
+/** Parse --timeout (default: 10 minutes). */
+function resolveTimeoutMs(flags: Record<string, unknown>): TimeoutResolution {
+  const DEFAULT_TIMEOUT_MS = 10 * 60_000
+  if (typeof flags.timeout !== 'string' || flags.timeout === '') {
+    return { ok: true, timeoutMs: DEFAULT_TIMEOUT_MS }
+  }
+  const parsed = parseDurationMs(flags.timeout)
+  if (parsed == null) {
+    return {
+      ok: false,
+      error:
+        `invalid --timeout value: "${flags.timeout}". ` +
+        'Use a duration like 10m, 30s, 1h, or a plain number in milliseconds.'
+    }
+  }
+  return { ok: true, timeoutMs: parsed }
+}
+
+type UntilResolution = { ok: true; until: UntilMode } | { ok: false; error: string }
+
+/** Parse --until (default: 'done' — preserves the historical/default behavior exactly). */
+function resolveUntilMode(flags: Record<string, unknown>): UntilResolution {
+  if (typeof flags.until !== 'string' || flags.until === '') {
+    return { ok: true, until: 'done' }
+  }
+  if (!isValidUntilMode(flags.until)) {
+    return {
+      ok: false,
+      error: `invalid --until value: "${flags.until}". Use one of: ${VALID_UNTIL_MODES.join(', ')}.`
+    }
+  }
+  return { ok: true, until: flags.until }
+}
+
+/** Build the onEvent callback that records per-id WaitReasons as frames arrive. */
+function makeOnEvent(
+  workspaceIds: string[],
+  results: Map<string, WaitReason>
+): (evt: unknown) => void {
+  return (evt: unknown): void => {
+    if (evt == null || typeof evt !== 'object' || !('id' in evt) || !('reason' in evt)) {
+      return
+    }
+    const frame = evt as { id: unknown; reason: unknown; status?: unknown }
+    const id = typeof frame.id === 'string' ? frame.id : null
+    const reason = typeof frame.reason === 'string' ? frame.reason : null
+    if (id == null || reason == null) return
+    if (!workspaceIds.includes(id)) return
+    const validReason: WaitReason = isValidReason(reason) ? reason : 'died'
+    results.set(id, validReason)
+  }
+}
+
+/**
+ * Handle the AppNotRunningError path: app is not running, so the session
+ * cannot be live and every id is reported as 'died' with exit code 13.
+ */
+function printAppNotRunningResult(workspaceIds: string[], jsonMode: boolean): void {
+  if (jsonMode) {
+    const resultsList = workspaceIds.map((id) => ({ id, reason: 'died' }))
+    printResult({ results: resultsList, aggregate: 'died' }, () => {})
+  } else {
+    printLines('error: Orpheus app is not running — session cannot be active (treating as died)')
+    for (const id of workspaceIds) {
+      printLines(`  ${id}  died`)
+    }
+  }
+  process.exitCode = 13
+}
+
+/** Print the final per-id + aggregate result and set the process exit code. */
+function printWaitResult(workspaceIds: string[], results: Map<string, WaitReason>): void {
+  const allReasons = workspaceIds.map((id) => results.get(id)!)
+  const aggregate = aggregateReason(allReasons)
+  const exitCode = REASON_TO_EXIT_CODE[aggregate]
+
+  const resultsList = workspaceIds.map((id) => ({ id, reason: results.get(id)! }))
+
+  printResult({ results: resultsList, aggregate }, () => {
+    // Pretty mode: print per-id outcome then summary
+    for (const { id, reason } of resultsList) {
+      printLines(`  ${id}  ${reason}`)
+    }
+    if (workspaceIds.length > 1) {
+      printLines(`aggregate: ${aggregate}`)
+    }
+  })
+
+  process.exitCode = exitCode
+}
+
+// ---------------------------------------------------------------------------
+// Command registration
+// ---------------------------------------------------------------------------
+
+registerCommand('ws wait', {
+  // NOT isRead — we use the socket. But we suppress auto-launch manually (see handler).
+  usage: 'ws wait <id...> [--timeout <dur>] [--until done|input|idle]',
+  help: 'Wait for one or more workspaces to reach a terminal activity state',
+  longDesc:
+    'Blocks until each workspace reaches a terminal state, then exits with a code ' +
+    'reflecting the aggregate outcome (see the exit-code table below). This is the ' +
+    'core synchronization primitive for fan-out: spawn workers with ws new, then ' +
+    'ws wait on their ids before reading results. With multiple ids, the exit code ' +
+    'reflects the HIGHEST-priority reason across all of them (died > timeout > ' +
+    'not-found > blocked-permission > blocked-input > done).',
+  minPositionals: 1,
+  // Variadic (accepts any number of workspace ids) — maxPositionals intentionally
+  // omitted so an arbitrary number of ids is never rejected as a usage error.
+  argsSpec: [
+    { name: 'id', required: true, variadic: true, desc: 'One or more workspace ids to wait on.' }
+  ],
+  flags: {
+    timeout: {
+      type: 'string',
+      valueHint: '<dur>',
+      desc: 'Maximum time to wait before giving up on any id that has not reached a terminal state. Accepts a duration string (e.g. 10m, 30s, 1h) or a plain integer (milliseconds).',
+      default: '10m'
+    },
+    until: {
+      type: 'string',
+      valueHint: '<mode>',
+      desc: 'How specific a terminal state to block for.',
+      values: ['done', 'input', 'idle'],
+      default: 'done',
+      notes:
+        'done = resolve as soon as the workspace stops running for ANY reason (finished, idle, or blocked on the user). input = keep waiting past idle/awaiting_input; only resolve once the workspace is genuinely blocked on the user (permission or input) — "wait until the agent needs me". idle = keep waiting past awaiting_input; only resolve once fully idle/settled. A died/not-found/timeout outcome is always terminal regardless of --until.'
+    }
+  },
+  examples: [
+    'orpheus ws wait abc-123 --timeout 10m',
+    'orpheus ws wait abc-123 def-456 ghi-789   # wait on a whole fan-out batch',
+    'orpheus ws wait abc-123 --until input --timeout 30m   # block until it needs you'
+  ],
+  handler: async (ctx) => {
+    const workspaceIds = ctx.positionals
+    if (workspaceIds.length === 0) {
+      printError('at least one workspace id is required: ws wait <id...>', { exitCode: 2 })
+      return
+    }
+
+    // Parse --timeout (default: 10 minutes)
+    const timeoutResolution = resolveTimeoutMs(ctx.flags)
+    if (!timeoutResolution.ok) {
+      printError(timeoutResolution.error, { exitCode: 2 })
+      return
+    }
+    const timeoutMs = timeoutResolution.timeoutMs
+
+    // Parse --until (default: 'done' — preserves the historical/default behavior
+    // exactly: resolve as soon as the workspace stops running for any reason).
+    const untilResolution = resolveUntilMode(ctx.flags)
+    if (!untilResolution.ok) {
+      printError(untilResolution.error, { exitCode: 2 })
+      return
+    }
+    const until = untilResolution.until
+
+    // Collected per-id results (resolved as frames arrive)
+    const results = new Map<string, WaitReason>()
+
+    // Client-side timeout: bound the total wait duration independently of the server.
+    // If the server closes first, the client's timer is cleared. If the client times
+    // out first (e.g. if the server doesn't close promptly), unresolved ids get 'timeout'.
+    let clientTimeoutHandle: ReturnType<typeof setTimeout> | null = null
+    let clientTimedOut = false
+
+    const onEvent = makeOnEvent(workspaceIds, results)
+
+    let subscription: { close: () => void; done: Promise<void> } | null = null
+
+    try {
+      // subscribe() synchronously calls resolveToken(); if AppNotRunningError is thrown
+      // it propagates here before the connection is opened.
+      subscription = subscribe(
+        { workspaceIds, timeoutMs, until },
+        onEvent,
+        { timeoutMs } // client-side timeout mirrors --timeout
+      )
+    } catch (err: unknown) {
+      if (err instanceof AppNotRunningError) {
+        // App is not running; session cannot be live → treat all as died
+        printAppNotRunningResult(workspaceIds, ctx.jsonMode)
+        return
+      }
+      printError(err)
+      return
+    }
+
+    // Arm client-side timeout (defense-in-depth: fires if server doesn't close in time)
+    clientTimeoutHandle = setTimeout(() => {
+      clientTimedOut = true
+      clientTimeoutHandle = null
+      subscription?.close()
+    }, timeoutMs)
+
+    // Wait for server to close (or client to force-close via timeout)
+    await subscription.done
+
+    // Clear client timeout if server closed first
+    if (clientTimeoutHandle != null) {
+      clearTimeout(clientTimeoutHandle)
+      clientTimeoutHandle = null
+    }
+
+    // Fill any ids that never received a frame (should not happen normally but
+    // guards against unexpected server closes or filtered frames).
+    // Only set for UNRESOLVED ids — never overwrite an already-terminal result.
+    for (const id of workspaceIds) {
+      if (!results.has(id)) {
+        results.set(id, clientTimedOut ? 'timeout' : 'died')
+      }
+      // ids that already have a result are left unchanged regardless of clientTimedOut.
+    }
+
+    // Compute aggregate reason, print results, and set exit code
+    printWaitResult(workspaceIds, results)
+  }
+})

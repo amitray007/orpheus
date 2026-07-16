@@ -1,16 +1,18 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import { ArrowCounterClockwise, X } from '@phosphor-icons/react'
 import {
   CLAUDE_MODEL_OPTIONS,
   CLAUDE_MODEL_ALIAS_START_INDEX,
   type ClaudeEffort,
+  type ClaudeGlobalSettings,
   type ClaudePermissionMode,
   type ClaudeProjectSettings,
   type ClaudeProjectSettingsOverrides
 } from '@shared/types'
-import { Select } from '../settings/primitives'
+import { Select, CliFlagsEditor, CustomEnvVarsEditor } from '../settings/primitives'
 import { Overlay } from '@/components/ui/Overlay'
+import { WorkspaceCreationSettings } from './WorkspaceCreationSettings'
 
 // ---------------------------------------------------------------------------
 // Per-project settings drawer
@@ -49,6 +51,21 @@ const EFFORT_OPTIONS = [
 type ModelOption = (typeof MODEL_OPTIONS)[number]['value']
 type PermissionOption = (typeof PERMISSION_OPTIONS)[number]['value']
 type EffortOption = (typeof EFFORT_OPTIONS)[number]['value']
+
+// Stable fallback identity for the CLI flags editor's value/inheritedFlags
+// props. A fresh `[]` literal allocated inline in JSX (`x ?? []`) gets a new
+// reference every render, which defeats CliFlagsEditor's render-time
+// prevValueRef sync guard (reference-compares first) and CliFlagsPreview's
+// React.memo (shallow prop compare). Module-level singleton so the reference
+// never changes across renders — see composed props below via useMemo.
+const EMPTY_FLAGS: string[] = []
+
+// Same stable-fallback rationale as EMPTY_FLAGS above, for CustomEnvVarsEditor's
+// `value` prop — a fresh `{}` literal allocated inline every render would give
+// the editor's `useEffect(() => setRows(recordToRows(value)), [value])` a new
+// dependency identity every render, refiring the resync and destroying
+// in-progress typing/focus. Module-level singleton so the reference is stable.
+const EMPTY_ENV_VARS: Record<string, string> = {}
 
 interface SettingsDrawerProps {
   projectId: string
@@ -103,6 +120,9 @@ export function SettingsDrawer({
 }: SettingsDrawerProps): React.JSX.Element | null {
   const [settings, setSettings] = useState<ClaudeProjectSettings | null>(null)
   const [localOverrides, setLocalOverrides] = useState<ClaudeProjectSettingsOverrides>({})
+  // Global settings, fetched alongside project settings — needed only to
+  // render inherited CLI flags (muted) in the CliFlagsEditor preview.
+  const [globalSettings, setGlobalSettings] = useState<ClaudeGlobalSettings | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -115,29 +135,46 @@ export function SettingsDrawer({
         setLocalOverrides(s.overrides)
       })
       .catch((err) => console.error('[settings-drawer] failed to load', err))
+    window.api.claudeSettings
+      .get()
+      .then((s) => {
+        if (!cancelled) setGlobalSettings(s)
+      })
+      .catch((err) => console.error('[settings-drawer] failed to load global settings', err))
     return () => {
       cancelled = true
     }
   }, [open, projectId])
 
-  function patch(update: ClaudeProjectSettingsOverrides): void {
-    const next: ClaudeProjectSettingsOverrides = { ...localOverrides }
-    for (const [k, v] of Object.entries(update)) {
-      if (v === undefined) delete next[k as keyof ClaudeProjectSettingsOverrides]
-      else (next as Record<string, unknown>)[k] = v
-    }
-    setLocalOverrides(next)
-    window.api.claudeProjectSettings.update(projectId, update).catch((err) => {
-      console.error('[settings-drawer] update failed, refetching', err)
-      window.api.claudeProjectSettings
-        .get(projectId)
-        .then((s) => {
-          setSettings(s)
-          setLocalOverrides(s.overrides)
-        })
-        .catch(console.error)
-    })
-  }
+  // Stable patch: uses functional setState so it doesn't close over
+  // `localOverrides` — required for the memoized CliFlagsEditor onChange
+  // (below) to stay stable across renders. Mirrors ClaudeDeveloperSection's
+  // patch (~line 863); see the comment there for why stability matters for
+  // memo. The undefined-clears-a-key semantics and the IPC call + error-path
+  // refetch are unchanged from the previous non-memoized version.
+  const patch = useCallback(
+    (update: ClaudeProjectSettingsOverrides): void => {
+      setLocalOverrides((prev) => {
+        const next: ClaudeProjectSettingsOverrides = { ...prev }
+        for (const [k, v] of Object.entries(update)) {
+          if (v === undefined) delete next[k as keyof ClaudeProjectSettingsOverrides]
+          else (next as Record<string, unknown>)[k] = v
+        }
+        return next
+      })
+      window.api.claudeProjectSettings.update(projectId, update).catch((err) => {
+        console.error('[settings-drawer] update failed, refetching', err)
+        window.api.claudeProjectSettings
+          .get(projectId)
+          .then((s) => {
+            setSettings(s)
+            setLocalOverrides(s.overrides)
+          })
+          .catch(console.error)
+      })
+    },
+    [projectId]
+  )
 
   function handleModel(v: ModelOption): void {
     // Guard: separator values start with '__sep' and should never be committed
@@ -152,8 +189,43 @@ export function SettingsDrawer({
   }
 
   function resetAll(): void {
-    patch({ model: undefined, permissionMode: undefined, effort: undefined })
+    patch({
+      model: undefined,
+      permissionMode: undefined,
+      effort: undefined,
+      customCliFlags: undefined,
+      customEnvVars: undefined
+    })
   }
+
+  // Stable identities for CliFlagsEditor's props — see EMPTY_FLAGS comment.
+  // Only change reference when the underlying data actually changes, so
+  // CliFlagsEditor's prevValueRef sync and CliFlagsPreview's memo both work.
+  // Must stay above the `if (!open) return null` below — Rules of Hooks.
+  const cliFlagsValue = useMemo(
+    () => localOverrides.customCliFlags ?? EMPTY_FLAGS,
+    [localOverrides.customCliFlags]
+  )
+  const inheritedCliFlags = useMemo(
+    () => globalSettings?.customCliFlags ?? EMPTY_FLAGS,
+    [globalSettings?.customCliFlags]
+  )
+  const handleCliFlagsChange = useCallback(
+    (v: string[]) => patch({ customCliFlags: v.length > 0 ? v : undefined }),
+    [patch]
+  )
+
+  // Stable identity for CustomEnvVarsEditor's `value` prop — see
+  // EMPTY_ENV_VARS comment.
+  const envVarsValue = useMemo(
+    () => localOverrides.customEnvVars ?? EMPTY_ENV_VARS,
+    [localOverrides.customEnvVars]
+  )
+  const handleEnvVarsChange = useCallback(
+    (v: Record<string, string>) =>
+      patch({ customEnvVars: Object.keys(v).length > 0 ? v : undefined }),
+    [patch]
+  )
 
   if (!open) return null
 
@@ -174,7 +246,9 @@ export function SettingsDrawer({
   const overrideCount =
     (localOverrides.model !== undefined ? 1 : 0) +
     (localOverrides.permissionMode !== undefined ? 1 : 0) +
-    (localOverrides.effort !== undefined ? 1 : 0)
+    (localOverrides.effort !== undefined ? 1 : 0) +
+    ((localOverrides.customCliFlags?.length ?? 0) > 0 ? 1 : 0) +
+    (Object.keys(localOverrides.customEnvVars ?? {}).length > 0 ? 1 : 0)
   const hasAnyOverride = overrideCount > 0
 
   return (
@@ -272,6 +346,35 @@ export function SettingsDrawer({
                 </button>
               </div>
             )}
+          </section>
+
+          <WorkspaceCreationSettings projectId={projectId} />
+
+          <section className="flex flex-col mt-4 border-t border-border-default/40">
+            <header className="px-4 pt-5 pb-2">
+              <span className="text-xs font-semibold text-text-primary uppercase tracking-wider">
+                Custom CLI flags
+              </span>
+            </header>
+            <div className="px-4 pb-5">
+              <CliFlagsEditor
+                value={cliFlagsValue}
+                onChange={handleCliFlagsChange}
+                inheritedFlags={inheritedCliFlags}
+                placeholder="--dangerously-load-development-channels server:loco"
+              />
+            </div>
+          </section>
+
+          <section className="flex flex-col mt-4 border-t border-border-default/40">
+            <header className="px-4 pt-5 pb-2">
+              <span className="text-xs font-semibold text-text-primary uppercase tracking-wider">
+                Custom environment variables
+              </span>
+            </header>
+            <div className="px-4 pb-5">
+              <CustomEnvVarsEditor value={envVarsValue} onChange={handleEnvVarsChange} />
+            </div>
           </section>
 
           <section className="flex flex-col mt-4 border-t border-border-default/40">

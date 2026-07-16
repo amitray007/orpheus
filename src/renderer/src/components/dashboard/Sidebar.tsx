@@ -1,19 +1,19 @@
 import type React from 'react'
-import { useState, useEffect, useRef, useCallback, memo } from 'react'
-import { useFocusOnMount } from '@/lib/useFocusOnMount'
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import {
   Circle,
-  Kanban,
   Plus,
   CaretDown,
   CaretRight,
   Stack,
   Archive,
-  Gear,
   GitFork,
-  PushPin
+  PushPin,
+  ArrowsDownUp
 } from '@phosphor-icons/react'
+import { WorktreeBadge } from './WorktreeBadge'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
+import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
 import { ContextMenu } from '../ContextMenu'
@@ -21,15 +21,31 @@ import type { ContextMenuItem } from '../ContextMenu'
 import { ActivityIndicator } from './ActivityIndicator'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import { SidebarBoundsContext, useSidebarBounds } from './SidebarBoundsContext'
-import { useWorkspaceActivity } from '@/lib/activityStore'
+import { useWorkspaceActivity, useActiveIdsKey, getActivitySnapshot } from '@/lib/activityStore'
 import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
-import { showHoverPopover, hideNativePopover, onNativePopoverClosed } from '@/lib/nativePopover'
+import { useUiState } from '@/lib/uiStateStore'
+import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
+import { useInlineRename } from '@/lib/useInlineRename'
+import {
+  showHoverCard,
+  hideOverlayCard,
+  hoverCardId,
+  onCardPointer,
+  activityToState,
+  activityToLabel,
+  gitStatusToCard,
+  prToCard
+} from '@/lib/overlayClient'
+import type { HoverCardProps, ContextMenuNativeItem } from '@shared/types'
 import { formatRelativeTime, EMPTY_TITLE_MAP, EMPTY_MTIME_MAP } from './sidebar.helpers'
-import { NavItem, SectionHeader } from './SidebarNavItems'
+import { SectionHeader } from './SidebarNavItems'
 import { CollapsedProjectList } from './CollapsedProjectList'
+import { NewWorkspaceMenu } from './NewWorkspaceMenu'
+import { nextWorkspaceName } from './dashboard.helpers'
+import { RenameInput } from './settings/primitives'
 
 // ---------------------------------------------------------------------------
 // Workspace sub-row (nested inside expanded project row)
@@ -59,39 +75,150 @@ interface WorkspaceRowProps {
   onTogglePin: () => void
 }
 
-// Small component so useFocusOnMount fires when the rename input mounts
-function WorkspaceRenameInput({
-  value,
-  onChange,
-  onKeyDown,
-  onBlur,
-  onClick,
-  onMouseDown,
-  className,
-  ariaLabel
+/**
+ * Freshness display — live activity time wins; jsonl mtime is the fallback for
+ * workspaces with no activity since launch. Take the max so a freshly loaded
+ * mtime never overrides a more-recent live bump.
+ */
+function computeWorkspaceFreshness(
+  liveActivityAt: number | null,
+  mtimeActivityAt: number | null,
+  nowMs: number
+): { relativeTime: string; isVeryOld: boolean } {
+  const lastActivityAt =
+    liveActivityAt !== null && mtimeActivityAt !== null
+      ? Math.max(liveActivityAt, mtimeActivityAt)
+      : (liveActivityAt ?? mtimeActivityAt)
+  const relativeTime = formatRelativeTime(lastActivityAt, nowMs)
+  const ageMs = lastActivityAt !== null ? nowMs - lastActivityAt : null
+  const isVeryOld = ageMs !== null && ageMs >= 24 * 60 * 60_000
+  return { relativeTime, isVeryOld }
+}
+
+/** Dispatch a native workspace context-menu action string to its callback. */
+function dispatchWorkspaceMenuAction(
+  action: string,
+  callbacks: {
+    onTogglePin: () => void
+    onBeginRename: () => void
+    onClose: () => void
+    onArchive: () => void
+  }
+): void {
+  if (action === 'togglePin') callbacks.onTogglePin()
+  else if (action === 'rename') callbacks.onBeginRename()
+  else if (action === 'close') callbacks.onClose()
+  else if (action === 'archive') callbacks.onArchive()
+}
+
+/** Open the native (Electron) workspace context menu and wire its action callback. Used when the sidebar is too narrow for the in-app popover. */
+function showNativeWorkspaceMenu(
+  isPinned: boolean,
+  isClosed: boolean,
+  isBusy: boolean,
+  callbacks: {
+    onTogglePin: () => void
+    onBeginRename: () => void
+    onClose: () => void
+    onArchive: () => void
+  }
+): void {
+  void window.api.contextMenu
+    .show(nativeWorkspaceMenuItems(isPinned, isClosed, isBusy))
+    .then((action) => {
+      if (!action) return
+      dispatchWorkspaceMenuAction(action, callbacks)
+    })
+}
+
+/** Native (Electron) context-menu item list for a workspace row — same shape/order as the inline literal it replaces. */
+function nativeWorkspaceMenuItems(
+  isPinned: boolean,
+  isClosed: boolean,
+  isBusy: boolean
+): ContextMenuNativeItem[] {
+  return [
+    { label: isPinned ? 'Unpin' : 'Pin', action: 'togglePin' },
+    { label: 'Rename', action: 'rename' },
+    { divider: true },
+    ...(!isClosed && !isBusy ? [{ label: 'Close', action: 'close' }] : []),
+    { label: 'Archive', action: 'archive' }
+  ]
+}
+
+/** In-app ContextMenu item list for a workspace row — same shape/order as the inline literal it replaces. */
+function buildWorkspaceMenuItems(
+  isPinned: boolean,
+  isClosed: boolean,
+  isBusy: boolean,
+  callbacks: {
+    onTogglePin: () => void
+    onBeginRename: () => void
+    onClose: () => void
+    onArchive: () => void
+  }
+): ContextMenuItem[] {
+  return [
+    { label: isPinned ? 'Unpin' : 'Pin', onClick: callbacks.onTogglePin },
+    { label: 'Rename', onClick: callbacks.onBeginRename },
+    { label: '', divider: true, onClick: () => {} },
+    ...(!isClosed && !isBusy ? [{ label: 'Close', onClick: callbacks.onClose }] : []),
+    { label: 'Archive', onClick: callbacks.onArchive }
+  ]
+}
+
+/** Build the hover-popover props for a workspace row, incl. worktree-annotated cwd. */
+function buildWorkspaceHoverCardProps(params: {
+  workspace: WorkspaceRecord
+  title: string
+  activity: ReturnType<typeof useWorkspaceActivity>
+  relativeTime: string
+  gitStatus: ReturnType<typeof useGitStatus>
+  pr: ReturnType<typeof usePr>
+}): HoverCardProps {
+  const { workspace, title, activity, relativeTime, gitStatus, pr } = params
+  return {
+    title,
+    activityLabel: activityToLabel(activity),
+    activityState: activityToState(activity),
+    relativeTime,
+    git: gitStatusToCard(gitStatus),
+    pr: prToCard(pr),
+    cwd: popoverCwdFor(workspace)
+  }
+}
+
+/** Annotate a worktree workspace's cwd with its parent branch for the hover popover. */
+function popoverCwdFor(workspace: WorkspaceRecord): string {
+  return workspace.worktreeParentCwd && workspace.worktreeBranch
+    ? `${workspace.cwd} (${workspace.worktreeBranch})`
+    : workspace.cwd
+}
+
+/** Status icon slot for a workspace row — closed/circle, live activity, or idle stack. Same nested fallback as the inline JSX it replaces. */
+function WorkspaceStatusIcon({
+  isClosed,
+  activity,
+  active
 }: {
-  value: string
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
-  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
-  onBlur: () => void
-  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
-  onMouseDown: (e: React.MouseEvent<HTMLInputElement>) => void
-  className: string
-  ariaLabel: string
+  isClosed: boolean
+  activity: ReturnType<typeof useWorkspaceActivity>
+  active: boolean
 }): React.JSX.Element {
-  const ref = useRef<HTMLInputElement | null>(null)
-  useFocusOnMount(ref)
+  if (isClosed) {
+    return <Circle size={11} weight="regular" className="text-text-muted opacity-60" />
+  }
+  if (activity && activity !== 'archived') {
+    return <ActivityIndicator detail={activity} />
+  }
   return (
-    <input
-      ref={ref}
-      aria-label={ariaLabel}
-      value={value}
-      onChange={onChange}
-      onKeyDown={onKeyDown}
-      onBlur={onBlur}
-      onClick={onClick}
-      onMouseDown={onMouseDown}
-      className={className}
+    <Stack
+      size={12}
+      weight={active ? 'fill' : 'regular'}
+      className={[
+        'transition-colors duration-150',
+        active ? 'text-text-primary' : 'text-text-muted group-hover:text-text-secondary'
+      ].join(' ')}
     />
   )
 }
@@ -120,7 +247,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   const gitStatus = useGitStatus(workspace.id)
   const pr = usePr(workspace.id)
   const [hovered, setHovered] = useState(false)
-  const [renameValue, setRenameValue] = useState(workspace.name)
+  const rename = useInlineRename(workspace.name, (trimmed) => onFinishRename(trimmed))
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const sidebarBoundsRef = useSidebarBounds()
 
@@ -134,8 +261,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   // Seed the rename input with whatever the user currently sees, so renaming
   // from a Claude title doesn't snap back to "New workspace".
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: only updates when renaming mode activates
-    if (renaming) setRenameValue(displayName)
+    if (renaming) rename.seed(displayName)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renaming])
 
@@ -144,130 +270,107 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     const rect = sidebarBoundsRef?.current?.getBoundingClientRect()
     if (!rect || rect.width < 200) {
       const isPinned = workspace.pinnedAt !== null
-      void window.api.contextMenu
-        .show([
-          { label: isPinned ? 'Unpin' : 'Pin', action: 'togglePin' },
-          { label: 'Rename', action: 'rename' },
-          { divider: true },
-          ...(!isClosed && !isBusy ? [{ label: 'Close', action: 'close' }] : []),
-          { label: 'Archive', action: 'archive' }
-        ])
-        .then((action) => {
-          if (!action) return
-          if (action === 'togglePin') onTogglePin()
-          else if (action === 'rename') onBeginRename()
-          else if (action === 'close') onClose()
-          else if (action === 'archive') onArchive()
-        })
+      showNativeWorkspaceMenu(isPinned, isClosed, isBusy, {
+        onTogglePin,
+        onBeginRename,
+        onClose,
+        onArchive
+      })
       return
     }
     setMenu({ x: e.clientX, y: e.clientY })
   }
 
   const isPinned = workspace.pinnedAt !== null
-  const wsMenuItems: ContextMenuItem[] = [
-    { label: isPinned ? 'Unpin' : 'Pin', onClick: onTogglePin },
-    { label: 'Rename', onClick: onBeginRename },
-    { label: '', divider: true, onClick: () => {} },
-    ...(!isClosed && !isBusy ? [{ label: 'Close', onClick: onClose }] : []),
-    { label: 'Archive', onClick: onArchive }
-  ]
+  const wsMenuItems: ContextMenuItem[] = buildWorkspaceMenuItems(isPinned, isClosed, isBusy, {
+    onTogglePin,
+    onBeginRename,
+    onClose,
+    onArchive
+  })
 
   function handleRenameCommit(): void {
-    const trimmed = renameValue.trim()
-    if (trimmed && trimmed !== workspace.name) {
-      onFinishRename(trimmed)
-    } else {
-      onCancelRename()
-    }
-    setRenameValue(workspace.name) // reset so a future rename starts clean
+    const trimmed = rename.value.trim()
+    const willCommit = trimmed && trimmed !== workspace.name
+    rename.commit() // calls onFinishRename(trimmed) when willCommit; always resets value
+    if (!willCommit) onCancelRename()
   }
 
-  // Freshness display — live activity time wins; jsonl mtime is the fallback for
-  // workspaces with no activity since launch. Take the max so a freshly loaded
-  // mtime never overrides a more-recent live bump.
   const mtimeActivityAt = workspace.claudeSessionId
     ? (sessionMtimeBySessionId.get(workspace.claudeSessionId) ?? null)
     : null
-  const lastActivityAt =
-    liveActivityAt !== null && mtimeActivityAt !== null
-      ? Math.max(liveActivityAt, mtimeActivityAt)
-      : (liveActivityAt ?? mtimeActivityAt)
-  const relativeTime = formatRelativeTime(lastActivityAt, nowMs)
-  const ageMs = lastActivityAt !== null ? nowMs - lastActivityAt : null
-  const isVeryOld = ageMs !== null && ageMs >= 24 * 60 * 60_000
+  const { relativeTime, isVeryOld } = computeWorkspaceFreshness(
+    liveActivityAt,
+    mtimeActivityAt,
+    nowMs
+  )
 
   const hasDetail = gitStatus !== null || pr != null
 
-  // Native popover: only allowed when inactive, not renaming, and has data.
+  // Hover card: only allowed when inactive, not renaming, and has data.
   const cardAllowed = hasDetail && !renaming && !active
 
-  // Ref to the row element used as anchor for the native popover.
+  // Ref to the row element used as anchor for the hover card.
   const rowRef = useRef<HTMLDivElement>(null)
 
   // Hover timing mirrors the old floating-ui delays: 120ms open, 80ms close.
-  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hoverCard = useOverlayHoverCard({ openDelay: 120, closeDelay: 80 })
 
-  function clearHoverTimer(): void {
-    if (hoverTimerRef.current !== null) {
-      clearTimeout(hoverTimerRef.current)
-      hoverTimerRef.current = null
-    }
+  function hideHoverCard(): void {
+    hideOverlayCard(hoverCardId(workspace.id))
   }
 
   function handleRowMouseEnter(): void {
     if (!cardAllowed) return
-    clearHoverTimer()
-    hoverTimerRef.current = setTimeout(() => {
-      hoverTimerRef.current = null
+    hoverCard.handleMouseEnter(() => {
       if (!rowRef.current || !cardAllowed) return
-      showHoverPopover(
-        workspace.id,
-        rowRef.current,
-        gitStatus,
-        pr,
-        dn.text,
+      const cardProps = buildWorkspaceHoverCardProps({
+        workspace,
+        title: dn.text,
         activity,
         relativeTime,
-        workspace.cwd
-      )
-    }, 120)
+        gitStatus,
+        pr
+      })
+      showHoverCard(workspace.id, rowRef.current, cardProps)
+    })
   }
 
   function handleRowMouseLeave(): void {
-    clearHoverTimer()
-    hoverTimerRef.current = setTimeout(() => {
-      hoverTimerRef.current = null
-      hideNativePopover(workspace.id)
-    }, 80)
+    hoverCard.handleMouseLeave(hideHoverCard)
   }
 
   // If the card is allowed but the row becomes active / renaming / loses detail,
   // close it immediately so it never sits over a live terminal.
   useEffect(() => {
     if (!cardAllowed) {
-      clearHoverTimer()
-      hideNativePopover(workspace.id)
+      hoverCard.clearTimer()
+      hideHoverCard()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardAllowed, workspace.id])
 
   // Clean up on unmount.
   useEffect(() => {
     return () => {
-      clearHoverTimer()
-      hideNativePopover(workspace.id)
+      hoverCard.clearTimer()
+      hideHoverCard()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace.id])
 
-  // Hover-bridge: when the native card closes itself via NSTrackingArea
-  // mouseExited (pointer left the card without returning to the trigger),
-  // reset our open-state by cancelling any pending timers. This ensures a
-  // subsequent hover on this row re-opens the card cleanly.
+  // Hover-bridge: keep the card open while the pointer is over the card
+  // itself, so moving from the row into the card doesn't close-timer it out.
+  // The overlay card emits mouseenter/mouseleave (OverlayRoot's card
+  // wrapper) — cancel the close timer on enter, re-arm it (same 80ms) on
+  // leave.
   useEffect(() => {
-    const unregister = onNativePopoverClosed(workspace.id, () => {
-      clearHoverTimer()
+    const unregister = onCardPointer(hoverCardId(workspace.id), {
+      onEnter: hoverCard.clearTimer,
+      onLeave: () => hoverCard.armClose(hideHoverCard)
     })
     return unregister
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace.id])
 
   return (
@@ -275,7 +378,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
       <div
         ref={rowRef}
         className={[
-          'relative flex rounded-r-md transition-colors duration-150 group',
+          'relative flex rounded-r-md transition-colors duration-150 group h-8',
           isVeryOld && !isClosed ? 'opacity-60' : '',
           isClosed ? 'opacity-50' : '',
           // 2px left bar on active rows for unambiguous selection.
@@ -298,9 +401,9 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
           type="button"
           onClick={onSelect}
           className={[
-            'flex flex-col pl-8 pr-9 flex-1 text-left min-w-0',
-            'h-8 justify-center',
-            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md'
+            'flex items-center pl-8 pr-9 flex-1 text-left min-w-0 h-8',
+            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md',
+            'cursor-pointer'
           ].join(' ')}
           aria-label={workspace.name}
         >
@@ -311,29 +414,16 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
               className="flex items-center justify-center w-3 h-3 flex-shrink-0"
               title={isClosed ? 'Closed — click to reopen' : undefined}
             >
-              {isClosed ? (
-                <Circle size={11} weight="regular" className="text-text-muted opacity-60" />
-              ) : activity && activity !== 'archived' ? (
-                <ActivityIndicator detail={activity} />
-              ) : (
-                <Stack
-                  size={12}
-                  weight={active ? 'fill' : 'regular'}
-                  className={[
-                    'transition-colors duration-150',
-                    active ? 'text-text-primary' : 'text-text-muted group-hover:text-text-secondary'
-                  ].join(' ')}
-                />
-              )}
+              <WorkspaceStatusIcon isClosed={isClosed} activity={activity} active={active} />
             </span>
 
             {/* Title area */}
             <span className="flex items-center gap-1 min-w-0 flex-1">
               {renaming ? (
-                <WorkspaceRenameInput
+                <RenameInput
                   ariaLabel="Rename workspace"
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
+                  value={rename.value}
+                  onChange={(e) => rename.setValue(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') handleRenameCommit()
                     if (e.key === 'Escape') onCancelRename()
@@ -362,13 +452,15 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
                   aria-label="forked workspace"
                 />
               )}
+              {/* Worktree badge — after fork badge */}
+              {!renaming && <WorktreeBadge workspace={workspace} />}
             </span>
           </span>
         </button>
 
         {/* Trailing slot: time and archive share the same absolute position at the right edge */}
         {!renaming && relativeTime && !hovered && (
-          <span className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center h-8 pr-1 pointer-events-none">
+          <span className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center h-8 w-8 pointer-events-none">
             <span className="text-[11px] text-text-muted tabular-nums">{relativeTime}</span>
           </span>
         )}
@@ -379,7 +471,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
               e.stopPropagation()
               onArchive()
             }}
-            className="absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            className="absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
             aria-label="Archive workspace"
           >
             <Archive size={13} />
@@ -458,7 +550,7 @@ const PinnedRow = memo(function PinnedRow({
       <button
         type="button"
         onClick={onSelect}
-        className="flex items-center gap-2.5 pl-4 pr-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
+        className="flex items-center gap-2.5 pl-4 pr-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md cursor-pointer"
         title={workspace.cwd}
         aria-label={workspace.name}
       >
@@ -477,14 +569,17 @@ const PinnedRow = memo(function PinnedRow({
           )}
         </span>
         <span className="flex flex-col gap-0.5 min-w-0 flex-1">
-          <span
-            className={[
-              'text-xs truncate leading-tight',
-              dn.muted ? 'text-text-muted italic' : ''
-            ].join(' ')}
-            title={dn.text}
-          >
-            {dn.text}
+          <span className="flex items-center gap-1 min-w-0">
+            <span
+              className={[
+                'text-xs truncate leading-tight',
+                dn.muted ? 'text-text-muted italic' : ''
+              ].join(' ')}
+              title={dn.text}
+            >
+              {dn.text}
+            </span>
+            <WorktreeBadge workspace={workspace} />
           </span>
           <span className="text-[11px] text-text-muted truncate leading-tight">{project.name}</span>
         </span>
@@ -562,38 +657,6 @@ interface ProjectRowProps {
   onWorkspaceDragEnd: () => void
 }
 
-// Small component so useFocusOnMount fires when the project rename input mounts
-function ProjectRenameInput({
-  value,
-  onChange,
-  onKeyDown,
-  onBlur,
-  onClick,
-  className
-}: {
-  value: string
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
-  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
-  onBlur: () => void
-  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
-  className: string
-}): React.JSX.Element {
-  const ref = useRef<HTMLInputElement | null>(null)
-  useFocusOnMount(ref)
-  return (
-    <input
-      ref={ref}
-      aria-label="Rename project"
-      value={value}
-      onChange={onChange}
-      onKeyDown={onKeyDown}
-      onBlur={onBlur}
-      onClick={onClick}
-      className={className}
-    />
-  )
-}
-
 const ProjectRow = memo(function ProjectRow({
   project,
   active,
@@ -636,15 +699,23 @@ const ProjectRow = memo(function ProjectRow({
   onWorkspaceDragEnd
 }: ProjectRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
-  const [renameValue, setRenameValue] = useState(project.name)
+  const rename = useInlineRename(project.name, (trimmed) => onFinishRename(trimmed))
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [revealExtra, setRevealExtra] = useState(0)
   const sidebarBoundsRef = useSidebarBounds()
 
   // Sync rename input when project name changes externally (useEffect avoids render-time setState)
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: only updates when not actively renaming
-    if (!renaming) setRenameValue(project.name)
+    if (!renaming) rename.seed(project.name)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.name, renaming])
+
+  // Collapse the revealed-extra count when the project is collapsed, so
+  // re-expanding starts back at the capped view.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: only resets when collapsing
+    if (!expanded) setRevealExtra(0)
+  }, [expanded])
 
   function handleContextMenu(e: React.MouseEvent): void {
     e.preventDefault()
@@ -669,6 +740,45 @@ const ProjectRow = memo(function ProjectRow({
     setMenu({ x: e.clientX, y: e.clientY })
   }
 
+  // Cap the visible workspace list: always show active workspaces (working/
+  // attention/ready), plus idles up to a base of 5 (or actives.length if
+  // higher), plus any extra idles revealed via "Show more".
+  const workspaceIds = useMemo(() => workspaces.map((w) => w.id), [workspaces])
+  // Subscribed purely for its re-render trigger: the returned key changes
+  // whenever the active SET changes (including a compensating swap that
+  // leaves the count unchanged), so the partition below is recomputed from a
+  // fresh snapshot instead of going stale on same-count membership changes.
+  useActiveIdsKey(workspaceIds)
+  const snap = getActivitySnapshot()
+  const actives: WorkspaceRecord[] = []
+  const idles: WorkspaceRecord[] = []
+  for (const ws of workspaces) {
+    const detail = snap.get(ws.id)
+    if (detail === 'working' || detail === 'attention' || detail === 'ready') {
+      actives.push(ws)
+    } else {
+      idles.push(ws)
+    }
+  }
+  const baseVisible = Math.max(5, actives.length)
+  const idleSlots = Math.max(0, baseVisible - actives.length) + revealExtra
+  const visibleIds = new Set([
+    ...actives.map((w) => w.id),
+    ...idles.slice(0, idleSlots).map((w) => w.id)
+  ])
+  // Always show the workspace currently open in the terminal view and the one
+  // selected in the sidebar, even if it would otherwise fall past the cap —
+  // navigating into a workspace must never make it vanish from the sidebar.
+  // Pinned in ADDITION to the idle-fill above (doesn't consume an idle slot).
+  if (currentWorkspaceId && workspaceIds.includes(currentWorkspaceId)) {
+    visibleIds.add(currentWorkspaceId)
+  }
+  if (selectedWorkspaceId && workspaceIds.includes(selectedWorkspaceId)) {
+    visibleIds.add(selectedWorkspaceId)
+  }
+  const visibleWorkspaces = workspaces.filter((w) => visibleIds.has(w.id))
+  const hiddenCount = workspaces.length - visibleIds.size
+
   const isPinned = project.pinnedAt !== null
   const projectMenuItems: ContextMenuItem[] = [
     { label: isPinned ? 'Unpin' : 'Pin', onClick: onTogglePinProject },
@@ -678,12 +788,10 @@ const ProjectRow = memo(function ProjectRow({
   ]
 
   function handleRenameCommit(): void {
-    const trimmed = renameValue.trim()
-    if (trimmed && trimmed !== project.name) {
-      onFinishRename(trimmed)
-    } else {
-      onCancelRename()
-    }
+    const trimmed = rename.value.trim()
+    const willCommit = trimmed && trimmed !== project.name
+    rename.commit() // calls onFinishRename(trimmed) when willCommit; always resets value
+    if (!willCommit) onCancelRename()
   }
 
   return (
@@ -703,7 +811,7 @@ const ProjectRow = memo(function ProjectRow({
         <button
           type="button"
           onClick={onSelect}
-          className="flex items-center gap-2 px-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
+          className="flex items-center gap-2 px-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md cursor-pointer"
           title={project.path}
           aria-label={project.name}
         >
@@ -720,9 +828,10 @@ const ProjectRow = memo(function ProjectRow({
             )}
           </span>
           {renaming ? (
-            <ProjectRenameInput
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
+            <RenameInput
+              ariaLabel="Rename project"
+              value={rename.value}
+              onChange={(e) => rename.setValue(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleRenameCommit()
                 if (e.key === 'Escape') onCancelRename()
@@ -746,18 +855,21 @@ const ProjectRow = memo(function ProjectRow({
           <div className="flex items-center gap-0.5 pr-1 flex-shrink-0">
             {/* Add workspace — visible on hover */}
             {hovered && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onAddWorkspace()
-                }}
-                className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-                title="New workspace"
-                aria-label="New workspace"
+              <NewWorkspaceMenu
+                projectId={project.id}
+                defaultName={nextWorkspaceName(workspaces)}
+                onCreateLocal={() => onAddWorkspace()}
+                onCreated={(ws) => onSelectWorkspace(ws.id)}
               >
-                <Plus size={14} weight="bold" />
-              </button>
+                <button
+                  type="button"
+                  className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
+                  title="New workspace"
+                  aria-label="New workspace"
+                >
+                  <Plus size={14} weight="bold" />
+                </button>
+              </NewWorkspaceMenu>
             )}
 
             {/* Expand/collapse chevron */}
@@ -767,7 +879,7 @@ const ProjectRow = memo(function ProjectRow({
                 e.stopPropagation()
                 onToggleExpand()
               }}
-              className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+              className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
               title={expanded ? 'Collapse' : 'Expand workspaces'}
               aria-label={expanded ? 'Collapse workspaces' : 'Expand workspaces'}
             >
@@ -788,19 +900,30 @@ const ProjectRow = memo(function ProjectRow({
 
       {/* Nested workspace rows */}
       {expanded && workspaces.length === 0 && (
-        <button
-          type="button"
-          onClick={onAddWorkspace}
-          className="w-full h-8 flex items-center justify-start gap-2 pl-8 pr-2 mt-0.5 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-          aria-label="Add workspace"
+        <NewWorkspaceMenu
+          projectId={project.id}
+          defaultName={nextWorkspaceName(workspaces)}
+          onCreateLocal={() => onAddWorkspace()}
+          onCreated={(ws) => onSelectWorkspace(ws.id)}
+          className="w-full mt-0.5"
         >
-          <Plus size={12} />
-          <span>Add workspace</span>
-        </button>
+          <button
+            type="button"
+            className="w-full h-8 flex items-center gap-2 pl-8 pr-2 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
+            aria-label="Add workspace"
+          >
+            <Plus size={12} />
+            <span>Add workspace</span>
+          </button>
+        </NewWorkspaceMenu>
       )}
       {expanded && workspaces.length > 0 && (
         <div className="flex flex-col gap-0.5 mt-0.5">
-          {workspaces.map((ws) => {
+          {/* Rows hidden by the cap have no drop target here — they're not
+              rendered, so there's nowhere to drag onto. Reordering into the
+              hidden tail requires expanding via "Show more" first. Accepted
+              as-is: capped rows are an edge case, not the common reorder path. */}
+          {visibleWorkspaces.map((ws) => {
             const showLineAbove = wsDropTargetId === ws.id && wsDropPos === 'before'
             const showLineBelow = wsDropTargetId === ws.id && wsDropPos === 'after'
             const isDragging = wsDragId === ws.id
@@ -840,6 +963,19 @@ const ProjectRow = memo(function ProjectRow({
               </div>
             )
           })}
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setRevealExtra((x) => x + 5)
+              }}
+              className="w-full h-8 flex items-center gap-2 pl-8 pr-2 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
+            >
+              <CaretDown size={12} />
+              <span>Show more</span>
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -860,10 +996,258 @@ function DropIndicator({ position }: { position: 'top' | 'bottom' }): React.JSX.
 }
 
 // ---------------------------------------------------------------------------
+// Projects section — extracted from Sidebar() so the swap-in for the Panes
+// "Panels" tree (see the render body below) doesn't push Sidebar()'s own
+// cognitive complexity over the sonarjs cap. Pure prop pass-through; no
+// behavior change from the block that used to be inlined here.
+// ---------------------------------------------------------------------------
+
+interface ProjectsSectionProps {
+  collapsed: boolean
+  projects: ProjectRecord[]
+  projectsLoading: boolean
+  selectedProjectId: string | null
+  selectedWorkspaceId: string | null
+  activeView: SidebarActiveView
+  currentViewKind: string
+  expandedProjectIds: Set<string>
+  workspacesByProject: Record<string, WorkspaceRecord[]>
+  workspaceCountInline: boolean
+  fetchGithubAvatars: boolean
+  addProjectButton: React.ReactNode
+  addingProject: boolean
+  /** Pinned workspaces, rendered as the first rows below the "Projects" heading. */
+  pinnedItems: PinnedItem[]
+  onRefreshPins: () => void
+  sessionTitlesByProject: Map<string, Map<string, string>>
+  sessionUserPreviewsByProject: Map<string, Map<string, string>>
+  sessionMtimesByProject: Map<string, Map<string, number>>
+  staleAfterMinutes: number
+  nowMs: number
+  isProjectActive: (projectId: string) => boolean
+  onSelectProject: (id: string) => void
+  onAddProject: () => void
+  onToggleProjectExpand: (id: string) => void
+  onSelectWorkspace: (workspaceId: string, projectId: string) => void
+  renamingProjectId: string | null
+  onBeginRename: (id: string) => void
+  onFinishRename: (id: string, newName: string) => void
+  onCancelRename: () => void
+  onRequestRemoveProject: (project: ProjectRecord) => void
+  onAddWorkspace: (projectId: string) => void | Promise<void>
+  renamingWorkspaceId: string | null
+  onBeginRenameWorkspace: (id: string) => void
+  onFinishRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void
+  onCancelRenameWorkspace: () => void
+  onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onCloseWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onTogglePinWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onTogglePinProject: (projectId: string) => void | Promise<void>
+  dragId: string | null
+  dropTargetId: string | null
+  dropPos: 'before' | 'after'
+  onProjectDragStart: (e: React.DragEvent<HTMLDivElement>, id: string) => void
+  onProjectDragOver: (e: React.DragEvent<HTMLDivElement>, id: string) => void
+  onProjectDrop: (e: React.DragEvent<HTMLDivElement>, id: string) => void
+  onProjectDragEnd: () => void
+  wsDragId: string | null
+  wsDropTargetId: string | null
+  wsDropPos: 'before' | 'after'
+  onWorkspaceDragStart: (
+    e: React.DragEvent<HTMLDivElement>,
+    wsId: string,
+    projectId: string
+  ) => void
+  onWorkspaceDragOver: (e: React.DragEvent<HTMLDivElement>, wsId: string, projectId: string) => void
+  onWorkspaceDrop: (
+    e: React.DragEvent<HTMLDivElement>,
+    targetId: string,
+    projectId: string,
+    workspaces: WorkspaceRecord[]
+  ) => void
+  onWorkspaceDragEnd: () => void
+}
+
+function ProjectsSection({
+  collapsed,
+  projects,
+  projectsLoading,
+  selectedProjectId,
+  selectedWorkspaceId,
+  activeView,
+  currentViewKind,
+  expandedProjectIds,
+  workspacesByProject,
+  workspaceCountInline,
+  fetchGithubAvatars,
+  addProjectButton,
+  addingProject,
+  pinnedItems,
+  onRefreshPins,
+  sessionTitlesByProject,
+  sessionUserPreviewsByProject,
+  sessionMtimesByProject,
+  staleAfterMinutes,
+  nowMs,
+  isProjectActive,
+  onSelectProject,
+  onAddProject,
+  onToggleProjectExpand,
+  onSelectWorkspace,
+  renamingProjectId,
+  onBeginRename,
+  onFinishRename,
+  onCancelRename,
+  onRequestRemoveProject,
+  onAddWorkspace,
+  renamingWorkspaceId,
+  onBeginRenameWorkspace,
+  onFinishRenameWorkspace,
+  onCancelRenameWorkspace,
+  onArchiveWorkspace,
+  onCloseWorkspace,
+  onTogglePinWorkspace,
+  onTogglePinProject,
+  dragId,
+  dropTargetId,
+  dropPos,
+  onProjectDragStart,
+  onProjectDragOver,
+  onProjectDrop,
+  onProjectDragEnd,
+  wsDragId,
+  wsDropTargetId,
+  wsDropPos,
+  onWorkspaceDragStart,
+  onWorkspaceDragOver,
+  onWorkspaceDrop,
+  onWorkspaceDragEnd
+}: ProjectsSectionProps): React.JSX.Element {
+  return (
+    <div className="mt-2 flex flex-col gap-0.5 flex-1 min-h-0">
+      {!collapsed ? (
+        <>
+          <SectionHeader label="Projects" action={addProjectButton} />
+          {pinnedItems.length > 0 && (
+            <div className="flex flex-col gap-0.5 mb-1">
+              {pinnedItems.map((item) => (
+                <PinnedRow
+                  key={item.workspace.id}
+                  item={item}
+                  active={selectedWorkspaceId === item.workspace.id}
+                  onSelect={() => onSelectWorkspace(item.workspace.id, item.workspace.projectId)}
+                  onUnpin={async () => {
+                    await window.api.workspaces.setPinned(item.workspace.id, false)
+                    onRefreshPins()
+                  }}
+                />
+              ))}
+            </div>
+          )}
+          {projectsLoading ? (
+            <ProjectListSkeleton />
+          ) : projects.length === 0 ? (
+            <p className="text-xs text-text-muted px-3 mt-1">No projects yet</p>
+          ) : (
+            <div className="flex flex-col gap-0.5 overflow-y-auto flex-1 min-h-0 no-scrollbar">
+              {projects.map((p) => {
+                const expanded = expandedProjectIds.has(p.id)
+                const workspaces = (workspacesByProject[p.id] ?? []).filter(
+                  (w) => w.archivedAt === null
+                )
+                const showLineAbove = dropTargetId === p.id && dropPos === 'before'
+                const showLineBelow = dropTargetId === p.id && dropPos === 'after'
+                const isDragging = dragId === p.id
+                return (
+                  <div
+                    key={p.id}
+                    draggable={renamingProjectId !== p.id}
+                    onDragStart={(e) => onProjectDragStart(e, p.id)}
+                    onDragOver={(e) => onProjectDragOver(e, p.id)}
+                    onDrop={(e) => onProjectDrop(e, p.id)}
+                    onDragEnd={onProjectDragEnd}
+                    className={['relative', isDragging ? 'opacity-40' : ''].join(' ')}
+                  >
+                    {showLineAbove && <DropIndicator position="top" />}
+                    <ProjectRow
+                      project={p}
+                      active={activeView === 'project' && selectedProjectId === p.id}
+                      expanded={expanded}
+                      workspaces={workspaces}
+                      workspaceCount={workspaces.length}
+                      workspaceCountInline={workspaceCountInline}
+                      fetchGithubAvatars={fetchGithubAvatars}
+                      selectedWorkspaceId={selectedWorkspaceId}
+                      sessionTitleBySessionId={sessionTitlesByProject.get(p.id) ?? EMPTY_TITLE_MAP}
+                      sessionUserPreviewBySessionId={
+                        sessionUserPreviewsByProject.get(p.id) ?? EMPTY_TITLE_MAP
+                      }
+                      sessionMtimeBySessionId={sessionMtimesByProject.get(p.id) ?? EMPTY_MTIME_MAP}
+                      staleAfterMinutes={staleAfterMinutes}
+                      nowMs={nowMs}
+                      onSelect={() => onSelectProject(p.id)}
+                      onToggleExpand={() => onToggleProjectExpand(p.id)}
+                      onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
+                      currentViewKind={currentViewKind}
+                      currentWorkspaceId={selectedWorkspaceId}
+                      renaming={renamingProjectId === p.id}
+                      onBeginRename={() => onBeginRename(p.id)}
+                      onFinishRename={(name) => onFinishRename(p.id, name)}
+                      onCancelRename={onCancelRename}
+                      onRequestRemove={() => onRequestRemoveProject(p)}
+                      onAddWorkspace={() => onAddWorkspace(p.id)}
+                      renamingWorkspaceId={renamingWorkspaceId}
+                      onBeginRenameWorkspace={onBeginRenameWorkspace}
+                      onFinishRenameWorkspace={(wsId, name) =>
+                        onFinishRenameWorkspace(wsId, p.id, name)
+                      }
+                      onCancelRenameWorkspace={onCancelRenameWorkspace}
+                      onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
+                      onCloseWorkspace={(wsId) => onCloseWorkspace(wsId, p.id)}
+                      onTogglePinWorkspace={(wsId) => onTogglePinWorkspace(wsId, p.id)}
+                      onTogglePinProject={() => onTogglePinProject(p.id)}
+                      wsDragId={wsDragId}
+                      wsDropTargetId={wsDropTargetId}
+                      wsDropPos={wsDropPos}
+                      onWorkspaceDragStart={onWorkspaceDragStart}
+                      onWorkspaceDragOver={onWorkspaceDragOver}
+                      onWorkspaceDrop={onWorkspaceDrop}
+                      onWorkspaceDragEnd={onWorkspaceDragEnd}
+                    />
+                    {showLineBelow && <DropIndicator position="bottom" />}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </>
+      ) : (
+        <CollapsedProjectList
+          projects={projects}
+          projectsLoading={projectsLoading}
+          fetchGithubAvatars={fetchGithubAvatars}
+          isProjectActive={isProjectActive}
+          addingProject={addingProject}
+          onSelectProject={onSelectProject}
+          onAddProject={onAddProject}
+          workspacesByProject={workspacesByProject}
+        />
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar
 // ---------------------------------------------------------------------------
 
-export type SidebarActiveView = 'sessions' | 'project' | 'workspace' | 'settings'
+export type SidebarActiveView =
+  | 'sessions'
+  | 'project'
+  | 'workspace'
+  | 'settings'
+  | 'panes'
+  | 'dashboard'
 
 interface SidebarProps {
   collapsed: boolean
@@ -882,8 +1266,6 @@ interface SidebarProps {
   fetchGithubAvatars: boolean
   pinnedItems: PinnedItem[]
   onSelectProject: (id: string) => void
-  onSelectNav: (view: 'sessions') => void
-  onSelectSettings: () => void
   onAddProject: () => void
   addingProject?: boolean
   onToggleProjectExpand: (id: string) => void
@@ -901,6 +1283,7 @@ interface SidebarProps {
   onTogglePinWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onTogglePinProject: (projectId: string) => void | Promise<void>
   onReorderProjects: (orderedIds: string[]) => void
+  onReorderProjectsByActivity: () => void
   onReorderWorkspaces: (projectId: string, orderedIds: string[]) => void
   onRefreshPins: () => void
 }
@@ -919,8 +1302,6 @@ export function Sidebar({
   sidebarWidth,
   fetchGithubAvatars,
   onSelectProject,
-  onSelectNav,
-  onSelectSettings,
   onAddProject,
   addingProject = false,
   onToggleProjectExpand,
@@ -934,6 +1315,7 @@ export function Sidebar({
   onTogglePinWorkspace,
   onTogglePinProject,
   onReorderProjects,
+  onReorderProjectsByActivity,
   onReorderWorkspaces,
   pinnedItems,
   onRefreshPins
@@ -961,7 +1343,10 @@ export function Sidebar({
     Map<string, Map<string, number>>
   >(new Map())
   // Stale threshold from AppUiState (default matches original hardcoded 60 min)
-  const [staleAfterMinutes, setStaleAfterMinutes] = useState(60)
+  // — reads through the shared live store; falls back to the canonical
+  // default until the initial uiState.get() resolves.
+  const liveUiState = useUiState()
+  const staleAfterMinutes = liveUiState?.staleAfterMinutes ?? UI_STATE_DEFAULTS.staleAfterMinutes
   // Coarse clock — tick once per minute so all rows refresh together
   const [nowMs, setNowMs] = useState(() => Date.now())
   const fetchedProjectSessions = useRef<Set<string> | null>(null)
@@ -1004,13 +1389,6 @@ export function Sidebar({
         .catch((err) => console.error('[sidebar] sessions load failed for', projectId, err))
     }
   }, [projects])
-
-  // Subscribe to staleAfterMinutes from AppUiState
-  useEffect(() => {
-    void window.api.uiState.get().then((s) => setStaleAfterMinutes(s.staleAfterMinutes))
-    const unsub = window.api.uiState.onChanged((s) => setStaleAfterMinutes(s.staleAfterMinutes))
-    return unsub
-  }, [])
 
   // Tick nowMs once per minute so freshness labels refresh without per-row timers
   useEffect(() => {
@@ -1176,21 +1554,42 @@ export function Sidebar({
     [activeView, selectedProjectId]
   )
 
+  const sortProjectsButton = (
+    <button
+      type="button"
+      aria-label="Sort projects: active first"
+      title="Sort projects: active first"
+      className="w-8 h-8 flex items-center justify-center rounded-md transition-colors duration-150 text-text-muted hover:text-text-primary hover:bg-surface-overlay cursor-pointer"
+      onClick={onReorderProjectsByActivity}
+    >
+      <ArrowsDownUp size={14} weight="bold" />
+    </button>
+  )
+
   const addProjectButton = (
     <button
       type="button"
       aria-label="Add project"
       disabled={addingProject}
       className={[
-        'p-1 rounded transition-colors duration-150',
+        // -mr-2 cancels SectionHeader's px-3 so this lands in the same
+        // 4px right gutter the workspace-row chevron button uses.
+        'w-8 h-8 -mr-2 flex items-center justify-center rounded-md transition-colors duration-150',
         addingProject
           ? 'text-text-muted opacity-50 cursor-wait'
-          : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+          : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay cursor-pointer'
       ].join(' ')}
       onClick={onAddProject}
     >
       <Plus size={14} weight="bold" />
     </button>
+  )
+
+  const projectsHeaderActions = (
+    <div className="flex items-center gap-0.5">
+      {sortProjectsButton}
+      {addProjectButton}
+    </div>
   )
 
   return (
@@ -1201,147 +1600,71 @@ export function Sidebar({
           collapsed ? 'w-14' : '',
           'transition-[width] duration-150 ease-out',
           'bg-surface-raised border-r border-border-default',
-          'flex flex-col gap-1 overflow-hidden shrink-0 h-full'
+          'flex flex-col overflow-hidden shrink-0 h-full'
         ].join(' ')}
         style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
       >
-        {/* Top nav */}
-        {/* Route key 'sessions' is preserved for back-compat with uiState serialisation; visible label is Workspaces */}
-        <NavItem
-          Icon={Kanban}
-          label="Workspaces"
-          active={activeView === 'sessions'}
+        {/* Sidebar is now Projects-only — the top-level surface switch lives
+            in ActivityRail, and Panes' own tree (PanelsSection) is rendered
+            by Dashboard.tsx's shell instead of swapping in here. Pinned
+            workspaces render as the first rows inside ProjectsSection, right
+            below the "Projects" heading, so the heading itself always lands
+            at the same fixed top offset as Panes' heading — pinning never
+            shifts the layout. */}
+        <ProjectsSection
           collapsed={collapsed}
-          flushTop
-          onClick={() => onSelectNav('sessions')}
-        />
-
-        {/* Pinned section — only rendered when at least one workspace is pinned */}
-        {!collapsed && pinnedItems.length > 0 && (
-          <div className="mt-4 flex flex-col gap-0.5">
-            <SectionHeader label="Pinned" />
-            {pinnedItems.map((item) => (
-              <PinnedRow
-                key={item.workspace.id}
-                item={item}
-                active={selectedWorkspaceId === item.workspace.id}
-                onSelect={() => onSelectWorkspace(item.workspace.id, item.workspace.projectId)}
-                onUnpin={async () => {
-                  await window.api.workspaces.setPinned(item.workspace.id, false)
-                  onRefreshPins()
-                }}
-              />
-            ))}
-          </div>
-        )}
-
-        {/* Projects section */}
-        <div className="mt-4 flex flex-col gap-0.5 flex-1 min-h-0">
-          {!collapsed ? (
-            <>
-              <SectionHeader label="Projects" action={addProjectButton} />
-              {projectsLoading ? (
-                <ProjectListSkeleton />
-              ) : projects.length === 0 ? (
-                <p className="text-xs text-text-muted px-3 mt-1">No projects yet</p>
-              ) : (
-                <div className="flex flex-col gap-0.5 overflow-y-auto flex-1 min-h-0 no-scrollbar">
-                  {projects.map((p) => {
-                    const expanded = expandedProjectIds.has(p.id)
-                    const workspaces = (workspacesByProject[p.id] ?? []).filter(
-                      (w) => w.archivedAt === null
-                    )
-                    const showLineAbove = dropTargetId === p.id && dropPos === 'before'
-                    const showLineBelow = dropTargetId === p.id && dropPos === 'after'
-                    const isDragging = dragId === p.id
-                    return (
-                      <div
-                        key={p.id}
-                        draggable={renamingProjectId !== p.id}
-                        onDragStart={(e) => onProjectDragStart(e, p.id)}
-                        onDragOver={(e) => onProjectDragOver(e, p.id)}
-                        onDrop={(e) => onProjectDrop(e, p.id)}
-                        onDragEnd={onProjectDragEnd}
-                        className={['relative', isDragging ? 'opacity-40' : ''].join(' ')}
-                      >
-                        {showLineAbove && <DropIndicator position="top" />}
-                        <ProjectRow
-                          project={p}
-                          active={activeView === 'project' && selectedProjectId === p.id}
-                          expanded={expanded}
-                          workspaces={workspaces}
-                          workspaceCount={workspaces.length}
-                          workspaceCountInline={workspaceCountInline}
-                          fetchGithubAvatars={fetchGithubAvatars}
-                          selectedWorkspaceId={selectedWorkspaceId}
-                          sessionTitleBySessionId={
-                            sessionTitlesByProject.get(p.id) ?? EMPTY_TITLE_MAP
-                          }
-                          sessionUserPreviewBySessionId={
-                            sessionUserPreviewsByProject.get(p.id) ?? EMPTY_TITLE_MAP
-                          }
-                          sessionMtimeBySessionId={
-                            sessionMtimesByProject.get(p.id) ?? EMPTY_MTIME_MAP
-                          }
-                          staleAfterMinutes={staleAfterMinutes}
-                          nowMs={nowMs}
-                          onSelect={() => onSelectProject(p.id)}
-                          onToggleExpand={() => onToggleProjectExpand(p.id)}
-                          onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
-                          currentViewKind={currentViewKind}
-                          currentWorkspaceId={selectedWorkspaceId}
-                          renaming={renamingProjectId === p.id}
-                          onBeginRename={() => handleBeginRename(p.id)}
-                          onFinishRename={(name) => handleFinishRename(p.id, name)}
-                          onCancelRename={handleCancelRename}
-                          onRequestRemove={() => onRequestRemoveProject(p)}
-                          onAddWorkspace={() => onAddWorkspace(p.id)}
-                          renamingWorkspaceId={renamingWorkspaceId}
-                          onBeginRenameWorkspace={handleBeginRenameWorkspace}
-                          onFinishRenameWorkspace={(wsId, name) =>
-                            handleFinishRenameWorkspace(wsId, p.id, name)
-                          }
-                          onCancelRenameWorkspace={handleCancelRenameWorkspace}
-                          onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
-                          onCloseWorkspace={(wsId) => onCloseWorkspace(wsId, p.id)}
-                          onTogglePinWorkspace={(wsId) => onTogglePinWorkspace(wsId, p.id)}
-                          onTogglePinProject={() => onTogglePinProject(p.id)}
-                          wsDragId={wsDragId}
-                          wsDropTargetId={wsDropTargetId}
-                          wsDropPos={wsDropPos}
-                          onWorkspaceDragStart={onWorkspaceDragStart}
-                          onWorkspaceDragOver={onWorkspaceDragOver}
-                          onWorkspaceDrop={onWorkspaceDrop}
-                          onWorkspaceDragEnd={onWorkspaceDragEnd}
-                        />
-                        {showLineBelow && <DropIndicator position="bottom" />}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </>
-          ) : (
-            <CollapsedProjectList
-              projects={projects}
-              projectsLoading={projectsLoading}
-              fetchGithubAvatars={fetchGithubAvatars}
-              isProjectActive={isProjectActive}
-              addingProject={addingProject}
-              onSelectProject={onSelectProject}
-              onAddProject={onAddProject}
-              workspacesByProject={workspacesByProject}
-            />
-          )}
-        </div>
-
-        {/* Bottom: Settings */}
-        <NavItem
-          Icon={Gear}
-          label="Settings"
-          active={activeView === 'settings'}
-          collapsed={collapsed}
-          onClick={onSelectSettings}
+          pinnedItems={pinnedItems}
+          onRefreshPins={onRefreshPins}
+          projects={projects}
+          projectsLoading={projectsLoading}
+          selectedProjectId={selectedProjectId}
+          selectedWorkspaceId={selectedWorkspaceId}
+          activeView={activeView}
+          currentViewKind={currentViewKind}
+          expandedProjectIds={expandedProjectIds}
+          workspacesByProject={workspacesByProject}
+          workspaceCountInline={workspaceCountInline}
+          fetchGithubAvatars={fetchGithubAvatars}
+          addProjectButton={projectsHeaderActions}
+          addingProject={addingProject}
+          sessionTitlesByProject={sessionTitlesByProject}
+          sessionUserPreviewsByProject={sessionUserPreviewsByProject}
+          sessionMtimesByProject={sessionMtimesByProject}
+          staleAfterMinutes={staleAfterMinutes}
+          nowMs={nowMs}
+          isProjectActive={isProjectActive}
+          onSelectProject={onSelectProject}
+          onAddProject={onAddProject}
+          onToggleProjectExpand={onToggleProjectExpand}
+          onSelectWorkspace={onSelectWorkspace}
+          renamingProjectId={renamingProjectId}
+          onBeginRename={handleBeginRename}
+          onFinishRename={handleFinishRename}
+          onCancelRename={handleCancelRename}
+          onRequestRemoveProject={onRequestRemoveProject}
+          onAddWorkspace={onAddWorkspace}
+          renamingWorkspaceId={renamingWorkspaceId}
+          onBeginRenameWorkspace={handleBeginRenameWorkspace}
+          onFinishRenameWorkspace={handleFinishRenameWorkspace}
+          onCancelRenameWorkspace={handleCancelRenameWorkspace}
+          onArchiveWorkspace={onArchiveWorkspace}
+          onCloseWorkspace={onCloseWorkspace}
+          onTogglePinWorkspace={onTogglePinWorkspace}
+          onTogglePinProject={onTogglePinProject}
+          dragId={dragId}
+          dropTargetId={dropTargetId}
+          dropPos={dropPos}
+          onProjectDragStart={onProjectDragStart}
+          onProjectDragOver={onProjectDragOver}
+          onProjectDrop={onProjectDrop}
+          onProjectDragEnd={onProjectDragEnd}
+          wsDragId={wsDragId}
+          wsDropTargetId={wsDropTargetId}
+          wsDropPos={wsDropPos}
+          onWorkspaceDragStart={onWorkspaceDragStart}
+          onWorkspaceDragOver={onWorkspaceDragOver}
+          onWorkspaceDrop={onWorkspaceDrop}
+          onWorkspaceDragEnd={onWorkspaceDragEnd}
         />
       </aside>
     </SidebarBoundsContext.Provider>

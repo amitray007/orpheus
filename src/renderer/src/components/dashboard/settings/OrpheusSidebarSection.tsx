@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState } from '@shared/types'
+import { UI_STATE_DEFAULTS, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX } from '@shared/uiStateDefaults'
 import { SettingRow, Toggle, NumberInput, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
@@ -9,7 +10,7 @@ import { SettingsSectionSkeleton } from '../../Skeleton'
 // ---------------------------------------------------------------------------
 
 function clampSidebarWidth(v: number): number {
-  return Math.min(480, Math.max(200, v))
+  return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, v))
 }
 
 export function OrpheusSidebarSection(): React.JSX.Element {
@@ -138,8 +139,10 @@ export function OrpheusSidebarSection(): React.JSX.Element {
             <div className="flex items-center gap-1.5">
               <NumberInput
                 value={uiState.sidebarWidth}
-                onChange={(v) => patch({ sidebarWidth: clampSidebarWidth(v ?? 256) })}
-                placeholder="256"
+                onChange={(v) =>
+                  patch({ sidebarWidth: clampSidebarWidth(v ?? UI_STATE_DEFAULTS.sidebarWidth) })
+                }
+                placeholder={String(UI_STATE_DEFAULTS.sidebarWidth)}
               />
               <span className="text-xs text-text-muted">px</span>
             </div>

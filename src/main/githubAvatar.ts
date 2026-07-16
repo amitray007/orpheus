@@ -1,6 +1,7 @@
 import { exec } from 'node:child_process'
 import { BrowserWindow } from 'electron'
 import { getDb } from './db'
+import { PUSH_CHANNELS } from '../shared/ipc'
 
 // Broadcast a partial update so the renderer can patch its local projects
 // state in-place without re-fetching the whole list. Sends only the four
@@ -13,7 +14,7 @@ function broadcastGithubUpdate(payload: {
   githubCheckedAt: number
 }): void {
   for (const w of BrowserWindow.getAllWindows()) {
-    w.webContents.send('projects:githubDataUpdated', payload)
+    w.webContents.send(PUSH_CHANNELS.projectsGithubDataUpdated, payload)
   }
 }
 
@@ -27,9 +28,7 @@ const SSH_RE = /^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/i
 // HTTPS: https://github.com/owner/repo or .git
 const HTTPS_RE = /^https?:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?\/?$/i
 
-export function extractGithubInfo(
-  repoPath: string
-): Promise<{ owner: string; repo: string } | null> {
+function extractGithubInfo(repoPath: string): Promise<{ owner: string; repo: string } | null> {
   return new Promise((resolve) => {
     exec('git config --get remote.origin.url', { cwd: repoPath, timeout: 3000 }, (err, stdout) => {
       if (err || !stdout) {
@@ -56,7 +55,7 @@ export function extractGithubInfo(
 // Avatar URL fetch
 // ---------------------------------------------------------------------------
 
-export async function fetchAvatarUrl(owner: string): Promise<string | null> {
+async function fetchAvatarUrl(owner: string): Promise<string | null> {
   try {
     const res = await fetch(`https://github.com/${encodeURIComponent(owner)}.png?size=120`, {
       method: 'GET',

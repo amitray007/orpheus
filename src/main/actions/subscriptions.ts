@@ -17,6 +17,7 @@ import { WebContents } from 'electron'
 import { invoke } from './registry'
 import { invalidateSessionCache, resolveJsonlPath } from './session'
 import { getWorkspace } from '../workspaces'
+import { encodePathToClaudeDir } from '../claudeProjectDir'
 import * as os from 'node:os'
 
 // ---------------------------------------------------------------------------
@@ -172,21 +173,23 @@ function startSessionSubscription(
   function getParentDir(wid: string): string | null {
     const ws = getWorkspace(wid)
     if (!ws) return null
-    const encoded = ws.cwd.replace(/\//g, '-')
+    const encoded = encodePathToClaudeDir(ws.cwd)
     return nodePath.join(os.homedir(), '.claude', 'projects', encoded)
   }
 
-  const fireUpdate = throttleLeadingTrailing(async () => {
+  const fireUpdate = throttleLeadingTrailing(() => {
     if (disposed) return
     invalidateSessionCache(workspaceId)
-    try {
-      const result = await invoke({ id: actionId, params, workspaceId }, 'subscription')
-      if (result.ok && 'value' in result) {
-        sendUpdate(result.value)
+    void (async () => {
+      try {
+        const result = await invoke({ id: actionId, params, workspaceId }, 'subscription')
+        if (result.ok && 'value' in result) {
+          sendUpdate(result.value)
+        }
+      } catch (err) {
+        console.error('[actions:subscriptions] update invoke failed', { subId, actionId, err })
       }
-    } catch (err) {
-      console.error('[actions:subscriptions] update invoke failed', { subId, actionId, err })
-    }
+    })()
   }, SUBSCRIPTION_DEBOUNCE_MS)
 
   function stopFileWatcher(): void {

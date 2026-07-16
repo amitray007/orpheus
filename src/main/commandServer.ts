@@ -1,0 +1,1483 @@
+import * as http from 'node:http'
+import * as fs from 'node:fs'
+import * as nodePath from 'node:path'
+import * as crypto from 'node:crypto'
+import { app } from 'electron'
+import { getDb } from './db'
+import { logDiagMain } from './diagnostics'
+import { DIAG_EVENTS } from '../shared/diagEvents'
+import {
+  createWorkspace,
+  getWorkspace,
+  reopenWorkspace,
+  renameWorkspace,
+  listChildWorkspaces,
+  getWorkspaceLineage
+} from './workspaces'
+import { getClaudeGlobalSettings } from './claudeSettings'
+import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
+import { getProject } from './projects'
+import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
+import { onWorkspaceStatusChange } from './orpheusNotify'
+import { getWorkspaceFileInfo, getWorkspaceFileStatusSync, forceReconcile } from './sessionState'
+import {
+  listByWorkspace as listLocalReviewComments,
+  setResolved as setLocalReviewCommentResolved
+} from './reviewStore'
+
+// ---------------------------------------------------------------------------
+// Deps injected from index.ts (these live as locals there, so we receive them
+// as callbacks rather than importing them directly).
+// ---------------------------------------------------------------------------
+
+export type CommandServerDeps = {
+  /** Destroy the libghostty surface for a workspace (no-op if not mounted). */
+  destroySurface: (workspaceId: string) => void
+  /**
+   * Evict all per-workspace in-memory state (launch snapshot, dirty flag,
+   * activity, overlay, git watcher, etc.). Mirrors teardownWorkspaceResources
+   * in index.ts.
+   */
+  teardownWorkspaceResources: (workspaceId: string, cwd: string | null) => void
+  /**
+   * Destroy surface + teardown + DB closeWorkspace in one shot.
+   * Mirrors performClose in index.ts.
+   */
+  performClose: (workspaceId: string) => WorkspaceRecord | undefined
+  /**
+   * Destroy surface + teardown + DB archiveWorkspace in one shot. Forces the
+   * archive (dirty worktrees are torn down without a confirmation round-trip)
+   * since the CLI/command-server caller has already decided to archive.
+   * Mirrors performArchive in index.ts.
+   */
+  performArchive: (workspaceId: string) => Promise<{ archived: boolean; wasDirty: boolean }>
+  /**
+   * Send 'workspace:requestOpen' to the renderer so it opens/mounts the given
+   * workspace. Used by U8/U12 and by `ws open`.
+   *
+   * `focus` (default true) controls whether the renderer NAVIGATES the UI to
+   * the workspace (handleSelectWorkspace: setView + mount — steals focus) or
+   * performs a BACKGROUND MOUNT (mounts the terminal surface so it becomes
+   * injectable without changing what the user is looking at). See the
+   * background-mount design note in Dashboard.tsx's onWorkspaceRequestOpen
+   * handler.
+   */
+  requestOpenWorkspace: (workspaceId: string, focus?: boolean) => void
+  /**
+   * Open a workspace and inject a seed task once the surface is injectable.
+   * Implemented in index.ts using requestOpenWorkspace + a bounded poll on
+   * getSurfacePhase + canInject + isWorkspaceSessionReady (waits for claude
+   * itself to have booted and registered its session, not just the terminal
+   * surface to be mounted) + terminalActions.sendInput/submit. Returns a
+   * warning string if the workspace never became ready within the timeout
+   * (task not injected), null on success. The workspace is always created
+   * regardless; only the injection may be skipped.
+   *
+   * `focus` (default true) is forwarded to requestOpenWorkspace: true
+   * navigates the UI to the workspace, false performs a background mount.
+   *
+   * `submit` (default true) controls whether the task is submitted (typed +
+   * Enter) after being staged. false leaves the text staged in claude's input
+   * box unsent (for user review/editing) — sendInput still runs, only the
+   * SUBMIT_DELAY_MS delay + submit() call is skipped.
+   */
+  openAndSeed: (
+    workspaceId: string,
+    taskText: string,
+    focus?: boolean,
+    submit?: boolean
+  ) => Promise<string | null>
+  /**
+   * Send text, a named key, and/or submit to a running workspace. If the
+   * workspace surface is not yet injectable, opens it (requestOpenWorkspace)
+   * and polls canInject up to a bounded timeout (10 s) before injecting.
+   * Returns { ok: true } on success or { ok: false, error: string } on failure
+   * (surface not ready, timeout, send error).
+   *
+   * `focus` (default true) is forwarded to the auto-open path: true navigates
+   * the UI to the workspace, false performs a background mount (the workspace
+   * becomes injectable without stealing the user's view).
+   */
+  sendToWorkspace: (
+    workspaceId: string,
+    payload: { text?: string; submit?: boolean; key?: string },
+    focus?: boolean
+  ) => Promise<{ ok: boolean; error?: string }>
+}
+
+// ---------------------------------------------------------------------------
+// Internal types
+// ---------------------------------------------------------------------------
+
+const BODY_SIZE_LIMIT = 10 * 1024 * 1024 // 10 MB
+
+// Shared validation-error message for the many dispatch handlers that require
+// a string args.id — hoisted since it's repeated verbatim across them.
+const ARGS_ID_REQUIRED_ERROR = 'args.id is required'
+
+type CmdBody = {
+  action: string
+  args?: Record<string, unknown>
+  context?: { workspaceId?: string }
+}
+
+// The value a dispatch handler resolves to — always fed straight into
+// JSON.stringify({ ok: true, data }) by the /cmd envelope, so it's
+// constrained to JSON-serializable shapes rather than bare `unknown`.
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | JsonValue[]
+  | { [key: string]: JsonValue }
+
+type DispatchFn = (
+  args: Record<string, unknown>,
+  context: { workspaceId?: string },
+  deps: CommandServerDeps
+) => Promise<JsonValue> | JsonValue
+
+// ---------------------------------------------------------------------------
+// /subscribe — --until modes (see ws-wait.ts's DURATION PARSING / --UNTIL doc
+// comment for the full behavioral spec). Passed through from the CLI's
+// `subscribe({ workspaceIds, timeoutMs, until })` body.
+// ---------------------------------------------------------------------------
+
+type UntilMode = 'done' | 'input' | 'idle'
+
+function isValidUntilMode(v: string): v is UntilMode {
+  return v === 'done' || v === 'input' || v === 'idle'
+}
+
+// Repeated wait-outcome literal — hoisted since it's returned from several
+// branches of the ws-wait status resolution below.
+const BLOCKED_INPUT = 'blocked-input'
+
+/**
+ * Collect the full subtree rooted at `rootId` (BFS over listChildWorkspaces),
+ * returning ids in BFS discovery order (root first). Used by
+ * workspace.archive's recursive mode: callers walk the result in reverse so
+ * children are archived before parents. A visited Set guards against
+ * infinite loops from corrupted parent_workspace_id cycles.
+ */
+function collectWorkspaceSubtreeIds(rootId: string): string[] {
+  const subtreeIds: string[] = []
+  const visited = new Set<string>()
+  const queue: string[] = [rootId]
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    if (visited.has(current)) continue // cycle guard
+    visited.add(current)
+    subtreeIds.push(current)
+    const children = listChildWorkspaces(current)
+    for (const child of children) {
+      if (!visited.has(child.id)) {
+        queue.push(child.id)
+      }
+    }
+  }
+  return subtreeIds
+}
+
+/**
+ * Resolve `workspace.create`'s parent workspace id (explicit arg > caller's
+ * context workspace) and, when an explicit parentWorkspaceId was supplied,
+ * run its two validations before returning it:
+ *   - CROSS-PROJECT VALIDATION — explicit parentWorkspaceId must belong to
+ *     the same project. A crafted parent from a different project could
+ *     bypass depth/children caps (the lineage and children queries are
+ *     project-unaware). context.workspaceId is trusted as the real caller;
+ *     only an explicitly supplied parentWorkspaceId is validated.
+ *   - GUARDRAIL CHECK (children cap / depth cap) — only runs when there is
+ *     an explicit parent, mirroring the original inline `if (parentId != null)`.
+ * Throws the same errors, in the same order, as the original inline code.
+ */
+function resolveAndValidateParentWorkspaceId(
+  args: Record<string, unknown>,
+  context: { workspaceId?: string }
+): string | null {
+  // Determine parent workspace id: explicit arg > caller's context workspace
+  const parentId: string | null =
+    typeof args.parentWorkspaceId === 'string'
+      ? args.parentWorkspaceId
+      : (context?.workspaceId ?? null)
+
+  if (
+    typeof args.parentWorkspaceId === 'string' &&
+    args.parentWorkspaceId !== context?.workspaceId
+  ) {
+    const parentRow = getDb()
+      .prepare('SELECT id, project_id FROM workspaces WHERE id = ? AND archived_at IS NULL')
+      .get(args.parentWorkspaceId) as { id: string; project_id: string } | undefined
+    if (!parentRow) {
+      throw new Error(`parent workspace not found or archived: ${args.parentWorkspaceId}`)
+    }
+    if (parentRow.project_id !== args.projectId) {
+      throw new Error(
+        `parent workspace ${args.parentWorkspaceId} belongs to a different project — ` +
+          `cross-project parenting is not allowed`
+      )
+    }
+  }
+
+  if (parentId != null) {
+    const globalSettings = getClaudeGlobalSettings()
+    const maxChildren = globalSettings.maxWorkspaceChildren ?? 10
+    const maxDepth = globalSettings.maxWorkspaceDepth ?? 3
+
+    // Children check: how many non-archived children does the parent already have?
+    const existingChildren = listChildWorkspaces(parentId)
+    if (existingChildren.length >= maxChildren) {
+      throw new Error(
+        `Max children (${maxChildren}) reached for this workspace. Don't spawn more workspaces — ` +
+          `use subagents (Agent tool) or teammates within an existing workspace instead, ` +
+          `or archive finished workers to free slots.`
+      )
+    }
+
+    // Depth check: how deep in the lineage would the new workspace be?
+    // getWorkspaceLineage returns root→parent chain (inclusive of parent).
+    // The new workspace would be at depth lineage.length + 1.
+    const lineage = getWorkspaceLineage(parentId)
+    const newDepth = lineage.length + 1
+    if (newDepth > maxDepth) {
+      throw new Error(
+        `Max workspace depth (${maxDepth}) would be exceeded. Don't nest workspaces further — ` +
+          `use subagents (Agent tool) or teammates within an existing workspace instead.`
+      )
+    }
+  }
+
+  return parentId
+}
+
+/**
+ * `workspace.create`'s fork support: when --fork is requested, look up the
+ * parent's claudeSessionId to seed forkedFromSessionId. Returns null when
+ * --fork was not requested (args.fork !== true). Throws the same errors, in
+ * the same order, as the original inline code.
+ */
+function resolveForkedFromSessionId(
+  args: Record<string, unknown>,
+  parentId: string | null
+): string | null {
+  if (args.fork !== true) return null
+  if (parentId == null) {
+    throw new Error(
+      '--fork requires a parent workspace. Run from inside a workspace (ORPHEUS_WORKSPACE_ID) or pass --parent.'
+    )
+  }
+  const parentWs = getWorkspace(parentId)
+  if (parentWs == null) {
+    throw new Error(`parent workspace not found: ${parentId}`)
+  }
+  if (parentWs.claudeSessionId == null) {
+    throw new Error(
+      `parent workspace ${parentId} has no claude session yet — cannot fork before a session is established`
+    )
+  }
+  return parentWs.claudeSessionId
+}
+
+/**
+ * Build the workspace-level settings override (model / permissionMode /
+ * effort) from `workspace.create`'s args, validating each field exactly as
+ * the original inline code did. Stored in claude_workspace_settings and
+ * picked up by composeClaudeLaunch. Returns an empty object when no valid
+ * override fields were supplied (caller skips the updateClaudeWorkspaceSettings
+ * call in that case, matching the original `Object.keys(...).length > 0` gate).
+ */
+function buildWorkspaceSettingsOverride(args: Record<string, unknown>): {
+  model?: string
+  permissionMode?: ClaudePermissionMode
+  effort?: ClaudeEffort
+} {
+  const settingsOverride: {
+    model?: string
+    permissionMode?: ClaudePermissionMode
+    effort?: ClaudeEffort
+  } = {}
+  if (typeof args.model === 'string' && args.model !== '') {
+    settingsOverride.model = args.model
+  }
+  const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
+    'default',
+    'acceptEdits',
+    'plan',
+    'bypassPermissions'
+  ]
+  if (
+    typeof args.permissionMode === 'string' &&
+    VALID_PERMISSION_MODES.includes(args.permissionMode as ClaudePermissionMode)
+  ) {
+    settingsOverride.permissionMode = args.permissionMode as ClaudePermissionMode
+  }
+  const VALID_EFFORTS: ClaudeEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
+  if (typeof args.effort === 'string' && VALID_EFFORTS.includes(args.effort as ClaudeEffort)) {
+    settingsOverride.effort = args.effort as ClaudeEffort
+  }
+  return settingsOverride
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch table — one entry per supported CLI action.
+// ---------------------------------------------------------------------------
+
+function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> {
+  return {
+    // Create a new workspace inside a project.
+    // Args:
+    //   projectId (required) — the project to create the workspace under
+    //   cwd (required)       — working directory for the workspace
+    //   name?                — workspace name; defaults to 'New workspace'
+    //   fork? (boolean)      — if true, inherit parent session history via --fork-session
+    //   parentWorkspaceId?   — explicit parent id; falls back to context.workspaceId
+    //   model?               — workspace-level model override
+    //   permissionMode?      — workspace-level permission mode override
+    //   effort?              — workspace-level effort override
+    //   task?                — seed text to inject after opening the workspace in the GUI
+    //   submit? (boolean)    — whether a seeded task is submitted (typed + Enter) after
+    //                          staging, vs left staged/unsent for review. Default true
+    //                          (omitted → submit). Only meaningful together with task.
+    'workspace.create': async (args, context, innerDeps) => {
+      if (typeof args.projectId !== 'string') throw new Error('args.projectId is required')
+      if (typeof args.cwd !== 'string') throw new Error('args.cwd is required')
+      const projectExists = getDb()
+        .prepare('SELECT id FROM projects WHERE id = ?')
+        .get(args.projectId)
+      if (!projectExists) throw new Error(`project not found: ${args.projectId}`)
+
+      const parentId = resolveAndValidateParentWorkspaceId(args, context)
+      const forkedFromSessionId = resolveForkedFromSessionId(args, parentId)
+
+      const name = typeof args.name === 'string' && args.name !== '' ? args.name : 'New workspace'
+      const ws = createWorkspace({
+        projectId: args.projectId,
+        name,
+        cwd: args.cwd,
+        forkedFromSessionId,
+        parentWorkspaceId: parentId
+      })
+
+      // Apply workspace-level settings overrides (model / permissionMode / effort)
+      // These are stored in claude_workspace_settings and picked up by composeClaudeLaunch.
+      const settingsOverride = buildWorkspaceSettingsOverride(args)
+      if (Object.keys(settingsOverride).length > 0) {
+        updateClaudeWorkspaceSettings(ws.id, settingsOverride)
+      }
+
+      // ACTIVATION (user directive): a newly created workspace must never be left
+      // created-but-closed. Previously requestOpenWorkspace only fired via
+      // openAndSeed, and only when --task was given — a task-less `ws new` just
+      // inserted the DB row and returned, leaving the workspace looking CLOSED/
+      // inactive in the UI (closedAt is null by default, but the renderer never
+      // mounts+selects it, so nothing about the workspace is "live" until the
+      // user manually clicks it). Fix: ALWAYS activate.
+      //   - task present    → openAndSeed (opens via requestOpenWorkspace internally,
+      //                       then injects the task once the surface is injectable).
+      //   - task absent     → requestOpenWorkspace directly (opens/mounts, no injection).
+      // Either way the renderer receives the open signal and mounts the workspace;
+      // closedAt is never set on a freshly created workspace (createWorkspace doesn't
+      // touch it), so this only affects whether the surface is actually live.
+      // focus: whether to navigate the UI to the newly created workspace
+      // (true) or background-mount it (false, mount+inject without stealing
+      // the user's view). Defaults to true — CLI callers resolve their own
+      // default (ws-new.ts defaults --background) and always pass an explicit
+      // boolean, but this default keeps any other caller's pre-existing
+      // "always navigate" behavior.
+      const focus = args.focus !== false
+      // submit: whether a seeded task should be typed + Enter (true, default) or
+      // merely staged in claude's input box unsent (false, --no-submit). Only
+      // meaningful when a task is present; irrelevant for a task-less create.
+      const submit = args.submit !== false
+      let seedWarning: string | null = null
+      const taskText = typeof args.task === 'string' && args.task !== '' ? args.task : null
+      if (taskText != null) {
+        seedWarning = await innerDeps.openAndSeed(ws.id, taskText, focus, submit)
+      } else {
+        innerDeps.requestOpenWorkspace(ws.id, focus)
+      }
+
+      return { workspace: ws, seedWarning }
+    },
+
+    // Archive (permanently delete) a workspace — mirrors the workspaces:archive IPC
+    // handler in index.ts via the shared performArchive dep.
+    // With recursive:true, archives the entire subtree (children-before-parent) so
+    // teardown ordering is safe and no workspace is left with a missing parent.
+    //
+    // DATA-INTEGRITY FIX (QA #3): archiveWorkspace() in workspaces.ts is a silent
+    // no-op DELETE — it never throws for a nonexistent id, so previously this
+    // dispatch reported { archived: true } even when args.id never existed. The
+    // caller (a script) would see success and move on, masking a typo'd or
+    // already-archived id. Fix: getWorkspace(id) FIRST; a null result throws a
+    // 'workspace not found: <id>' error, which the /cmd envelope turns into
+    // { ok: false, error: '...' } and which the CLI's not-found heuristic maps
+    // to exit 3. The same check applies to the recursive root — if the root
+    // itself doesn't exist, refuse before doing any BFS/teardown work.
+    'workspace.archive': async (args, context) => {
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
+      const recursive = args.recursive === true
+
+      // Root-must-exist check (single AND recursive) — see comment above.
+      const root = getWorkspace(args.id)
+      if (root == null) {
+        throw new Error(`workspace not found: ${args.id}`)
+      }
+
+      if (recursive) {
+        // Collect the full subtree rooted at args.id (BFS), then archive leaves-up.
+        const subtreeIds = collectWorkspaceSubtreeIds(args.id)
+
+        // Self-action guard: refuse if the caller's own workspace is within the subtree.
+        if (context?.workspaceId != null && subtreeIds.includes(context.workspaceId)) {
+          throw new Error(
+            `cannot archive your own workspace (id=${context.workspaceId}): it is within the requested subtree`
+          )
+        }
+
+        // Archive leaves-up: reverse the BFS order so children come before parents.
+        // Each subtree member is guaranteed to exist (it was discovered via
+        // listChildWorkspaces from a live parent), so no per-id existence check
+        // is needed here — only the root needed the explicit check above.
+        for (let i = subtreeIds.length - 1; i >= 0; i--) {
+          await deps.performArchive(subtreeIds[i])
+        }
+
+        return { archived: true, count: subtreeIds.length }
+      }
+
+      // Non-recursive (single) archive.
+      // Self-action guard: refuse if caller is archiving their own workspace.
+      if (context?.workspaceId != null && args.id === context.workspaceId) {
+        throw new Error(`cannot archive your own workspace (id=${args.id})`)
+      }
+
+      await deps.performArchive(args.id)
+      return { archived: true }
+    },
+
+    // Close a workspace (sets closed_at). The CLI caller is headless and
+    // deliberately closing — no busy-status guard (unlike the GUI handler).
+    // Self-action guard: refuse if the caller's own workspace is being closed.
+    //
+    // DATA-INTEGRITY FIX (mirrors workspace.archive): performClose (→
+    // closeWorkspace in workspaces.ts) is a silent no-op UPDATE — it returns
+    // undefined for a nonexistent id instead of throwing, so previously this
+    // dispatch reported { workspace: null } (success-shaped) even when args.id
+    // never existed. Fix: getWorkspace(id) FIRST; existence-before-self-guard
+    // so a genuine not-found isn't masked as a self-action refusal.
+    'workspace.close': (args, context) => {
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
+      if (getWorkspace(args.id) == null) {
+        throw new Error(`workspace not found: ${args.id}`)
+      }
+      if (context?.workspaceId != null && args.id === context.workspaceId) {
+        throw new Error(`cannot close your own workspace (id=${args.id})`)
+      }
+      const workspace = deps.performClose(args.id)
+      return { workspace: workspace ?? null }
+    },
+
+    // Reopen a previously-closed workspace (clears closed_at).
+    //
+    // DATA-INTEGRITY FIX (mirrors workspace.archive): reopenWorkspace is a
+    // silent no-op UPDATE — it returns undefined for a nonexistent id instead
+    // of throwing, so previously this dispatch reported { workspace: null }
+    // (success-shaped) even when args.id never existed. Fix: getWorkspace(id)
+    // FIRST.
+    'workspace.reopen': (args) => {
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
+      if (getWorkspace(args.id) == null) {
+        throw new Error(`workspace not found: ${args.id}`)
+      }
+      const workspace = reopenWorkspace(args.id)
+      return { workspace: workspace ?? null }
+    },
+
+    // Rename a workspace.
+    // NOTE: no explicit existence guard needed here — renameWorkspace() in
+    // workspaces.ts already throws `workspace not found: <id>` when the
+    // UPDATE...RETURNING matches zero rows, so a nonexistent id already
+    // surfaces as a real error (not a false success). Adding a redundant
+    // getWorkspace() check here would just duplicate that. renameWorkspace()
+    // also sanitizes/caps the name (see sanitizeWorkspaceName in workspaces.ts:
+    // strips control chars, collapses whitespace, trims, caps at 200 chars
+    // with an ellipsis, and rejects an empty-after-trim name).
+    'workspace.rename': (args) => {
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
+      if (typeof args.name !== 'string') throw new Error('args.name is required')
+      return renameWorkspace(args.id, args.name)
+    },
+
+    // Ask the renderer to open (and mount) a workspace. Used by U8 (ws new
+    // --task) and U12 (ws send to an unmounted workspace), and directly by
+    // `ws open`.
+    // args.focus: true (default) navigates the UI to the workspace (explicit
+    // "open this" intent); false performs a background mount (mounts the
+    // surface so it becomes injectable without changing what the user is
+    // looking at).
+    'workspace.open': (args) => {
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
+      // DATA-INTEGRITY FIX (QA — mirrors workspace.archive/close/reopen): previously
+      // this dispatch never checked existence, so `ws open <nonexistent-id>` reported
+      // { requested: true } (success-shaped) and exit 0 even though nothing was opened.
+      // Fix: getWorkspace(id) FIRST; a null result throws 'workspace not found: <id>',
+      // which the CLI's not-found heuristic maps to exit 3 — consistent with archive/
+      // close/reopen/rename.
+      if (getWorkspace(args.id) == null) {
+        throw new Error(`workspace not found: ${args.id}`)
+      }
+      const focus = args.focus !== false
+      deps.requestOpenWorkspace(args.id, focus)
+      return { requested: true }
+    },
+
+    // Send text / key / submit to a running workspace surface.
+    // Args:
+    //   id     (required) — workspace to send to
+    //   text?  (string)   — UTF-8 text to write into the PTY
+    //   submit?(boolean)  — if true, send Return after text (or alone if no text)
+    //   key?   (string)   — named key to send ('enter','escape','up','down','tab', etc.)
+    //                       When both text and key are present: text is sent first, then key.
+    //                       When both text and submit are present: text is sent, then Return.
+    //                       key and submit together: key is sent, then Return.
+    // If the surface is not yet injectable, requestOpenWorkspace is called and
+    // the dep polls canInject for up to 10 s before injecting.
+    'workspace.send': async (args, _context, innerDeps) => {
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
+      const text = typeof args.text === 'string' && args.text !== '' ? args.text : undefined
+      const submit = args.submit === true
+      const key = typeof args.key === 'string' && args.key !== '' ? args.key : undefined
+      if (text == null && key == null && !submit) {
+        throw new Error('at least one of args.text, args.key, or args.submit is required')
+      }
+      // focus: whether an auto-open (workspace not yet mounted) navigates the
+      // UI to the workspace (true) or background-mounts it (false). Defaults
+      // to true; ws-send.ts defaults --background and always passes an
+      // explicit boolean.
+      const focus = args.focus !== false
+      const result = await innerDeps.sendToWorkspace(args.id, { text, submit, key }, focus)
+      if (!result.ok) {
+        throw new Error(result.error ?? 'send failed')
+      }
+      return { ok: true }
+    },
+
+    // Return identity context for the given workspaceId so the CLI can display
+    // the current project name / cwd without querying SQLite directly.
+    'whoami.resolve': (args, context) => {
+      const workspaceId =
+        context?.workspaceId ?? (typeof args?.workspaceId === 'string' ? args.workspaceId : null)
+      if (!workspaceId) {
+        return { workspaceId: null, projectId: null, projectName: null, cwd: null }
+      }
+      const ws = getWorkspace(workspaceId)
+      if (!ws) throw new Error(`workspace not found: ${workspaceId}`)
+      const project = getProject(ws.projectId)
+      return {
+        workspaceId,
+        projectId: ws.projectId,
+        projectName: project?.name ?? null,
+        cwd: ws.cwd
+      }
+    },
+
+    // Workbench Git tab, Phase 4d — THE agent-readable hook for the LOCAL
+    // review-comment store (Epic G2). Surfaces the SAME data reviewStore.ts's
+    // reviews:list IPC returns to the renderer, over the existing `orpheus`
+    // CLI/HTTP command channel — so an agent can read local review comments
+    // without needing direct SQLite access (though that always works too,
+    // since the store is just the `review_comments` table — see
+    // reviewStore.ts's own header). Read-only by design for this phase; a
+    // future `reviews.add`/`reviews.resolve` write action would slot in here
+    // alongside this one using the same reviewStore.ts functions.
+    // Args:
+    //   workspaceId — falls back to context.workspaceId (the same
+    //                 caller-identity convention whoami.resolve above uses),
+    //                 so a workspace-scoped agent doesn't need to pass it.
+    'reviews.list': (args, context) => {
+      const workspaceId =
+        context?.workspaceId ?? (typeof args?.workspaceId === 'string' ? args.workspaceId : null)
+      if (!workspaceId) throw new Error('workspaceId is required (no context workspace either)')
+      return listLocalReviewComments(workspaceId)
+    },
+
+    // Resolve-back — the write-side counterpart to reviews.list, mirrored
+    // shape/auth/error handling exactly (same workspaceId convention as
+    // reviews.list/whoami.resolve, same reviewStore.ts function the
+    // reviews:setResolved IPC handler uses). This closes the CLI/command-server
+    // parity gap flagged in reviewStore.ts's own header comment and in
+    // docs/learnings/agent-review-loop.md — an agent can now flip a local
+    // review comment's resolved flag from outside the renderer, completing
+    // the read -> act (ws send) -> resolve loop.
+    // Args:
+    //   id         (required) — the review comment id to update
+    //   resolved   (required, boolean) — the new resolved value
+    // Comment ids are globally unique (randomUUID), so — unlike reviews.list —
+    // there is no workspaceId to resolve/scope by here; mirrors the
+    // reviews:setResolved IPC handler, which also takes only { id, resolved }.
+    'reviews.setResolved': (args) => {
+      if (typeof args.id !== 'string' || args.id === '') throw new Error(ARGS_ID_REQUIRED_ERROR)
+      if (typeof args.resolved !== 'boolean') throw new Error('args.resolved is required (boolean)')
+      return setLocalReviewCommentResolved(args.id, args.resolved)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared HTTP plumbing — auth + body read, used by both /subscribe and /cmd.
+// ---------------------------------------------------------------------------
+
+/**
+ * Constant-time bearer-token check shared by /subscribe and /cmd. Writes a
+ * 401 JSON response and returns false on any failure (missing header, wrong
+ * length, or mismatched bytes); returns true (writes nothing) on success.
+ *
+ * Behavior-identical to both endpoints' original inline checks: a missing/
+ * non-string header is rejected without any buffer comparison, and length is
+ * checked before timingSafeEqual (which throws on a length mismatch) so a
+ * short-circuited `false` — not an early accept — is what decides length
+ * mismatches.
+ */
+function authenticate(req: http.IncomingMessage, res: http.ServerResponse, token: string): boolean {
+  const incomingToken = req.headers['x-orpheus-token']
+  if (typeof incomingToken !== 'string') {
+    res.writeHead(401, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
+    return false
+  }
+  const incomingBuf = Buffer.from(incomingToken, 'utf-8')
+  const expectedBuf = Buffer.from(token, 'utf-8')
+  const tokenValid =
+    incomingBuf.length === expectedBuf.length && crypto.timingSafeEqual(incomingBuf, expectedBuf)
+  if (!tokenValid) {
+    res.writeHead(401, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
+    return false
+  }
+  return true
+}
+
+/**
+ * Read+accumulate the request body, enforcing BODY_SIZE_LIMIT. Unified on
+ * /cmd's STRICTER original behavior (a safe hardening — see the Batch 2
+ * commit message):
+ *   - Upfront Content-Length check: if the header already declares a size
+ *     over the limit, reject immediately with 413 before reading any bytes.
+ *     /subscribe previously lacked this pre-check.
+ *   - Streaming guard: if accumulated bytes exceed the limit mid-stream,
+ *     destroy the request AND respond 413. /subscribe previously destroyed
+ *     the request on overflow but never wrote a response (the connection was
+ *     just dropped, leaving the client to observe a reset rather than a
+ *     structured 413).
+ * Resolves to the concatenated body Buffer on success, or null if the
+ * request was rejected (a response has already been written/ended in that
+ * case — callers must return without writing anything further).
+ */
+function readBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<Buffer | null> {
+  return new Promise((resolve) => {
+    const contentLength = parseInt(req.headers['content-length'] ?? '0', 10)
+    if (!isNaN(contentLength) && contentLength > BODY_SIZE_LIMIT) {
+      res.writeHead(413, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, error: 'request too large' }))
+      resolve(null)
+      return
+    }
+
+    const chunks: Buffer[] = []
+    let accumulated = 0
+    let oversized = false
+
+    req.on('data', (chunk: Buffer) => {
+      if (oversized) return
+      accumulated += chunk.length
+      if (accumulated > BODY_SIZE_LIMIT) {
+        oversized = true
+        req.destroy()
+        res.writeHead(413, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: 'request too large' }))
+        resolve(null)
+        return
+      }
+      chunks.push(chunk)
+    })
+
+    req.on('end', () => {
+      if (oversized) return // already responded
+      resolve(Buffer.concat(chunks))
+    })
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Subscription cap — prevents unbounded open /subscribe connections.
+// ---------------------------------------------------------------------------
+
+/** Maximum concurrent /subscribe connections allowed. */
+const MAX_CONCURRENT_SUBSCRIPTIONS = 32
+/** Current count of active /subscribe connections. */
+let activeSubscriptionCount = 0
+/** Guarded decrement — never lets the counter go negative. */
+function releaseSubscriptionSlot(): void {
+  activeSubscriptionCount = Math.max(0, activeSubscriptionCount - 1)
+}
+
+// Result of parsing/validating a /subscribe request body — either the fields
+// handleSubscribe needs to proceed, or the (status, error) pair to respond
+// with (the caller writes the response; this function has no res access).
+type SubscribeRequestParseResult =
+  | { ok: true; workspaceIds: string[]; until: UntilMode; effectiveTimeoutMs: number }
+  | { ok: false; status: number; error: string }
+
+/**
+ * Parse and validate a /subscribe request body: JSON-parse, extract+validate
+ * workspaceIds (non-empty string[]), resolve --until (falls back to 'done'
+ * on anything invalid/missing — the CLI already validates client-side), and
+ * compute the effective server-side timeout (default 5 min, hard-capped at
+ * 1 hour). Behavior-identical to the original inline logic; only the
+ * response-writing was left to the caller since this function doesn't have
+ * access to `res`.
+ */
+function parseSubscribeRequestBody(raw: Buffer): SubscribeRequestParseResult {
+  let body: { workspaceIds?: unknown; timeoutMs?: unknown; until?: unknown }
+  try {
+    body = JSON.parse(raw.toString('utf-8')) as {
+      workspaceIds?: unknown
+      timeoutMs?: unknown
+      until?: unknown
+    }
+  } catch {
+    return { ok: false, status: 400, error: 'invalid JSON body' }
+  }
+
+  const workspaceIds = Array.isArray(body.workspaceIds)
+    ? (body.workspaceIds as unknown[]).filter((x): x is string => typeof x === 'string')
+    : []
+
+  if (workspaceIds.length === 0) {
+    return { ok: false, status: 400, error: 'workspaceIds must be a non-empty string[]' }
+  }
+
+  // --until — how specific a terminal state the caller wants to block for.
+  // 'done' (default) preserves the historical behavior exactly: any non-running
+  // state (awaiting_input, idle, blocked-permission, blocked-input) resolves.
+  // 'input' blocks past awaiting_input/idle until the workspace is genuinely
+  // blocked on the user. 'idle' blocks past awaiting_input until the workspace
+  // is fully idle. The CLI already validates this client-side (exit 2 on a bad
+  // value), so an invalid/missing value here just falls back to the default
+  // rather than erroring the whole subscription.
+  const until: UntilMode =
+    typeof body.until === 'string' && isValidUntilMode(body.until) ? body.until : 'done'
+
+  // Server-side timeout policy:
+  //   - Default (timeoutMs omitted or zero): 5 minutes (300 000 ms)
+  //   - Explicit caller value: respected up to 1 hour hard cap
+  //   - 1 hour cap still accessible for callers that explicitly opt in
+  const SERVER_MAX_TIMEOUT_MS = 60 * 60 * 1000
+  const SERVER_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
+  const requestedTimeout =
+    typeof body.timeoutMs === 'number' && body.timeoutMs > 0
+      ? body.timeoutMs
+      : SERVER_DEFAULT_TIMEOUT_MS
+  const effectiveTimeoutMs = Math.min(requestedTimeout, SERVER_MAX_TIMEOUT_MS)
+
+  return { ok: true, workspaceIds, until, effectiveTimeoutMs }
+}
+
+// ---------------------------------------------------------------------------
+// /cmd — one-shot request/response dispatch helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a JSON response for /cmd, guarding against a client that already
+ * disconnected (writableEnded, or writeHead/end throwing mid-flight) exactly
+ * as every call site's original inline `if (!res.writableEnded) { try {...}
+ * catch { /* client disconnected *\/ } }` did.
+ */
+function writeCmdJsonResponse(res: http.ServerResponse, status: number, payload: unknown): void {
+  if (res.writableEnded) return
+  try {
+    res.writeHead(status, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(payload))
+  } catch {
+    /* client disconnected */
+  }
+}
+
+/**
+ * Resolve the dispatch handler for `action`, mirroring the original inline
+ * lookup exactly: only an own-property hit that is actually a function
+ * counts as a handler (guards against action strings colliding with
+ * Object.prototype members like 'toString').
+ */
+function resolveCmdHandler(
+  dispatch: Record<string, DispatchFn>,
+  action: string
+): DispatchFn | undefined {
+  const handlerCandidate = Object.prototype.hasOwnProperty.call(dispatch, action)
+    ? dispatch[action]
+    : undefined
+  return typeof handlerCandidate === 'function' ? handlerCandidate : undefined
+}
+
+/**
+ * Invoke a resolved /cmd dispatch handler and write its response envelope —
+ * `{ ok: true, data }` on success, `{ ok: false, error }` on a thrown error.
+ * Wrapped in try/catch so a throwing domain function never crashes the
+ * socket; matches the original inline try/catch exactly, including writing
+ * the error envelope with a 200 status (the /cmd contract puts success/
+ * failure in the JSON body, not the HTTP status).
+ */
+async function dispatchCmdAndRespond(
+  handler: DispatchFn,
+  args: Record<string, unknown>,
+  context: { workspaceId?: string },
+  deps: CommandServerDeps,
+  res: http.ServerResponse
+): Promise<void> {
+  try {
+    const data = await handler(args, context, deps)
+    writeCmdJsonResponse(res, 200, { ok: true, data })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error('[commandServer] handler error:', err)
+    writeCmdJsonResponse(res, 200, { ok: false, error: message })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Server lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * Start the command server on a Unix-domain socket. Returns the socket path,
+ * auth token (written to cmd.token), and a close() function.
+ *
+ * Called unconditionally at startup (not gated on hooks integration) so the
+ * CLI always has a channel even when hooks are disabled.
+ */
+export function startCommandServer(deps: CommandServerDeps): {
+  sockPath: string
+  token: string
+  close: () => void
+} {
+  const userData = app.getPath('userData')
+  const sockPath = nodePath.join(userData, 'cmd.sock')
+  const tokenPath = nodePath.join(userData, 'cmd.token')
+
+  if (sockPath.length > 104) {
+    throw new Error(
+      `[commandServer] socket path too long for macOS (${sockPath.length} > 104 chars): ${sockPath}`
+    )
+  }
+
+  // Generate a fresh random token each time the app starts.
+  // Written to cmd.token (0o600) so only the current user can read it.
+  const token = crypto.randomBytes(32).toString('hex')
+  fs.writeFileSync(tokenPath, token, { mode: 0o600 })
+  // Belt-and-suspenders chmod in case writeFileSync's mode argument is masked by umask.
+  try {
+    fs.chmodSync(tokenPath, 0o600)
+  } catch {
+    /* ignore — the writeFileSync mode should have set it */
+  }
+
+  // Remove stale socket file so listen() doesn't hit EADDRINUSE on a clean start.
+  try {
+    fs.unlinkSync(sockPath)
+  } catch {
+    /* ignore — file may not exist */
+  }
+
+  const dispatch = makeDispatchTable(deps)
+
+  let listening = false
+
+  // --------------------------------------------------------------------------
+  // POST /subscribe — long-lived streaming subscription endpoint (U11)
+  // --------------------------------------------------------------------------
+  function handleSubscribe(req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (!authenticate(req, res, token)) return
+
+    // --- Concurrent subscription cap ---
+    if (activeSubscriptionCount >= MAX_CONCURRENT_SUBSCRIPTIONS) {
+      res.writeHead(429, { 'Content-Type': 'application/json' })
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: `too many concurrent subscriptions (max ${MAX_CONCURRENT_SUBSCRIPTIONS})`
+        })
+      )
+      return
+    }
+    activeSubscriptionCount++
+    // Guards against a double-release of this request's slot: the early
+    // req.on('error') below and the async IIFE's own validation-failure
+    // returns are mutually exclusive in practice (readBody never resolves
+    // once the socket has errored — see readBody's implementation), but the
+    // flag makes that guarantee explicit rather than relying on the timing.
+    let slotReleased = false
+    function releaseSlotOnce(): void {
+      if (slotReleased) return
+      slotReleased = true
+      releaseSubscriptionSlot()
+    }
+
+    req.on('error', () => {
+      releaseSlotOnce()
+      if (!res.writableEnded) {
+        try {
+          res.end()
+        } catch {
+          /* ignore */
+        }
+      }
+    })
+
+    void (async () => {
+      const raw = await readBody(req, res)
+      if (raw == null) {
+        releaseSlotOnce() // readBody already responded (413)
+        return
+      }
+
+      const parsed = parseSubscribeRequestBody(raw)
+      if (!parsed.ok) {
+        releaseSlotOnce()
+        if (!res.writableEnded) {
+          res.writeHead(parsed.status, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: parsed.error }))
+        }
+        return
+      }
+      const { workspaceIds, until, effectiveTimeoutMs } = parsed
+
+      // Start streaming response — keep connection open
+      res.writeHead(200, {
+        'Content-Type': 'application/x-ndjson',
+        'Transfer-Encoding': 'chunked',
+        'Cache-Control': 'no-cache'
+      })
+
+      // Track which workspace ids have resolved to a terminal reason
+      const resolved = new Map<string, string>() // workspaceId → reason
+
+      // Track workspaces that have been observed alive at least once (busy/idle/waiting).
+      // Used to distinguish "not yet started" (grace period) from "truly died": a workspace
+      // is only mapped to 'died' when it transitions from a known-alive state to unknown.
+      // This prevents ws-wait from falsely dying for a just-created workspace whose session
+      // file hasn't appeared yet (startup race: ws new --task → ws wait <id> → 'died').
+      const everSeenAlive = new Set<string>()
+
+      // NOT-FOUND VALIDATION (QA fix — `ws wait <nonexistent-id>` was resolving as
+      // 'died', conflating "genuinely dead" with "never existed"). Validate every
+      // requested id against the DB RIGHT NOW, before any grace-window/deriveReason
+      // machinery runs. A null getWorkspace() here means the id never existed at
+      // subscribe time — resolve it immediately as 'not-found' and never enter the
+      // wait loop for it. This also guards a multi-id batch: `ws wait <real> <fake>`
+      // must report the fake id as 'not-found' without blocking or poisoning the
+      // real id's eventual 'done'/'died'/etc — each id resolves independently via
+      // the `resolved` map, so marking the fake one here just removes it from every
+      // later loop (`checkAllResolved`, the observer, the initial-check loop, and the
+      // timeout sweep all skip ids already in `resolved`).
+      for (const workspaceId of workspaceIds) {
+        if (getWorkspace(workspaceId) == null) {
+          resolved.set(workspaceId, 'not-found')
+          writeFrame({ id: workspaceId, reason: 'not-found', status: 'unknown' })
+        }
+      }
+
+      // GRACE WINDOW (fixes: `ws send --submit` immediately followed by `ws wait`
+      // reporting 'died' for a workspace that is actively booting/running).
+      //
+      // Root cause: right after `ws send --submit`, claude has just rewritten its
+      // ~/.claude/sessions/<pid>.json to 'busy', but sessionState.ts's fs.watch +
+      // 75ms debounce + reconcile() hasn't run yet, so liveSessionMap (and therefore
+      // getWorkspaceFileInfo) still reads 'unknown'. The DB workspace.status is ALSO
+      // stale at that instant (setStatusFromFile hasn't committed the busy transition
+      // yet), so the old code fell through every DB-status branch to a final `died`.
+      //
+      // Fix, in order:
+      //   1. Never trust a single 'unknown' read — force a synchronous reconcile
+      //      (forceReconcile) and re-derive from a fresh read before concluding
+      //      anything terminal. This closes the debounce gap directly.
+      //   2. Cross-check with a second, independent ground-truth source
+      //      (getWorkspaceFileStatusSync — reads the session file straight off disk,
+      //      bypassing liveSessionMap entirely) in case the map is still cold even
+      //      after a forced reconcile (e.g. the file only appeared mid-reconcile).
+      //   3. For the first SUBSCRIPTION_GRACE_MS of a subscription's lifetime, an
+      //      'unknown' status that survives both ground-truth checks is treated as
+      //      "still starting/transitioning", never 'died'. A workspace that was just
+      //      sent input needs a moment for claude to flush its status file; this is
+      //      exactly that moment.
+      //   4. 'died' is only ever concluded once the grace window has elapsed AND the
+      //      ground-truth re-reads still can't find a live session — i.e. genuinely
+      //      dead (session file gone / pid not alive), not just "the debounced cache
+      //      hasn't caught up yet".
+      const SUBSCRIPTION_GRACE_MS = 5000
+      const subscriptionStartedAt = Date.now()
+
+      // Derive terminal exit reason for a workspace from its live session file info.
+      // Returns '' (empty string) when the workspace is still busy (not yet terminal).
+      // Async: may force a reconcile() pass to get a ground-truth read before
+      // concluding 'died' (see grace-window comment above).
+      //
+      // STARTUP GRACE: 'unknown' is only terminal ('died') when everSeenAlive contains
+      // the workspace id — meaning it was previously observed alive and then disappeared.
+      // If the workspace has never been seen alive, 'unknown' is treated as non-terminal
+      // (the session file simply hasn't been written yet). The subscription timeout is the
+      // backstop for a workspace that never starts.
+      //
+      // DB CROSS-CHECK (QA #4 — false 'died' on a just-completed turn):
+      // getWorkspaceFileInfo can legitimately read 'unknown' for a workspace that is
+      // very much alive/finished-cleanly: the window between claude finishing a turn
+      // (session file rewritten to 'idle'/'waiting') and sessionState.ts's fs.watch
+      // debounce settling can transiently drop liveSessionMap's view of the session,
+      // or the on-disk file can be caught mid-write. Naively mapping every 'unknown'
+      // (once everSeenAlive) to 'died' meant a workspace that had just gone
+      // awaiting_input got misreported as 'died' on the FIRST wait, only to read
+      // correctly as 'done' on a re-run once the race settled.
+      //
+      // Fix: before concluding 'died' for fileStatus === 'unknown', consult the
+      // persisted DB workspace.status (the same field the GUI and `ws status` read).
+      // That status is written synchronously by setStatusFromFile → dispatch →
+      // setWorkspaceStatus, so it reflects the *last known-good* transition even
+      // during a session-file read race:
+      //   - workspace missing entirely (row deleted)          → 'died' if it was ever
+      //     seen alive during this subscription (genuinely destroyed mid-wait), else
+      //     'not-found' (it never existed in the first place — though the subscribe-
+      //     start validation above should have already caught that case before this
+      //     function is ever called for it; this branch is a defensive fallback for
+      //     an id that somehow slipped past, e.g. a race with the DB row appearing
+      //     and then vanishing between the start-of-subscribe check and here).
+      //   - archivedAt != null                                → died (workspace is gone)
+      //   - closedAt != null (deliberately closed by the user/CLI) → died (not live)
+      //   - status === 'awaiting_input' or status === 'idle'  → 'done' — the DB already
+      //     recorded the terminal, non-died outcome of the turn; surface that instead
+      //     of re-deriving from a momentarily-stale file.
+      //   - status === 'attention'                             → blocked-permission/input,
+      //     derived from the DB's own detail (file's waitingFor is unavailable, so we
+      //     fall back to blocked-input, the more common case).
+      //   - status === 'in_progress'                           → still live, not yet
+      //     terminal — 'unknown' here is the read race described above; keep waiting.
+      // Only when NONE of the above apply (e.g. the DB row's status is somehow neither
+      // live nor a resolvable terminal state) do we force a ground-truth reconcile and,
+      // failing that, apply the grace window before ever concluding 'died'.
+      // Resolve deriveReason()'s outcome for the fileStatus === 'unknown' case —
+      // extracted verbatim (see the big comment block above deriveReason for the
+      // full rationale: DB cross-check, ground-truth reconcile, grace window).
+      // Mutates `everSeenAlive` in place exactly as the inline code did (same
+      // Set instance, passed through).
+      async function deriveReasonForUnknownFileStatus(
+        workspaceId: string,
+        waitingFor: string,
+        fromTransition: boolean
+      ): Promise<string> {
+        const ws = getWorkspace(workspaceId)
+
+        if (ws == null) {
+          // Workspace row is gone entirely — cannot be live. Distinguish
+          // "never existed" from "existed and was destroyed": if this
+          // subscription never observed the workspace alive, treat it as
+          // 'not-found' rather than 'died' (matches the subscribe-start
+          // validation above). Otherwise it was alive and is now genuinely
+          // gone → 'died'.
+          return everSeenAlive.has(workspaceId) ? 'died' : 'not-found'
+        }
+        if (ws.archivedAt != null) {
+          // Archived — teardown already happened; treat as died (not a live wait target).
+          return 'died'
+        }
+        if (ws.closedAt != null) {
+          // Deliberately closed — not live, but not a crash either. 'died' is the
+          // closest terminal bucket ws-wait has; the caller closed it on purpose.
+          return 'died'
+        }
+        if (ws.status === 'awaiting_input' || ws.status === 'idle') {
+          // The DB already recorded the turn's terminal outcome (awaiting_input/idle)
+          // via setStatusFromFile before this file read raced past it. Report the
+          // real outcome — never 'died' — even though the file momentarily reads
+          // 'unknown'.
+          return 'done'
+        }
+        if (ws.status === 'attention') {
+          // DB says the workspace is blocked on something; file's waitingFor detail
+          // isn't available in this race, so default to the more common case.
+          return waitingFor.toLowerCase().includes('permission')
+            ? 'blocked-permission'
+            : BLOCKED_INPUT
+        }
+        if (ws.status === 'in_progress') {
+          // DB says the workspace is still actively running — 'unknown' here is a
+          // transient file-read race, not a death. Keep waiting.
+          return ''
+        }
+
+        // GROUND TRUTH before any 'died' conclusion: force a synchronous reconcile
+        // (refreshes liveSessionMap from disk right now, not on the next debounce
+        // tick) and re-read. If the workspace is actually busy/idle/waiting, use
+        // that — it was never dead, just a cold cache.
+        await forceReconcile()
+        const refreshedInfo = getWorkspaceFileInfo(workspaceId)
+        if (refreshedInfo.status === 'busy') {
+          everSeenAlive.add(workspaceId)
+          return ''
+        }
+        if (refreshedInfo.status === 'idle') {
+          everSeenAlive.add(workspaceId)
+          return 'done'
+        }
+        if (refreshedInfo.status === 'waiting') {
+          everSeenAlive.add(workspaceId)
+          const refreshedWaitingFor = (refreshedInfo.waitingFor ?? '').toLowerCase()
+          return refreshedWaitingFor.includes('permission') ? 'blocked-permission' : BLOCKED_INPUT
+        }
+
+        // Second, independent ground-truth source: read the session file straight
+        // off disk, bypassing liveSessionMap entirely, in case the map is still
+        // cold even right after a forced reconcile (e.g. the file only appeared
+        // mid-reconcile, or the pid/sessionId pairing hasn't been observed yet).
+        const syncStatus = getWorkspaceFileStatusSync(workspaceId)
+        if (syncStatus === 'busy') {
+          everSeenAlive.add(workspaceId)
+          return ''
+        }
+        if (syncStatus === 'idle') {
+          everSeenAlive.add(workspaceId)
+          return 'done'
+        }
+        if (syncStatus === 'waiting') {
+          everSeenAlive.add(workspaceId)
+          return BLOCKED_INPUT
+        }
+
+        // Still genuinely unknown after BOTH ground-truth refreshes. Only now
+        // consider 'died' — and only once the subscription's startup grace window
+        // has elapsed. A workspace that was just created/sent-to is transitioning;
+        // giving it a few seconds to flush its first status file prevents the
+        // false-died race this fix targets.
+        const withinGraceWindow = Date.now() - subscriptionStartedAt < SUBSCRIPTION_GRACE_MS
+        if (withinGraceWindow) {
+          return '' // still within grace — not yet terminal
+        }
+
+        // Genuine death = confirmed gone even after ground-truth refresh, AND
+        // either this is a real transition event (the workspace was live and its
+        // status observably changed) or it was previously seen alive and has now
+        // disappeared. Otherwise (initial check, workspace never observed alive,
+        // grace window elapsed with no session ever appearing) keep waiting — the
+        // subscription timeout is the backstop for a workspace that never starts.
+        if (fromTransition || everSeenAlive.has(workspaceId)) {
+          return 'died'
+        }
+        return '' // startup grace — not yet terminal
+      }
+
+      async function deriveReason(workspaceId: string, fromTransition: boolean): Promise<string> {
+        const info = getWorkspaceFileInfo(workspaceId)
+        const fileStatus = info.status
+        const waitingFor = info.waitingFor ?? ''
+
+        if (fileStatus === 'busy' || fileStatus === 'idle' || fileStatus === 'waiting') {
+          everSeenAlive.add(workspaceId)
+        }
+
+        if (fileStatus === 'unknown') {
+          return deriveReasonForUnknownFileStatus(workspaceId, waitingFor, fromTransition)
+        }
+        if (fileStatus === 'idle') {
+          return 'done'
+        }
+        if (fileStatus === 'waiting') {
+          if (waitingFor.toLowerCase().includes('permission')) {
+            return 'blocked-permission'
+          }
+          return BLOCKED_INPUT
+        }
+        // fileStatus === 'busy' — still running; not yet terminal
+        return ''
+      }
+
+      // Apply the caller's --until mode to a raw reason from deriveReason().
+      //
+      // deriveReason() always computes the DEFAULT ('done') notion of terminal —
+      // the workspace stopped running for ANY reason (awaiting_input, idle, or
+      // blocked-*). --until narrows what counts as resolved for a 'done' reason
+      // specifically; blocked-permission/blocked-input/died/not-found are always
+      // terminal in every mode (a dead/missing/timed-out/blocked-on-user workspace
+      // always resolves, regardless of --until).
+      //
+      // 'input' mode: a raw 'done' means the workspace reached awaiting_input/idle
+      // WITHOUT being blocked on the user — that's exactly what 'input' mode wants
+      // to wait PAST. So 'done' is downgraded to '' (keep waiting) under 'input'.
+      //
+      // 'idle' mode: a raw 'done' could mean either awaiting_input (turn-end, but
+      // not fully settled) or idle (fully settled) — deriveReason() collapses both
+      // into 'done'. To distinguish them we consult the DB's own workspace.status
+      // column (WorkspaceStatus has distinct 'awaiting_input' and 'idle' values;
+      // see getWorkspace()/rowToWorkspaceRecord in workspaces.ts), which is the same
+      // source deriveReason() itself already falls back to during its race-window
+      // handling. Only a DB status of exactly 'idle' resolves under 'idle' mode;
+      // 'awaiting_input' (or anything else) is downgraded to '' (keep waiting).
+      function applyUntilFilter(reason: string, workspaceId: string): string {
+        if (reason !== 'done') return reason // blocked-*/died/not-found always terminal
+
+        if (until === 'done') return reason // default — unchanged behavior
+
+        if (until === 'input') {
+          // 'done' here means non-blocked (awaiting_input/idle) — not what 'input' wants.
+          return ''
+        }
+
+        // until === 'idle': only a genuine DB status of 'idle' counts.
+        const ws = getWorkspace(workspaceId)
+        if (ws?.status === 'idle') return 'done'
+        return '' // awaiting_input (or unresolved) — keep waiting
+      }
+
+      function isTerminalReason(reason: string): boolean {
+        return (
+          reason === 'done' ||
+          reason === 'blocked-permission' ||
+          reason === BLOCKED_INPUT ||
+          reason === 'died' ||
+          reason === 'not-found'
+        )
+      }
+
+      function writeFrame(frame: Record<string, unknown>): void {
+        if (!res.writableEnded) {
+          try {
+            res.write(JSON.stringify(frame) + '\n')
+          } catch {
+            /* client disconnected */
+          }
+        }
+      }
+
+      function checkAllResolved(): boolean {
+        return workspaceIds.every((id) => resolved.has(id))
+      }
+
+      // Cleanup state — must be called on EVERY exit path to prevent observer leaks
+      let unsubscribe: (() => void) | null = null
+      let timeoutHandle: NodeJS.Timeout | null = null
+      let cleanedUp = false
+
+      function cleanup(): void {
+        if (cleanedUp) return
+        cleanedUp = true
+        activeSubscriptionCount = Math.max(0, activeSubscriptionCount - 1)
+        if (timeoutHandle != null) {
+          clearTimeout(timeoutHandle)
+          timeoutHandle = null
+        }
+        // Unregister the status observer — CRITICAL leak prevention
+        if (unsubscribe != null) {
+          unsubscribe()
+          unsubscribe = null
+        }
+        if (!res.writableEnded) {
+          try {
+            res.end()
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+
+      // Register status change observer for the requested workspace ids.
+      // onWorkspaceStatusChange returns the unsubscribe function.
+      // We derive the reason from getWorkspaceFileInfo, so the old/new status
+      // args are unused — omit them (a narrower callback is assignable).
+      // deriveReason is async (it may force a reconcile pass for ground truth), but
+      // onWorkspaceStatusChange's observer callback is synchronous by type. Fire the
+      // async work from inside a void-returning wrapper; resolved.has(workspaceId) is
+      // re-checked after the await resolves to guard against another observer firing
+      // (or the initial check completing) while this one was awaiting forceReconcile.
+      unsubscribe = onWorkspaceStatusChange((workspaceId) => {
+        if (!workspaceIds.includes(workspaceId)) return
+        if (resolved.has(workspaceId)) return
+
+        void (async () => {
+          // fromTransition=true: this is a real status-change event, so 'unknown'
+          // means the workspace was alive and its session file just disappeared → 'died'.
+          const rawReason = await deriveReason(workspaceId, true)
+          if (resolved.has(workspaceId)) return // resolved by another path while awaiting
+          // Narrow a raw 'done' per the caller's --until mode (see applyUntilFilter).
+          // blocked-*/died/not-found pass through unchanged in every mode.
+          const reason = applyUntilFilter(rawReason, workspaceId)
+          if (!isTerminalReason(reason)) return // still busy, not yet terminal per --until
+
+          resolved.set(workspaceId, reason)
+          const info = getWorkspaceFileInfo(workspaceId)
+          writeFrame({ id: workspaceId, reason, status: info.status })
+
+          if (checkAllResolved()) {
+            cleanup()
+          }
+        })()
+      })
+
+      // Initial check: emit immediately for any workspace already in a terminal state.
+      // This handles the case where a workspace was already idle/waiting before subscribe.
+      // fromTransition=false: use startup grace — 'unknown' here means the session file
+      // hasn't been written yet (workspace just created), not that the process died.
+      // Sequential await (not Promise.all) keeps this simple; each iteration is cheap
+      // unless it hits the forceReconcile ground-truth path, and even then bounded.
+      for (const workspaceId of workspaceIds) {
+        if (resolved.has(workspaceId)) continue
+        const rawReason = await deriveReason(workspaceId, false)
+        if (resolved.has(workspaceId)) continue // resolved by a transition while awaiting
+        // Narrow a raw 'done' per the caller's --until mode (see applyUntilFilter).
+        const reason = applyUntilFilter(rawReason, workspaceId)
+        if (isTerminalReason(reason)) {
+          resolved.set(workspaceId, reason)
+          const info = getWorkspaceFileInfo(workspaceId)
+          writeFrame({ id: workspaceId, reason, status: info.status })
+        }
+      }
+
+      if (checkAllResolved()) {
+        cleanup()
+        return
+      }
+
+      // Arm server-side timeout — fires if not all ids resolve within effectiveTimeoutMs.
+      timeoutHandle = setTimeout(() => {
+        timeoutHandle = null
+        // Emit timeout frames for any still-unresolved ids
+        for (const workspaceId of workspaceIds) {
+          if (!resolved.has(workspaceId)) {
+            resolved.set(workspaceId, 'timeout')
+            writeFrame({ id: workspaceId, reason: 'timeout', status: 'unknown' })
+          }
+        }
+        cleanup()
+      }, effectiveTimeoutMs)
+
+      // Client disconnect cleanup — CRITICAL: unsubscribe must fire here too
+      req.on('close', () => {
+        cleanup()
+      })
+
+      req.on('error', () => {
+        cleanup()
+      })
+    })()
+  }
+
+  // --------------------------------------------------------------------------
+  // POST /cmd — one-shot request/response command dispatch
+  // --------------------------------------------------------------------------
+  function handleCmd(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    dispatch: Record<string, DispatchFn>
+  ): void {
+    if (!authenticate(req, res, token)) return
+
+    void (async () => {
+      try {
+        const raw = await readBody(req, res)
+        if (raw == null) return // readBody already responded (413)
+
+        // --- Parse JSON body ---
+        let body: CmdBody
+        try {
+          body = JSON.parse(raw.toString('utf-8')) as CmdBody
+        } catch {
+          writeCmdJsonResponse(res, 400, { ok: false, error: 'invalid JSON body' })
+          return
+        }
+
+        const { action, args = {}, context = {} } = body
+
+        // --- Dispatch ---
+        const handler = resolveCmdHandler(dispatch, action)
+        if (!handler) {
+          writeCmdJsonResponse(res, 400, { ok: false, error: `unknown action: ${action}` })
+          return
+        }
+
+        await dispatchCmdAndRespond(handler, args, context, deps, res)
+      } catch (err) {
+        // Outer catch: unexpected error in the request handler — swallow to
+        // prevent an unhandled rejection from crashing the process.
+        logDiagMain({
+          category: 'error',
+          level: 'error',
+          event: DIAG_EVENTS.CMD_SERVER_HANDLER_FAILED,
+          data: { err: String(err) }
+        })
+      }
+    })()
+
+    req.on('error', () => {
+      // Connection reset or early destroy — nothing to respond to.
+    })
+  }
+
+  const server = http.createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/subscribe') {
+      handleSubscribe(req, res)
+      return
+    }
+
+    // Only accept POST /cmd — anything else gets a 404.
+    if (req.method !== 'POST' || req.url !== '/cmd') {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, error: 'not found' }))
+      return
+    }
+
+    handleCmd(req, res, dispatch)
+  })
+
+  server.setTimeout(30000)
+
+  server.listen(sockPath, () => {
+    listening = true
+    // Restrict the socket to the current user only (matches notify.sock).
+    try {
+      fs.chmodSync(sockPath, 0o600)
+    } catch (err) {
+      console.warn('[commandServer] could not chmod cmd.sock to 0600:', err)
+    }
+    console.log('[commandServer] listening on', sockPath)
+  })
+
+  server.on('error', (err) => {
+    console.error('[commandServer] server error:', err)
+    // Clean up the socket file so a subsequent start doesn't hit EADDRINUSE.
+    try {
+      fs.unlinkSync(sockPath)
+    } catch {
+      /* ignore — file may not exist if listen never bound */
+    }
+  })
+
+  return {
+    sockPath,
+    token,
+    close(): void {
+      if (
+        typeof (server as http.Server & { closeAllConnections?: () => void })
+          .closeAllConnections === 'function'
+      ) {
+        ;(server as http.Server & { closeAllConnections: () => void }).closeAllConnections()
+      }
+      if (listening) {
+        server.close()
+      }
+      try {
+        fs.unlinkSync(sockPath)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}

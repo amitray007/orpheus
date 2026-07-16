@@ -2,6 +2,8 @@ import { BrowserWindow } from 'electron'
 import { getDb } from './db'
 import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from '../shared/types'
 import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
+import { removeWorktree, withRepoLock } from './worktrees'
+import { PUSH_CHANNELS } from '../shared/ipc'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -24,6 +26,11 @@ type WorkspaceRow = {
   last_title: string | null
   // v43: fork session support (Plan A)
   forked_from_session_id: string | null
+  // v64: parent workspace lineage
+  parent_workspace_id: string | null
+  // v64: worktree-native workspaces
+  worktree_parent_cwd: string | null
+  worktree_branch: string | null
 }
 
 type ProjectRow = {
@@ -59,23 +66,10 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     sortOrder: row.sort_order ?? null,
     claudeSessionId: row.claude_session_id ?? null,
     forkedFromSessionId: row.forked_from_session_id ?? null,
-    lastTitle: row.last_title ?? null
-  }
-}
-
-/**
- * Get the forked_from_session_id for a workspace (Plan A fork support).
- * Returns null when the column doesn't exist yet (pre-v43 DBs) or has no value.
- */
-export function getWorkspaceForkedFromSessionId(id: string): string | null {
-  const db = getDb()
-  try {
-    const row = db.prepare('SELECT forked_from_session_id FROM workspaces WHERE id = ?').get(id) as
-      | { forked_from_session_id: string | null }
-      | undefined
-    return row?.forked_from_session_id ?? null
-  } catch {
-    return null
+    lastTitle: row.last_title ?? null,
+    parentWorkspaceId: row.parent_workspace_id ?? null,
+    worktreeParentCwd: row.worktree_parent_cwd ?? null,
+    worktreeBranch: row.worktree_branch ?? null
   }
 }
 
@@ -99,6 +93,53 @@ function rowToProjectRecord(row: ProjectRow): ProjectRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Workspace name sanitization
+// ---------------------------------------------------------------------------
+
+/**
+ * Max length (in characters) for a user-supplied workspace name. Names longer
+ * than this are truncated with a trailing ellipsis ('…'). Chosen to keep
+ * `ws ls` table rendering (and the sidebar) sane against a hostile/careless
+ * caller passing a 300+ char name — 200 chars is comfortably longer than any
+ * legitimate workspace name while still bounding worst-case column width.
+ */
+const WORKSPACE_NAME_MAX_LENGTH = 200
+
+/**
+ * Sanitize a user-supplied workspace name so it can never blow out table
+ * rendering (`ws ls`) or the sidebar:
+ *   - CRLF/LF/tab (and other control chars) are replaced with a space so a
+ *     pasted multi-line string collapses to one line.
+ *   - Runs of whitespace are collapsed to a single space.
+ *   - Leading/trailing whitespace is trimmed.
+ *   - The result is capped to WORKSPACE_NAME_MAX_LENGTH chars, truncated with
+ *     a trailing '…' when longer.
+ * Throws if the sanitized result is empty (name was blank/whitespace-only)
+ * so callers get a clear error instead of silently storing an empty name.
+ */
+function sanitizeWorkspaceName(name: string): string {
+  // C0 control chars (U+0000-U+001F) + DEL (U+007F), built via fromCharCode
+  // rather than a literal \x00-\x1f regex escape to keep this ASCII-clean.
+  const CONTROL_CHARS_RE = new RegExp(
+    `[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]+`,
+    'g'
+  )
+  // Replace CR/LF/tab and other C0 control chars + DEL with a space so a
+  // pasted multi-line / control-char-laden string collapses to plain text.
+  const noControlChars = name.replace(CONTROL_CHARS_RE, ' ')
+  // Collapse runs of whitespace (including the spaces just introduced) to one.
+  const collapsed = noControlChars.replace(/\s+/g, ' ')
+  const trimmed = collapsed.trim()
+  if (trimmed === '') {
+    throw new Error('name cannot be empty')
+  }
+  if (trimmed.length > WORKSPACE_NAME_MAX_LENGTH) {
+    return trimmed.slice(0, WORKSPACE_NAME_MAX_LENGTH - 1) + '…'
+  }
+  return trimmed
+}
+
+// ---------------------------------------------------------------------------
 // CRUD
 // ---------------------------------------------------------------------------
 
@@ -112,7 +153,7 @@ function rowToProjectRecord(row: ProjectRow): ProjectRecord {
 function broadcastWorkspaceCreated(workspace: WorkspaceRecord): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send('workspaces:created', { workspace })
+      win.webContents.send(PUSH_CHANNELS.workspacesCreated, { workspace })
     }
   }
 }
@@ -120,7 +161,7 @@ function broadcastWorkspaceCreated(workspace: WorkspaceRecord): void {
 function broadcastWorkspaceChanged(workspace: WorkspaceRecord): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send('workspaces:changed', { workspace })
+      win.webContents.send(PUSH_CHANNELS.workspacesChanged, { workspace })
     }
   }
 }
@@ -128,7 +169,7 @@ function broadcastWorkspaceChanged(workspace: WorkspaceRecord): void {
 function broadcastWorkspaceArchived(workspaceId: string, projectId: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send('workspaces:archived', { workspaceId, projectId })
+      win.webContents.send(PUSH_CHANNELS.workspacesArchived, { workspaceId, projectId })
     }
   }
 }
@@ -137,7 +178,10 @@ export function createWorkspace({
   projectId,
   name,
   cwd,
-  forkedFromSessionId = null
+  forkedFromSessionId = null,
+  parentWorkspaceId = null,
+  worktreeParentCwd = null,
+  worktreeBranch = null
 }: {
   projectId: string
   name: string
@@ -146,10 +190,18 @@ export function createWorkspace({
    *  record is written before broadcastWorkspaceCreated fires. Avoids a race
    *  where the renderer receives workspaces:created with a null field. */
   forkedFromSessionId?: string | null
+  /** When creating a child workspace, pass the parent workspace ID to establish
+   *  lineage for depth/children guardrails (v64). */
+  parentWorkspaceId?: string | null
+  /** Repo root this worktree branches from; null for a plain workspace (v64). */
+  worktreeParentCwd?: string | null
+  /** Branch checked out in this worktree; null for a plain workspace (v64). */
+  worktreeBranch?: string | null
 }): WorkspaceRecord {
   const db = getDb()
   const id = crypto.randomUUID()
   const createdAt = Date.now()
+  const sanitizedName = sanitizeWorkspaceName(name)
 
   // Pre-generate the claude session UUID at workspace creation so that the
   // very first launch can pass --session-id <uuid> to claude (deterministic).
@@ -170,18 +222,21 @@ export function createWorkspace({
 
   const row = db
     .prepare(
-      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order, forked_from_session_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order, forked_from_session_id, parent_workspace_id, worktree_parent_cwd, worktree_branch)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
     )
     .get(
       id,
       projectId,
-      name,
+      sanitizedName,
       cwd,
       createdAt,
       claudeSessionId,
       sortOrder,
-      forkedFromSessionId ?? null
+      forkedFromSessionId ?? null,
+      parentWorkspaceId ?? null,
+      worktreeParentCwd ?? null,
+      worktreeBranch ?? null
     ) as WorkspaceRow | undefined
   if (!row) throw new Error(`createWorkspace: INSERT RETURNING returned nothing`)
   const workspace = rowToWorkspaceRecord(row)
@@ -226,7 +281,7 @@ export function openWorkspace(id: string): WorkspaceRecord {
   const row = db
     .prepare('UPDATE workspaces SET last_opened_at = ? WHERE id = ? RETURNING *')
     .get(Date.now(), id) as WorkspaceRow | undefined
-  if (!row) throw new Error(`openWorkspace: workspace not found: ${id}`)
+  if (!row) throw new Error(`workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 
@@ -236,7 +291,7 @@ export function setWorkspacePinned(id: string, pinned: boolean): WorkspaceRecord
   const row = db
     .prepare('UPDATE workspaces SET pinned_at = ? WHERE id = ? RETURNING *')
     .get(pinnedAt, id) as WorkspaceRow | undefined
-  if (!row) throw new Error(`setWorkspacePinned: workspace not found: ${id}`)
+  if (!row) throw new Error(`workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 
@@ -253,13 +308,45 @@ export function setWorkspacePinned(id: string, pinned: boolean): WorkspaceRecord
  * Kept named archiveWorkspace because the IPC channel + UI action names
  * are still "Archive" from the user's vocabulary perspective. Internally
  * it's just deletion.
+ *
+ * For worktree-backed workspaces (`worktreeParentCwd != null`), the git
+ * worktree is removed BEFORE the row is deleted. If the worktree is dirty
+ * and `force` is false, the function returns early with `{ archived: false,
+ * wasDirty: true }` and the row is NOT deleted — caller must re-invoke with
+ * force:true after user confirmation. The branch is never deleted.
+ *
+ * Returns `{ archived: true, wasDirty: false }` on success, or
+ * `{ archived: false, wasDirty: true }` when blocked by an unforced dirty
+ * worktree.
  */
-export function archiveWorkspace(id: string): void {
+export async function archiveWorkspace(
+  id: string,
+  force: boolean = false
+): Promise<{ archived: boolean; wasDirty: boolean }> {
   const db = getDb()
-  // Fetch the workspace record first so we have the projectId for the broadcast.
-  const ws = db.prepare('SELECT id, project_id FROM workspaces WHERE id = ?').get(id) as
-    | { id: string; project_id: string }
+  // Fetch the full workspace record so we have worktreeParentCwd + cwd.
+  const ws = db
+    .prepare('SELECT id, project_id, cwd, worktree_parent_cwd FROM workspaces WHERE id = ?')
+    .get(id) as
+    | { id: string; project_id: string; cwd: string; worktree_parent_cwd: string | null }
     | undefined
+
+  // Worktree teardown: must happen before the row DELETE.
+  let wasDirty = false
+  if (ws?.worktree_parent_cwd) {
+    const r = await withRepoLock(ws.worktree_parent_cwd, () =>
+      removeWorktree({ path: ws.cwd, force })
+    )
+    if (!r.removed && r.wasDirty && !force) {
+      // Dirty worktree, no force — block the delete and let the caller escalate.
+      return { archived: false, wasDirty: true }
+    }
+    // Either removed cleanly or forced (r.removed === true). Proceed to delete.
+    // Preserve wasDirty so a forced removal of a dirty worktree is still
+    // reported back to the caller on the success path.
+    wasDirty = r.wasDirty
+  }
+
   db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
   // Evict the settings cache entry so a stale value can't be served after the
   // row is gone.
@@ -269,6 +356,7 @@ export function archiveWorkspace(id: string): void {
   if (ws) {
     broadcastWorkspaceArchived(ws.id, ws.project_id)
   }
+  return { archived: true, wasDirty }
 }
 
 export function closeWorkspace(id: string, lastTitle: string | null): WorkspaceRecord | undefined {
@@ -297,10 +385,15 @@ export function reopenWorkspace(id: string): WorkspaceRecord | undefined {
 
 export function renameWorkspace(id: string, name: string): WorkspaceRecord {
   const db = getDb()
+  // Sanitize BEFORE the existence check so a bad name (empty/whitespace-only)
+  // is rejected with 'name cannot be empty' even for a nonexistent id — the
+  // sanitize error is the more specific/actionable one for a malformed rename
+  // payload, while a genuinely missing workspace still surfaces below.
+  const sanitizedName = sanitizeWorkspaceName(name)
   const row = db
     .prepare('UPDATE workspaces SET name = ?, name_is_auto = 0 WHERE id = ? RETURNING *')
-    .get(name, id) as WorkspaceRow | undefined
-  if (!row) throw new Error(`renameWorkspace: workspace not found: ${id}`)
+    .get(sanitizedName, id) as WorkspaceRow | undefined
+  if (!row) throw new Error(`workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 
@@ -362,6 +455,18 @@ export function resetTransientStatusesOnStartup(): number {
   return res.changes
 }
 
+/**
+ * Decide the archived_at column value when a workspace/session status changes.
+ * Returns null when leaving/not-in the archived state (clears the timestamp).
+ * Returns the provided `now` when entering archived. Callers decide whether to
+ * COALESCE with any existing archived_at (workspaces preserve the original
+ * archive time; sessions overwrite) — this helper only centralizes the
+ * status→archived_at branch that both sites previously hand-rolled.
+ */
+export function archivedAtForStatus(status: string, now: number): number | null {
+  return status === 'archived' ? now : null
+}
+
 export function setWorkspaceStatus(id: string, status: WorkspaceStatus): WorkspaceRecord {
   if (!VALID_STATUSES.includes(status)) {
     throw new Error(`Invalid status: ${status}`)
@@ -371,18 +476,101 @@ export function setWorkspaceStatus(id: string, status: WorkspaceStatus): Workspa
   // transitioning AWAY from 'archived' clears it.
   let row: WorkspaceRow | undefined
   if (status === 'archived') {
+    // COALESCE preserves the original archived_at on idempotent re-archive;
+    // archivedAtForStatus('archived', now) is just `now` here, used only as
+    // the COALESCE fallback for a first-time archive.
     row = db
       .prepare(
         'UPDATE workspaces SET status = ?, archived_at = COALESCE(archived_at, ?) WHERE id = ? RETURNING *'
       )
-      .get(status, Date.now(), id) as WorkspaceRow | undefined
+      .get(status, archivedAtForStatus(status, Date.now()), id) as WorkspaceRow | undefined
   } else {
     row = db
       .prepare('UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ? RETURNING *')
       .get(status, id) as WorkspaceRow | undefined
   }
-  if (!row) throw new Error(`setWorkspaceStatus: workspace not found: ${id}`)
+  if (!row) throw new Error(`workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
+}
+
+// ---------------------------------------------------------------------------
+// Worktree workspace queries (v64+)
+// ---------------------------------------------------------------------------
+
+/**
+ * Count the number of worktree-backed workspaces for a project.
+ * Used pre-delete to decide whether to show the "Also delete worktrees" checkbox.
+ */
+export function countWorktreeWorkspaces(projectId: string): number {
+  const db = getDb()
+  const row = db
+    .prepare(
+      'SELECT COUNT(*) AS cnt FROM workspaces WHERE project_id = ? AND worktree_parent_cwd IS NOT NULL'
+    )
+    .get(projectId) as { cnt: number } | undefined
+  return row?.cnt ?? 0
+}
+
+/**
+ * Return the cwd + worktreeParentCwd for all worktree-backed workspaces of a
+ * project. Used by the project-delete IPC handler to enumerate worktrees that
+ * need teardown before the cascade-delete.
+ */
+export function listWorktreeWorkspaces(
+  projectId: string
+): Array<{ id: string; cwd: string; worktreeParentCwd: string }> {
+  const db = getDb()
+  const rows = db
+    .prepare(
+      `SELECT id, cwd, worktree_parent_cwd FROM workspaces
+       WHERE project_id = ? AND worktree_parent_cwd IS NOT NULL`
+    )
+    .all(projectId) as Array<{ id: string; cwd: string; worktree_parent_cwd: string }>
+  return rows.map((r) => ({ id: r.id, cwd: r.cwd, worktreeParentCwd: r.worktree_parent_cwd }))
+}
+
+// ---------------------------------------------------------------------------
+// Worktree cwd update (v64+)
+// ---------------------------------------------------------------------------
+
+/**
+ * Update the cwd of a workspace row. Used by reconcileWorktree when the
+ * recreated worktree lands at a suffixed path (e.g. `slug-2`) different from
+ * the stored cwd.
+ */
+export function setWorkspaceCwd(id: string, cwd: string): void {
+  const db = getDb()
+  db.prepare('UPDATE workspaces SET cwd = ? WHERE id = ?').run(cwd, id)
+}
+
+/**
+ * Convert a worktree-backed workspace into a plain local workspace.
+ *
+ * Sets cwd to the old worktreeParentCwd (the main repo root) and nulls out
+ * both worktree fields. Does NOT delete the branch or the worktree directory —
+ * that is left to the user. Broadcasts workspaces:changed so the renderer
+ * picks up the mutation immediately.
+ */
+export function convertWorktreeToLocal(id: string): WorkspaceRecord {
+  const db = getDb()
+  // Read current row to get worktreeParentCwd before we overwrite it.
+  const current = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as
+    | WorkspaceRow
+    | undefined
+  if (!current) throw new Error(`convertWorktreeToLocal: workspace not found: ${id}`)
+  if (!current.worktree_parent_cwd) {
+    throw new Error(`convertWorktreeToLocal: workspace ${id} is not a worktree workspace`)
+  }
+  const parentCwd = current.worktree_parent_cwd
+  const row = db
+    .prepare(
+      'UPDATE workspaces SET cwd = ?, worktree_parent_cwd = NULL, worktree_branch = NULL WHERE id = ? RETURNING *'
+    )
+    .get(parentCwd, id) as WorkspaceRow | undefined
+  if (!row) throw new Error(`convertWorktreeToLocal: UPDATE returned nothing for id: ${id}`)
+  const record = rowToWorkspaceRecord(row)
+  broadcastWorkspaceChanged(record)
+  return record
 }
 
 // ---------------------------------------------------------------------------
@@ -445,4 +633,55 @@ export function listAllPinned(): PinnedItem[] {
       github_checked_at: null
     })
   }))
+}
+
+// ---------------------------------------------------------------------------
+// Workspace lineage (v64)
+// ---------------------------------------------------------------------------
+
+/**
+ * List all direct children of the given workspace (workspaces whose
+ * parent_workspace_id === parentId). Excludes archived workspaces.
+ */
+export function listChildWorkspaces(parentId: string): WorkspaceRecord[] {
+  const db = getDb()
+  const rows = db
+    .prepare(
+      `SELECT * FROM workspaces
+       WHERE parent_workspace_id = ? AND archived_at IS NULL
+       ORDER BY sort_order ASC NULLS LAST, created_at DESC`
+    )
+    .all(parentId) as WorkspaceRow[]
+  return rows.map(rowToWorkspaceRecord)
+}
+
+/**
+ * Return the root-to-node ancestry path for the given workspace by walking
+ * parent_workspace_id upward. The returned array is ordered from the root
+ * ancestor down to (and including) the workspace itself.
+ *
+ * A visited set guards against cycles in malformed data — if a cycle is
+ * detected the walk stops and the partial path is returned.
+ */
+export function getWorkspaceLineage(id: string): WorkspaceRecord[] {
+  const db = getDb()
+  const visited = new Set<string>()
+  const path: WorkspaceRecord[] = []
+
+  let currentId: string | null = id
+  while (currentId !== null) {
+    if (visited.has(currentId)) {
+      // Cycle detected — stop the walk
+      break
+    }
+    visited.add(currentId)
+    const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(currentId) as
+      | WorkspaceRow
+      | undefined
+    if (!row) break
+    path.unshift(rowToWorkspaceRecord(row))
+    currentId = row.parent_workspace_id ?? null
+  }
+
+  return path
 }

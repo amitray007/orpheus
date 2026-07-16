@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
+import { PUSH_CHANNELS } from '../shared/ipc'
+import type { InvokeChannel, Req, Res, PushChannel, PushPayload } from '../shared/ipc'
 import type {
   DetectedApp,
   DoctorResult,
@@ -11,6 +13,7 @@ import type {
   WorkspaceRecord,
   WorkspaceStatus,
   WorkspaceActivityDetail,
+  CreateWorktreeParams,
   PinnedItem,
   ClaudeGlobalSettings,
   ClaudeGlobalSettingsPatch,
@@ -18,15 +21,39 @@ import type {
   ClaudeProjectSettingsOverrides,
   ClaudeWorkspaceSettings,
   ClaudeWorkspaceSettingsOverrides,
+  ClaudeEffort,
   AppUiState,
   AppUiStatePatch,
   GitStatus,
   GitBranchInfo,
   GitCommit,
+  FilesListing,
+  GitStatusEntry,
+  FileContents,
+  FileImage,
+  WriteFileResult,
+  FilesMutationResult,
+  GitDiffResult,
+  GitDiffUnchangedResult,
   GhPullRequest,
+  GhPullRequestDetail,
+  GhReviewCommentThread,
+  GhReviewComment,
+  GhReviewCommentSide,
+  GhSearchPr,
+  GhSearchIssue,
+  LocalReviewComment,
+  PanePanel,
+  PanePanelKind,
+  PaneLayout,
+  PaneTerminal,
+  SplitTree,
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
+  ClaudeUsageResult,
+  ClaudeUsage,
+  ClaudeActivitySummary,
   DiscoveredMcpServer,
   McpServerDraft,
   ClaudeSlashCommand,
@@ -51,74 +78,93 @@ import type {
   DiagEvent,
   HealthReport,
   KeepAwakeState,
-  KeepAwakeBaseMode
+  KeepAwakeBaseMode,
+  OverlayDescriptor,
+  OverlayShowResult,
+  OverlayEvent,
+  TerminalMountResult,
+  TerminalRect
 } from '../shared/types'
 
-type TerminalRect = { x: number; y: number; w: number; h: number }
+// ---------------------------------------------------------------------------
+// Generic typed IPC helpers. `invoke` and `subscribe` are typed against the
+// shared ChannelMap (src/shared/ipc.ts) — there is no permissive `string`
+// fallback, so an unmapped channel is a compile error (DUP-3 finalize,
+// commit 3/3).
+// ---------------------------------------------------------------------------
+
+function invoke<C extends InvokeChannel>(channel: C, ...args: Req<C>): Promise<Res<C>> {
+  return ipcRenderer.invoke(channel, ...args)
+}
+
+function subscribe<C extends PushChannel>(
+  channel: C,
+  cb: (payload: PushPayload<C>) => void
+): () => void {
+  const listener = (_evt: IpcRendererEvent, payload: PushPayload<C>): void => cb(payload)
+  ipcRenderer.on(channel, listener)
+  return () => ipcRenderer.removeListener(channel, listener)
+}
 
 // Custom APIs for renderer
 const api = {
   app: {
-    getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
-    getPaths: (): Promise<{ userData: string; logs: string }> => ipcRenderer.invoke('app:getPaths')
+    getVersion: (): Promise<string> => invoke('app:getVersion'),
+    getPaths: (): Promise<{ userData: string; logs: string }> => invoke('app:getPaths'),
+    offeredModes: (projectId: string): Promise<{ local: boolean; worktree: boolean }> =>
+      invoke('app:offeredModes', { projectId })
   },
   window: {
-    openDevTools: (): Promise<void> => ipcRenderer.invoke('window:openDevTools'),
-    reload: (): Promise<void> => ipcRenderer.invoke('window:reload')
+    openDevTools: (): Promise<void> => invoke('window:openDevTools'),
+    reload: (): Promise<void> => invoke('window:reload')
   },
   debug: {
-    onActionTrace: (cb: (e: { tagName: string }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { tagName: string }): void => cb(e)
-      ipcRenderer.on('addon:actionTrace', listener)
-      return () => ipcRenderer.removeListener('addon:actionTrace', listener)
-    }
+    onActionTrace: (cb: (e: { tagName: string }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.addonActionTrace, cb)
   },
   terminal: {
+    // NOTE: this previously declared its resolved value as
+    // `{ workspaceId: string; created: boolean }`, which was already stale —
+    // the real terminal:mount handler has returned the 3-variant
+    // TerminalMountResult union (success / aborted / worktreeError) since the
+    // Phase-4 worktree-reconcile work. src/preload/index.d.ts had the correct
+    // union; this runtime wrapper's declared type had drifted from it. The
+    // only two call sites (WorkspaceView.tsx, Dashboard.tsx) already narrow
+    // via `'aborted' in result` / `'worktreeError' in result`, so they were
+    // relying on index.d.ts's (correct) ambient type, not this file's stale
+    // one — retyping here just makes the two agree.
     mount: (
       workspaceId: string,
       rect: TerminalRect,
       scaleFactor: number,
       cwd?: string
-    ): Promise<{ workspaceId: string; created: boolean }> =>
-      ipcRenderer.invoke('terminal:mount', { workspaceId, rect, scaleFactor, cwd }),
-    hide: (workspaceId: string): Promise<void> =>
-      ipcRenderer.invoke('terminal:hide', { workspaceId }),
+    ): Promise<TerminalMountResult> =>
+      invoke('terminal:mount', { workspaceId, rect, scaleFactor, cwd }),
+    hide: (workspaceId: string): Promise<void> => invoke('terminal:hide', { workspaceId }),
     resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number): Promise<void> =>
-      ipcRenderer.invoke('terminal:resize', { workspaceId, rect, scaleFactor }),
-    destroy: (workspaceId: string): Promise<void> =>
-      ipcRenderer.invoke('terminal:destroy', { workspaceId }),
+      invoke('terminal:resize', { workspaceId, rect, scaleFactor }),
+    destroy: (workspaceId: string): Promise<void> => invoke('terminal:destroy', { workspaceId }),
     sendInput: (workspaceId: string, text: string): Promise<ActionResult> =>
-      ipcRenderer.invoke('terminal:sendInput', { workspaceId, text }),
+      invoke('terminal:sendInput', { workspaceId, text }),
     sendKeys: (workspaceId: string, keys: TerminalSendKeyDescriptor[]): Promise<ActionResult> =>
-      ipcRenderer.invoke('terminal:sendKeys', { workspaceId, keys }),
+      invoke('terminal:sendKeys', { workspaceId, keys }),
     submit: (workspaceId: string): Promise<ActionResult> =>
-      ipcRenderer.invoke('terminal:submit', { workspaceId }),
+      invoke('terminal:submit', { workspaceId }),
     clearInput: (workspaceId: string): Promise<ActionResult> =>
-      ipcRenderer.invoke('terminal:clearInput', { workspaceId }),
+      invoke('terminal:clearInput', { workspaceId }),
     canInject: (workspaceId: string): Promise<boolean> =>
-      ipcRenderer.invoke('terminal:canInject', { workspaceId }),
+      invoke('terminal:canInject', { workspaceId }),
     onCanInjectChanged: (
       cb: (e: { workspaceId: string; canInject: boolean }) => void
-    ): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; canInject: boolean }
-      ): void => cb(e)
-      ipcRenderer.on('terminal:canInjectChanged', listener)
-      return () => ipcRenderer.removeListener('terminal:canInjectChanged', listener)
-    },
-    focus: (workspaceId: string): Promise<void> =>
-      ipcRenderer.invoke('terminal:focus', { workspaceId }),
-    getSurfacePhase: (workspaceId: string): Promise<string> =>
-      ipcRenderer.invoke('terminal:getSurfacePhase', { workspaceId }),
+    ): (() => void) => subscribe(PUSH_CHANNELS.terminalCanInjectChanged, cb),
+    focus: (workspaceId: string): Promise<void> => invoke('terminal:focus', { workspaceId }),
+    getSurfacePhase: (
+      workspaceId: string
+    ): Promise<'none' | 'hidden' | 'attached' | 'visible' | 'freeing'> =>
+      invoke('terminal:getSurfacePhase', { workspaceId }),
     onSleepStateChanged: (
       cb: (data: { workspaceId: string; sleeping: boolean }) => void
-    ): (() => void) => {
-      const listener = (_e: unknown, data: { workspaceId: string; sleeping: boolean }): void =>
-        cb(data)
-      ipcRenderer.on('terminal:sleepStateChanged', listener)
-      return () => ipcRenderer.removeListener('terminal:sleepStateChanged', listener)
-    },
+    ): (() => void) => subscribe(PUSH_CHANNELS.terminalSleepStateChanged, cb),
     onLiveness: (
       cb: (data: {
         workspaceId: string
@@ -126,55 +172,73 @@ const api = {
         liveTick: number
         occluded: boolean
       }) => void
-    ): (() => void) => {
-      const listener = (
-        _e: unknown,
-        data: { workspaceId: string; inputTick: number; liveTick: number; occluded: boolean }
-      ): void => cb(data)
-      ipcRenderer.on('terminal:liveness', listener)
-      return () => ipcRenderer.removeListener('terminal:liveness', listener)
-    },
-    // Native popover chassis (Phase A)
-    showPopover: (
+    ): (() => void) => subscribe(PUSH_CHANNELS.terminalLiveness, cb)
+  },
+  // Workbench Terminal-tab surface(s) — plain-$SHELL libghostty surfaces
+  // scoped to a claude workspace, keyed `workbench:<workspaceId>` (single
+  // shell, U6b) or `workbench:<workspaceId>:<terminalId>` (a strip of ad-hoc
+  // terminals, U8) in the native addon. `workspaceId` here is always the
+  // owning claude workspace's id (the main process derives the slot key
+  // internally); `terminalId` is the renderer's monotonic per-terminal id,
+  // omitted for a single-shell caller.
+  workbench: {
+    mount: (
       workspaceId: string,
-      kind: string,
-      anchorRect: { x: number; y: number; w: number; h: number },
-      data: Record<string, unknown>,
-      fontDir?: string
-    ): Promise<void> =>
-      ipcRenderer.invoke('terminal:showPopover', { workspaceId, kind, anchorRect, data, fontDir }),
-    updatePopover: (workspaceId: string, data: Record<string, unknown>): Promise<void> =>
-      ipcRenderer.invoke('terminal:updatePopover', { workspaceId, data }),
-    hidePopover: (workspaceId: string): Promise<void> =>
-      ipcRenderer.invoke('terminal:hidePopover', { workspaceId }),
-    onPopoverAction: (cb: (e: { identifier: string }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { identifier: string }): void => cb(e)
-      ipcRenderer.on('popover:actionClicked', listener)
-      return () => ipcRenderer.removeListener('popover:actionClicked', listener)
-    }
+      rect: TerminalRect,
+      scaleFactor: number,
+      terminalId?: number
+    ): Promise<{ workspaceId: string; created: boolean }> =>
+      invoke('workbench:mount', { workspaceId, rect, scaleFactor, terminalId }),
+    resize: (
+      workspaceId: string,
+      rect: TerminalRect,
+      scaleFactor: number,
+      terminalId?: number
+    ): Promise<void> => invoke('workbench:resize', { workspaceId, rect, scaleFactor, terminalId }),
+    hide: (workspaceId: string, terminalId?: number): Promise<void> =>
+      invoke('workbench:hide', { workspaceId, terminalId }),
+    destroy: (workspaceId: string, terminalId?: number): Promise<void> =>
+      invoke('workbench:destroy', { workspaceId, terminalId }),
+    // Fires whenever a program running inside a Workbench ad-hoc terminal
+    // sets its OSC title (e.g. running `claude` inside one) — mirrors
+    // workspaces.onTitleChanged but scoped per-terminal via {workspaceId,
+    // terminalId} instead of just the claude workspace id, since a single
+    // claude workspace can own many ad-hoc terminals at once.
+    onTerminalTitleChanged: (
+      cb: (e: { workspaceId: string; terminalId: number; title: string | null }) => void
+    ): (() => void) => subscribe(PUSH_CHANNELS.workbenchTerminalTitleChanged, cb)
   },
   config: {
-    openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
+    openFolder: (): Promise<string | null> => invoke('config:openFolder')
   },
   doctor: {
-    check: (): Promise<DoctorResult> => ipcRenderer.invoke('doctor:check')
+    check: (): Promise<DoctorResult> => invoke('doctor:check')
   },
   projects: {
-    list: (): Promise<ProjectRecord[]> => ipcRenderer.invoke('projects:list'),
-    add: (path: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:add', { path }),
-    pickAndAdd: (): Promise<ProjectRecord | null> => ipcRenderer.invoke('projects:pickAndAdd'),
-    open: (id: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:open', { id }),
-    remove: (id: string): Promise<void> => ipcRenderer.invoke('projects:remove', { id }),
-    rename: (id: string, name: string): Promise<void> =>
-      ipcRenderer.invoke('projects:rename', { id, name }),
+    list: (): Promise<ProjectRecord[]> => invoke('projects:list'),
+    add: (path: string): Promise<ProjectRecord> => invoke('projects:add', { path }),
+    pickAndAdd: (): Promise<ProjectRecord | null> => invoke('projects:pickAndAdd'),
+    open: (id: string): Promise<ProjectRecord> => invoke('projects:open', { id }),
+    remove: (
+      id: string,
+      opts: { deleteWorktrees?: boolean; force?: boolean } = {}
+    ): Promise<{ deleted: boolean; dirtyWorktrees: number }> =>
+      invoke('projects:remove', {
+        id,
+        deleteWorktrees: opts.deleteWorktrees ?? false,
+        force: opts.force ?? false
+      }),
+    worktreeSummary: (projectId: string): Promise<{ count: number }> =>
+      invoke('projects:worktreeSummary', { projectId }),
+    rename: (id: string, name: string): Promise<void> => invoke('projects:rename', { id, name }),
     setExpandedInSidebar: (id: string, expanded: boolean): Promise<void> =>
-      ipcRenderer.invoke('projects:setExpandedInSidebar', { id, expanded }),
-    reorder: (orderedIds: string[]): Promise<void> =>
-      ipcRenderer.invoke('projects:reorder', { orderedIds }),
+      invoke('projects:setExpandedInSidebar', { id, expanded }),
+    reorder: (orderedIds: string[]): Promise<void> => invoke('projects:reorder', { orderedIds }),
+    reorderByActivity: (): Promise<string[]> => invoke('projects:reorderByActivity'),
     setPinned: (id: string, pinned: boolean): Promise<ProjectRecord> =>
-      ipcRenderer.invoke('projects:setPinned', { id, pinned }),
+      invoke('projects:setPinned', { id, pinned }),
     refreshGithub: (projectId: string): Promise<void> =>
-      ipcRenderer.invoke('projects:refreshGithub', projectId),
+      invoke('projects:refreshGithub', projectId),
     onGithubDataUpdated: (
       cb: (e: {
         projectId: string
@@ -183,93 +247,63 @@ const api = {
         githubAvatarUrl: string | null
         githubCheckedAt: number
       }) => void
-    ): (() => void) => {
-      const listener = (
-        _e: Electron.IpcRendererEvent,
-        payload: {
-          projectId: string
-          githubOwner: string | null
-          githubRepo: string | null
-          githubAvatarUrl: string | null
-          githubCheckedAt: number
-        }
-      ): void => cb(payload)
-      ipcRenderer.on('projects:githubDataUpdated', listener)
-      return () => ipcRenderer.off('projects:githubDataUpdated', listener)
-    }
+    ): (() => void) => subscribe(PUSH_CHANNELS.projectsGithubDataUpdated, cb)
   },
   sessions: {
     listForProject: (
       projectId: string,
       options?: { includeArchived?: boolean }
-    ): Promise<SessionRecord[]> =>
-      ipcRenderer.invoke('sessions:listForProject', { projectId, ...options }),
+    ): Promise<SessionRecord[]> => invoke('sessions:listForProject', { projectId, ...options }),
     listAll: (opts?: { status?: SessionStatus }): Promise<SessionRecord[]> =>
-      ipcRenderer.invoke('sessions:listAll', opts),
+      invoke('sessions:listAll', opts),
     setStatus: (id: string, status: SessionStatus): Promise<void> =>
-      ipcRenderer.invoke('sessions:setStatus', { id, status }),
+      invoke('sessions:setStatus', { id, status }),
     listForProjectPaged: (req: SessionsPagedRequest): Promise<SessionsPagedResult> =>
-      ipcRenderer.invoke('sessions:listForProjectPaged', req),
+      invoke('sessions:listForProjectPaged', req),
     resumeInNewWorkspace: (sessionId: string, projectId: string): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('sessions:resumeInNewWorkspace', { sessionId, projectId }),
+      invoke('sessions:resumeInNewWorkspace', { sessionId, projectId }),
+    resumeInWorktreeWorkspace: (sessionId: string, projectId: string): Promise<WorkspaceRecord> =>
+      invoke('sessions:resumeInWorktreeWorkspace', { sessionId, projectId }),
     refreshMetadata: (projectId: string): Promise<void> =>
-      ipcRenderer.invoke('sessions:refreshMetadata', { projectId }),
-    delete: (id: string): Promise<void> => ipcRenderer.invoke('sessions:delete', { id }),
+      invoke('sessions:refreshMetadata', { projectId }),
+    delete: (id: string): Promise<void> => invoke('sessions:delete', { id }),
     getContextBudget: (workspaceId: string): Promise<{ contextBudget: number; modelId: string }> =>
-      ipcRenderer.invoke('sessions:getContextBudget', { workspaceId })
+      invoke('sessions:getContextBudget', { workspaceId })
   },
   workspaces: {
     listForProject: (
       projectId: string,
       options?: { scope?: 'active' | 'archived' | 'all' }
-    ): Promise<WorkspaceRecord[]> =>
-      ipcRenderer.invoke('workspaces:listForProject', { projectId, ...options }),
+    ): Promise<WorkspaceRecord[]> => invoke('workspaces:listForProject', { projectId, ...options }),
     create: (args: { projectId: string; name: string; cwd: string }): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('workspaces:create', args),
-    open: (id: string): Promise<WorkspaceRecord> => ipcRenderer.invoke('workspaces:open', { id }),
+      invoke('workspaces:create', args),
+    createWorktree: (projectId: string, params: CreateWorktreeParams): Promise<WorkspaceRecord> =>
+      invoke('workspaces:createWorktree', { projectId, params }),
+    open: (id: string): Promise<WorkspaceRecord> => invoke('workspaces:open', { id }),
     setPinned: (id: string, pinned: boolean): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('workspaces:setPinned', { id, pinned }),
+      invoke('workspaces:setPinned', { id, pinned }),
     // "Archive" is a hard delete in v34+. The IPC name + label stay for
     // user-facing continuity even though there's no soft-archive anymore.
-    archive: (id: string): Promise<void> => ipcRenderer.invoke('workspaces:archive', { id }),
+    // For worktree-backed workspaces, pass force:true to override a dirty check.
+    // Returns { archived, wasDirty } — if wasDirty:true and archived:false,
+    // the caller should confirm and re-invoke with force:true.
+    archive: (
+      id: string,
+      opts: { force?: boolean } = {}
+    ): Promise<{ archived: boolean; wasDirty: boolean }> =>
+      invoke('workspaces:archive', { id, force: opts.force ?? false }),
     rename: (id: string, name: string): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('workspaces:rename', { id, name }),
+      invoke('workspaces:rename', { id, name }),
     reorder: (projectId: string, orderedIds: string[]): Promise<void> =>
-      ipcRenderer.invoke('workspaces:reorder', { projectId, orderedIds }),
-    isDirty: (id: string): Promise<boolean> =>
-      ipcRenderer.invoke('workspace:isDirty', { workspaceId: id }),
-    onDirtyChanged: (cb: (e: { workspaceId: string; dirty: boolean }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { workspaceId: string; dirty: boolean }): void =>
-        cb(e)
-      ipcRenderer.on('workspace:dirtyChanged', listener)
-      return () => ipcRenderer.removeListener('workspace:dirtyChanged', listener)
-    },
+      invoke('workspaces:reorder', { projectId, orderedIds }),
+    isDirty: (id: string): Promise<boolean> => invoke('workspace:isDirty', { workspaceId: id }),
+    onDirtyChanged: (cb: (e: { workspaceId: string; dirty: boolean }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspaceDirtyChanged, cb),
     getTitle: (id: string): Promise<string | null> =>
-      ipcRenderer.invoke('workspace:getTitle', { workspaceId: id }),
+      invoke('workspace:getTitle', { workspaceId: id }),
     onTitleChanged: (
       cb: (e: { workspaceId: string; title: string | null }) => void
-    ): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; title: string | null }
-      ): void => cb(e)
-      ipcRenderer.on('workspace:titleChanged', listener)
-      return () => ipcRenderer.removeListener('workspace:titleChanged', listener)
-    },
-    onActivityChanged: (
-      cb: (e: {
-        workspaceId: string
-        status: WorkspaceStatus
-        detail: WorkspaceActivityDetail
-      }) => void
-    ): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; status: WorkspaceStatus; detail: WorkspaceActivityDetail }
-      ): void => cb(e)
-      ipcRenderer.on('workspace:activityChanged', listener)
-      return () => ipcRenderer.removeListener('workspace:activityChanged', listener)
-    },
+    ): (() => void) => subscribe(PUSH_CHANNELS.workspaceTitleChanged, cb),
     onActivityBatch: (
       cb: (
         updates: Array<{
@@ -278,111 +312,151 @@ const api = {
           detail: WorkspaceActivityDetail
         }>
       ) => void
-    ): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        updates: Array<{
-          workspaceId: string
-          status: WorkspaceStatus
-          detail: WorkspaceActivityDetail
-        }>
-      ): void => cb(updates)
-      ipcRenderer.on('workspace:activityBatch', listener)
-      return () => ipcRenderer.removeListener('workspace:activityBatch', listener)
-    },
+    ): (() => void) => subscribe(PUSH_CHANNELS.workspaceActivityBatch, cb),
     setCurrentlyViewed: (workspaceId: string | null): void => {
       ipcRenderer.send('workspace:setCurrentlyViewed', { workspaceId })
     },
-    onNavigateTo: (cb: (workspaceId: string) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { workspaceId: string }): void =>
-        cb(e.workspaceId)
-      ipcRenderer.on('workspace:navigateTo', listener)
-      return () => ipcRenderer.removeListener('workspace:navigateTo', listener)
-    },
-    onCreated: (cb: (workspace: WorkspaceRecord) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { workspace: WorkspaceRecord }): void =>
-        cb(e.workspace)
-      ipcRenderer.on('workspaces:created', listener)
-      return () => ipcRenderer.removeListener('workspaces:created', listener)
-    },
-    onArchived: (cb: (e: { workspaceId: string; projectId: string }) => void): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; projectId: string }
-      ): void => cb(e)
-      ipcRenderer.on('workspaces:archived', listener)
-      return () => ipcRenderer.removeListener('workspaces:archived', listener)
-    },
+    onNavigateTo: (cb: (workspaceId: string, projectId?: string) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspaceNavigateTo, (e) => cb(e.workspaceId, e.projectId)),
+    onCreated: (cb: (workspace: WorkspaceRecord) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspacesCreated, (e) => cb(e.workspace)),
+    onArchived: (cb: (e: { workspaceId: string; projectId: string }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspacesArchived, cb),
+    // NOTE (MDB-9): the busy-reject leg was `{ ok: false, reason: 'busy' }`
+    // pre-migration -- renamed to `error` here to match the ActionResult
+    // convention (`ok` + `error`). The only renderer call site
+    // (Dashboard.tsx `workspaces.close(...).catch(...)`) discards the
+    // resolved value entirely, so this is a safe rename with no follow-up
+    // renderer changes required.
     close: (
       id: string
-    ): Promise<{ ok: boolean; reason?: string; workspace?: WorkspaceRecord | null }> =>
-      ipcRenderer.invoke('workspace:close', { id }),
-    reopen: (id: string): Promise<{ ok: boolean; workspace?: WorkspaceRecord | null }> =>
-      ipcRenderer.invoke('workspace:reopen', { id }),
-    onChanged: (cb: (e: { workspace: WorkspaceRecord }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { workspace: WorkspaceRecord }): void => cb(e)
-      ipcRenderer.on('workspaces:changed', listener)
-      return () => ipcRenderer.removeListener('workspaces:changed', listener)
-    },
-    onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, payload: { workspaceId: string | null }): void =>
-        cb(payload)
-      ipcRenderer.on('terminal:activeWorkspaceChanged', listener)
-      return () => ipcRenderer.removeListener('terminal:activeWorkspaceChanged', listener)
-    }
+    ): Promise<{ ok: true; workspace: WorkspaceRecord | null } | { ok: false; error: 'busy' }> =>
+      invoke('workspace:close', { id }),
+    reopen: (id: string): Promise<{ ok: true; workspace: WorkspaceRecord | null }> =>
+      invoke('workspace:reopen', { id }),
+    onChanged: (cb: (e: { workspace: WorkspaceRecord }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspacesChanged, cb),
+    onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.terminalActiveWorkspaceChanged, cb),
+    onWorkspaceRequestOpen: (
+      cb: (e: { workspaceId: string; focus: boolean }) => void
+    ): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspaceRequestOpen, (e) =>
+        cb({ workspaceId: e.workspaceId, focus: e.focus !== false })
+      ),
+    convertToLocal: (id: string): Promise<WorkspaceRecord> =>
+      invoke('workspaces:convertToLocal', { id }),
+    // Footer Model chip: persists a model override and suppresses the
+    // resulting dirty delta (see setWorkspaceModelAndSuppressDirty in
+    // src/main/index.ts) since the caller injects `/model <value>` into the
+    // terminal live right after this resolves.
+    setModel: (workspaceId: string, model: string): Promise<ClaudeWorkspaceSettings> =>
+      invoke('workspace:setModel', { workspaceId, model }),
+    // Footer Model chip: reads the effective model a workspace would launch
+    // with right now (workspace override → project override → global
+    // setting), via composeClaudeLaunch — the single source of truth.
+    getEffectiveModel: (workspaceId: string): Promise<{ model: string }> =>
+      invoke('workspace:getEffectiveModel', { workspaceId }),
+    // Footer Effort chip: persists an effort override and suppresses the
+    // resulting dirty delta (see setWorkspaceSettingAndSuppressDirty in
+    // src/main/index.ts) since the caller injects `/effort <value>` into the
+    // terminal live right after this resolves.
+    setEffort: (workspaceId: string, effort: ClaudeEffort): Promise<ClaudeWorkspaceSettings> =>
+      invoke('workspace:setEffort', { workspaceId, effort }),
+    // Footer Effort chip: reads the effective effort a workspace would launch
+    // with right now, via composeClaudeLaunch — the single source of truth.
+    getEffectiveEffort: (workspaceId: string): Promise<{ effort: string }> =>
+      invoke('workspace:getEffectiveEffort', { workspaceId })
+  },
+  worktrees: {
+    branchExists: (projectId: string, branch: string): Promise<boolean> =>
+      invoke('worktrees:branchExists', { projectId, branch })
   },
   pins: {
-    listAll: (): Promise<PinnedItem[]> => ipcRenderer.invoke('pins:listAll')
+    listAll: (): Promise<PinnedItem[]> => invoke('pins:listAll')
   },
   claudeSettings: {
-    get: (): Promise<ClaudeGlobalSettings> => ipcRenderer.invoke('claudeSettings:get'),
+    get: (): Promise<ClaudeGlobalSettings> => invoke('claudeSettings:get'),
     update: (patch: ClaudeGlobalSettingsPatch): Promise<ClaudeGlobalSettings> =>
-      ipcRenderer.invoke('claudeSettings:update', patch)
+      invoke('claudeSettings:update', patch)
   },
   ghosttySettings: {
-    get: (): Promise<GhosttyUserConfig> => ipcRenderer.invoke('ghosttySettings:get'),
+    get: (): Promise<GhosttyUserConfig> => invoke('ghosttySettings:get'),
     update: (patch: Partial<GhosttyUserConfig>): Promise<GhosttyUserConfig> =>
-      ipcRenderer.invoke('ghosttySettings:update', patch)
+      invoke('ghosttySettings:update', patch)
   },
   claudeAuth: {
-    get: (): Promise<ClaudeAuthState> => ipcRenderer.invoke('claudeAuth:get'),
+    get: (): Promise<ClaudeAuthState> => invoke('claudeAuth:get'),
     update: (patch: ClaudeAuthPatch): Promise<ClaudeAuthState> =>
-      ipcRenderer.invoke('claudeAuth:update', patch),
-    testConnection: (): Promise<ClaudeAuthTestResult> =>
-      ipcRenderer.invoke('claudeAuth:testConnection')
+      invoke('claudeAuth:update', patch),
+    testConnection: (): Promise<ClaudeAuthTestResult> => invoke('claudeAuth:testConnection')
+  },
+  claude: {
+    // Dashboard "Usage" card — see src/main/claudeUsage.ts for the fetch/
+    // cache/degrade contract. Main-process TTL-cached (~3min) + inflight-
+    // deduped, so this is safe to call on every dashboard mount without
+    // hammering the endpoint.
+    usage: (): Promise<ClaudeUsageResult> => invoke('claude:usage'),
+    // Dashboard D2 (stale-while-revalidate) — instant, disk-backed read (no
+    // network) for the initial cache-first paint. `null` when no cache row
+    // exists yet (cold start).
+    usageCached: (): Promise<{ value: ClaudeUsage; fetchedAt: number } | null> =>
+      invoke('claude:usage:cached'),
+    // Dashboard D3 — background poller push. Fires on each successful poll
+    // tick (see src/main/usagePoller.ts) so the renderer can update the
+    // Usage card silently in place, no manual refresh needed.
+    onUsagePushed: (cb: (usage: ClaudeUsage) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.claudeUsagePushed, cb),
+    // Dashboard "Your pulse" real activity — see src/main/claudeActivity.ts
+    // for the scan/cache contract. Sourced from the on-disk transcript
+    // store, not the Orpheus `sessions` table.
+    activity: (): Promise<ClaudeActivitySummary> => invoke('claude:activity'),
+    // Cached-first companion (D2) — instant, disk-backed read, no scan.
+    // `null` when no cache row exists yet (cold start).
+    activityCached: (): Promise<{ value: ClaudeActivitySummary; fetchedAt: number } | null> =>
+      invoke('claude:activity:cached'),
+    // Background poller push (src/main/claudeActivityPoller.ts) — fires on
+    // each scan tick so the renderer can update the pulse numbers silently
+    // in place, no manual refresh needed.
+    onActivityPushed: (cb: (summary: ClaudeActivitySummary) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.claudeActivityPushed, cb)
   },
   claudeProjectSettings: {
     get: (projectId: string): Promise<ClaudeProjectSettings> =>
-      ipcRenderer.invoke('claudeProjectSettings:get', { projectId }),
+      invoke('claudeProjectSettings:get', { projectId }),
     update: (
       projectId: string,
       patch: ClaudeProjectSettingsOverrides
     ): Promise<ClaudeProjectSettings> =>
-      ipcRenderer.invoke('claudeProjectSettings:update', { projectId, patch })
+      invoke('claudeProjectSettings:update', { projectId, patch })
   },
   claudeWorkspaceSettings: {
     get: (workspaceId: string): Promise<ClaudeWorkspaceSettings> =>
-      ipcRenderer.invoke('claudeWorkspaceSettings:get', { workspaceId }),
+      invoke('claudeWorkspaceSettings:get', { workspaceId }),
     update: (
       workspaceId: string,
       patch: ClaudeWorkspaceSettingsOverrides
     ): Promise<ClaudeWorkspaceSettings> =>
-      ipcRenderer.invoke('claudeWorkspaceSettings:update', { workspaceId, patch })
+      invoke('claudeWorkspaceSettings:update', { workspaceId, patch })
+  },
+  orpheusConfig: {
+    get: (projectId: string): Promise<{ allowLocal: boolean; allowWorktree: boolean }> =>
+      invoke('orpheusConfig:get', { projectId }),
+    setOverride: (
+      projectId: string,
+      patch: Partial<{ allowLocal: boolean; allowWorktree: boolean }>
+    ): Promise<{ allowLocal: boolean; allowWorktree: boolean }> =>
+      invoke('orpheusConfig:setOverride', { projectId, patch })
   },
   uiState: {
-    get: (): Promise<AppUiState> => ipcRenderer.invoke('uiState:get'),
-    update: (patch: AppUiStatePatch): Promise<AppUiState> =>
-      ipcRenderer.invoke('uiState:update', patch),
-    onChanged: (cb: (state: AppUiState) => void): (() => void) => {
-      const handler = (_: Electron.IpcRendererEvent, state: AppUiState): void => cb(state)
-      ipcRenderer.on('uiState:changed', handler)
-      return () => ipcRenderer.removeListener('uiState:changed', handler)
-    }
+    get: (): Promise<AppUiState> => invoke('uiState:get'),
+    update: (patch: AppUiStatePatch): Promise<AppUiState> => invoke('uiState:update', patch),
+    onChanged: (cb: (state: AppUiState) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.uiStateChanged, cb)
   },
   git: {
-    status: (cwd: string): Promise<GitStatus | null> => ipcRenderer.invoke('git:status', { cwd }),
-    branches: (cwd: string): Promise<GitBranchInfo[]> =>
-      ipcRenderer.invoke('git:branches', { cwd }),
+    status: (cwd: string): Promise<GitStatus | null> => invoke('git:status', { cwd }),
+    branches: (cwd: string): Promise<GitBranchInfo[]> => invoke('git:branches', { cwd }),
     log: (
       cwd: string,
       opts?: {
@@ -393,86 +467,295 @@ const api = {
         untilMs?: number
         grep?: string
       }
-    ): Promise<GitCommit[]> => ipcRenderer.invoke('git:log', { cwd, ...opts }),
+    ): Promise<GitCommit[]> => invoke('git:log', { cwd, ...opts }),
     count: (
       cwd: string,
       opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
-    ): Promise<number> => ipcRenderer.invoke('git:count', { cwd, ...opts }),
-    onStatusChanged: (
-      cb: (e: { workspaceId: string; status: GitStatus }) => void
-    ): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; status: GitStatus }
-      ): void => cb(e)
-      ipcRenderer.on('git:statusChanged', listener)
-      return () => ipcRenderer.removeListener('git:statusChanged', listener)
-    }
+    ): Promise<number> => invoke('git:count', { cwd, ...opts }),
+    onStatusChanged: (cb: (e: { workspaceId: string; status: GitStatus }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.gitStatusChanged, cb),
+    // Workbench Git tab (Phase 1) — per-file working-tree diff patches.
+    // Resolves the workspace's cwd internally, like files:*. See
+    // src/main/gitDiff.ts. PERF FIX (main-side diff no-op detection): the
+    // resolved type is a UNION with GitDiffUnchangedResult — see that type's
+    // own doc comment; GitTab.tsx's fetchDiff narrows it before use.
+    // BUG FIX (stuck-loading) — optional `forceFresh` bypasses main's
+    // signature-cache lookup for this one call (see git:diff's own doc
+    // comment in src/shared/ipc.ts); GitTab.tsx passes this on the first
+    // fetch after a state reset (mount, mode switch).
+    diff: (
+      workspaceId: string,
+      forceFresh?: boolean
+    ): Promise<GitDiffResult | GitDiffUnchangedResult> =>
+      invoke('git:diff', { workspaceId, forceFresh }),
+    // Workbench Git tab (Phase 4-pre) — the [Working tree | PR diff]
+    // toggle's PR-diff data source. Resolves the workspace's cwd internally,
+    // like diff above. See src/main/gitDiff.ts::getPrDiff.
+    prDiff: (workspaceId: string): Promise<GitDiffResult> => invoke('git:prDiff', { workspaceId }),
+    // Workbench Git tab (Phase 2) — "Not a git repository" empty state's
+    // Git-init button. Resolves the workspace's cwd internally, like diff
+    // above. Total (never rejects) — see src/main/git.ts's gitInit.
+    init: (workspaceId: string): Promise<{ ok: true } | { ok: false; error: string }> =>
+      invoke('git:init', { workspaceId }),
+    // Workbench Git tab (Phase 3c) — Commits sub-tab's no-PR fallback.
+    // Resolves the workspace's cwd internally, like diff/init above.
+    logForWorkspace: (workspaceId: string, limit?: number): Promise<GitCommit[]> =>
+      invoke('git:logForWorkspace', { workspaceId, limit }),
+    // Pierre adoption batch 4 (safe/read-only slice) — conflict DETECTION
+    // only (no resolve/write-back). Resolves the workspace's cwd internally,
+    // like diff/init above. See src/main/git.ts::getConflictedPaths.
+    conflicts: (workspaceId: string): Promise<string[]> => invoke('git:conflicts', { workspaceId }),
+    // Per-hunk "Revert" feature (setting-gated) — the file's content at HEAD,
+    // for processFile's oldFile side. Resolves the workspace's cwd
+    // internally, like diff/init above. See src/main/git.ts::getFileAtHead.
+    showHead: (workspaceId: string, path: string): Promise<string | null> =>
+      invoke('git:showHead', { workspaceId, path })
+  },
+  // Workbench Files tab data sources (Stage A). All resolve the workspace's cwd
+  // from `workspaceId` in the main process; see src/main/ipc/files.ts.
+  files: {
+    listDir: (workspaceId: string): Promise<FilesListing> =>
+      invoke('files:listDir', { workspaceId }),
+    gitStatus: (workspaceId: string): Promise<GitStatusEntry[]> =>
+      invoke('files:gitStatus', { workspaceId }),
+    readFile: (workspaceId: string, path: string): Promise<FileContents> =>
+      invoke('files:readFile', { workspaceId, path }),
+    readImage: (workspaceId: string, path: string): Promise<FileImage> =>
+      invoke('files:readImage', { workspaceId, path }),
+    writeFile: (workspaceId: string, path: string, contents: string): Promise<WriteFileResult> =>
+      invoke('files:writeFile', { workspaceId, path, contents }),
+    // Tree mutations (Phase 4). Each returns a typed FilesMutationResult.
+    createFile: (workspaceId: string, path: string): Promise<FilesMutationResult> =>
+      invoke('files:createFile', { workspaceId, path }),
+    createDir: (workspaceId: string, path: string): Promise<FilesMutationResult> =>
+      invoke('files:createDir', { workspaceId, path }),
+    rename: (workspaceId: string, from: string, to: string): Promise<FilesMutationResult> =>
+      invoke('files:rename', { workspaceId, from, to }),
+    delete: (workspaceId: string, path: string): Promise<FilesMutationResult> =>
+      invoke('files:delete', { workspaceId, path }),
+    absolutePath: (workspaceId: string, path: string): Promise<string | null> =>
+      invoke('files:absolutePath', { workspaceId, path }),
+    // Working-tree watcher (main/filesWatcher.ts) — live tree refresh while
+    // the Files tab is open. AT MOST ONE watcher is active app-wide; starting
+    // a new workspace's watch stops any previous one.
+    watchStart: (workspaceId: string): Promise<void> => invoke('files:watchStart', { workspaceId }),
+    watchStop: (workspaceId: string): Promise<void> => invoke('files:watchStop', { workspaceId }),
+    onFilesChanged: (cb: (e: { workspaceId: string }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.filesChanged, cb)
   },
   github: {
     prForBranch: (cwd: string, branch: string): Promise<GhPullRequest | null> =>
-      ipcRenderer.invoke('github:prForBranch', { cwd, branch }),
+      invoke('github:prForBranch', { cwd, branch }),
     onPrChanged: (
       cb: (e: { workspaceId: string; pr: GhPullRequest | null }) => void
-    ): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; pr: GhPullRequest | null }
-      ): void => cb(e)
-      ipcRenderer.on('github:prChanged', listener)
-      return () => ipcRenderer.removeListener('github:prChanged', listener)
-    }
+    ): (() => void) => subscribe(PUSH_CHANNELS.githubPrChanged, cb),
+    // Fetch-on-mount fallback for GitTab's `pr` state — see src/shared/
+    // ipc.ts's own comment on this channel for why onPrChanged's one-shot
+    // push alone isn't enough.
+    prForWorkspace: (workspaceId: string): Promise<GhPullRequest | null> =>
+      invoke('github:prForWorkspace', { workspaceId }),
+    // Phase 3b — rich PR detail (Details/Commits/Checks tabs, Phase 4
+    // general comments). Manual-refresh only; no push channel (see
+    // docs/learnings/gh-pr-detail.md — avoid reintroducing the Git tab's
+    // continuous-refetch flicker).
+    prDetail: (workspaceId: string): Promise<GhPullRequestDetail | null> =>
+      invoke('github:prDetail', { workspaceId }),
+    // Phase 4a — line-anchored PR review comments (inline diff annotations).
+    // Manual-refresh only, same cadence convention as prDetail above.
+    prReviewComments: (workspaceId: string): Promise<GhReviewCommentThread[] | null> =>
+      invoke('github:prReviewComments', { workspaceId }),
+    // Phase 4c — write operations (the first GitHub writes this app makes).
+    // Each is total (never rejects) — see src/main/github.ts's "PR write
+    // operations" section for the full safety rationale.
+    postReviewComment: (args: {
+      workspaceId: string
+      path: string
+      line: number
+      side: GhReviewCommentSide
+      body: string
+      commitId?: string
+    }): Promise<{ ok: true; value: GhReviewComment } | { ok: false; error: string }> =>
+      invoke('github:postReviewComment', args),
+    replyToReviewComment: (
+      workspaceId: string,
+      commentId: number,
+      body: string
+    ): Promise<{ ok: true; value: GhReviewComment } | { ok: false; error: string }> =>
+      invoke('github:replyToReviewComment', { workspaceId, commentId, body }),
+    postGeneralComment: (
+      workspaceId: string,
+      body: string
+    ): Promise<{ ok: true } | { ok: false; error: string }> =>
+      invoke('github:postGeneralComment', { workspaceId, body }),
+    // Dashboard Phase 2 (U5) — account-wide search, no workspaceId/cwd arg
+    // (unlike every method above). See src/main/github.ts::getMyOpenPrs/
+    // getMyIssues; total (never rejects), resolves to [] on any gh failure.
+    myOpenPrs: (): Promise<GhSearchPr[]> => invoke('github:myOpenPrs'),
+    myIssues: (): Promise<GhSearchIssue[]> => invoke('github:myIssues'),
+    // Dashboard D2 (stale-while-revalidate) — instant, disk-backed reads
+    // (no network) for the initial cache-first paint. `null` when no cache
+    // row exists yet (cold start).
+    myOpenPrsCached: (): Promise<{ value: GhSearchPr[]; fetchedAt: number } | null> =>
+      invoke('github:myOpenPrs:cached'),
+    myIssuesCached: (): Promise<{ value: GhSearchIssue[]; fetchedAt: number } | null> =>
+      invoke('github:myIssues:cached'),
+    // Dashboard D4 — refresh the signed-in gh user's display name on each
+    // app open (silent, fire-and-forget). Resolves to the resolved display
+    // name (name || login), or null on any gh failure.
+    refreshUsername: (): Promise<string | null> => invoke('github:refreshUsername')
+  },
+  // Workbench Git tab (Phase 4d) — the LOCAL (Orpheus-owned) review-comment
+  // store. See src/main/reviewStore.ts's own header for the full rationale
+  // (3-source comment model, agent-readable DB/commandServer hook).
+  reviews: {
+    list: (workspaceId: string): Promise<LocalReviewComment[]> =>
+      invoke('reviews:list', { workspaceId }),
+    add: (args: {
+      workspaceId: string
+      prNumber?: number | null
+      path: string
+      line?: number | null
+      startLine?: number | null
+      side?: GhReviewCommentSide | null
+      body: string
+    }): Promise<LocalReviewComment> => invoke('reviews:add', args),
+    setResolved: (id: string, resolved: boolean): Promise<LocalReviewComment> =>
+      invoke('reviews:setResolved', { id, resolved }),
+    delete: (id: string): Promise<void> => invoke('reviews:delete', { id })
+  },
+  // Panes v2 — top-level Panels · Layouts · split Panes
+  // (docs/plans/2026-07-10-001-feat-panes-v2-toplevel-layouts-plan.md, U4).
+  // CRUD for the panel/layout/terminal hierarchy (src/main/paneStore.ts) plus
+  // the pane SURFACE ops — a dedicated native slot per terminal
+  // (`pane:<layoutId>:<terminalId>`), unchanged from the flat-row Panes tab
+  // (KTD1) apart from what the two key parts now mean. See
+  // src/main/ipc/panes.ts.
+  panes: {
+    listPanels: (): Promise<PanePanel[]> => invoke('panes:listPanels'),
+    createPanel: (args: {
+      kind: PanePanelKind
+      name: string
+      dir?: string | null
+      position?: number
+    }): Promise<PanePanel> => invoke('panes:createPanel', args),
+    updatePanel: (
+      id: string,
+      patch: { name?: string; dir?: string | null; position?: number }
+    ): Promise<PanePanel> => invoke('panes:updatePanel', { id, ...patch }),
+    deletePanel: (id: string): Promise<void> => invoke('panes:deletePanel', { id }),
+    setPanelExpanded: (id: string, expanded: boolean): Promise<void> =>
+      invoke('panes:setPanelExpanded', { id, expanded }),
+    setLayoutAutoStart: (id: string, autoStart: boolean): Promise<PaneLayout> =>
+      invoke('panes:setLayoutAutoStart', { id, autoStart }),
+    listLayouts: (panelId: string): Promise<PaneLayout[]> =>
+      invoke('panes:listLayouts', { panelId }),
+    createLayout: (args: {
+      panelId: string
+      name: string
+      dir: string
+      position?: number
+    }): Promise<PaneLayout> => invoke('panes:createLayout', args),
+    updateLayout: (
+      id: string,
+      patch: { name?: string; dir?: string; splitTree?: SplitTree | null; position?: number }
+    ): Promise<PaneLayout> => invoke('panes:updateLayout', { id, ...patch }),
+    deleteLayout: (id: string): Promise<void> => invoke('panes:deleteLayout', { id }),
+    startLayoutBackground: (id: string): Promise<void> =>
+      invoke('panes:startLayoutBackground', { id }),
+    stopLayout: (id: string): Promise<void> => invoke('panes:stopLayout', { id }),
+    listTerminals: (layoutId: string): Promise<PaneTerminal[]> =>
+      invoke('panes:listTerminals', { layoutId }),
+    createTerminal: (args: {
+      layoutId: string
+      command: string
+      name?: string
+      position: number
+    }): Promise<PaneTerminal> => invoke('panes:createTerminal', args),
+    updateTerminal: (
+      id: string,
+      patch: { command?: string; name?: string; position?: number }
+    ): Promise<PaneTerminal> => invoke('panes:updateTerminal', { id, ...patch }),
+    deleteTerminal: (id: string): Promise<void> => invoke('panes:deleteTerminal', { id }),
+    pickDirectory: (): Promise<string | null> => invoke('panes:pickDirectory'),
+    mount: (
+      layoutId: string,
+      terminalId: string,
+      rect: TerminalRect,
+      scaleFactor: number,
+      command: string
+    ): Promise<TerminalMountResult> =>
+      invoke('pane:mount', {
+        workspaceId: layoutId,
+        paneId: terminalId,
+        rect,
+        scaleFactor,
+        command
+      }),
+    resize: (
+      layoutId: string,
+      terminalId: string,
+      rect: TerminalRect,
+      scaleFactor: number
+    ): Promise<void> =>
+      invoke('pane:resize', { workspaceId: layoutId, paneId: terminalId, rect, scaleFactor }),
+    hide: (layoutId: string, terminalId: string): Promise<void> =>
+      invoke('pane:hide', { workspaceId: layoutId, paneId: terminalId }),
+    destroy: (layoutId: string, terminalId: string): Promise<void> =>
+      invoke('pane:destroy', { workspaceId: layoutId, paneId: terminalId }),
+    // Issue #24 — sidebar running loader. Pushes the FULL current set of
+    // layout ids with >=1 live pane surface (background-aware: a hidden-
+    // but-not-destroyed layout stays in the set). See paneLiveLayoutsStore.ts.
+    onLiveLayoutsChanged: (cb: (layoutIds: string[]) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.panesLiveLayoutsChanged, (e) => cb(e.layoutIds))
   },
   shell: {
-    revealInFinder: (path: string): Promise<void> =>
-      ipcRenderer.invoke('shell:revealInFinder', { path }),
-    openInEditor: (path: string): Promise<void> =>
-      ipcRenderer.invoke('shell:openInEditor', { path }),
-    openTerminal: (path: string): Promise<void> =>
-      ipcRenderer.invoke('shell:openTerminal', { path }),
-    copyToClipboard: (text: string): Promise<void> =>
-      ipcRenderer.invoke('shell:copyToClipboard', { text }),
-    listEditorApps: (): Promise<DetectedApp[]> => ipcRenderer.invoke('shell:listEditorApps'),
-    listTerminalApps: (): Promise<DetectedApp[]> => ipcRenderer.invoke('shell:listTerminalApps')
+    revealInFinder: (path: string): Promise<void> => invoke('shell:revealInFinder', { path }),
+    openInEditor: (path: string): Promise<void> => invoke('shell:openInEditor', { path }),
+    openTerminal: (path: string): Promise<void> => invoke('shell:openTerminal', { path }),
+    copyToClipboard: (text: string): Promise<void> => invoke('shell:copyToClipboard', { text }),
+    listEditorApps: (): Promise<DetectedApp[]> => invoke('shell:listEditorApps'),
+    listTerminalApps: (): Promise<DetectedApp[]> => invoke('shell:listTerminalApps'),
+    // Dashboard Phase 2 (U5) — PR/issue row-click opens the url in the OS
+    // default browser. See src/main/ipc/shell.ts's handler for the
+    // isSafeExternalUrl guard applied main-side.
+    openExternal: (url: string): Promise<void> => invoke('shell:openExternal', { url })
   },
   mcp: {
-    listServers: (): Promise<DiscoveredMcpServer[]> => ipcRenderer.invoke('mcp:listServers'),
-    add: (draft: McpServerDraft): Promise<void> => ipcRenderer.invoke('mcp:add', draft),
+    listServers: (): Promise<DiscoveredMcpServer[]> => invoke('mcp:listServers'),
+    add: (draft: McpServerDraft): Promise<void> => invoke('mcp:add', draft),
     update: (
       filePath: string,
       oldName: string,
       draft: Omit<McpServerDraft, 'source' | 'projectId'>
-    ): Promise<void> => ipcRenderer.invoke('mcp:update', { filePath, oldName, draft }),
+    ): Promise<void> => invoke('mcp:update', { filePath, oldName, draft }),
     delete: (filePath: string, name: string): Promise<void> =>
-      ipcRenderer.invoke('mcp:delete', { filePath, name })
+      invoke('mcp:delete', { filePath, name })
   },
   claudeAgents: {
     listSlashCommands: (): Promise<ClaudeSlashCommand[]> =>
-      ipcRenderer.invoke('claudeAgents:listSlashCommands'),
-    listSubagents: (): Promise<ClaudeSubagent[]> =>
-      ipcRenderer.invoke('claudeAgents:listSubagents'),
+      invoke('claudeAgents:listSlashCommands'),
+    listSubagents: (): Promise<ClaudeSubagent[]> => invoke('claudeAgents:listSubagents'),
     addSlashCommand: (draft: ClaudeSlashCommandDraft): Promise<void> =>
-      ipcRenderer.invoke('claudeAgents:addSlashCommand', draft),
+      invoke('claudeAgents:addSlashCommand', draft),
     updateSlashCommand: (
       filePath: string,
       draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'>
-    ): Promise<void> => ipcRenderer.invoke('claudeAgents:updateSlashCommand', { filePath, draft }),
+    ): Promise<void> => invoke('claudeAgents:updateSlashCommand', { filePath, draft }),
     deleteSlashCommand: (filePath: string): Promise<void> =>
-      ipcRenderer.invoke('claudeAgents:deleteSlashCommand', { filePath }),
+      invoke('claudeAgents:deleteSlashCommand', { filePath }),
     addSubagent: (draft: ClaudeSubagentDraft): Promise<void> =>
-      ipcRenderer.invoke('claudeAgents:addSubagent', draft),
+      invoke('claudeAgents:addSubagent', draft),
     updateSubagent: (
       filePath: string,
       draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'>
-    ): Promise<void> => ipcRenderer.invoke('claudeAgents:updateSubagent', { filePath, draft }),
+    ): Promise<void> => invoke('claudeAgents:updateSubagent', { filePath, draft }),
     deleteSubagent: (filePath: string): Promise<void> =>
-      ipcRenderer.invoke('claudeAgents:deleteSubagent', { filePath })
+      invoke('claudeAgents:deleteSubagent', { filePath })
   },
   claudeHooks: {
-    list: (): Promise<ClaudeHookEntry[]> => ipcRenderer.invoke('claudeHooks:list'),
-    openFile: (filePath: string): Promise<void> =>
-      ipcRenderer.invoke('claudeHooks:openFile', { filePath }),
-    add: (draft: ClaudeHookDraft): Promise<void> => ipcRenderer.invoke('claudeHooks:add', draft),
+    list: (): Promise<ClaudeHookEntry[]> => invoke('claudeHooks:list'),
+    openFile: (filePath: string): Promise<void> => invoke('claudeHooks:openFile', { filePath }),
+    add: (draft: ClaudeHookDraft): Promise<void> => invoke('claudeHooks:add', draft),
     update: (
       filePath: string,
       event: string,
@@ -480,7 +763,7 @@ const api = {
       hookIdx: number,
       draft: { event: string; matcher: string | null; type: string; command: string }
     ): Promise<void> =>
-      ipcRenderer.invoke('claudeHooks:update', {
+      invoke('claudeHooks:update', {
         filePath,
         event,
         matcherEntryIdx,
@@ -492,68 +775,56 @@ const api = {
       event: string,
       matcherEntryIdx: number,
       hookIdx: number
-    ): Promise<void> =>
-      ipcRenderer.invoke('claudeHooks:delete', { filePath, event, matcherEntryIdx, hookIdx })
+    ): Promise<void> => invoke('claudeHooks:delete', { filePath, event, matcherEntryIdx, hookIdx })
   },
   contextMenu: {
     show: (items: ContextMenuNativeItem[]): Promise<string | null> =>
-      ipcRenderer.invoke('contextMenu:show', items)
+      invoke('contextMenu:show', items)
   },
   notifications: {
-    test: (): Promise<void> => ipcRenderer.invoke('notifications:test')
+    test: (): Promise<void> => invoke('notifications:test')
+  },
+  // Git tab avatars (Avatar.tsx) — fetch-once, disk-cached GitHub avatar as a
+  // data URI. Total — resolves `null` on any fetch/network/fs failure so the
+  // renderer can fall back to the direct sized CDN url, then initials.
+  avatar: {
+    get: (url: string): Promise<string | null> => invoke('avatar:get', { url })
   },
   updates: {
-    check: (): Promise<UpdateCheckResult> => ipcRenderer.invoke('updates:check'),
-    install: (): Promise<void> => ipcRenderer.invoke('updates:install'),
-    restart: (): Promise<void> => ipcRenderer.invoke('updates:restart'),
-    getState: (): Promise<UpdateSnapshot> => ipcRenderer.invoke('updates:getState'),
-    onProgress: (cb: (e: UpdateProgress) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: UpdateProgress): void => cb(e)
-      ipcRenderer.on('updates:progress', listener)
-      return () => ipcRenderer.removeListener('updates:progress', listener)
-    },
-    onDone: (cb: (e: { success: boolean; code: number | null }) => void): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { success: boolean; code: number | null }
-      ): void => cb(e)
-      ipcRenderer.on('updates:done', listener)
-      return () => ipcRenderer.removeListener('updates:done', listener)
-    },
-    onCheckResult: (cb: (result: UpdateCheckResult) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, result: UpdateCheckResult): void => cb(result)
-      ipcRenderer.on('updates:checkResult', listener)
-      return () => ipcRenderer.removeListener('updates:checkResult', listener)
-    }
+    check: (): Promise<UpdateCheckResult> => invoke('updates:check'),
+    install: (): Promise<void> => invoke('updates:install'),
+    restart: (): Promise<void> => invoke('updates:restart'),
+    getState: (): Promise<UpdateSnapshot> => invoke('updates:getState'),
+    onProgress: (cb: (e: UpdateProgress) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.updatesProgress, cb),
+    onDone: (cb: (e: { success: boolean; code: number | null }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.updatesDone, cb),
+    onCheckResult: (cb: (result: UpdateCheckResult) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.updatesCheckResult, cb)
   },
   status: {
-    get: (): Promise<ClaudeStatusSnapshot> => ipcRenderer.invoke('status:get'),
-    refresh: (): Promise<ClaudeStatusSnapshot> => ipcRenderer.invoke('status:refresh'),
-    openPage: (): Promise<void> => ipcRenderer.invoke('status:openPage'),
-    onChange: (cb: (snapshot: ClaudeStatusSnapshot) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, snapshot: ClaudeStatusSnapshot): void =>
-        cb(snapshot)
-      ipcRenderer.on('status:change', listener)
-      return () => ipcRenderer.removeListener('status:change', listener)
-    }
+    get: (): Promise<ClaudeStatusSnapshot> => invoke('status:get'),
+    refresh: (): Promise<ClaudeStatusSnapshot> => invoke('status:refresh'),
+    openPage: (): Promise<void> => invoke('status:openPage'),
+    onChange: (cb: (snapshot: ClaudeStatusSnapshot) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.statusChange, cb)
   },
   actions: {
     invoke: (
       invocation: { id: string; params: Record<string, unknown>; workspaceId: string },
       consumerHint?: string
     ): Promise<ActionResult> =>
-      ipcRenderer.invoke('actions:invoke', {
+      invoke('actions:invoke', {
         actionId: invocation.id,
         params: invocation.params,
         workspaceId: invocation.workspaceId,
         consumerHint: consumerHint ?? 'renderer'
       }),
 
-    list: (): Promise<Array<{ id: string; kind: ActionKind }>> =>
-      ipcRenderer.invoke('actions:list'),
+    list: (): Promise<Array<{ id: string; kind: ActionKind }>> => invoke('actions:list'),
 
     history: (workspaceId: string, limit?: number): Promise<ActionAuditEntry[]> =>
-      ipcRenderer.invoke('actions:history', { workspaceId, limit }),
+      invoke('actions:history', { workspaceId, limit }),
 
     subscribe: (
       actionId: string,
@@ -572,54 +843,61 @@ const api = {
         }
       }
 
-      ipcRenderer.on('actions:subscription-update', listener)
-      ipcRenderer.invoke('actions:subscribe', { subscriptionId, actionId, params, workspaceId })
+      ipcRenderer.on(PUSH_CHANNELS.actionsSubscriptionUpdate, listener)
+      const subP = invoke('actions:subscribe', {
+        subscriptionId,
+        actionId,
+        params,
+        workspaceId
+      }).catch((e) => {
+        console.error('actions:subscribe failed', e)
+      })
 
       return {
         dispose: () => {
-          ipcRenderer.removeListener('actions:subscription-update', listener)
-          ipcRenderer.invoke('actions:unsubscribe', { subscriptionId }).catch(() => {
-            /* ignore cleanup errors */
-          })
+          ipcRenderer.removeListener(PUSH_CHANNELS.actionsSubscriptionUpdate, listener)
+          subP
+            .then(() => invoke('actions:unsubscribe', { subscriptionId }))
+            .catch(() => {
+              /* ignore cleanup errors */
+            })
         }
       }
     }
   },
   footerActions: {
     listMerged: (workspaceId: string): Promise<FooterActionDescriptor[]> =>
-      ipcRenderer.invoke('footerActions:listMerged', { workspaceId }),
+      invoke('footerActions:listMerged', { workspaceId }),
 
     listAtScope: (scope: FooterActionScope, scopeId?: string): Promise<FooterActionDescriptor[]> =>
-      ipcRenderer.invoke('footerActions:listAtScope', { scope, scopeId }),
+      invoke('footerActions:listAtScope', { scope, scopeId }),
 
     create: (
       scope: FooterActionScope,
       scopeId: string | null,
       draft: FooterActionDraft
-    ): Promise<FooterActionDescriptor> =>
-      ipcRenderer.invoke('footerActions:create', { scope, scopeId, draft }),
+    ): Promise<FooterActionDescriptor> => invoke('footerActions:create', { scope, scopeId, draft }),
 
     update: (id: string, patch: Partial<FooterActionDraft>): Promise<FooterActionDescriptor> =>
-      ipcRenderer.invoke('footerActions:update', { id, patch }),
+      invoke('footerActions:update', { id, patch }),
 
-    remove: (id: string): Promise<void> => ipcRenderer.invoke('footerActions:remove', { id }),
+    remove: (id: string): Promise<void> => invoke('footerActions:remove', { id }),
 
     reorder: (
       scope: FooterActionScope,
       scopeId: string | null,
       orderedIds: string[]
-    ): Promise<void> => ipcRenderer.invoke('footerActions:reorder', { scope, scopeId, orderedIds }),
+    ): Promise<void> => invoke('footerActions:reorder', { scope, scopeId, orderedIds }),
 
-    resetDefaults: (): Promise<void> => ipcRenderer.invoke('footerActions:resetDefaults')
+    resetDefaults: (): Promise<void> => invoke('footerActions:resetDefaults')
   },
   hooks: {
     setEnabled: (enabled: boolean): Promise<{ enabled: boolean }> =>
-      ipcRenderer.invoke('hooks:setEnabled', enabled),
-    getStatus: (): Promise<{ enabled: boolean; installed: number }> =>
-      ipcRenderer.invoke('hooks:getStatus')
+      invoke('hooks:setEnabled', enabled),
+    getStatus: (): Promise<{ enabled: boolean; installed: number }> => invoke('hooks:getStatus')
   },
   health: {
-    get: (): Promise<HealthReport> => ipcRenderer.invoke('health:get')
+    get: (): Promise<HealthReport> => invoke('health:get')
   },
   diag: {
     event: (evt: DiagEvent): void => {
@@ -629,37 +907,40 @@ const api = {
         /* never throw */
       }
     },
-    openConsole: (): Promise<void> => ipcRenderer.invoke('diag:openConsole'),
-    onStream: (cb: (batch: unknown[]) => void): (() => void) => {
-      const listener = (_e: IpcRendererEvent, batch: unknown[]): void => cb(batch)
-      ipcRenderer.on('diag:stream', listener)
-      return () => ipcRenderer.removeListener('diag:stream', listener)
-    },
+    openConsole: (): Promise<void> => invoke('diag:openConsole'),
+    onStream: (cb: (batch: unknown[]) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.diagStream, cb),
     export: (opts: {
       sinceMs: number
-    }): Promise<{
-      ok: boolean
-      path?: string
-      txtPath?: string
-      jsonPath?: string
-      error?: string
-    }> => ipcRenderer.invoke('diag:export', opts)
+    }): Promise<
+      { ok: true; path: string; txtPath: string; jsonPath: string } | { ok: false; error: string }
+    > => invoke('diag:export', opts)
   },
   keepAwake: {
-    get: (): Promise<KeepAwakeState> => ipcRenderer.invoke('keepAwake:get'),
+    get: (): Promise<KeepAwakeState> => invoke('keepAwake:get'),
     setMode: (mode: KeepAwakeBaseMode): Promise<KeepAwakeState> =>
-      ipcRenderer.invoke('keepAwake:setMode', mode),
-    setDisplayOn: (on: boolean): Promise<KeepAwakeState> =>
-      ipcRenderer.invoke('keepAwake:setDisplayOn', on),
+      invoke('keepAwake:setMode', mode),
+    setDisplayOn: (on: boolean): Promise<KeepAwakeState> => invoke('keepAwake:setDisplayOn', on),
     startTimer: (minutes: number): Promise<KeepAwakeState> =>
-      ipcRenderer.invoke('keepAwake:startTimer', minutes),
-    onState: (cb: (state: KeepAwakeState) => void): (() => void) => {
-      const handler = (_: Electron.IpcRendererEvent, state: KeepAwakeState): void => cb(state)
-      ipcRenderer.on('keepAwake:state', handler)
-      return () => ipcRenderer.removeListener('keepAwake:state', handler)
-    }
+      invoke('keepAwake:startTimer', minutes),
+    onState: (cb: (state: KeepAwakeState) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.keepAwakeState, cb)
+  },
+  overlay: {
+    show: (descriptor: OverlayDescriptor): Promise<OverlayShowResult> =>
+      invoke('overlay:showDescriptor', { descriptor }),
+    update: (id: string, props: Record<string, unknown>): Promise<void> =>
+      invoke('overlay:update', { id, props }),
+    hide: (id: string): Promise<void> => invoke('overlay:hide', { id }),
+    onEvent: (cb: (e: OverlayEvent) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.overlayEvent, cb)
   }
 }
+
+// DUP-3 finalize: the single source of truth for the renderer-facing
+// `window.api` shape. `src/preload/index.d.ts` derives `Window.api` from
+// this type instead of hand-maintaining a parallel twin — see that file.
+export type OrpheusApi = typeof api
 
 // Use `contextBridge` APIs to expose Electron APIs to
 // renderer only if context isolation is enabled, otherwise

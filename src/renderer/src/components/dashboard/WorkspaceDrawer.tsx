@@ -1,3 +1,8 @@
+// Preserved for future use — the per-workspace overrides UI (OverridesSection).
+// No longer mounted since the Workspace Settings gear was removed in favor of
+// the Workbench; kept so a future "overrides" home (e.g. a Workbench tab) can
+// reuse it.
+
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import { X, ArrowCounterClockwise } from '@phosphor-icons/react'

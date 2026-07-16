@@ -4,6 +4,7 @@ import * as nodePath from 'node:path'
 import { promisify } from 'node:util'
 import type { WebContents } from 'electron'
 import { getWorkspace } from './workspaces'
+import { PUSH_CHANNELS } from '../shared/ipc'
 
 const execFile = promisify(childProcess.execFile)
 
@@ -22,6 +23,60 @@ export type GitStatus = {
   modifiedFiles: number
   /** Count of deleted files (working tree vs HEAD) */
   deletedFiles: number
+}
+
+/** Parse `git rev-parse --abbrev-ref HEAD` output into a branch name, or null
+ *  for detached HEAD (which reports the literal string "HEAD") or an empty
+ *  result. `result` is null when the rev-parse call itself failed/was skipped. */
+function parseBranchResult(result: { stdout: string } | null): string | null {
+  if (!result) return null
+  const out = result.stdout.trim()
+  return out === 'HEAD' ? null : out || null
+}
+
+/** Parse `git diff --shortstat HEAD` output (e.g. " 2 files changed, 113
+ *  insertions(+), 0 deletions(-)") into insertion/deletion counts. Either
+ *  count may be absent from the output (pure additions / pure deletions). */
+function parseDiffShortstat(result: { stdout: string } | null): {
+  insertions: number
+  deletions: number
+} {
+  let insertions = 0
+  let deletions = 0
+  if (result) {
+    const out = result.stdout
+    const insMatch = out.match(/(\d+)\s+insertion/)
+    const delMatch = out.match(/(\d+)\s+deletion/)
+    if (insMatch) insertions = parseInt(insMatch[1], 10)
+    if (delMatch) deletions = parseInt(delMatch[1], 10)
+  }
+  return { insertions, deletions }
+}
+
+/** Parse `git status --porcelain` output into new/modified/deleted file
+ *  counts, one line per changed path (`XY <path>`). */
+function parsePorcelainCounts(result: { stdout: string } | null): {
+  newFiles: number
+  modifiedFiles: number
+  deletedFiles: number
+} {
+  let newFiles = 0
+  let modifiedFiles = 0
+  let deletedFiles = 0
+  if (result) {
+    for (const line of result.stdout.split('\n')) {
+      if (line.length < 2) continue
+      const xy = line.slice(0, 2)
+      if (xy === '??' || xy[0] === 'A' || xy[1] === 'A') {
+        newFiles++
+      } else if (xy.includes('D')) {
+        deletedFiles++
+      } else if (xy.includes('M')) {
+        modifiedFiles++
+      }
+    }
+  }
+  return { newFiles, modifiedFiles, deletedFiles }
 }
 
 /**
@@ -56,44 +111,105 @@ export async function getGitStatus(cwd: string): Promise<GitStatus | null> {
     execFile('git', ['-C', cwd, 'status', '--porcelain'], { timeout: 2000 }).catch(() => null)
   ])
 
-  let branch: string | null = null
-  if (branchResult) {
-    const out = branchResult.stdout.trim()
-    // Detached HEAD reports literal "HEAD"
-    branch = out === 'HEAD' ? null : out || null
-  }
-
-  let insertions = 0
-  let deletions = 0
-  if (diffResult) {
-    // Output looks like: " 2 files changed, 113 insertions(+), 0 deletions(-)"
-    const out = diffResult.stdout
-    const insMatch = out.match(/(\d+)\s+insertion/)
-    const delMatch = out.match(/(\d+)\s+deletion/)
-    if (insMatch) insertions = parseInt(insMatch[1], 10)
-    if (delMatch) deletions = parseInt(delMatch[1], 10)
-  }
-
-  let newFiles = 0
-  let modifiedFiles = 0
-  let deletedFiles = 0
-  if (porcelainResult) {
-    for (const line of porcelainResult.stdout.split('\n')) {
-      if (line.length < 2) continue
-      const xy = line.slice(0, 2)
-      if (xy === '??' || xy[0] === 'A' || xy[1] === 'A') {
-        newFiles++
-      } else if (xy.includes('D')) {
-        deletedFiles++
-      } else if (xy.includes('M')) {
-        modifiedFiles++
-      }
-    }
-  }
+  const branch = parseBranchResult(branchResult)
+  const { insertions, deletions } = parseDiffShortstat(diffResult)
+  const { newFiles, modifiedFiles, deletedFiles } = parsePorcelainCounts(porcelainResult)
 
   const hasChanges =
     insertions > 0 || deletions > 0 || newFiles > 0 || modifiedFiles > 0 || deletedFiles > 0
   return { insertions, deletions, hasChanges, branch, newFiles, modifiedFiles, deletedFiles }
+}
+
+/**
+ * `git init` for the Workbench Git tab's "Not a git repository" empty state
+ * (Phase 2). Total — never throws: returns a discriminated result so the
+ * renderer can show inline success/failure feedback instead of an unhandled
+ * rejection. The caller (src/main/ipc/git.ts) is responsible for refetching
+ * `git:diff` afterward — this function only runs `git init`, it doesn't
+ * re-derive diff state itself.
+ */
+export async function gitInit(cwd: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!cwd) return { ok: false, error: 'No workspace directory' }
+  try {
+    await execFile('git', ['-C', cwd, 'init'], { timeout: 5000 })
+    return { ok: true }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { ok: false, error: message }
+  }
+}
+
+/**
+ * The nine `git status --porcelain=v1` XY codes that mean "unmerged" (a
+ * genuine merge conflict, not just a staged/unstaged edit) — one entry per
+ * side-combination git can report: both added (AA), both modified (UU), one
+ * side deleted (DU/UD), one side added-the-other-didn't (AU/UA), one side
+ * deleted-the-other-didn't (DD is both-deleted, a real conflict too). Kept as
+ * a Set (not a regex) so the membership check below is a single O(1) lookup
+ * per porcelain line, and so this list is easy to audit against `git help
+ * status`'s own "Unmerged" table (which enumerates exactly these nine).
+ */
+const UNMERGED_XY_CODES = new Set(['UU', 'AA', 'DD', 'AU', 'UA', 'DU', 'UD'])
+
+/**
+ * READ-ONLY conflict detection (Pierre adoption batch 4, safe slice) — runs
+ * `git status --porcelain=v1` and returns the repo-relative paths of every
+ * currently-unmerged (conflicted) file, using the same XY-code table `git
+ * status`'s own "Unmerged paths" section is built from. This performs no
+ * writes of any kind (no `git add`/`checkout --ours`/`merge --continue`) —
+ * it's purely a read used to gate the Git tab's conflict-viewer branch (see
+ * GitTab.tsx's `conflictedPaths`).
+ *
+ * Total — never throws: any failure (not a repo, git missing, timeout)
+ * resolves to `[]`, matching getGitStatus's own swallow-everything contract
+ * so a conflict-detection hiccup never blocks the rest of the Git tab from
+ * rendering.
+ */
+export async function getConflictedPaths(cwd: string): Promise<string[]> {
+  if (!cwd) return []
+  try {
+    const { stdout } = await execFile(
+      'git',
+      ['-C', cwd, '-c', 'core.quotePath=false', 'status', '--porcelain=v1'],
+      { timeout: 2000 }
+    )
+    const paths: string[] = []
+    for (const line of stdout.split('\n')) {
+      if (line.length < 3) continue
+      const xy = line.slice(0, 2)
+      if (!UNMERGED_XY_CODES.has(xy)) continue
+      // Porcelain v1 unmerged lines are `XY <path>` with no rename arrow (a
+      // conflicted entry is never ALSO a rename) — slice(3) drops "XY ".
+      paths.push(line.slice(3).trim())
+    }
+    return paths
+  } catch {
+    return []
+  }
+}
+
+/**
+ * READ-ONLY — the file's content at `HEAD` (`git show HEAD:<path>`), for the
+ * per-hunk "Revert" feature's `processFile(patch, { oldFile, newFile })` call
+ * (see docs/learnings/hunk-accept-reject.md). No git mutation of any kind.
+ *
+ * Returns `null` when the path has no HEAD version — untracked/new files
+ * (git errors on an unknown path), a non-repo, or any other git failure.
+ * The caller treats `null` the same way (oldFile.contents = '') since a
+ * new-file diff's "old" side is genuinely empty either way. Total — never
+ * throws, matching getConflictedPaths' own swallow-everything contract.
+ */
+export async function getFileAtHead(cwd: string, path: string): Promise<string | null> {
+  if (!cwd || !path) return null
+  try {
+    const { stdout } = await execFile('git', ['-C', cwd, 'show', `HEAD:${path}`], {
+      timeout: 3000,
+      maxBuffer: 1024 * 1024 * 20
+    })
+    return stdout
+  } catch {
+    return null
+  }
 }
 
 export type GitBranchInfo = {
@@ -196,6 +312,28 @@ export function listCommits(
   if (!cwd) return []
   const limit = opts?.limit ?? 25
   const offset = opts?.offset ?? 0
+  const args = buildListCommitsArgs(cwd, limit, offset, opts)
+  try {
+    const out = childProcess.execFileSync('git', args, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+      encoding: 'utf-8'
+    })
+    return parseCommitLogOutput(out)
+  } catch {
+    return []
+  }
+}
+
+/** Build the `git log` argv for {@link listCommits}: base args, optional
+ *  branch/date-range/grep filters, then the `--shortstat`/format tail that
+ *  drives {@link parseCommitLogOutput}. */
+function buildListCommitsArgs(
+  cwd: string,
+  limit: number,
+  offset: number,
+  opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
+): string[] {
   const args = ['-C', cwd, 'log']
   if (opts?.branch) args.push(opts.branch)
   if (opts?.sinceMs !== undefined) {
@@ -211,56 +349,69 @@ export function listCommits(
   // SENTINEL prefixes every commit's metadata line so the parser can
   // distinguish it from --shortstat lines that follow ("3 files changed, ...").
   // Without it, multi-line shortstat output would shred line-based splitting.
-  const SENTINEL = '__ORPH_COMMIT__'
   args.push(
     '--shortstat',
     `--max-count=${limit}`,
     `--skip=${offset}`,
-    `--format=${SENTINEL}%H%x09%h%x09%s%x09%an%x09%ae%x09%ct`
+    `--format=${COMMIT_LOG_SENTINEL}%H%x09%h%x09%s%x09%an%x09%ae%x09%ct`
   )
-  try {
-    const out = childProcess.execFileSync('git', args, {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 3000,
-      encoding: 'utf-8'
-    })
-    const commits: GitCommit[] = []
-    let current: GitCommit | null = null
-    // shortstat: " 3 files changed, 124 insertions(+), 38 deletions(-)"
-    // insertions or deletions may be absent (pure additions / pure deletions).
-    const statRe =
-      /(\d+)\s+files?\s+changed(?:,\s*(\d+)\s+insertions?\(\+\))?(?:,\s*(\d+)\s+deletions?\(-\))?/
-    for (const raw of out.split('\n')) {
-      if (raw.startsWith(SENTINEL)) {
-        if (current) commits.push(current)
-        const parts = raw.slice(SENTINEL.length).split('\t')
-        const ts = parseInt(parts[5], 10)
-        current = {
-          fullSha: parts[0] ?? '',
-          sha: parts[1] ?? '',
-          subject: parts[2] ?? '',
-          author: parts[3] ?? '',
-          authorEmail: parts[4] ?? '',
-          timestamp: isNaN(ts) ? 0 : ts * 1000,
-          filesChanged: 0,
-          insertions: 0,
-          deletions: 0
-        }
-        continue
-      }
-      if (!current) continue
-      const m = statRe.exec(raw)
-      if (m) {
-        current.filesChanged = parseInt(m[1] ?? '0', 10) || 0
-        current.insertions = m[2] ? parseInt(m[2], 10) || 0 : 0
-        current.deletions = m[3] ? parseInt(m[3], 10) || 0 : 0
-      }
-    }
-    if (current) commits.push(current)
-    return commits
-  } catch {
-    return []
+  return args
+}
+
+// Shared between buildListCommitsArgs (emitted via --format) and
+// parseCommitLogOutput (matched against each output line) — must stay in sync.
+const COMMIT_LOG_SENTINEL = '__ORPH_COMMIT__'
+
+// shortstat: " 3 files changed, 124 insertions(+), 38 deletions(-)"
+// insertions or deletions may be absent (pure additions / pure deletions).
+const SHORTSTAT_RE =
+  /(\d+)\s+files?\s+changed(?:,\s*(\d+)\s+insertions?\(\+\))?(?:,\s*(\d+)\s+deletions?\(-\))?/
+
+/** Parse a SENTINEL-prefixed metadata line (`%H\t%h\t%s\t%an\t%ae\t%ct`) into
+ *  a fresh {@link GitCommit} with zeroed stat fields — the stats are filled
+ *  in separately once the following --shortstat line (if any) is parsed. */
+function parseCommitSentinelLine(raw: string): GitCommit {
+  const parts = raw.slice(COMMIT_LOG_SENTINEL.length).split('\t')
+  const ts = parseInt(parts[5], 10)
+  return {
+    fullSha: parts[0] ?? '',
+    sha: parts[1] ?? '',
+    subject: parts[2] ?? '',
+    author: parts[3] ?? '',
+    authorEmail: parts[4] ?? '',
+    timestamp: isNaN(ts) ? 0 : ts * 1000,
+    filesChanged: 0,
+    insertions: 0,
+    deletions: 0
   }
+}
+
+/** Apply a matched --shortstat line's counts onto the in-progress commit. */
+function applyShortstatMatch(current: GitCommit, raw: string): void {
+  const m = SHORTSTAT_RE.exec(raw)
+  if (!m) return
+  current.filesChanged = parseInt(m[1] ?? '0', 10) || 0
+  current.insertions = m[2] ? parseInt(m[2], 10) || 0 : 0
+  current.deletions = m[3] ? parseInt(m[3], 10) || 0 : 0
+}
+
+/** Parse the full `git log --shortstat --format=SENTINEL...` stdout into
+ *  commit records — one SENTINEL-prefixed metadata line per commit, optionally
+ *  followed by a --shortstat summary line for that same commit. */
+function parseCommitLogOutput(out: string): GitCommit[] {
+  const commits: GitCommit[] = []
+  let current: GitCommit | null = null
+  for (const raw of out.split('\n')) {
+    if (raw.startsWith(COMMIT_LOG_SENTINEL)) {
+      if (current) commits.push(current)
+      current = parseCommitSentinelLine(raw)
+      continue
+    }
+    if (!current) continue
+    applyShortstatMatch(current, raw)
+  }
+  if (current) commits.push(current)
+  return commits
 }
 
 // ---------------------------------------------------------------------------
@@ -276,12 +427,37 @@ export function listCommits(
 
 import { getPrForBranch } from './github'
 
+type GitWatchClient = {
+  cwd: string
+  webContents: WebContents
+  lastBranch: string | null
+  // Signature of the last GitStatus actually PUSHED to this client — lets
+  // refreshGitForDir skip a redundant gitStatusChanged send when a watcher
+  // firing produced no real change (see the loop-breaker comment below).
+  lastStatusSig: string | null
+}
+
 type GitWatchEntry = {
   watchers: fs.FSWatcher[]
   refCount: number
-  // workspaceId → { cwd, webContents, lastBranch }
-  clients: Map<string, { cwd: string; webContents: WebContents; lastBranch: string | null }>
+  // workspaceId → client record
+  clients: Map<string, GitWatchClient>
   debounceTimer: ReturnType<typeof setTimeout> | null
+}
+
+/** Cheap, stable signature of the fields the renderer actually renders/reacts
+ *  to — used only to detect "nothing actually changed" (see below), not as a
+ *  content hash of the repo. */
+function statusSignature(status: GitStatus): string {
+  return [
+    status.insertions,
+    status.deletions,
+    status.hasChanges,
+    status.branch ?? '',
+    status.newFiles,
+    status.modifiedFiles,
+    status.deletedFiles
+  ].join('|')
 }
 
 const gitWatchers = new Map<string, GitWatchEntry>()
@@ -295,22 +471,58 @@ async function refreshGitForDir(dir: string): Promise<void> {
   if (!entry) return
   if (entry.clients.size === 0) return
 
-  // Re-run git status for each client workspace; detect branch changes and
-  // refresh PRs if the branch flipped.
+  // PERF FIX #11: `git status` is a property of the watched DIRECTORY, not of
+  // any individual client — every client sharing this `entry` watches the
+  // same `dir`, so their status is always identical. The previous
+  // implementation called `getGitStatus(cwd)` once PER CLIENT, all in
+  // parallel, on every watcher tick — N clients sharing one directory (e.g.
+  // two workspaces open on the same repo/worktree) meant N identical `git
+  // rev-parse`/`git diff --shortstat`/`git status --porcelain` subprocess
+  // trios firing simultaneously for a single real change. Hoisting the call
+  // to run ONCE per tick (keyed on `dir`, the same resolved path
+  // `gitWatchers` itself is keyed on) and fanning the one result out below
+  // collapses that to exactly one subprocess trio per tick regardless of
+  // client count. `getGitStatus` already swallows its own internal failures
+  // and resolves to `null` rather than throwing — the try/catch here is kept
+  // purely as an extra safety net so a future change to that contract can't
+  // reintroduce an unhandled rejection into this watcher tick.
+  let status: GitStatus | null = null
+  try {
+    status = await getGitStatus(dir)
+  } catch {
+    // git may be unavailable or the directory may have been removed — skip
+  }
+
+  // Per-client fan-out of the single shared status: each client still does
+  // its OWN signature-skip check (a client only gets a push when the status
+  // actually changed since the last push made TO THAT CLIENT — a newly
+  // mounted client's lastStatusSig may differ from an existing client's even
+  // though the underlying repo status is identical) and its OWN branch-based
+  // PR resolution (`client.cwd` is used for `getPrForBranch` — PR resolution
+  // stays per-client since it composes with that client's own cwd/branch
+  // bookkeeping, not the shared directory-level status).
+  //
+  // LOOP-BREAKER (see docs/learnings — Workbench Git tab flicker): `git
+  // status`/`git diff` opportunistically refresh + rewrite `.git/index`'s
+  // stat-cache as a side effect of running them (real git behavior, not an
+  // Orpheus bug) — on some repos that stat-cache never "settles", so EVERY
+  // status read re-touches `.git/index`, which re-fires THIS watcher,
+  // forever, even though nothing the user did actually changed. Pushing
+  // `gitStatusChanged` unconditionally on every watcher tick therefore drove
+  // an unbounded renderer refetch loop (measured: continuous pushes at rest,
+  // never converging). Comparing against the last signature ACTUALLY pushed
+  // to this client and skipping a no-op push breaks that amplification at
+  // the source — a real change still pushes (and its downstream watcher
+  // re-tick, if any, is itself a no-op next time and stops there).
   const clientList = Array.from(entry.clients.entries())
+  const sig = status !== null ? statusSignature(status) : null
   for (const [workspaceId, client] of clientList) {
     const { cwd, webContents, lastBranch } = client
     if (webContents.isDestroyed()) continue
 
-    let status: GitStatus | null = null
-    try {
-      status = await getGitStatus(cwd)
-    } catch {
-      // git may be unavailable or cwd may have been deleted — skip
-    }
-
-    if (!webContents.isDestroyed() && status !== null) {
-      webContents.send('git:statusChanged', { workspaceId, status })
+    if (status !== null && sig !== null && sig !== client.lastStatusSig) {
+      client.lastStatusSig = sig
+      webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
     }
 
     // If branch changed, also refresh the PR
@@ -321,7 +533,7 @@ async function refreshGitForDir(dir: string): Promise<void> {
         getPrForBranch(cwd, newBranch)
           .then((pr) => {
             if (!webContents.isDestroyed()) {
-              webContents.send('github:prChanged', { workspaceId, pr })
+              webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr })
             }
           })
           .catch(() => {
@@ -329,7 +541,7 @@ async function refreshGitForDir(dir: string): Promise<void> {
           })
       } else if (!webContents.isDestroyed()) {
         // Detached HEAD or no branch — clear the PR chip
-        webContents.send('github:prChanged', { workspaceId, pr: null })
+        webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr: null })
       }
     }
   }
@@ -378,7 +590,13 @@ function watchGitFiles(dir: string, gitDir: string): fs.FSWatcher[] {
  * An initial push fires shortly after watch starts so the renderer
  * gets current status without the 30s polling round-trip.
  *
- * Safe to call multiple times for the same cwd — ref-counted.
+ * Safe to call multiple times for the same cwd — ref-counted. A re-mount for
+ * an already-registered workspaceId (a hide→show terminal cycle) re-emits
+ * BOTH the status push AND (on a branch change) the PR push — see the
+ * re-mount-guard branch below; this self-heals a workspace whose Git tab
+ * mounted after `startGitWatch`'s one-shot initial PR push already fired
+ * (the Workbench Git tab is only mounted while its own sub-tab is active, so
+ * that's the common case, not an edge case).
  *
  * The git rev-parse to locate the .git dir is now async so terminal:mount
  * returns immediately without blocking on the git subprocess. The watcher
@@ -395,13 +613,14 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
       // rev-parse was in flight (stopGitWatch already ran and had nothing to
       // clean up). Registering a watcher now would leak FSWatcher handles.
       if (webContents.isDestroyed()) return
-      if (!getWorkspace(workspaceId)) return
+      const w = getWorkspace(workspaceId)
+      if (!w || w.closedAt != null) return
 
       const rel = stdout.trim()
       const gitDir = nodePath.isAbsolute(rel) ? rel : nodePath.join(cwd, rel)
 
-      // Use the resolved absolute git dir as the dedup key (handles worktrees
-      // where multiple cwds share the same .git dir).
+      // Dedup key is the resolved absolute cwd (one watcher entry per cwd).
+      // Distinct worktrees keep separate entries even when they share a .git dir.
       const dir = nodePath.resolve(cwd)
 
       let entry = gitWatchers.get(dir)
@@ -416,12 +635,46 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
       // double-counting on hide→mount cycles and the resulting watcher leak.
       if (entry.clients.has(workspaceId)) {
         const existing = entry.clients.get(workspaceId)!
-        entry.clients.set(workspaceId, { cwd, webContents, lastBranch: existing.lastBranch })
+        const client: GitWatchClient = {
+          cwd,
+          webContents,
+          lastBranch: existing.lastBranch,
+          lastStatusSig: existing.lastStatusSig
+        }
+        entry.clients.set(workspaceId, client)
         getGitStatus(cwd)
           .then((status) => {
-            if (!webContents.isDestroyed() && status !== null) {
-              webContents.send('git:statusChanged', { workspaceId, status })
+            if (webContents.isDestroyed() || status === null) return
+            client.lastStatusSig = statusSignature(status)
+            webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
+
+            // Self-heal fix: also re-run the PR resolution + re-push
+            // githubPrChanged on every re-mount (hide→show terminal cycle),
+            // not just the very first watch registration below. Before this
+            // fix, a re-mount only re-emitted gitStatusChanged — GitTab's
+            // `pr` state had no other way to recover a missed initial push
+            // (see the module header's "GitTab fetch-on-mount fallback" note
+            // for the renderer-side half of this fix). Signature-gated the
+            // same way refreshGitForDir's branch-change path already is (via
+            // `client.lastBranch`) so a redundant re-mount with an unchanged
+            // branch still only sends one push per actual change, not a
+            // flicker-inducing unconditional resend.
+            const branch = status.branch
+            if (branch === existing.lastBranch) return
+            client.lastBranch = branch
+            if (!branch) {
+              webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr: null })
+              return
             }
+            getPrForBranch(cwd, branch)
+              .then((pr) => {
+                if (!webContents.isDestroyed()) {
+                  webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr })
+                }
+              })
+              .catch(() => {
+                /* gh unavailable */
+              })
           })
           .catch(() => {
             /* git unavailable — skip */
@@ -430,14 +683,17 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
       }
 
       entry.refCount++
-      entry.clients.set(workspaceId, { cwd, webContents, lastBranch: null })
+      const client: GitWatchClient = { cwd, webContents, lastBranch: null, lastStatusSig: null }
+      entry.clients.set(workspaceId, client)
 
       // Emit an initial status push so the renderer gets current state without
       // waiting for the next file-change event.
       getGitStatus(cwd)
         .then((status) => {
           if (!webContents.isDestroyed() && status !== null) {
-            webContents.send('git:statusChanged', { workspaceId, status })
+            const initialClient = entry?.clients.get(workspaceId)
+            if (initialClient) initialClient.lastStatusSig = statusSignature(status)
+            webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
             const branch = status.branch
             if (branch) {
               const client = entry?.clients.get(workspaceId)
@@ -445,7 +701,7 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
               getPrForBranch(cwd, branch)
                 .then((pr) => {
                   if (!webContents.isDestroyed()) {
-                    webContents.send('github:prChanged', { workspaceId, pr })
+                    webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr })
                   }
                 })
                 .catch(() => {

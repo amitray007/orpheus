@@ -5,18 +5,7 @@ import { ringLength, drainRing, getDiagDropped } from './diagCore'
 
 // Re-export the full in-memory event bus API so all callers that currently
 // import from './diagnostics' continue to work without any path changes.
-export {
-  setDiagCategoryFlags,
-  isCategoryEnabled,
-  logDiagMain,
-  ingestDiagEvent,
-  subscribeDiag,
-  subscribeTrace,
-  fanOut,
-  diagSubscribers,
-  traceStore,
-  diag
-} from './diagCore'
+export { setDiagCategoryFlags, logDiagMain, ingestDiagEvent, subscribeDiag, diag } from './diagCore'
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const ROW_CAP = 50_000
@@ -153,7 +142,10 @@ export function queryDiagnostics(q: DiagQuery): DiagRow[] {
 
 function safeParse(s: string): Record<string, unknown> | null {
   try {
-    return JSON.parse(s)
+    const parsed: unknown = JSON.parse(s)
+    return typeof parsed === 'object' && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : null
   } catch {
     return null
   }

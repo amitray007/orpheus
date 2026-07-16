@@ -1,0 +1,215 @@
+/* ---------------------------------------------------------------------------
+ * src/renderer/src/components/workbench/git/CommentComposer.css
+ *
+ * Scoped styles for the inline "start a comment" compose box (Phase 4b) —
+ * everything here is nested under `.gcc-composer` so it can't leak into
+ * GitTab.tsx's diff-pane chrome, ReviewCommentThread.css's `.rc-*` classes,
+ * or DetailsTab.css's own (differently-scoped) composer. Visually mirrors
+ * both of those — dark Orpheus tokens, same textarea/button treatment — see
+ * CommentComposer.tsx's module header for why the classes are duplicated
+ * rather than shared.
+ * ------------------------------------------------------------------------ */
+
+.gcc-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  margin: 2px 0;
+  border: 1px solid var(--color-accent);
+  border-radius: 8px;
+  background: var(--color-surface-raised);
+  font-family: var(--font-sans);
+}
+
+/* Pierre adoption Batch 3 — the "Commenting on lines N–M" indicator, shown
+   only for a true multi-line select-to-comment gesture (see
+   CommentComposer.tsx's own rangeLabel computation). Absent entirely for the
+   common single-line case. */
+.gcc-range-label {
+  font-size: 10.5px;
+  color: var(--color-text-muted);
+}
+
+.gcc-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 52px;
+  background: var(--color-surface-base);
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  padding: 7px 9px;
+}
+.gcc-textarea:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+.gcc-textarea::placeholder {
+  color: var(--color-text-muted);
+}
+
+/* Phase 4c — inline post-failure banner. Uses the same red GitTab.tsx's
+   NotARepoState error line already uses (text-red-400, #f87171) rather than
+   inventing a new error token — no --color-red/--color-danger CSS var
+   exists in the app's token set today (checked before adding this). */
+.gcc-error {
+  font-size: 11px;
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 6px;
+  padding: 6px 8px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+/* Phase 5 (3-button redesign) — Cancel sits at the footer's LEFT edge,
+   `.gcc-actions` (the one-or-two submit buttons) at the RIGHT — plain
+   flex `space-between` on the two direct children, same as the pre-Phase-5
+   footer's Cancel/actions split (this class itself is unchanged; only the
+   markup feeding it changed — Cancel is now a direct footer child instead of
+   living inside `.gcc-actions`). */
+.gcc-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.gcc-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gcc-btn {
+  appearance: none;
+  border: 1px solid var(--color-border-default);
+  background: var(--color-surface-overlay);
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition:
+    background-color 0.12s,
+    border-color 0.12s;
+  white-space: nowrap;
+}
+.gcc-btn--cancel:hover:not(:disabled) {
+  background: var(--color-surface-raised);
+}
+.gcc-btn--primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-on);
+  font-weight: 600;
+}
+.gcc-btn--primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+/* Phase 5 — the [GitHub] Comment button's own treatment when BOTH
+   destination buttons render (allowGithub): a clear secondary action next to
+   the primary [Local] Comment button, same border/surface language as
+   `.gcc-btn--cancel` but distinguished by hover feedback so it still reads as
+   clickable rather than decorative. */
+.gcc-btn--secondary:hover:not(:disabled) {
+  background: var(--color-surface-raised);
+  border-color: var(--color-text-muted);
+}
+.gcc-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* The gutter "+" affordance rendered via renderGutterUtility — a small
+   button that @pierre/diffs' custom element repositions to track the
+   currently-hovered line's gutter (line-number column), same as GitHub's own
+   per-line hover "+" (see GutterAddCommentButton's doc comment in
+   GitTab.tsx). Phase 5 FIX 2 (this pass) — this used to be an always-on
+   accent-filled pill, which read as a persistent decoration rather than a
+   subtle "hover to reveal" affordance; now it's transparent/muted by
+   default and only turns accent-filled on hover/focus of the BUTTON itself
+   — "appears on the hovered line, accents on hover", matching the task's
+   explicit GitHub-like styling direction. */
+.gcc-gutter-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  /* Always the filled accent PILL (box + "+" inside), visible at rest — not just
+     on hover. Per the reference: a solid accent-background "+" button on the
+     line's gutter at all times. Hover just deepens to the hover accent. */
+  background: var(--color-accent);
+  color: var(--color-accent-on);
+  cursor: pointer;
+  line-height: 0;
+  transition:
+    background-color 0.1s,
+    color 0.1s;
+}
+.gcc-gutter-add:hover,
+.gcc-gutter-add:focus-visible {
+  background: var(--color-accent-hover);
+  color: var(--color-accent-on);
+  outline: none;
+}
+
+/* Wrapper for the gutter-utility slot when BOTH the comment "+" and the
+   per-hunk "Revert" button (setting-gated, hunkActionsEnabled) are shown for
+   the same hovered line — @pierre/diffs only exposes one renderGutterUtility
+   slot per line (see GutterRevertHunkButton's own doc comment), so
+   DiffContentPane renders them as siblings inside this flex row rather than
+   each fighting for the slot on its own. */
+.gcc-gutter-utility-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* Per-hunk "Revert" gutter button — deliberately muted/outlined rather than
+   accent-filled like .gcc-gutter-add: it's a MUTATING action (overwrites
+   the file on disk), so it shouldn't visually compete with the primary
+   comment affordance for attention at rest, only reveal itself as available
+   on hover/focus. */
+.gcc-gutter-revert {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--color-border-default);
+  border-radius: 4px;
+  background: var(--color-surface-overlay);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  line-height: 0;
+  transition:
+    background-color 0.1s,
+    color 0.1s,
+    border-color 0.1s;
+}
+.gcc-gutter-revert:hover,
+.gcc-gutter-revert:focus-visible {
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+  border-color: var(--color-text-muted);
+  outline: none;
+}
+.gcc-gutter-revert:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

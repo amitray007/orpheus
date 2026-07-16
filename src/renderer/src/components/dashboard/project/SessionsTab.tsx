@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
-import { Play, Trash } from '@phosphor-icons/react'
+import { GitBranch, Play, Trash } from '@phosphor-icons/react'
 import type { SessionRecord, SessionsPagedRequest, WorkspaceRecord } from '@shared/types'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { DotmSquare13 } from '../../ui/dotm-square-13'
 import { ConfirmModal } from '../../ConfirmModal'
 import { SessionsFilterBar } from './SessionsFilterBar'
+import { useDebouncedValue } from '@/lib/useDebouncedValue'
 import {
   PAGE_SIZE_FULL,
   PAGE_SIZE_COMPACT,
@@ -16,6 +17,30 @@ import {
   type DateRange,
   type SortBy
 } from './sessions-tab-helpers'
+
+// ---------------------------------------------------------------------------
+// Worktree-origin detection (render-time, no IPC)
+// ---------------------------------------------------------------------------
+
+const WORKTREE_MARKER = '--claude-worktrees-'
+
+/**
+ * Returns the worktree slug from a session's jsonlPath if the session originated
+ * in a git worktree (i.e. its encoded dir contains '--claude-worktrees-').
+ * Returns null for sessions from the main project directory.
+ */
+function worktreeSlugFromPath(jsonlPath: string): string | null {
+  // jsonlPath = ~/.claude/projects/<encodedDir>/<sessionId>.jsonl
+  // encodedDir for a worktree: ...<repoEncoded>--claude-worktrees-<slug>
+  // Split on both separators defensively; Orpheus is macOS-only today (this
+  // path is always POSIX in practice) but the split is free either way.
+  const parts = jsonlPath.split(/[/\\]/)
+  // The encoded dir is the second-to-last segment (last is the .jsonl filename)
+  const encodedDir = parts.length >= 2 ? parts[parts.length - 2] : ''
+  const markerIdx = encodedDir.indexOf(WORKTREE_MARKER)
+  if (markerIdx === -1) return null
+  return encodedDir.slice(markerIdx + WORKTREE_MARKER.length) || null
+}
 
 // ---------------------------------------------------------------------------
 // Tab
@@ -47,7 +72,7 @@ export function SessionsTab({
 }: SessionsTabProps): React.JSX.Element {
   const PAGE_SIZE = compact ? PAGE_SIZE_COMPACT : PAGE_SIZE_FULL
   const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const debouncedSearch = useDebouncedValue(search, 250).trim()
   const [dateRange, setDateRange] = useState<DateRange>('d3')
   const [sortBy, setSortBy] = useState<SortBy>('updatedAt')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
@@ -75,12 +100,6 @@ export function SessionsTab({
   const [autoWidenedFor, setAutoWidenedFor] = useState<string | null>(null)
   const autoWidened = autoWidenedFor === projectId
 
-  // Debounce search input
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim()), 250)
-    return () => clearTimeout(t)
-  }, [search])
-
   // One-shot metadata backfill on project change — fills in any null titles
   // and models from JSONL files. Then the next paged query picks up the
   // freshly-extracted values.
@@ -96,6 +115,17 @@ export function SessionsTab({
     return () => {
       cancelled = true
     }
+  }, [projectId])
+
+  // Reset hasAnySessions to "unknown" the instant projectId changes — otherwise
+  // the previous project's value (e.g. true) stays live until the check below
+  // resolves for the new project, and the paged-fetch effect (which also fires
+  // on this projectId change, and races the same async gap) can read that
+  // stale value and auto-widen the NEW project's date range using the OLD
+  // project's "has sessions" answer.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting derived state before the async re-check below is the idiomatic pattern (mirrors CommitsTab's allTimeTotal reset)
+    setHasAnySessions(null)
   }, [projectId])
 
   // One-shot check: does this project have any sessions at all (ignoring all
@@ -213,7 +243,10 @@ export function SessionsTab({
     if (resumingId) return
     setResumingId(row.id)
     try {
-      const ws = await window.api.sessions.resumeInNewWorkspace(row.id, projectId)
+      const isWorktree = worktreeSlugFromPath(row.jsonlPath) !== null
+      const ws = isWorktree
+        ? await window.api.sessions.resumeInWorktreeWorkspace(row.id, projectId)
+        : await window.api.sessions.resumeInNewWorkspace(row.id, projectId)
       onResumedInWorkspace(ws)
     } catch (err) {
       console.error('[sessions-tab] resume failed', err)
@@ -227,11 +260,25 @@ export function SessionsTab({
       key: 'title',
       label: 'Prompt',
       sortable: true,
-      render: (r) => (
-        <span className="truncate" title={r.title ?? r.id}>
-          {r.title ?? <span className="text-text-muted italic">untitled</span>}
-        </span>
-      )
+      render: (r) => {
+        const worktreeSlug = worktreeSlugFromPath(r.jsonlPath)
+        return (
+          <span className="flex items-center gap-1.5 min-w-0">
+            {worktreeSlug && (
+              <span
+                title={worktreeSlug}
+                aria-label="worktree session"
+                className="flex-shrink-0 inline-flex items-center gap-0.5 text-text-muted"
+              >
+                <GitBranch size={10} weight="duotone" />
+              </span>
+            )}
+            <span className="truncate" title={r.title ?? r.id}>
+              {r.title ?? <span className="text-text-muted italic">untitled</span>}
+            </span>
+          </span>
+        )
+      }
     }
     const updatedCol: DataTableColumn<SessionRecord> = {
       key: 'updatedAt',
@@ -382,14 +429,6 @@ export function SessionsTab({
         dateRange={dateRange}
         onDateRangeChange={changeDateRange}
       />
-
-      {/* Auto-widen hint: shown when the default date window hid everything and
-          we fell back to "All time" so the list isn't mysteriously empty. */}
-      {autoWidened && dateRange === 'all' && !debouncedSearch && (
-        <p className="text-xs text-text-muted -mt-1">
-          No sessions in the recent window — showing all sessions.
-        </p>
-      )}
 
       <DataTable<SessionRecord>
         columns={columns}

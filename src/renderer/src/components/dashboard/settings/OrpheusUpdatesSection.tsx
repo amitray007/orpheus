@@ -1,16 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
-import type {
-  AppUiState,
-  UpdateCheckResult,
-  UpdatePhase,
-  UpdateProgress,
-  UpdateSnapshot
-} from '@shared/types'
+import type { UpdateCheckResult, UpdatePhase, UpdateProgress, UpdateSnapshot } from '@shared/types'
 import { SettingRow, Toggle, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { DotmSquare11 } from '@/components/ui/dotm-square-11'
 import { DotmSquare18 } from '@/components/ui/dotm-square-18'
+import { useUiState, updateUiState } from '@/lib/uiStateStore'
 
 // ---------------------------------------------------------------------------
 // State machine types
@@ -176,7 +171,7 @@ function LogDisclosure({ log }: { log: string[] }): React.JSX.Element {
 
 // ---------------------------------------------------------------------------
 // Dev-only debug seam — step through states without a real update
-// Gated strictly: only renders when __ORPHEUS_MODE__ === 'development'
+// Gated strictly: only renders when __ORPHEUS_MODE__ !== 'production'
 // ---------------------------------------------------------------------------
 
 const fakeLog = [
@@ -191,7 +186,7 @@ function DevStateControls({
 }: {
   onSet: (s: UpdateState) => void
 }): React.JSX.Element | null {
-  if (__ORPHEUS_MODE__ !== 'development') return null
+  if (__ORPHEUS_MODE__ === 'production') return null
 
   return (
     <div className="mt-3 p-2 border border-dashed border-border-default rounded text-xs text-text-muted flex flex-wrap gap-1">
@@ -278,7 +273,7 @@ function handleRestart(): void {
 }
 
 export function OrpheusUpdatesSection(): React.JSX.Element {
-  const [uiState, setUiState] = useState<AppUiState | null>(null)
+  const uiState = useUiState()
   const [version, setVersion] = useState<string | null>(null)
   const [updateState, setUpdateState] = useState<UpdateState>({ kind: 'idle', lastChecked: null })
   const cleanupRef = useRef<(() => void)[]>([])
@@ -301,11 +296,10 @@ export function OrpheusUpdatesSection(): React.JSX.Element {
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([window.api.uiState.get(), window.api.app.getVersion()])
-      .then(([s, v]) => {
-        if (cancelled) return
-        setUiState(s)
-        setVersion(v)
+    window.api.app
+      .getVersion()
+      .then((v) => {
+        if (!cancelled) setVersion(v)
       })
       .catch(console.error)
 
@@ -379,10 +373,7 @@ export function OrpheusUpdatesSection(): React.JSX.Element {
   }
 
   function patchAutoCheck(v: boolean): void {
-    if (!uiState) return
-    const next = { ...uiState, autoCheckUpdates: v }
-    setUiState(next)
-    window.api.uiState.update({ autoCheckUpdates: v }).catch(console.error)
+    updateUiState({ autoCheckUpdates: v })
   }
 
   const isInFlight = updateState.kind === 'checking' || updateState.kind === 'installing'

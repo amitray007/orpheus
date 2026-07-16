@@ -1,0 +1,8 @@
+{
+  "name": "@orpheus/cli",
+  "version": "0.1.0",
+  "description": "CLI for the Orpheus Electron app",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js"
+}

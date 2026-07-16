@@ -93,15 +93,27 @@ pgrep -lf "Orpheus Dev.app/Contents/MacOS/Orpheus Dev" | head -1
 
 **Other useful commands**
 
-| Command                | What it does                          |
-| ---------------------- | ------------------------------------- |
-| `bun run typecheck`    | Type-check main + preload + renderer  |
-| `bun run lint`         | ESLint over the whole workspace       |
-| `bun run format`       | Prettier-format the workspace         |
-| `bun run build:native` | Rebuild the native ghostty addon only |
+| Command                | What it does                                                                          |
+| ---------------------- | ------------------------------------------------------------------------------------- |
+| `bun run typecheck`    | Type-check main + preload + renderer                                                  |
+| `bun run lint`         | ESLint over the whole workspace (`--max-warnings=146` ratchet in CI — only goes down) |
+| `bun run format`       | Prettier-format the workspace                                                         |
+| `bun run check`        | Aggregate gate: typecheck + lint + `check:dup` + `check:arch`                         |
+| `bun run check:dup`    | `jscpd` duplication scan (2.4% threshold)                                             |
+| `bun run check:arch`   | `depcruise` — no circular imports, layer rules enforced                               |
+| `bun run check:dead`   | `knip` unused-export scan (advisory, not a hard gate)                                 |
+| `bun run test:db`      | DB migration engine assertion harness (CI-gated on `src/main/db/**` changes)          |
+| `bun run build:native` | Rebuild the native ghostty addon only                                                 |
 
-There are no automated tests. Manual testing against the dev build is the current
-verification path.
+There is one automated suite: the DB migration engine verifier (`bun run test:db`),
+run in CI whenever `src/main/db/**` changes. There is no general unit/UI test
+runner yet — manual testing against the dev build covers the rest.
+
+Husky hooks run automatically and enforce quality on every commit/push:
+`pre-commit` (lint-staged ESLint + Prettier), `commit-msg` (commitlint against
+Conventional Commits), and `pre-push` (typecheck + the ESLint 146-warning
+ratchet + `prettier --check`). CI additionally runs CodeQL static analysis and
+OSV dependency vulnerability scanning, plus `actionlint` on workflow changes.
 
 ---
 
@@ -117,13 +129,17 @@ verification path.
 
 ## Before opening a pull request
 
-Run all of the following and fix any issues before submitting:
+Run the aggregate quality gate and fix any issues before submitting:
 
 ```bash
-bun run typecheck
-bun run lint
+bun run check       # typecheck + lint + check:dup + check:arch
 bun run format
 ```
+
+Note the ESLint ratchet: CI enforces `--max-warnings=146`, and that ceiling only
+moves down as warnings get fixed — don't introduce new ones. Husky's
+`pre-commit`/`commit-msg`/`pre-push` hooks will also run automatically and catch
+most of this for you.
 
 Then build and do a manual smoke-test with `bun run build:unpack`.
 

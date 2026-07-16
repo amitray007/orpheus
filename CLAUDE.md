@@ -68,8 +68,16 @@ build never touches your real production install.
 osascript -e 'tell application "Orpheus Dev" to quit' 2>/dev/null; sleep 1
 pkill -x "Orpheus Dev" 2>/dev/null; true
 bun run build:unpack         # → build:dev: build:native → ORPHEUS_MODE=development build → electron-builder-dev.yml --dir → install Orpheus Dev.app
-open "/Applications/Orpheus Dev.app"
+open -g "/Applications/Orpheus Dev.app"   # -g = background: do NOT steal the user's focus
 ```
+
+**Never foreground the dev app when building/testing — always `open -g`.** The
+user is often working in another window; the agents rebuild + relaunch
+`Orpheus Dev.app` many times per session, and a relaunch that pops the window
+into their face is a real annoyance. Use `open -g` (background) every time you
+relaunch during a build/test loop. Likewise, all background data work (dashboard
+refreshes, pollers) updates silently in place — it must never flash a skeleton
+on refresh or otherwise pull the user's attention.
 
 - **Never run the production build locally.** `build:unpack` is an alias for `build:dev` and installs `Orpheus Dev.app`. The prod path (`build:mac` / `install:mac-prod`) is guarded — `install-mac.mjs` refuses to overwrite `/Applications/Orpheus.app` unless `ORPHEUS_ALLOW_PROD_INSTALL=1` is set explicitly. The agent never sets that flag; production ships only via `release.yml` + Homebrew.
 - **Do not run `bun run dev`.** Icon, bundle, signing all diverge from shipped — wastes time on dev-only artifacts. Use the dev _build_ (`build:unpack`/`build:dev`), not `electron-vite dev`.
@@ -82,22 +90,57 @@ open "/Applications/Orpheus Dev.app"
 | Command                    | What it does                                                                                                                                                                                                                                                                                                                                 |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bun run typecheck`        | Runs both `typecheck:node` (main + preload + shared) and `typecheck:web` (renderer) against composite tsconfigs.                                                                                                                                                                                                                             |
-| `bun run lint`             | ESLint over the workspace (flat config, `.eslintcache` enabled).                                                                                                                                                                                                                                                                             |
+| `bun run lint`             | ESLint over the workspace (flat config, `.eslintcache` enabled). CI runs `bunx eslint . --max-warnings=146` — a ratchet that only goes DOWN as warnings are fixed; don't add new ones.                                                                                                                                                       |
 | `bun run format`           | Prettier-format the workspace. Enforced by `husky` `pre-commit` (lint-staged Prettier) and `pre-push` (`prettier --check`).                                                                                                                                                                                                                  |
+| `bun run check`            | Aggregate gate: `typecheck` + `lint` + `check:dup` + `check:arch`. Run before considering non-trivial work done.                                                                                                                                                                                                                             |
+| `bun run check:dup`        | `jscpd` duplication scan over `src` + `packages/orpheus-cli`, threshold 2.4%.                                                                                                                                                                                                                                                                |
+| `bun run check:arch`       | `depcruise` (dependency-cruiser) over `src` + `packages/orpheus-cli` — enforces no circular imports plus layer rules (e.g. `src/shared/ipc.ts` may only import from `./types`).                                                                                                                                                              |
+| `bun run check:dead`       | `knip` dead-code/unused-export scan. Advisory, not a hard CI gate.                                                                                                                                                                                                                                                                           |
+| `bun run test:db`          | Runs `scripts/verify-migration-engine.ts` — the DB migration engine's assertion harness. CI-gated on changes under `src/main/db/**`; run and extend it whenever you touch that directory.                                                                                                                                                    |
 | `bun run build:native`     | Rebuild `packages/ghostty-surface` (`node-gyp` against the installed Electron ABI).                                                                                                                                                                                                                                                          |
 | `bun run fetch:libghostty` | Re-fetch `vendor/GhosttyKit.xcframework` + `vendor/ghostty` source pin (SHA-256-verified). Runs as `postinstall`.                                                                                                                                                                                                                            |
 | `bun run release`          | **Manual fallback only** (release-please owns the normal path — see release-pipeline section). Build `.dmg`, publish a `vX.Y.Z` GitHub release, render `scripts/orpheus-cask.template.rb`, commit + push the cask in `../homebrew-tap` (override path with `ORPHEUS_TAP_PATH`). Do NOT hand-bump `package.json#version` for the normal flow. |
 
-There is no test runner wired up. There are no unit tests. Don't invent one.
+**Enforcement gates.** Husky hooks run automatically: `pre-commit` (lint-staged ESLint + Prettier on staged files), `commit-msg` (commitlint), `pre-push` (`typecheck` + `eslint --max-warnings=146` + `prettier --check`). In CI, `typecheck`, `lint` (146 ratchet), `format`, `check:dup`, and `check:arch` are hard gates; `check:dead` is advisory; `test:db` is a hard gate but path-filtered to run only when `src/main/db/**` changes.
+
+There is no general/renderer test runner — don't invent one for feature code. The DB migration engine is the one exception: it has a real assertion harness, `scripts/verify-migration-engine.ts`, run via `bun run test:db` (see the SQLite section below).
+
+**What lint actually catches** (`eslint.config.mjs`, ~lines 64-126): type-aware
+`recommendedTypeChecked` rules on `src/main`/`src/preload`/`src/shared` —
+`@typescript-eslint/no-floating-promises` (warn), `no-misused-promises` (warn),
+`await-thenable` (error, zero violations today), `no-unnecessary-type-assertion`
+(warn), plus the `no-unsafe-*` family (assignment/member-access/return/argument,
+all warn) — so: await or `void` your promises, don't let `any`/unsafe values
+flow across a type boundary untyped. And a curated `sonarjs` subset on `src/**`:
+`cognitive-complexity` capped at **20** (warn — extract a helper if a function
+gets too branchy), `no-identical-functions` (warn), `no-duplicate-string`
+threshold **5** (warn — hoist a literal repeated 5+ times to a const), plus
+`no-all-duplicated-branches` (warn), `no-element-overwrite`/`no-identical-expressions`
+(error, zero violations today). Most of these sit at `warn` under the ratchet —
+new code that trips them raises the warning count and breaks the 146-ceiling
+pre-push/CI gate (it only goes down). Write to these rules from the start. For
+the broader manual-review dimensions the gates can't cover (semantic
+duplication, swallowed errors, races, etc.), see `docs/CODE_QUALITY.md`.
 
 ## Architecture
 
 ### Three-process model (Electron)
 
-- **Main** (`src/main/`) — Node 22 / Electron 39. Owns SQLite, native addon, IPC handlers, hook server. Entry: `src/main/index.ts`. Every domain module hangs off `index.ts` via `ipcMain.handle(...)`.
-- **Preload** (`src/preload/index.ts`) — typed `window.api.*` bridge. `index.d.ts` is the contract the renderer types against.
+- **Main** (`src/main/`) — Node 22 / Electron 39. Owns SQLite, native addon, IPC handlers, hook server. Entry: `src/main/index.ts` (2700+ lines) wires cross-cutting handlers directly and delegates per-domain handlers to `src/main/ipc/*.ts` modules (`claudeAgents.ts`, `claudeAuth.ts`, `claudeHooks.ts`, `footerActions.ts`, `ghosttySettings.ts`, `git.ts`, `keepAwake.ts`, `mcp.ts`, `misc.ts`, `orpheusConfig.ts`, `shell.ts`, `system.ts`, `updates.ts`), each registered from `index.ts` via a `registerXxxIpc(deps)` call.
+- **Preload** (`src/preload/index.ts`) — typed `window.api.*` bridge. `index.d.ts` is a thin shim (`OrpheusApi = typeof api`) that hangs the type off `Window`; the renderer types against it.
 - **Renderer** (`src/renderer/src/`) — React 19 + Tailwind v4 + Geist. Boot path: `main.tsx` → `App.tsx` (runs doctor) → `components/dashboard/Dashboard.tsx`. Path aliases: `@renderer/*`, `@/*` → `src/renderer/src/*`; `@shared/*` → `src/shared/*`.
-- **Shared types** (`src/shared/types.ts`) — single source of truth for all IPC payloads, DB record types, draft types. Both main and renderer import from here.
+  - Cross-component state lives in `src/renderer/src/lib/` as external stores via `useSyncExternalStore`, not component-local state. Per-workspace data uses the `createPerKeyStore` factory (`gitStore`, `prStore`, `titleStore`, `activityStore`, `activityTimeStore`, `sleepStore`); app-wide UI state is `uiStateStore` (via the `useUiState` hook); reusable hooks include `useDebouncedValue`, `useOverlayHoverCard`, `useInlineRename`. Check for an existing store/hook before adding new component-local state.
+- **Shared types** (`src/shared/types.ts`) — single source of truth for all IPC payloads, DB record types, draft types. Both main and renderer import from here. `src/shared/ipc.ts` is the companion typed channel map (see "Adding an IPC channel" below).
+
+### Adding an IPC channel (typed + strict)
+
+IPC is no longer raw `ipcMain.handle(...)` calls scattered through `index.ts` — it's a typed, strict system anchored in `src/shared/ipc.ts`:
+
+1. **Request/response channels** must be added to `InvokeChannelMap` in `src/shared/ipc.ts` first, as `'channel:name': { req: [...]; res: ... }`. The `handle()` wrapper (`src/main/ipc/handle.ts`) is generic over `keyof InvokeChannelMap`, so registering a channel name that isn't in the map — or a handler whose args/return don't match — is a **compile error**, not a runtime surprise.
+2. **Implement** via `handle('channel:name', (e, ...args) => ...)` from `src/main/ipc/handle.ts` inside the matching `src/main/ipc/<domain>.ts` module's `registerXxxIpc(deps)` function (or a new module wired into `index.ts`) — never call raw `ipcMain.handle`. The wrapper auto-times the handler and logs slow/failing calls.
+3. **Expose in preload** (`src/preload/index.ts`) via the typed `invoke()` helper, added to the `api` object.
+4. **Push channels** (main → renderer, fire-and-forget) must be added to BOTH `RendererPushMap` and the `PUSH_CHANNELS` const in `src/shared/ipc.ts` — an exhaustiveness type-check (`_PushChannelsCoverAllKeys`) fails to compile if they drift apart. Send via `webContents.send`, consume in preload via `subscribe(PUSH_CHANNELS.xxx, cb)`.
+5. **New `ipc/` modules receive index.ts-owned state via their `registerXxxIpc(deps)` parameter** (e.g. `registerMiscIpc({ getProject })`), never by importing `index.ts` directly — that would create a circular dependency.
 
 ### Core domain model
 
@@ -128,7 +171,17 @@ When **any** layer mutates, `recomputeDirty()` in `src/main/index.ts` compares t
 
 ### SQLite schema + migrations
 
-`src/main/db.ts` is migrations-as-code. `CURRENT_VERSION` is the source of truth. Pattern for additive changes is **non-destructive**: add the column to the `CREATE TABLE` block for fresh installs, then append a defensive `try { db.exec("ALTER TABLE ... ADD COLUMN ...") } catch {}` migration at the bottom. Never write destructive migrations. Bump `CURRENT_VERSION` so the migration block runs once.
+Schema lives in `src/main/db/` (a directory, not a monolith). `schema.ts` is the single declarative source of truth — every table is declared once as a structured `TableDef`. `engine.ts` introspects the live DB, diffs it against `schema.ts`, and reconciles the difference (add column / add index / or a full SQLite 12-step table rebuild when a change touches a `CHECK` constraint, column type, or `NOT NULL`). `data-steps.ts` holds ordered, named, run-once data transforms tracked in an `applied_data_steps` ledger (named, not integer-versioned, so steps can't collide). `cutover.ts` is the ordered first-boot entry point; `index.ts` exposes the unchanged public surface (`getDb()` / `migrate()`).
+
+**To add a column:** edit the table's `TableDef` in `schema.ts` — add the column once. The engine adds it on the next boot. No more CREATE-block + defensive-ALTER double-declaration, no `catch {}`, no version bump.
+
+**To add a data transform:** append a named `DataStep` to `data-steps.ts` — it runs once and is recorded in the ledger by name.
+
+**CHECK/enum evolution is automatic:** change the shared enum array in `schema.ts` and the engine rebuilds the table, with `normalizeOnRebuild` coercing legacy values into the new constraint. The old `healWorkspacesCheck` / `healProjectsArchivedAt` boot-time healers are gone — the reconciler subsumes them.
+
+**Column drops are explicit** — a `dropColumns: [...]` array on the `TableDef` — never inferred from a column's absence, so a typo in `schema.ts` can't cause silent data loss.
+
+Never write destructive migrations by hand; the engine's rebuild path backs up via `VACUUM INTO` before any rebuild and verifies row counts after. Verification harness: `bun run test:db` (dev-only, under `scripts/`, not shipped) exercises render/introspect/diff/rebuild/backup/engine/schema-fresh/convergence/data-steps/cutover.
 
 ### Native terminal addon
 
@@ -220,7 +273,7 @@ the first clean release after these fixes is `v0.3.2`.
 - **Workspace surfaces are sticky.** `hide` ≠ `destroy`. Renderer navigation must call `terminal:hide` then `terminal:mount` again on return; never `destroy` unless the workspace is being archived/removed.
 - **Settings are layered.** Any UI control that maps to claude settings must compose through `composeClaudeLaunch` and carry a `mapsTo` chip pointing to the env var or settings key it produces.
 - **Commits use Conventional Commits, no emoji.** `feat(scope):`, `fix(scope):`, `chore(scope):`. No `Co-Authored-By: Claude` lines unless explicitly requested. While private, prefixes drive CHANGELOG grouping only — versioning is patch-only regardless of prefix (see the versioning policy in the Git-workflow section).
-  - **Enforced in CI by commitlint** (`commitlint.config.js` → `.github/workflows/commitlint.yml`, `wagoid/commitlint-github-action`). It runs on PRs to `staging` (contributor PRs) and is intentionally skipped on the `staging → main` release PR (`branches-ignore: [main]`).
+  - **Enforced in CI by commitlint** (`commitlint.config.mjs` → `.github/workflows/commitlint.yml`, `wagoid/commitlint-github-action`). It runs on PRs to `staging` (contributor PRs) and is intentionally skipped on the `staging → main` release PR (`branches-ignore: [main]`).
   - **Allowed types (`type-enum`):** `feat`, `fix`, `chore`, `refactor`, `docs`, `perf`, `build`, `ci`, `style`, `test`, `revert`. A type outside this list fails the check. The format is `type(scope): subject` — scope is **optional** and unrestricted (`keep-awake`, `diag`, etc. all pass).
   - **Deliberate relaxations** (so the project's own style isn't flagged): `header-max-length` is **off** (long subjects are fine), `subject-case` is **off** (any casing), and `scope-empty`/`scope-case` are off. Merge commits are auto-ignored by commitlint's `defaultIgnores`. Keep subjects accurate and conventionally prefixed; don't rely on the relaxations as license for sloppy messages.
 - **Audit env vars before adding new settings.** The `.claude/agents/audit-claude-env-vars.md` agent diffs `https://code.claude.com/docs/en/env-vars.md` against `.claude/snapshots/env-vars.json` — run it (or invoke it as a subagent) before guessing whether something is already wired.

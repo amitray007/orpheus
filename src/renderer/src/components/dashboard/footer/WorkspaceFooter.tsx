@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
 import type React from 'react'
-import type { AppUiState, FooterActionVisibility, WorkspaceActivityDetail } from '@shared/types'
+import type { FooterActionVisibility, WorkspaceActivityDetail } from '@shared/types'
 import { useFooterActions } from './useFooterActions'
 import { ActionChip } from './ActionChip'
 import { LiveChip } from './LiveChip'
+import { DropdownChip } from './DropdownChip'
+import { useUiState } from '@/lib/uiStateStore'
 
 interface WorkspaceFooterProps {
   workspaceId: string
@@ -20,6 +21,15 @@ interface WorkspaceFooterProps {
   /** Live activity detail for visibleWhen filtering. Provided by WorkspaceView. */
   activityDetail?: WorkspaceActivityDetail
 }
+
+// actionIds that render as a DropdownChip (opens a chipDropdown popover)
+// instead of an ActionChip — the built-in Model/Effort selectors plus the
+// fully custom author-configured "Dropdown menu" action type.
+const DROPDOWN_ACTION_IDS = new Set([
+  'footer.modelSelect',
+  'footer.effortSelect',
+  'footer.dropdown'
+])
 
 /**
  * Whether a chip should be shown given the current activity detail.
@@ -56,15 +66,8 @@ export function WorkspaceFooter({
   workspaceName = '',
   activityDetail
 }: WorkspaceFooterProps): React.JSX.Element | null {
-  const [uiState, setUiState] = useState<AppUiState | null>(null)
+  const uiState = useUiState()
   const { items, loading } = useFooterActions(workspaceId)
-
-  useEffect(() => {
-    // Fetch initial state
-    window.api.uiState.get().then(setUiState).catch(console.error)
-    // Subscribe to changes so toggling showWorkspaceFooter is immediately reactive
-    return window.api.uiState.onChanged(setUiState)
-  }, [])
 
   // Hide when toggled off (once uiState loads; during load render nothing)
   if (uiState && !uiState.showWorkspaceFooter) return null
@@ -94,22 +97,31 @@ export function WorkspaceFooter({
       {/* Left zone — mutator chips */}
       <div className="flex items-center gap-1 min-w-0 flex-1 overflow-x-auto no-scrollbar">
         {!loading &&
-          mutators.map((item) => (
-            <ActionChip
-              key={item.id}
-              actionId={item.actionId}
-              label={item.label}
-              icon={item.icon}
-              params={item.params}
-              prompts={item.prompts}
-              workspaceId={workspaceId}
-              sessionId={sessionId}
-              cwd={cwd}
-              workspaceName={workspaceName}
-              onForkSuccess={handleForkSuccess}
-              enabled={isVisible(item.visibleWhen, activityDetail)}
-            />
-          ))}
+          mutators.map((item) =>
+            DROPDOWN_ACTION_IDS.has(item.actionId) ? (
+              <DropdownChip
+                key={item.id}
+                item={item}
+                workspaceId={workspaceId}
+                enabled={isVisible(item.visibleWhen, activityDetail)}
+              />
+            ) : (
+              <ActionChip
+                key={item.id}
+                actionId={item.actionId}
+                label={item.label}
+                icon={item.icon}
+                params={item.params}
+                prompts={item.prompts}
+                workspaceId={workspaceId}
+                sessionId={sessionId}
+                cwd={cwd}
+                workspaceName={workspaceName}
+                onForkSuccess={handleForkSuccess}
+                enabled={isVisible(item.visibleWhen, activityDetail)}
+              />
+            )
+          )}
       </div>
 
       {/* Divider — only when both zones have content */}

@@ -33,7 +33,8 @@ export const NavItem = memo(function NavItem({
         active
           ? 'bg-accent/15 text-text-primary font-medium'
           : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay',
-        'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
+        'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+        'cursor-pointer'
       ].join(' ')}
       onClick={onClick}
       aria-label={label}
@@ -59,7 +60,7 @@ export const SectionHeader = memo(function SectionHeader({
   action
 }: SectionHeaderProps): React.JSX.Element {
   return (
-    <div className="flex items-center justify-between px-3 mb-1">
+    <div className="flex items-center justify-between px-3 mb-1 h-8">
       <p className="text-xs font-medium uppercase tracking-wider text-text-muted">{label}</p>
       {action}
     </div>

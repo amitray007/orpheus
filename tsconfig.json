@@ -1,4 +1,18 @@
 {
   "files": [],
-  "references": [{ "path": "./tsconfig.node.json" }, { "path": "./tsconfig.web.json" }]
+  "references": [{ "path": "./tsconfig.node.json" }, { "path": "./tsconfig.web.json" }],
+  "compilerOptions": {
+    /* No files are compiled from this root config (see "files": [] above) —
+       this "paths" entry is inert for `tsc -b` and exists ONLY so tools that
+       read a single root tsconfig.json for alias resolution (e.g. the
+       shadcn/ui CLI) can resolve `@/*` -> the renderer source dir, matching
+       tsconfig.web.json's real (compiled) mapping. Keep in sync with that
+       file's `paths`. */
+    "baseUrl": ".",
+    "paths": {
+      "@renderer/*": ["src/renderer/src/*"],
+      "@/*": ["src/renderer/src/*"],
+      "@shared/*": ["src/shared/*"]
+    }
+  }
 }

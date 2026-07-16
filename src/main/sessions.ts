@@ -3,9 +3,27 @@ import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import { getDb } from './db'
 import { getAppUiState } from './uiState'
-import { createWorkspace, getWorkspace, setWorkspaceClaudeSessionId } from './workspaces'
+import {
+  archivedAtForStatus,
+  createWorkspace,
+  getWorkspace,
+  setWorkspaceClaudeSessionId
+} from './workspaces'
 import { getPricing } from './pricing'
 import { composeClaudeLaunch, getClaudeGlobalSettings } from './claudeSettings'
+import { encodePathToClaudeDir } from './claudeProjectDir'
+import { findFlagValue } from '../shared/cliFlags'
+import {
+  branchExists,
+  createWorktree,
+  listWorktreePaths,
+  NotAGitRepoError,
+  readWorktreeBaseRef,
+  removeWorktree,
+  resolveMainWorktree,
+  withRepoLock,
+  worktreeSlug
+} from './worktrees'
 import type {
   ProjectRecord,
   SessionRecord,
@@ -69,6 +87,80 @@ const MAX_BYTES = 200 * 1024 // 200 KB
 const MAX_TITLE_LENGTH = 60
 
 /**
+ * Extracts the first text part from a Claude message `content` value, which is
+ * either a plain string or an array of `{type, text}` parts. Returns the FIRST
+ * text part found (does not join multiple parts) — matches the single-text-part
+ * semantics used by extractTitle / extractFromHead.
+ */
+function extractFirstTextFromContent(content: unknown): string | null {
+  if (typeof content === 'string') {
+    return content
+  }
+  if (Array.isArray(content)) {
+    for (const part of content) {
+      if (
+        typeof part === 'object' &&
+        part !== null &&
+        (part as Record<string, unknown>)['type'] === 'text'
+      ) {
+        const t = (part as Record<string, unknown>)['text']
+        if (typeof t === 'string') {
+          return t
+        }
+      }
+    }
+  }
+  return null
+}
+
+/** Trims raw text and clamps it to MAX_TITLE_LENGTH with an ellipsis. */
+function truncateTitle(raw: string): string {
+  const trimmedRaw = raw.trim()
+  return trimmedRaw.length > MAX_TITLE_LENGTH
+    ? trimmedRaw.slice(0, MAX_TITLE_LENGTH) + '…'
+    : trimmedRaw
+}
+
+/**
+ * Scans pre-decoded JSONL text line-by-line for the first user message and
+ * returns a title string extracted from its content, or null if none found.
+ */
+function extractTitleFromText(text: string): string | null {
+  const lines = text.split('\n')
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch {
+      continue
+    }
+
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      (parsed as Record<string, unknown>)['type'] !== 'user'
+    ) {
+      continue
+    }
+
+    const message = (parsed as Record<string, unknown>)['message']
+    if (typeof message !== 'object' || message === null) continue
+
+    const content = (message as Record<string, unknown>)['content']
+    const raw = extractFirstTextFromContent(content)
+
+    if (raw) {
+      return truncateTitle(raw)
+    }
+  }
+  return null
+}
+
+/**
  * Reads up to MAX_BYTES from the JSONL file, scans line-by-line for the first
  * user message, and extracts a title string from its content.
  *
@@ -89,58 +181,7 @@ function extractTitle(jsonlPath: string): string | null {
     }
 
     const text = buf.slice(0, bytesRead).toString('utf-8')
-    const lines = text.split('\n')
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(trimmed)
-      } catch {
-        continue
-      }
-
-      if (
-        typeof parsed !== 'object' ||
-        parsed === null ||
-        (parsed as Record<string, unknown>)['type'] !== 'user'
-      ) {
-        continue
-      }
-
-      const message = (parsed as Record<string, unknown>)['message']
-      if (typeof message !== 'object' || message === null) continue
-
-      const content = (message as Record<string, unknown>)['content']
-      let raw: string | null = null
-
-      if (typeof content === 'string') {
-        raw = content
-      } else if (Array.isArray(content)) {
-        for (const part of content) {
-          if (
-            typeof part === 'object' &&
-            part !== null &&
-            (part as Record<string, unknown>)['type'] === 'text'
-          ) {
-            const t = (part as Record<string, unknown>)['text']
-            if (typeof t === 'string') {
-              raw = t
-              break
-            }
-          }
-        }
-      }
-
-      if (raw) {
-        const trimmedRaw = raw.trim()
-        return trimmedRaw.length > MAX_TITLE_LENGTH
-          ? trimmedRaw.slice(0, MAX_TITLE_LENGTH) + '…'
-          : trimmedRaw
-      }
-    }
+    return extractTitleFromText(text)
   } catch {
     // Any IO / parse error → null, caller uses fallback
   }
@@ -301,11 +342,39 @@ type TailExtracted = {
   lastUserMessagePreview: string | null
 }
 
+/**
+ * Applies one parsed head-read JSONL line's contribution to the in-progress
+ * HeadExtracted accumulator, mutating it in place. Mirrors the per-line body
+ * of the original extractFromHead loop exactly (title from first user
+ * message, model from first assistant message).
+ */
+function applyHeadLine(
+  parsed: Record<string, unknown>,
+  type: 'user' | 'assistant',
+  acc: HeadExtracted
+): void {
+  const message = parsed['message']
+  if (typeof message !== 'object' || message === null) return
+
+  // Extract title from first user message
+  if (acc.title === null && type === 'user') {
+    const content = (message as Record<string, unknown>)['content']
+    const raw = extractFirstTextFromContent(content)
+    if (raw) {
+      acc.title = truncateTitle(raw)
+    }
+  }
+
+  // Extract model from first assistant message
+  if (acc.model === null && type === 'assistant') {
+    const m = (message as Record<string, unknown>)['model']
+    if (typeof m === 'string' && m.length > 0) acc.model = m
+  }
+}
+
 function extractFromHead(text: string): HeadExtracted {
   const lines = text.split('\n')
-  let title: string | null = null
-  let model: string | null = null
-  let messageCount = 0
+  const acc: HeadExtracted = { title: null, model: null, messageCount: 0 }
 
   for (const line of lines) {
     const trimmed = line.trim()
@@ -319,57 +388,122 @@ function extractFromHead(text: string): HeadExtracted {
 
     const type = parsed['type']
     if (type !== 'user' && type !== 'assistant') continue
-    messageCount++
+    acc.messageCount++
 
-    const message = parsed['message']
-    if (typeof message !== 'object' || message === null) continue
+    applyHeadLine(parsed, type, acc)
+  }
 
-    // Extract title from first user message
-    if (title === null && type === 'user') {
-      const content = (message as Record<string, unknown>)['content']
-      let raw: string | null = null
-      if (typeof content === 'string') {
-        raw = content
-      } else if (Array.isArray(content)) {
-        for (const part of content) {
-          if (
-            typeof part === 'object' &&
-            part !== null &&
-            (part as Record<string, unknown>)['type'] === 'text'
-          ) {
-            const t = (part as Record<string, unknown>)['text']
-            if (typeof t === 'string') {
-              raw = t
-              break
-            }
-          }
-        }
-      }
-      if (raw) {
-        const trimmedRaw = raw.trim()
-        title =
-          trimmedRaw.length > MAX_TITLE_LENGTH
-            ? trimmedRaw.slice(0, MAX_TITLE_LENGTH) + '…'
-            : trimmedRaw
+  return acc
+}
+
+/**
+ * Extracts and joins ALL text parts from a Claude message `content` value
+ * (string or array of `{type, text}` parts), space-joined, requiring each
+ * part's trimmed text be truthy before it's included. This is deliberately
+ * distinct from extractFirstTextFromContent (which returns only the first
+ * part) — extractFromTail previews want the full joined text.
+ */
+function extractJoinedTextFromContent(content: unknown): string | null {
+  if (typeof content === 'string') {
+    return content
+  }
+  if (Array.isArray(content)) {
+    const parts: string[] = []
+    for (const part of content) {
+      if (
+        typeof part === 'object' &&
+        part !== null &&
+        (part as Record<string, unknown>)['type'] === 'text'
+      ) {
+        const t = (part as Record<string, unknown>)['text']
+        if (typeof t === 'string' && t.trim()) parts.push(t)
       }
     }
+    if (parts.length > 0) return parts.join(' ')
+  }
+  return null
+}
 
-    // Extract model from first assistant message
-    if (model === null && type === 'assistant') {
-      const m = (message as Record<string, unknown>)['model']
-      if (typeof m === 'string' && m.length > 0) model = m
+/** Strips common markdown formatting and collapses whitespace, for previews. */
+function cleanMarkdownForPreview(raw: string): string {
+  return raw
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/`[^`]*`/g, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Clamps cleaned preview text to MAX_PREVIEW_LENGTH with an ellipsis. */
+function truncatePreview(cleaned: string): string {
+  return cleaned.length > MAX_PREVIEW_LENGTH ? cleaned.slice(0, MAX_PREVIEW_LENGTH) + '…' : cleaned
+}
+
+type TailAccumulator = TailExtracted & { fallbackUserText: string | null }
+
+/**
+ * Applies one parsed tail-read JSONL line's contribution to the in-progress
+ * TailAccumulator, mutating it in place. Mirrors the original extractFromTail
+ * per-line body exactly, including the prefer-assistant/fallback-to-user
+ * preview logic. Returns true once all three target fields are populated, so
+ * the caller can replicate the original loop's early-break condition.
+ */
+function applyTailLine(
+  parsed: Record<string, unknown>,
+  type: 'user' | 'assistant',
+  acc: TailAccumulator
+): boolean {
+  const message = parsed['message']
+  if (typeof message !== 'object' || message === null) return false
+
+  // Extract last_message_role from first qualifying line (reversed = last in file)
+  if (acc.lastMessageRole === null) {
+    const role = (message as Record<string, unknown>)['role']
+    if (typeof role === 'string') acc.lastMessageRole = role
+  }
+
+  const content = (message as Record<string, unknown>)['content']
+  const raw = extractJoinedTextFromContent(content)
+
+  if (!raw) return false
+
+  const cleaned = cleanMarkdownForPreview(raw)
+  if (!cleaned) return false
+
+  const preview = truncatePreview(cleaned)
+
+  // last_message_preview: prefer assistant, fall back to user
+  if (acc.lastMessagePreview === null) {
+    if (type === 'assistant') {
+      acc.lastMessagePreview = preview
+    } else if (acc.fallbackUserText === null) {
+      acc.fallbackUserText = preview
     }
   }
 
-  return { title, model, messageCount }
+  // last_user_message_preview: first user line seen (reversed = last in file)
+  if (acc.lastUserMessagePreview === null && type === 'user') {
+    acc.lastUserMessagePreview = preview
+  }
+
+  // Stop once we have everything we need (all three fields populated).
+  return (
+    acc.lastMessagePreview !== null &&
+    acc.lastUserMessagePreview !== null &&
+    acc.lastMessageRole !== null
+  )
 }
 
 function extractFromTail(text: string): TailExtracted {
   const lines = text.split('\n').reverse()
-  let lastMessageRole: string | null = null
-  let lastMessagePreview: string | null = null
-  let fallbackUserText: string | null = null
-  let lastUserMessagePreview: string | null = null
+  const acc: TailAccumulator = {
+    lastMessageRole: null,
+    lastMessagePreview: null,
+    lastUserMessagePreview: null,
+    fallbackUserText: null
+  }
 
   for (const line of lines) {
     const trimmed = line.trim()
@@ -384,72 +518,16 @@ function extractFromTail(text: string): TailExtracted {
     const type = parsed['type']
     if (type !== 'user' && type !== 'assistant') continue
 
-    const message = parsed['message']
-    if (typeof message !== 'object' || message === null) continue
-
-    // Extract last_message_role from first qualifying line (reversed = last in file)
-    if (lastMessageRole === null) {
-      const role = (message as Record<string, unknown>)['role']
-      if (typeof role === 'string') lastMessageRole = role
-    }
-
-    const content = (message as Record<string, unknown>)['content']
-    let raw: string | null = null
-    if (typeof content === 'string') {
-      raw = content
-    } else if (Array.isArray(content)) {
-      const parts: string[] = []
-      for (const part of content) {
-        if (
-          typeof part === 'object' &&
-          part !== null &&
-          (part as Record<string, unknown>)['type'] === 'text'
-        ) {
-          const t = (part as Record<string, unknown>)['text']
-          if (typeof t === 'string' && t.trim()) parts.push(t)
-        }
-      }
-      if (parts.length > 0) raw = parts.join(' ')
-    }
-
-    if (!raw) continue
-
-    const cleaned = raw
-      .replace(/```[\s\S]*?```/g, '')
-      .replace(/`[^`]*`/g, '')
-      .replace(/^#{1,6}\s+/gm, '')
-      .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1')
-      .replace(/_([^_]+)_/g, '$1')
-      .replace(/\s+/g, ' ')
-      .trim()
-
-    if (!cleaned) continue
-
-    const preview =
-      cleaned.length > MAX_PREVIEW_LENGTH ? cleaned.slice(0, MAX_PREVIEW_LENGTH) + '…' : cleaned
-
-    // last_message_preview: prefer assistant, fall back to user
-    if (lastMessagePreview === null) {
-      if (type === 'assistant') {
-        lastMessagePreview = preview
-      } else if (fallbackUserText === null) {
-        fallbackUserText = preview
-      }
-    }
-
-    // last_user_message_preview: first user line seen (reversed = last in file)
-    if (lastUserMessagePreview === null && type === 'user') {
-      lastUserMessagePreview = preview
-    }
-
-    // Stop once we have everything we need (all three fields populated).
-    if (lastMessagePreview !== null && lastUserMessagePreview !== null && lastMessageRole !== null)
-      break
+    if (applyTailLine(parsed, type, acc)) break
   }
 
-  if (lastMessagePreview === null) lastMessagePreview = fallbackUserText
+  if (acc.lastMessagePreview === null) acc.lastMessagePreview = acc.fallbackUserText
 
-  return { lastMessageRole, lastMessagePreview, lastUserMessagePreview }
+  return {
+    lastMessageRole: acc.lastMessageRole,
+    lastMessagePreview: acc.lastMessagePreview,
+    lastUserMessagePreview: acc.lastUserMessagePreview
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -460,6 +538,38 @@ function extractFromTail(text: string): TailExtracted {
 // Called between files (or small batches) inside async loops.
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve))
+}
+
+/**
+ * Return the list of Claude-encoded directory names for all linked worktrees
+ * of the repo that owns `projectCwd`, excluding the main repo root itself
+ * (which is already covered by the project's own claudeEncodedName).
+ *
+ * If `projectCwd` is not inside a git repo, returns [].
+ */
+export async function worktreeEncodedDirs(projectCwd: string): Promise<string[]> {
+  let repoRoot: string
+  try {
+    repoRoot = await resolveMainWorktree(projectCwd)
+  } catch (err) {
+    if (err instanceof NotAGitRepoError) return []
+    throw err
+  }
+
+  let allPaths: string[]
+  try {
+    allPaths = await listWorktreePaths(repoRoot)
+  } catch {
+    return []
+  }
+
+  const result: string[] = []
+  for (const wPath of allPaths) {
+    // Exclude the main repo root — it's already covered by project.claudeEncodedName.
+    if (wPath === repoRoot) continue
+    result.push(encodePathToClaudeDir(wPath))
+  }
+  return result
 }
 
 /**
@@ -645,17 +755,21 @@ async function upsertSessionFilesForProject(projectId: string, dir: string): Pro
 }
 
 /**
- * Scans the Claude Code project directory for .jsonl session files and
- * inserts them into the sessions table (INSERT OR IGNORE — idempotent).
- * Wrapped in a transaction by the caller (addProject).
+ * Scans the Claude Code project directory (and all linked worktree encoded
+ * dirs) for .jsonl session files and inserts them into the sessions table
+ * (INSERT OR IGNORE — idempotent). Wrapped in a transaction by the caller (addProject).
  */
 export async function importSessionsForProject(project: ProjectRecord): Promise<SessionRecord[]> {
   if (!project.claudeEncodedName) return []
 
-  const dir = nodePath.join(os.homedir(), '.claude', 'projects', project.claudeEncodedName)
-  if (!fs.existsSync(dir)) return []
+  const worktreeDirs = await worktreeEncodedDirs(project.path)
+  const encodedDirs = [project.claudeEncodedName, ...worktreeDirs]
 
-  await upsertSessionFilesForProject(project.id, dir)
+  for (const encodedDir of encodedDirs) {
+    const dir = nodePath.join(os.homedir(), '.claude', 'projects', encodedDir)
+    if (!fs.existsSync(dir)) continue
+    await upsertSessionFilesForProject(project.id, dir)
+  }
 
   return listSessionsForProject(project.id)
 }
@@ -691,23 +805,41 @@ export async function refreshSessionMetadata(projectId: string): Promise<void> {
   }
 }
 
-async function _refreshSessionMetadata(projectId: string): Promise<void> {
-  const db = getDb()
-
-  // Pull the claudeEncodedName for this project so we can scan for new files.
+/**
+ * Phase 1: scan the project's Claude dir and all linked worktree encoded dirs
+ * for .jsonl files not yet in the sessions table, and upsert them.
+ */
+async function scanAndUpsertProjectSessionFiles(
+  db: ReturnType<typeof getDb>,
+  projectId: string
+): Promise<void> {
+  // Pull the claudeEncodedName and path for this project so we can scan for
+  // new files across the project dir and all linked worktree encoded dirs.
   const projectRow = db
-    .prepare('SELECT claude_encoded_name FROM projects WHERE id = ?')
-    .get(projectId) as { claude_encoded_name: string | null } | undefined
+    .prepare('SELECT claude_encoded_name, path FROM projects WHERE id = ?')
+    .get(projectId) as { claude_encoded_name: string | null; path: string } | undefined
 
-  if (projectRow?.claude_encoded_name) {
-    const dir = nodePath.join(os.homedir(), '.claude', 'projects', projectRow.claude_encoded_name)
+  if (!projectRow?.claude_encoded_name) return
+
+  const worktreeDirs = await worktreeEncodedDirs(projectRow.path)
+  const encodedDirs = [projectRow.claude_encoded_name, ...worktreeDirs]
+
+  for (const encodedDir of encodedDirs) {
+    const dir = nodePath.join(os.homedir(), '.claude', 'projects', encodedDir)
     if (fs.existsSync(dir)) {
       await upsertSessionFilesForProject(projectId, dir)
     }
   }
+}
 
-  // Backfill any NULL metadata columns (title, model, role, counts) for rows
-  // that were inserted before the single-pass extractor was wired.
+/**
+ * Phase 2: backfill any NULL metadata columns (title, model, role, counts)
+ * for rows that were inserted before the single-pass extractor was wired.
+ */
+async function backfillNullMetadata(
+  db: ReturnType<typeof getDb>,
+  projectId: string
+): Promise<void> {
   type NullMetaRow = { id: string; jsonl_path: string }
   const nullRows = db
     .prepare(
@@ -765,10 +897,47 @@ async function _refreshSessionMetadata(projectId: string): Promise<void> {
       }
     }
   })(nullMetaResults)
+}
 
-  // Re-extract last_message_preview and last_user_message_preview for non-archived
-  // sessions, but only when the JSONL file has changed since the last extraction
-  // (mtime guard). This avoids re-reading every file on every project-tab open.
+/**
+ * Reads a JSONL file's tail chunk (or the whole file when it's small enough
+ * to fit in one read) for preview extraction. Mirrors the exact read-sizing
+ * logic previously inlined in the preview-refresh loop.
+ */
+function readTailTextForPreview(jsonlPath: string, fileSize: number): string {
+  const readSize = Math.min(fileSize, MAX_BYTES)
+  if (fileSize <= MAX_BYTES) {
+    // Small file — one read covers both head and tail
+    const buf = Buffer.allocUnsafe(readSize)
+    const fd = fs.openSync(jsonlPath, 'r')
+    try {
+      const bytesRead = fs.readSync(fd, buf, 0, readSize, 0)
+      return buf.slice(0, bytesRead).toString('utf-8')
+    } finally {
+      fs.closeSync(fd)
+    }
+  }
+  const tailOffset = fileSize - readSize
+  const buf = Buffer.allocUnsafe(readSize)
+  const fd = fs.openSync(jsonlPath, 'r')
+  try {
+    fs.readSync(fd, buf, 0, readSize, tailOffset)
+    return buf.toString('utf-8')
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+/**
+ * Phase 3: re-extract last_message_preview and last_user_message_preview for
+ * non-archived sessions, but only when the JSONL file has changed since the
+ * last extraction (mtime guard). This avoids re-reading every file on every
+ * project-tab open.
+ */
+async function refreshActivePreviews(
+  db: ReturnType<typeof getDb>,
+  projectId: string
+): Promise<void> {
   type ActiveRow = { id: string; jsonl_path: string; jsonl_mtime: number | null }
   const activeRows = db
     .prepare(
@@ -811,30 +980,7 @@ async function _refreshSessionMetadata(projectId: string): Promise<void> {
     if (row.jsonl_mtime !== null && row.jsonl_mtime === currentMtime) continue
 
     try {
-      const readSize = Math.min(fileSize, MAX_BYTES)
-      let tailText: string
-      if (fileSize <= MAX_BYTES) {
-        // Small file — one read covers both head and tail
-        const buf = Buffer.allocUnsafe(readSize)
-        const fd = fs.openSync(row.jsonl_path, 'r')
-        try {
-          const bytesRead = fs.readSync(fd, buf, 0, readSize, 0)
-          tailText = buf.slice(0, bytesRead).toString('utf-8')
-        } finally {
-          fs.closeSync(fd)
-        }
-      } else {
-        const tailOffset = fileSize - readSize
-        const buf = Buffer.allocUnsafe(readSize)
-        const fd = fs.openSync(row.jsonl_path, 'r')
-        try {
-          fs.readSync(fd, buf, 0, readSize, tailOffset)
-          tailText = buf.toString('utf-8')
-        } finally {
-          fs.closeSync(fd)
-        }
-      }
-
+      const tailText = readTailTextForPreview(row.jsonl_path, fileSize)
       const { lastMessagePreview, lastUserMessagePreview } = extractFromTail(tailText)
       previewResults.push({ id: row.id, lastMessagePreview, lastUserMessagePreview, currentMtime })
     } catch {
@@ -848,6 +994,14 @@ async function _refreshSessionMetadata(projectId: string): Promise<void> {
       previewUpdateStmt.run(r.lastMessagePreview, r.lastUserMessagePreview, r.currentMtime, r.id)
     }
   })(previewResults)
+}
+
+async function _refreshSessionMetadata(projectId: string): Promise<void> {
+  const db = getDb()
+
+  await scanAndUpsertProjectSessionFiles(db, projectId)
+  await backfillNullMetadata(db, projectId)
+  await refreshActivePreviews(db, projectId)
 
   // Auto-prune: drop oldest non-archived rows if a cap is configured.
   const uiState = getAppUiState()
@@ -868,7 +1022,7 @@ async function _refreshSessionMetadata(projectId: string): Promise<void> {
  * IMPORTANT: only deletes DB rows — JSONL files on disk are never touched.
  * Returns the number of rows deleted.
  */
-export function pruneOldSessions(projectId: string, max: number): number {
+function pruneOldSessions(projectId: string, max: number): number {
   const db = getDb()
 
   const { total } = db
@@ -992,8 +1146,12 @@ export function listSessionsForProjectPaged(req: SessionsPagedRequest): Sessions
   const params: unknown[] = [req.projectId]
 
   if (req.search) {
-    conditions.push("LOWER(title) LIKE '%' || LOWER(?) || '%'")
-    params.push(req.search)
+    // Escape LIKE metacharacters (\, %, _) so user input can't inject
+    // wildcards; ASCII backslashes are unaffected by LOWER() so escaping
+    // before the LOWER() call is safe.
+    const escaped = req.search.replace(/[\\%_]/g, (ch) => '\\' + ch)
+    conditions.push("LOWER(title) LIKE '%' || LOWER(?) || '%' ESCAPE '\\'")
+    params.push(escaped)
   }
   if (req.dateFrom !== undefined) {
     conditions.push('updated_at >= ?')
@@ -1028,18 +1186,14 @@ export function setSessionStatus(id: string, status: SessionStatus): void {
   const db = getDb()
   const now = Date.now()
 
-  if (status === 'archived') {
-    db.prepare(`UPDATE sessions SET status = ?, archived_at = ?, updated_at = ? WHERE id = ?`).run(
-      status,
-      now,
-      now,
-      id
-    )
-  } else {
-    db.prepare(
-      `UPDATE sessions SET status = ?, archived_at = NULL, updated_at = ? WHERE id = ?`
-    ).run(status, now, id)
-  }
+  // Unlike workspaces, sessions always overwrite archived_at to a fresh
+  // timestamp on (re-)archive (no COALESCE) and always bump updated_at.
+  db.prepare(`UPDATE sessions SET status = ?, archived_at = ?, updated_at = ? WHERE id = ?`).run(
+    status,
+    archivedAtForStatus(status, now),
+    now,
+    id
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,6 +1246,130 @@ export function createWorkspaceResumingSession(
     throw new Error(`Workspace disappeared immediately after creation: ${ws.id}`)
   }
   return refreshed
+}
+
+/**
+ * Creates a worktree-backed workspace pre-wired with `claude_session_id = sessionId`
+ * so that the first terminal mount will launch claude with `--resume <sessionId>`.
+ *
+ * The worktree branch is derived from the session's jsonl_path: if the encoded
+ * dir contains `--claude-worktrees-`, the slug that follows is used as the
+ * branch name. If the branch already exists in the repo, git worktree checks it
+ * out; otherwise a fresh branch is created from the default base ref.
+ *
+ * Falls back to `createWorkspaceResumingSession` (plain workspace) if the
+ * session has no worktree origin or the project is not a git repo.
+ */
+export async function createWorktreeResumingSession(
+  projectId: string,
+  sessionId: string
+): Promise<WorkspaceRecord> {
+  const db = getDb()
+
+  const project = db.prepare('SELECT id, path, name FROM projects WHERE id = ?').get(projectId) as
+    | ProjectPathRow
+    | undefined
+  if (!project) throw new Error(`Project not found: ${projectId}`)
+
+  const sessionRow = db
+    .prepare('SELECT title, jsonl_path FROM sessions WHERE id = ?')
+    .get(sessionId) as { title: string | null; jsonl_path: string | null } | undefined
+
+  const shortId = sessionId.slice(0, 8)
+  const rawTitle = sessionRow?.title
+  const workspaceName = rawTitle
+    ? rawTitle.length > 40
+      ? rawTitle.slice(0, 40) + '…'
+      : rawTitle
+    : `Resume ${shortId}`
+
+  // Extract the worktree slug from the jsonl_path encoded dir segment.
+  // A worktree path encodes as: …--claude-worktrees-<slug>/<sessionId>.jsonl
+  const WORKTREE_MARKER = '--claude-worktrees-'
+  let branch: string | null = null
+  if (sessionRow?.jsonl_path) {
+    const encodedDir = nodePath.basename(nodePath.dirname(sessionRow.jsonl_path))
+    const markerIdx = encodedDir.indexOf(WORKTREE_MARKER)
+    if (markerIdx !== -1) {
+      branch = encodedDir.slice(markerIdx + WORKTREE_MARKER.length)
+    }
+  }
+
+  // No worktree origin detected — fall back to a plain resume workspace.
+  if (!branch) {
+    return createWorkspaceResumingSession(projectId, sessionId)
+  }
+
+  // Resolve the repo root — non-git projects throw NotAGitRepoError.
+  let repoRoot: string
+  try {
+    repoRoot = await resolveMainWorktree(project.path)
+  } catch (err) {
+    if (err instanceof NotAGitRepoError) {
+      return createWorkspaceResumingSession(projectId, sessionId)
+    }
+    throw err
+  }
+
+  // Prefer the branch name stored on an existing (or archived) workspace whose
+  // cwd matches the worktree directory.  The worktree cwd is reconstructed as
+  // <repoRoot>/.claude/worktrees/<slug> and its correct branch may differ from
+  // the slug (e.g. a branch named "feature/foo" becomes slug "feature-foo").
+  const slugFromPath = worktreeSlug(branch)
+  const expectedWorktreePath = nodePath.join(repoRoot, '.claude', 'worktrees', slugFromPath)
+  const storedRow = getDb()
+    .prepare<
+      [string, string],
+      { worktree_branch: string | null }
+    >('SELECT worktree_branch FROM workspaces WHERE project_id = ? AND cwd = ? LIMIT 1')
+    .get(projectId, expectedWorktreePath)
+  const storedBranch = storedRow?.worktree_branch ?? null
+  // Use the stored branch when available; it is the authoritative git branch
+  // name (e.g. "feature/foo").  Fall back to slug-derived name for the
+  // auto-generated "worktree-<slug>" case where slug == branch.
+  branch = storedBranch ?? branch
+
+  const slug = worktreeSlug(branch)
+
+  return withRepoLock(repoRoot, async () => {
+    const mode = (await branchExists(repoRoot, branch)) ? 'existing' : 'new'
+    const baseRef = await readWorktreeBaseRef()
+
+    const { path: worktreePath, branch: finalBranch } = await createWorktree({
+      repoRoot,
+      slug,
+      branch: branch,
+      mode,
+      baseRef
+    })
+
+    let ws: WorkspaceRecord
+    try {
+      ws = createWorkspace({
+        projectId,
+        name: workspaceName,
+        cwd: worktreePath,
+        worktreeParentCwd: repoRoot,
+        worktreeBranch: finalBranch
+      })
+    } catch (rowErr) {
+      try {
+        await removeWorktree({ path: worktreePath, force: true })
+      } catch {
+        // best-effort rollback
+      }
+      throw rowErr
+    }
+
+    // Override the pre-seeded claudeSessionId with the session being resumed.
+    setWorkspaceClaudeSessionId(ws.id, sessionId)
+
+    const refreshed = getWorkspace(ws.id)
+    if (!refreshed) {
+      throw new Error(`Workspace disappeared immediately after creation: ${ws.id}`)
+    }
+    return refreshed
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -1174,9 +1452,9 @@ export function getContextBudget(workspaceId: string): ContextBudgetResult {
   if (ws) {
     try {
       const launch = composeClaudeLaunch(ws.project_id, workspaceId)
-      // The flag is '--model <id>', so extract the value
-      const match = launch.flags.match(/--model\s+(\S+)/)
-      if (match?.[1]) modelFromSettings = match[1]
+      // findFlagValue is the single parser for composed (0x1F-delimited)
+      // flags strings — see src/shared/cliFlags.ts.
+      modelFromSettings = findFlagValue(launch.flags, '--model')
     } catch {
       // ignore — settings DB may not be ready
     }

@@ -8,6 +8,9 @@ export const DIAG_EVENTS = {
   ERROR_RENDERER: 'error.renderer',
   ERROR_NATIVE: 'error.native',
   ERROR_IPC_FAIL: 'error.ipc_fail',
+  // error (Phase 3 — startup/crash hardening)
+  UNCAUGHT_EXCEPTION: 'error.uncaught_fatal',
+  STARTUP_FATAL: 'startup.fatal',
   // lifecycle (Phase 2 — reserved)
   TERMINAL_MOUNT: 'terminal.mount',
   TERMINAL_HIDE: 'terminal.hide',
@@ -21,6 +24,9 @@ export const DIAG_EVENTS = {
   WORKSPACE_SWITCH: 'workspace.switch',
   WORKSPACE_ACTIVATE: 'workspace.activate',
   HOOK_ACTIVITY: 'hook.activity',
+  HOOK_INSTALL_FAILED: 'hook.install_failed',
+  HOOK_UNINSTALL_FAILED: 'hook.uninstall_failed',
+  MANAGED_HOOKS_BAILED_NONOBJECT: 'hook.managed_hooks_bailed_nonobject',
   // perf (Phase 2 — reserved)
   PERF_TERMINAL_MOUNT: 'perf.terminal_mount',
   PERF_WORKSPACE_SWITCH: 'perf.workspace_switch',
@@ -35,7 +41,14 @@ export const DIAG_EVENTS = {
   OVERLAY_RETRY: 'overlay.retry',
   OVERLAY_FALLBACK: 'overlay.fallback',
   SESSION_PARSE_ERROR: 'session.parse_error',
-  SESSION_DEAD_PID: 'session.dead_pid'
+  SESSION_DEAD_PID: 'session.dead_pid',
+  SESSION_WATCH_FALLBACK: 'session.watch_fallback',
+  SESSION_RECONCILE_FAILED: 'session.reconcile_failed',
+  // main-process failure wiring (Phase 3)
+  STATUS_PERSIST_FAILED: 'status.persist_failed',
+  OVERRIDES_PARSE_FAILED: 'overrides.parse_failed',
+  CMD_SERVER_HANDLER_FAILED: 'cmd_server.handler_failed',
+  WORKTREE_REMOVAL_FAILED: 'worktree.removal_failed'
 } as const
 
 export type DiagEventKey = (typeof DIAG_EVENTS)[keyof typeof DIAG_EVENTS]

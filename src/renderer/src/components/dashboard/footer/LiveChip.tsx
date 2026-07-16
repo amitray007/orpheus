@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import type { ActionKind, WorkspaceActivityDetail } from '@shared/types'
 import { IconByName } from './iconMap'
+import { getCachedChipValue, setCachedChipValue } from './liveChipCache'
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
@@ -81,13 +82,6 @@ function formatValue(actionId: string, value: unknown): string | null {
   return null
 }
 
-// ---------------------------------------------------------------------------
-// Module-level value cache — keyed by `${actionId}:${workspaceId}`.
-// On workspace switch-back the chip immediately renders the stale value
-// (no null → value flash) while the subscription / poll catches up.
-// ---------------------------------------------------------------------------
-const chipValueCache = new Map<string, unknown>()
-
 interface LiveChipProps {
   actionId: string
   label: string
@@ -113,7 +107,7 @@ export function LiveChip({
   enabled = true
 }: LiveChipProps): React.JSX.Element {
   const cacheKey = `${actionId}:${workspaceId}`
-  const [value, setValue] = useState<unknown>(() => chipValueCache.get(cacheKey) ?? null)
+  const [value, setValue] = useState<unknown>(() => getCachedChipValue(cacheKey) ?? null)
   const disposeRef = useRef<(() => void) | null>(null)
 
   const isStatus = actionId === 'workspace.getActivityStatus'
@@ -130,7 +124,7 @@ export function LiveChip({
 
     // Helper that writes through to both component state and the module cache.
     const updateValue = (v: unknown): void => {
-      chipValueCache.set(key, v)
+      setCachedChipValue(key, v)
       setValue(v)
     }
 

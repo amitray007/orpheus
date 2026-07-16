@@ -21,6 +21,7 @@ import type {
 } from '@shared/types'
 import { TRAFFIC_LIGHT_CLEARANCE } from '@shared/windowChrome'
 import { BRAILLE_FRAMES, useAnimatedFrame } from '@/lib/braille'
+import { ACTIVITY_RAIL_WIDTH } from './ActivityRail'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -744,11 +745,15 @@ export function TopBar({
   sidebarCollapsed,
   sidebarWidth
 }: TopBarProps): React.JSX.Element {
-  // Left section width matches the sidebar so the workspace title bar lines up
-  // with the content column below it. Driven by sidebarWidth (not the collapsed
-  // flag), so toggling collapse does NOT shift the top bar; only a deliberate
-  // sidebar resize moves it. MIN_LEFT_WIDTH floors it so the controls always fit.
-  const leftWidth = Math.max(MIN_LEFT_WIDTH, sidebarWidth)
+  // Left section width spans the permanent activity rail PLUS the sidebar, so
+  // the workspace title slot (portaled into #topbar-workspace-slot) starts
+  // exactly where the content column below starts (rail + secondary sidebar +
+  // main). Without the rail term the slot sat ACTIVITY_RAIL_WIDTH px too far
+  // left — the "Claude Code" title/terminal-icon misalignment. Driven by
+  // sidebarWidth (not the collapsed flag), so toggling collapse does NOT shift
+  // the top bar; only a deliberate sidebar resize moves it. MIN_LEFT_WIDTH
+  // floors the sidebar term so the controls always fit.
+  const leftWidth = ACTIVITY_RAIL_WIDTH + Math.max(MIN_LEFT_WIDTH, sidebarWidth)
 
   return (
     <header
@@ -784,12 +789,12 @@ export function TopBar({
         {/* Keep awake chip — immediately after status chip */}
         <KeepAwakeChip sidebarWidth={sidebarWidth} />
 
-        {__ORPHEUS_MODE__ === 'development' && (
+        {__ORPHEUS_MODE__ !== 'production' && (
           <span
             className="ml-2 px-1.5 py-0.5 text-[10px] font-mono font-semibold tracking-widest uppercase rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 leading-none flex-shrink-0"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
-            DEV
+            {__ORPHEUS_MODE__ === 'worktree' ? 'WT' : 'DEV'}
           </span>
         )}
 

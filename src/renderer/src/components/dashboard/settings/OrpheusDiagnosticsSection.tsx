@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState } from '@shared/types'
+import type { Res } from '@shared/ipc'
 import { SettingRow, Toggle, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
@@ -19,13 +20,7 @@ export function OrpheusDiagnosticsSection(): React.JSX.Element {
   const [uiState, setUiState] = useState<AppUiState | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [exportRange, setExportRange] = useState<number>(3_600_000) // default 1h
-  const [exportResult, setExportResult] = useState<{
-    ok: boolean
-    path?: string
-    txtPath?: string
-    jsonPath?: string
-    error?: string
-  } | null>(null)
+  const [exportResult, setExportResult] = useState<Res<'diag:export'> | null>(null)
   const [exporting, setExporting] = useState(false)
 
   useEffect(() => {
@@ -185,7 +180,7 @@ export function OrpheusDiagnosticsSection(): React.JSX.Element {
                   window.api.diag
                     .export({ sinceMs: Date.now() - exportRange })
                     .then((res) => {
-                      if (res.error !== 'canceled') {
+                      if (res.ok || res.error !== 'canceled') {
                         setExportResult(res)
                       }
                     })

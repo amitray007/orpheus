@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState } from '@shared/types'
+import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
 import { SettingRow, NumberInput, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
@@ -91,9 +92,11 @@ export function OrpheusWorkspacesSection(): React.JSX.Element {
             description="When a workspace's agent has had no new activity for this many minutes, the sidebar marks it stale (a clock glyph and dimmed text). Helps surface forgotten or long-idle workspaces."
           >
             <NumberInput
-              value={uiState.staleAfterMinutes ?? 60}
-              onChange={(v) => patch({ staleAfterMinutes: Math.max(1, v ?? 60) })}
-              placeholder="60"
+              value={uiState.staleAfterMinutes ?? UI_STATE_DEFAULTS.staleAfterMinutes}
+              onChange={(v) =>
+                patch({ staleAfterMinutes: Math.max(1, v ?? UI_STATE_DEFAULTS.staleAfterMinutes) })
+              }
+              placeholder={String(UI_STATE_DEFAULTS.staleAfterMinutes)}
             />
           </SettingRow>
           <SettingRow

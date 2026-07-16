@@ -6,6 +6,7 @@ import type {
   ProjectRecord
 } from '@shared/types'
 import { GitMerge, Kanban } from '@phosphor-icons/react'
+import { WorktreeBadge } from './WorktreeBadge'
 import { ActivityIndicator } from './ActivityIndicator'
 import { PrChip } from '../github/PrChip'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
@@ -122,7 +123,7 @@ const WorkspaceCard = memo(function WorkspaceCard({
       onClick={onClick}
       className="w-full p-3 rounded-md bg-surface-raised border-2 border-dotted border-border-default/70 hover:bg-surface-overlay hover:border-accent/60 transition-colors duration-100 text-left cursor-pointer flex flex-col gap-1.5"
     >
-      {/* Row 1: activity glyph + workspace title */}
+      {/* Row 1: activity glyph + workspace title + worktree badge */}
       <span className="flex items-center gap-1.5 min-w-0">
         <span className="flex-shrink-0">
           <ActivityIndicator detail={effectiveActivity} />
@@ -136,6 +137,7 @@ const WorkspaceCard = memo(function WorkspaceCard({
         >
           {dn.text}
         </span>
+        <WorktreeBadge workspace={workspace} size={11} />
       </span>
 
       {/* Row 2: project name (left) + relative time (right) */}

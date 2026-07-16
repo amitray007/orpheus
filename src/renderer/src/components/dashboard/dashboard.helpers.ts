@@ -6,62 +6,9 @@
  * so that these utilities can be understood and tested in isolation.
  */
 
-import type { AppUiState } from '@shared/types'
 import type { View } from './MainContent'
 import type { SidebarActiveView } from './Sidebar'
-
-// ---------------------------------------------------------------------------
-// Default UI state — used as the error-path fallback when uiState.get() fails.
-// Mirrors the DB schema defaults exactly; update both when adding new columns.
-// ---------------------------------------------------------------------------
-
-export const DEFAULT_UI_STATE_FALLBACK: AppUiState = {
-  sidebarCollapsed: false,
-  lastViewKind: 'sessions',
-  lastProjectId: null,
-  lastWorkspaceId: null,
-  windowX: null,
-  windowY: null,
-  windowWidth: null,
-  windowHeight: null,
-  windowFullscreen: false,
-  restoreGeometry: true,
-  closeHides: true,
-  openAtLastView: true,
-  pinnedSectionVisible: true,
-  workspaceCountInline: true,
-  sidebarWidth: 256,
-  defaultProjectExpanded: false,
-  launchAtLogin: false,
-  globalHotkey: '',
-  archivedWorkspaceLimit: 20,
-  hooksIntegrationEnabled: false,
-  notifyAttention: true,
-  notifyStop: true,
-  notifyAlways: false,
-  notifyRichSummary: true,
-  notifySuppressWhenFocused: false,
-  notifyMaxAttentionRepeats: 5,
-  inProgressWatchdogSec: 120,
-  staleAfterMinutes: 60,
-  autoCloseAfterMinutes: 120,
-  diagError: true,
-  diagLifecycle: false,
-  diagPerf: false,
-  diagAnomaly: false,
-  diagTrace: false,
-  theme: 'midnight',
-  accentColor: null,
-  uiFontScale: 'default',
-  fetchGithubAvatars: true,
-  playInteractionSounds: true,
-  soundPack: 'core',
-  autoCheckUpdates: true,
-  statusPollIntervalSec: 1800,
-  muteStatusNotifications: false,
-  showWorkspaceFooter: true,
-  updatedAt: 0
-}
+import type { AppUiState } from '@shared/types'
 
 // ---------------------------------------------------------------------------
 // View helpers
@@ -72,6 +19,8 @@ export function viewToSidebarActiveView(view: View): SidebarActiveView {
   if (view.kind === 'workspace') return 'workspace'
   if (view.kind === 'project') return 'project'
   if (view.kind === 'settings') return 'settings'
+  if (view.kind === 'panes') return 'panes'
+  if (view.kind === 'dashboard') return 'dashboard'
   return 'sessions'
 }
 
@@ -84,11 +33,54 @@ export function viewToSidebarActiveView(view: View): SidebarActiveView {
  */
 export function mainContainerClassName(viewKind: View['kind']): string {
   if (viewKind === 'workspace') return 'flex-1 overflow-hidden min-h-0'
+  // Panes will host native terminal surfaces later — flush/no-padding like workspace.
+  if (viewKind === 'panes') return 'flex-1 overflow-hidden min-h-0'
   if (viewKind === 'settings') return 'flex-1 overflow-hidden min-h-0 bg-surface-base'
   if (viewKind === 'sessions')
     // Workspaces kanban: tight padding so the board sits close to the app edges
     return 'flex-1 overflow-y-auto px-3 py-3 bg-surface-base'
+  if (viewKind === 'dashboard') return 'flex-1 overflow-y-auto px-6 py-5 bg-surface-base'
   return 'flex-1 overflow-y-auto px-6 py-5 bg-surface-base'
+}
+
+// ---------------------------------------------------------------------------
+// Activity rail / surface helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Map the current view to the top-level surface the ActivityRail highlights.
+ * Returns null while in Settings — the rail has no active icon in that case
+ * (Settings is a bottom button, not one of the three top surfaces).
+ */
+export function deriveSurface(viewKind: View['kind']): 'dashboard' | 'projects' | 'panes' | null {
+  if (viewKind === 'panes') return 'panes'
+  if (viewKind === 'dashboard') return 'dashboard'
+  if (viewKind === 'project' || viewKind === 'workspace' || viewKind === 'sessions')
+    return 'projects'
+  return null
+}
+
+/**
+ * Resolve which View to land on when restoring uiState at launch, given
+ * openAtLastView is true and no concrete workspace/project was last viewed
+ * (those cases are handled by the caller before falling through to this).
+ *
+ * defaultSurface is the explicit "open at launch" user setting and wins the
+ * top-level landing decision — it must be checked FIRST. lastViewKind is
+ * only a fallback for when defaultSurface doesn't resolve to a recognized
+ * surface (e.g. it was never set).
+ */
+export function resolveLandingView(
+  uiState: Pick<AppUiState, 'lastViewKind' | 'defaultSurface'>
+): View {
+  // The explicit "open at launch" setting wins for the top-level landing view.
+  if (uiState.defaultSurface === 'dashboard') return { kind: 'dashboard' }
+  if (uiState.defaultSurface === 'panes') return { kind: 'panes' }
+  // Otherwise fall back to the saved top-level view kind.
+  if (uiState.lastViewKind === 'panes') return { kind: 'panes' }
+  // 'dashboard' as a lastViewKind is now a real surface again (legacy DBs coerce
+  // it to 'sessions' on read in uiState.ts); default everything else to Workspaces.
+  return { kind: 'sessions' }
 }
 
 // ---------------------------------------------------------------------------

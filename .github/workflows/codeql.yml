@@ -1,0 +1,40 @@
+name: CodeQL
+
+# Static-analysis security scanning for the JS/TS surface (main, preload,
+# renderer, packages/*). Default CodeQL query suite via github/codeql-action
+# — no custom queries. Runs on PRs to staging, pushes to main/staging, and a
+# weekly schedule to catch newly-published query-pack advisories against
+# unchanged code.
+
+on:
+  pull_request:
+    branches: [staging]
+  push:
+    branches: [main, staging]
+  schedule:
+    - cron: '0 7 * * 1' # Mondays 07:00 UTC
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (javascript-typescript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: github/codeql-action/init@703b9949c65fcfced30e2f9f41569c4adfcb657f # v3.36.3
+        with:
+          languages: javascript-typescript
+
+      - uses: github/codeql-action/analyze@703b9949c65fcfced30e2f9f41569c4adfcb657f # v3.36.3
+        with:
+          category: '/language:javascript-typescript'

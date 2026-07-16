@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { subscribeDiag } from './diagnostics'
+import { PUSH_CHANNELS } from '../shared/ipc'
 import type { DiagEvent } from '../shared/types'
 
 // Single-instance diagnostics console window. Opening it is what attaches the
@@ -52,7 +53,7 @@ function startStreaming(target: BrowserWindow): void {
       if (target.isDestroyed()) return
       if (buffer.length === 0) return
       const batch = buffer.splice(0, SEND_BATCH_MAX)
-      target.webContents.send('diag:stream', batch)
+      target.webContents.send(PUSH_CHANNELS.diagStream, batch)
     } catch {
       /* never throw out of the flush loop */
     }
@@ -111,9 +112,13 @@ export function openDiagConsole(): void {
     })
 
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-      created.loadURL(`${process.env['ELECTRON_RENDERER_URL']}?view=diag-console`)
+      created
+        .loadURL(`${process.env['ELECTRON_RENDERER_URL']}?view=diag-console`)
+        .catch((err) => console.error('[diagConsole] loadURL failed:', err))
     } else {
-      created.loadFile(join(__dirname, '../renderer/index.html'), { search: 'view=diag-console' })
+      created
+        .loadFile(join(__dirname, '../renderer/index.html'), { search: 'view=diag-console' })
+        .catch((err) => console.error('[diagConsole] loadFile failed:', err))
     }
   } catch (err) {
     console.error('[diagConsole] failed to open console window:', err)

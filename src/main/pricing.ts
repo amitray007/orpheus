@@ -13,12 +13,16 @@
 // exists so known model IDs are priceable offline. Only bump when an entirely
 // new model family appears (and update models.dev cross-check comment below).
 //
-// Cross-checked against models.dev/api.json on 2026-05-21:
+// Cross-checked against models.dev/api.json on 2026-05-21 (claude-sonnet-5
+// added 2026-07-02 per Anthropic's model catalog, not yet cross-checked
+// against models.dev):
 //   claude-opus-4-7:   $5/$25 input/output (1M ctx)
 //   claude-opus-4-5:   $5/$25 input/output (200K ctx)
+//   claude-sonnet-5:   $2/$10 input/output (1M ctx) — models.dev promo rate
 //   claude-sonnet-4-6: $3/$15 input/output (1M ctx)
 //   claude-sonnet-4-5: $3/$15 input/output (200K ctx)
 //   claude-haiku-4-5:  $1/$5  input/output (200K ctx)
+//   claude-fable-5:    $10/$50 input/output (1M ctx)
 // ---------------------------------------------------------------------------
 
 export type ModelPricing = {
@@ -69,6 +73,17 @@ export const FALLBACK_PRICING: Record<string, ModelPricing> = {
     context: 200_000,
     output_limit: 64_000
   },
+  // Claude Sonnet 5 — $2/$10, 1M context (mirrors models.dev, which currently
+  // reflects Anthropic's active promotional rate; reverts to $3/$15 when the
+  // promo ends — runtime refreshFromModelsDev() keeps this live)
+  'claude-sonnet-5': {
+    input: 2,
+    output: 10,
+    cacheRead: 0.2,
+    cacheWrite: 2.5,
+    context: 1_000_000,
+    output_limit: 128_000
+  },
   // Claude Sonnet 4.6 — $3/$15, 1M context
   'claude-sonnet-4-6': {
     input: 3,
@@ -96,6 +111,15 @@ export const FALLBACK_PRICING: Record<string, ModelPricing> = {
     context: 200_000,
     output_limit: 64_000
   },
+  // Claude Fable 5 — $10/$50, 1M context
+  'claude-fable-5': {
+    input: 10,
+    output: 50,
+    cacheRead: 1,
+    cacheWrite: 12.5,
+    context: 1_000_000,
+    output_limit: 128_000
+  },
   // Generic family aliases — map to representative latest pricing
   opus: {
     input: 5,
@@ -106,12 +130,12 @@ export const FALLBACK_PRICING: Record<string, ModelPricing> = {
     output_limit: 128_000
   },
   sonnet: {
-    input: 3,
-    output: 15,
-    cacheRead: 0.3,
-    cacheWrite: 3.75,
+    input: 2,
+    output: 10,
+    cacheRead: 0.2,
+    cacheWrite: 2.5,
     context: 1_000_000,
-    output_limit: 64_000
+    output_limit: 128_000
   },
   haiku: {
     input: 1,
@@ -120,6 +144,14 @@ export const FALLBACK_PRICING: Record<string, ModelPricing> = {
     cacheWrite: 1.25,
     context: 200_000,
     output_limit: 64_000
+  },
+  fable: {
+    input: 10,
+    output: 50,
+    cacheRead: 1,
+    cacheWrite: 12.5,
+    context: 1_000_000,
+    output_limit: 128_000
   }
 }
 
@@ -214,6 +246,7 @@ function inferFamilyAlias(modelId: string): string | null {
   if (lower.includes('opus')) return 'opus'
   if (lower.includes('sonnet')) return 'sonnet'
   if (lower.includes('haiku')) return 'haiku'
+  if (lower.includes('fable')) return 'fable'
   return null
 }
 
@@ -223,29 +256,29 @@ function inferFamilyAlias(modelId: string): string | null {
  */
 export function getPricing(modelId: string): ModelPricing | null {
   // 1. Exact match in runtimeCache
-  if (runtimeCache?.[modelId]) return runtimeCache[modelId]!
+  if (runtimeCache?.[modelId]) return runtimeCache[modelId]
 
   // 2. Exact match in FALLBACK_PRICING
-  if (FALLBACK_PRICING[modelId]) return FALLBACK_PRICING[modelId]!
+  if (FALLBACK_PRICING[modelId]) return FALLBACK_PRICING[modelId]
 
   // 3. Prefix match in runtimeCache — longest match wins so
   // "claude-opus-4-7-20260416" resolves to "claude-opus-4-7", not "claude-opus-4".
   if (runtimeCache) {
     const keys = Object.keys(runtimeCache).sort((a, b) => b.length - a.length)
     for (const key of keys) {
-      if (modelId.startsWith(key)) return runtimeCache[key]!
+      if (modelId.startsWith(key)) return runtimeCache[key]
     }
   }
 
   // 4. Prefix match in FALLBACK_PRICING — same longest-wins semantics.
   const fallbackKeys = Object.keys(FALLBACK_PRICING).sort((a, b) => b.length - a.length)
   for (const key of fallbackKeys) {
-    if (modelId.startsWith(key)) return FALLBACK_PRICING[key]!
+    if (modelId.startsWith(key)) return FALLBACK_PRICING[key]
   }
 
   // 5. Family alias bucket (infer opus/sonnet/haiku from the model id string)
   const alias = inferFamilyAlias(modelId)
-  if (alias && FALLBACK_PRICING[alias]) return FALLBACK_PRICING[alias]!
+  if (alias && FALLBACK_PRICING[alias]) return FALLBACK_PRICING[alias]
 
   // 6. Unknown model
   return null

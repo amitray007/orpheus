@@ -3,9 +3,15 @@ import { memo, useRef } from 'react'
 import { Plus, PushPin } from '@phosphor-icons/react'
 import type { ProjectRecord, WorkspaceRecord } from '@shared/types'
 import { Identicon } from '../Identicon'
-import { showProjectPopover, hideNativePopover, onNativePopoverClosed } from '@/lib/nativePopover'
+import {
+  showProjectCard,
+  hideOverlayCard,
+  projectCardId,
+  type ProjectCardProps
+} from '@/lib/overlayClient'
 import { getActivitySnapshot } from '@/lib/activityStore'
 import { getTitleSnapshot } from '@/lib/titleStore'
+import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import type { WorkspaceActivityDetail } from '@shared/types'
 
@@ -35,7 +41,7 @@ function toPopoverState(
 }
 
 // ---------------------------------------------------------------------------
-// ProjectTile — one icon button with native popover hover behavior
+// ProjectTile — one icon button with overlay-card hover behavior
 // ---------------------------------------------------------------------------
 
 interface ProjectTileProps {
@@ -56,20 +62,10 @@ const ProjectTile = memo(function ProjectTile({
   tileClass
 }: ProjectTileProps): React.JSX.Element {
   const buttonRef = useRef<HTMLButtonElement>(null)
-  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const popoverId = `proj:${p.id}`
-
-  function clearHoverTimer(): void {
-    if (hoverTimerRef.current !== null) {
-      clearTimeout(hoverTimerRef.current)
-      hoverTimerRef.current = null
-    }
-  }
+  const hoverCard = useOverlayHoverCard({ openDelay: 150, closeDelay: 80 })
 
   function handleMouseEnter(): void {
-    clearHoverTimer()
-    hoverTimerRef.current = setTimeout(() => {
-      hoverTimerRef.current = null
+    hoverCard.handleMouseEnter(() => {
       if (!buttonRef.current) return
 
       // Snapshot activity and title store at show-time (no hooks in a loop).
@@ -78,35 +74,37 @@ const ProjectTile = memo(function ProjectTile({
       const activeWorkspaces = workspaces.filter((w) => w.archivedAt === null)
       const capped = activeWorkspaces.slice(0, 8)
 
-      showProjectPopover(p.id, buttonRef.current, {
+      const cardProps: ProjectCardProps = {
         name: p.name,
         pinned: p.pinnedAt != null,
         repo: p.githubOwner && p.githubRepo ? `${p.githubOwner}/${p.githubRepo}` : undefined,
         path: p.path,
         workspaceCount: activeWorkspaces.length,
-        workspaces: capped.map((w) => ({
-          name: resolveWorkspaceName({
+        workspaces: capped.map((w) => {
+          const displayName = resolveWorkspaceName({
             workspace: w,
             terminalTitle: titles.get(w.id) ?? null,
             sessionTitle: null
-          }).text,
-          state: toPopoverState(activityMap.get(w.id))
-        }))
-      })
+          }).text
+          // Append branch annotation for worktree workspaces so the project
+          // popover workspace list distinguishes them from plain workspaces.
+          const name =
+            w.worktreeParentCwd && w.worktreeBranch
+              ? `${displayName} · ${w.worktreeBranch}`
+              : displayName
+          return {
+            name,
+            state: toPopoverState(activityMap.get(w.id))
+          }
+        })
+      }
 
-      // Register native-closed handler: reset timer state when card closes itself.
-      onNativePopoverClosed(popoverId, () => {
-        clearHoverTimer()
-      })
-    }, 150)
+      showProjectCard(p.id, buttonRef.current, cardProps)
+    })
   }
 
   function handleMouseLeave(): void {
-    clearHoverTimer()
-    hoverTimerRef.current = setTimeout(() => {
-      hoverTimerRef.current = null
-      hideNativePopover(popoverId)
-    }, 80)
+    hoverCard.handleMouseLeave(() => hideOverlayCard(projectCardId(p.id)))
   }
 
   return (
@@ -118,7 +116,11 @@ const ProjectTile = memo(function ProjectTile({
       onMouseLeave={handleMouseLeave}
       title={p.name}
       aria-label={p.name}
-      className={[tileClass, isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay'].join(' ')}
+      className={[
+        tileClass,
+        isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay',
+        'cursor-pointer'
+      ].join(' ')}
     >
       <span className="relative inline-flex items-center flex-shrink-0">
         <Identicon
@@ -168,7 +170,7 @@ export const CollapsedProjectList = memo(function CollapsedProjectList({
           'mb-1',
           addingProject
             ? 'text-text-muted opacity-50 cursor-wait'
-            : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+            : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay cursor-pointer'
         ].join(' ')}
         onClick={onAddProject}
       >

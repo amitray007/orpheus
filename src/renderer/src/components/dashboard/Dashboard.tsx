@@ -5,25 +5,34 @@ import { DIAG_EVENTS } from '@shared/diagEvents'
 import { Sidebar as SidebarBase } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
-import { ConfirmModal } from '../ConfirmModal'
+import { ActivityRail } from './ActivityRail'
+import { PanelsSection } from './PanelsSection'
+import { showConfirmModalReact } from '@/lib/overlayClient'
 import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/activityStore'
-import { setAuthoritativeActiveWorkspace } from '@/lib/freezeWatchdog'
+import { setAuthoritativeActiveWorkspace, getActiveRemount } from '@/lib/freezeWatchdog'
 import { bumpActivityTime, deleteActivityTime } from '@/lib/activityTimeStore'
 import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
+import { removeWorkbenchEntry } from '@/lib/workbenchStore'
+import { removeWorkbenchTerminalsEntry } from '@/lib/workbenchTerminalsStore'
+import { removeFilesTabEntry } from '@/lib/filesTabStore'
+import { useUpdateAvailable } from '@/lib/useUpdateAvailable'
+import { useUiState, updateUiState } from '@/lib/uiStateStore'
+import { mapWithConcurrency } from '@/lib/concurrency'
 import { clearFooterActionsCache } from './footer/useFooterActions'
+import { clearLiveChipCache } from './footer/liveChipCache'
 import { clearContextBudgetCache } from './workspaceTitleBar.helpers'
 import {
-  DEFAULT_UI_STATE_FALLBACK,
   viewToSidebarActiveView,
   mainContainerClassName,
   nextWorkspaceName,
   reorderById,
-  reorderWithTail
+  reorderWithTail,
+  deriveSurface,
+  resolveLandingView
 } from './dashboard.helpers'
 import type {
-  AppUiState,
   PinnedItem,
   ProjectRecord,
   SessionRecord,
@@ -31,6 +40,7 @@ import type {
   GitStatus,
   GhPullRequest
 } from '@shared/types'
+import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
 
 const Sidebar = memo(SidebarBase)
 const MainContent = memo(MainContentBase)
@@ -43,8 +53,9 @@ interface DashboardProps {
 export function Dashboard(_: DashboardProps): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
-  // UI state hydration
-  const [uiState, setUiState] = useState<AppUiState | null>(null)
+  // UI state — live subscription via the shared store (single get() + single
+  // onChanged() for the whole renderer; see lib/uiStateStore.ts).
+  const uiState = useUiState()
   const hydratedRef = useRef(false)
 
   // Projects state
@@ -68,7 +79,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
 
   // View routing
-  const [view, setView] = useState<View>({ kind: 'sessions' })
+  const [view, setView] = useState<View>({ kind: 'panes' })
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
 
@@ -78,11 +89,35 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const selectedProjectIdRef = useRef<string | null>(null)
   const workspacesByProjectRef = useRef<Record<string, WorkspaceRecord[]>>({})
   const projectsRef = useRef<ProjectRecord[]>([])
+  // Per-project monotonic request counter so an in-flight fetchWorkspacesForProject
+  // call that resolves after a newer call for the same project can't clobber the
+  // fresher result (or wrongly blank the list on a stale error). Written directly,
+  // not mirrored from state — no useLayoutEffect sync needed.
+  const fetchSeqRef = useRef<Record<string, number>>({})
   // Stable callback ref — lets the zero-dep onNavigateTo effect always call
   // the latest handleSelectWorkspace without re-subscribing on every render.
   const handleSelectWorkspaceRef = useRef<(workspaceId: string, projectId: string) => void>(
     () => {}
   )
+  // Stable callback ref for the native-modal-driven worktree archive flow —
+  // handleArchiveWorkspaceFromSidebar is defined before runWorktreeArchiveFlow
+  // (which depends on finishWorktreeArchive), so it reads through this ref
+  // rather than forward-referencing an unassigned const.
+  const runWorktreeArchiveFlowRef = useRef<
+    (workspace: WorkspaceRecord, projectId: string) => Promise<void>
+  >(async () => {})
+  // De-races the archive navigation double-fire: finishWorktreeArchive (called
+  // by the local runWorktreeArchiveFlow, awaited right after the archive IPC
+  // resolves) and the workspaces:archived broadcast listener (below, fired for
+  // ALL windows including this one) both used to navigate for the same
+  // just-archived workspace — finishWorktreeArchive would land the UI in one
+  // place, then the broadcast handler would immediately re-navigate (a second,
+  // often redundant or stale transition). finishWorktreeArchive is the single
+  // owner of post-archive navigation for workspaces it archives locally; it
+  // stamps the workspaceId in here right before navigating, and the broadcast
+  // listener skips its own navigation (but still does cache cleanup) for any
+  // id found here.
+  const locallyArchivedWorkspaceIdsRef = useRef<Set<string>>(new Set())
   // Keep refs in sync with state synchronously after every commit so event
   // handlers with [] deps can read the current value without becoming stale.
   // useLayoutEffect (rather than render-time assignment) satisfies the
@@ -99,19 +134,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // IPC calls when the effect re-runs because workspacesPollKey changed.
   const hasFetchedRef = useRef<Set<string> | null>(null)
   if (hasFetchedRef.current === null) hasFetchedRef.current = new Set<string>()
-
-  // Remove confirm dialog
-  const [removeConfirmTarget, setRemoveConfirmTarget] = useState<ProjectRecord | null>(null)
-
-  useEffect(() => {
-    window.api.uiState
-      .get()
-      .then(setUiState)
-      .catch((err) => {
-        console.error('[dashboard] failed to load ui state', err)
-        setUiState(DEFAULT_UI_STATE_FALLBACK)
-      })
-  }, [])
 
   // Apply appearance data attributes to document root whenever uiState changes.
   // This drives [data-theme], [data-accent], and [data-font-scale] CSS selectors
@@ -155,45 +177,19 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // NOTE: depends on main-layer onActivityBatch — wired via frozen contract:
   // channel `workspace:activityBatch`, payload Array<{workspaceId,status,detail}>,
   // preload window.api.workspaces.onActivityBatch.
-  // Falls back to onActivityChanged if the batched API isn't available yet.
   useEffect(() => {
-    const api = window.api.workspaces as typeof window.api.workspaces & {
-      onActivityBatch?: (
-        cb: (
-          batch: Array<{
-            workspaceId: string
-            status: import('@shared/types').WorkspaceStatus
-            detail: import('@shared/types').WorkspaceActivityDetail
-          }>
-        ) => void
-      ) => () => void
-    }
-
-    if (typeof api.onActivityBatch === 'function') {
-      return api.onActivityBatch((batch) => {
-        // Sound effects: play on first status transition per batch
-        for (const { workspaceId, detail } of batch) {
-          const prevDetail = getActivitySnapshot().get(workspaceId)
-          if (prevDetail !== detail) {
-            if (detail === 'ready') playSound('ding')
-            else if (detail === 'attention') playSound('notification')
-          }
+    return window.api.workspaces.onActivityBatch((batch) => {
+      // Sound effects: play on first status transition per batch
+      for (const { workspaceId, detail } of batch) {
+        const prevDetail = getActivitySnapshot().get(workspaceId)
+        if (prevDetail !== detail) {
+          if (detail === 'ready') playSound('ding')
+          else if (detail === 'attention') playSound('notification')
         }
-        setActivityBatch(batch.map(({ workspaceId, detail }) => ({ workspaceId, detail })))
-        const now = Date.now()
-        for (const { workspaceId } of batch) bumpActivityTime(workspaceId, now)
-      })
-    }
-
-    // Fallback: legacy per-event channel (used until main-layer lands onActivityBatch)
-    return window.api.workspaces.onActivityChanged((e) => {
-      const prevDetail = getActivitySnapshot().get(e.workspaceId)
-      if (prevDetail !== e.detail) {
-        if (e.detail === 'ready') playSound('ding')
-        else if (e.detail === 'attention') playSound('notification')
       }
-      setActivityBatch([{ workspaceId: e.workspaceId, detail: e.detail }])
-      bumpActivityTime(e.workspaceId, Date.now())
+      setActivityBatch(batch.map(({ workspaceId, detail }) => ({ workspaceId, detail })))
+      const now = Date.now()
+      for (const { workspaceId } of batch) bumpActivityTime(workspaceId, now)
     })
   }, [])
 
@@ -292,41 +288,58 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // requiring this effect to re-subscribe on every render.
   useEffect(() => {
     return window.api.workspaces.onArchived(({ workspaceId, projectId }) => {
-      // Remove the workspace from local cache.
+      // Remove the workspace from local cache. Also captures the post-removal
+      // list via a plain closure variable so the nav side-effects below can
+      // read the up-to-date remaining list without depending on ref timing
+      // (workspacesByProjectRef only syncs via useLayoutEffect after commit,
+      // so it may still be stale at this point in the same tick). Assigning a
+      // local `let` inside the updater is a pure, idempotent operation (safe
+      // under StrictMode double-invocation) — no side effects run inside it.
+      let remainingAfterRemoval: WorkspaceRecord[] = []
       setWorkspacesByProject((prev) => {
         const list = prev[projectId]
         if (!list) return prev
         const next = list.filter((w) => w.id !== workspaceId)
+        remainingAfterRemoval = next
         return { ...prev, [projectId]: next }
       })
+      // De-race: if this client's own archive flow (finishWorktreeArchive /
+      // handleArchiveWorkspaceFromSidebar) already owns navigation for this
+      // workspaceId, skip navigating again here — this broadcast fires for
+      // ALL windows (including the one that initiated the archive), so
+      // without this guard the local flow's navigation and this listener's
+      // navigation would both fire for the same archive, landing the UI in
+      // two places in quick succession. Still fall through to cache cleanup
+      // below (idempotent) and consume the stamp so it doesn't leak.
+      const wasLocallyOwned = locallyArchivedWorkspaceIdsRef.current.has(workspaceId)
+      if (wasLocallyOwned) {
+        locallyArchivedWorkspaceIdsRef.current.delete(workspaceId)
+      }
       // If this was the active workspace, navigate to a fallback.
-      if (selectedWorkspaceIdRef.current === workspaceId) {
-        setWorkspacesByProject((prev) => {
-          const remaining = (prev[projectId] ?? []).filter((w) => w.id !== workspaceId)
-          if (remaining.length > 0) {
-            // Navigate to the first remaining workspace in the project.
-            const next = remaining[0]
-            setSelectedProjectId(projectId)
-            setSelectedWorkspaceId(next.id)
-            setView({ kind: 'workspace', workspaceId: next.id, projectId })
-            window.api.uiState
-              .update({
-                lastViewKind: 'workspace',
-                lastProjectId: projectId,
-                lastWorkspaceId: next.id
-              })
-              .catch(console.error)
-          } else {
-            // No workspaces left — go to the project view.
-            setSelectedProjectId(projectId)
-            setSelectedWorkspaceId(null)
-            setView({ kind: 'project', projectId })
-            window.api.uiState
-              .update({ lastViewKind: 'project', lastProjectId: projectId, lastWorkspaceId: null })
-              .catch(console.error)
-          }
-          return prev // no change — already updated above
-        })
+      if (!wasLocallyOwned && selectedWorkspaceIdRef.current === workspaceId) {
+        const remaining = remainingAfterRemoval
+        if (remaining.length > 0) {
+          // Navigate to the first remaining workspace in the project.
+          const next = remaining[0]
+          setSelectedProjectId(projectId)
+          setSelectedWorkspaceId(next.id)
+          setView({ kind: 'workspace', workspaceId: next.id, projectId })
+          updateUiState({
+            lastViewKind: 'workspace',
+            lastProjectId: projectId,
+            lastWorkspaceId: next.id
+          })
+        } else {
+          // No workspaces left — go to the project view.
+          setSelectedProjectId(projectId)
+          setSelectedWorkspaceId(null)
+          setView({ kind: 'project', projectId })
+          updateUiState({
+            lastViewKind: 'project',
+            lastProjectId: projectId,
+            lastWorkspaceId: null
+          })
+        }
       }
       // Clear any stale entries for the deleted workspace from all stores.
       deleteActivity(workspaceId)
@@ -334,8 +347,12 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deletePr(workspaceId)
+      removeWorkbenchEntry(workspaceId)
+      removeWorkbenchTerminalsEntry(workspaceId)
+      removeFilesTabEntry(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
+      clearLiveChipCache(workspaceId)
       clearContextBudgetCache(workspaceId)
     })
   }, [])
@@ -367,12 +384,15 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // archivedAt at render time. One source of truth — keeps ProjectView in
   // sync when the sidebar mutates workspace state.
   const fetchWorkspacesForProject = useCallback(async (projectId: string): Promise<void> => {
+    const seq = (fetchSeqRef.current[projectId] = (fetchSeqRef.current[projectId] ?? 0) + 1)
     try {
       const workspaces = await window.api.workspaces.listForProject(projectId, { scope: 'all' })
+      if (seq !== fetchSeqRef.current[projectId]) return
       setWorkspacesByProject((prev) => ({ ...prev, [projectId]: workspaces }))
     } catch (err) {
+      if (seq !== fetchSeqRef.current[projectId]) return
       console.error('[dashboard] failed to load workspaces for', projectId, err)
-      setWorkspacesByProject((prev) => ({ ...prev, [projectId]: [] }))
+      // Do NOT clobber with [] — keep previously-loaded data, just log.
     }
   }, [])
 
@@ -383,7 +403,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setSidebarCollapsed((prev) => {
       const next = !prev
       playSound(next ? 'drawer-close' : 'drawer-open')
-      window.api.uiState.update({ sidebarCollapsed: next }).catch(console.error)
+      updateUiState({ sidebarCollapsed: next })
       return next
     })
   }, [])
@@ -427,19 +447,25 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         }
         // workspaces.open and uiState.update are independent DB writes — issue them
         // concurrently so they don't serialize on the ipcMain queue ahead of terminal:mount.
-        await Promise.all([
-          window.api.workspaces.open(workspaceId).then((updated) => {
+        // updateUiState() is fire-and-forget (own internal .catch), so only
+        // workspaces.open needs to be awaited/caught here.
+        updateUiState({
+          lastViewKind: 'workspace',
+          lastProjectId: projectId,
+          lastWorkspaceId: workspaceId,
+          projectsLastViewKind: 'workspace',
+          projectsLastProjectId: projectId,
+          projectsLastWorkspaceId: workspaceId
+        })
+        await window.api.workspaces
+          .open(workspaceId)
+          .then((updated) => {
             setWorkspacesByProject((prev) => ({
               ...prev,
               [projectId]: (prev[projectId] ?? []).map((w) => (w.id === workspaceId ? updated : w))
             }))
-          }),
-          window.api.uiState.update({
-            lastViewKind: 'workspace',
-            lastProjectId: projectId,
-            lastWorkspaceId: workspaceId
           })
-        ]).catch(console.error)
+          .catch(console.error)
       })()
     },
     [fetchWorkspacesForProject]
@@ -450,6 +476,106 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   useLayoutEffect(() => {
     handleSelectWorkspaceRef.current = handleSelectWorkspace
   })
+
+  // ---------------------------------------------------------------------------
+  // BACKGROUND MOUNT (focus=false path of onWorkspaceRequestOpen below).
+  //
+  // DESIGN NOTE: handleSelectWorkspace couples two things — (1) setView (UI
+  // navigation, steals the user's focus) and (2) making the workspace's
+  // terminal surface live/injectable (mounting happens as a *side effect* of
+  // WorkspaceView rendering once the view is active). For CLI-driven agent
+  // fan-out (`ws new --background` / `ws send --background`), we want (2)
+  // WITHOUT (1): the workspace should become injectable while the user stays
+  // exactly where they are.
+  //
+  // MECHANISM CHOSEN: call window.api.terminal.mount(...) directly, then
+  // immediately window.api.terminal.hide(...) — the same two IPC calls
+  // WorkspaceView's own mount effect makes — WITHOUT touching `view` or
+  // `selectedWorkspaceId` at all. This works because terminal:mount (see
+  // src/main/index.ts) is a plain IPC handler keyed only by workspaceId + the
+  // sender's BrowserWindow (for the native parent handle); it has no
+  // dependency on WorkspaceView being mounted/active — it composes the launch
+  // env, spawns/attaches the libghostty surface, and returns. `hide` (addon.hide)
+  // does not destroy the surface — it just stops it from drawing/being
+  // frontmost, exactly like navigating away from a normal workspace. Once
+  // mount resolves, getSurfacePhase(workspaceId) is 'hidden' (not 'none') and
+  // terminalActions.canInject() reports true, so the CLI's openAndSeed /
+  // sendToWorkspace polling loops on the main side succeed exactly as if the
+  // user had opened the workspace — the surface is fully live and injectable,
+  // it simply isn't the one currently rendered/visible.
+  //
+  // This avoids the heavier alternative (mounting a hidden/off-screen
+  // WorkspaceView instance) — no new render tree, no risk of the hidden
+  // instance's resize/observer effects fighting the active view's.
+  //
+  // A rect is still required by the mount IPC signature even though nothing
+  // is drawn on screen while hidden; reuse the current window's viewport rect
+  // (falls back to a small nonzero rect if unavailable) — it only matters if
+  // the surface is later made active via a normal navigation, at which point
+  // WorkspaceView's own active-toggle effect immediately re-measures and
+  // resizes it to the real container rect anyway.
+  //
+  // CWD: terminal:mount's 4th arg (cwd) is optional, and when omitted the
+  // launched claude process inherits Electron's own cwd (effectively the
+  // user's home directory) instead of the workspace's project directory —
+  // that was a real bug here. WorkspaceView always passes workspace.cwd (see
+  // its own terminal.mount call sites); this path must do the same. Since
+  // onWorkspaceRequestOpen only carries {workspaceId, focus} (no projectId),
+  // and a workspace freshly created via `ws new --background` may not be in
+  // workspacesByProject yet, we resolve cwd via window.api.workspaces.open()
+  // below, which reads the DB row directly and is authoritative regardless of
+  // renderer state.
+  const backgroundMountWorkspace = useCallback((workspaceId: string): void => {
+    void (async (): Promise<void> => {
+      // Resolve the workspace's cwd BEFORE mounting. window.api.workspaces.open()
+      // reads straight from the DB (see openWorkspace() in src/main/workspaces.ts),
+      // so it's authoritative even for a workspace the renderer hasn't fetched
+      // into workspacesByProject yet (e.g. one just created by `ws new
+      // --background` from the CLI). This also doubles as the "genuinely open
+      // the workspace" call the code already needed to make (closedAt/
+      // lastOpenedAt), so we just do it first instead of after mount.
+      let cwd: string | undefined
+      try {
+        const opened = await window.api.workspaces.open(workspaceId)
+        cwd = opened.cwd
+        setWorkspacesByProject((prev) => {
+          const projectId = opened.projectId
+          const list = prev[projectId]
+          if (!list) return prev
+          return {
+            ...prev,
+            [projectId]: list.map((w) => (w.id === workspaceId ? opened : w))
+          }
+        })
+      } catch (err) {
+        console.error('[dashboard] background mount: failed to resolve workspace cwd:', err)
+      }
+      try {
+        const scaleFactor = window.devicePixelRatio ?? 1
+        const rect = {
+          x: 0,
+          y: 0,
+          w: Math.max(1, Math.round(window.innerWidth || 1)),
+          h: Math.max(1, Math.round(window.innerHeight || 1))
+        }
+        await window.api.terminal.mount(workspaceId, rect, scaleFactor, cwd)
+        // Mount can attach the surface as frontmost momentarily; hide it right
+        // away so it never becomes visible/steals draw time while the user is
+        // looking at a different workspace (or no workspace at all).
+        await window.api.terminal.hide(workspaceId).catch(() => {})
+        // RACE-3: addon.mount unconditionally promotes this background-mounted
+        // workspace to native visibility, transiently stealing it from whatever
+        // the user is actually looking at. Re-promote the viewed workspace.
+        const vid = selectedWorkspaceIdRef.current
+        if (vid && vid !== workspaceId) {
+          const remount = getActiveRemount()
+          if (remount) remount()
+        }
+      } catch (err) {
+        console.error('[dashboard] background mount failed:', err)
+      }
+    })()
+  }, [])
 
   const handleToggleProjectExpand = useCallback(
     (id: string): void => {
@@ -487,21 +613,118 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         fetchWorkspacesForProject(id)
       }
       window.api.projects.open(id).catch(console.error)
-      window.api.uiState
-        .update({ lastViewKind: 'project', lastProjectId: id, lastWorkspaceId: null })
-        .catch(console.error)
+      updateUiState({
+        lastViewKind: 'project',
+        lastProjectId: id,
+        lastWorkspaceId: null,
+        projectsLastViewKind: 'project',
+        projectsLastProjectId: id,
+        projectsLastWorkspaceId: null
+      })
     },
     [fetchWorkspacesForProject]
   )
 
-  const handleSelectNav = useCallback((nav: 'sessions'): void => {
-    setView({ kind: nav })
+  // Restore the last Projects-surface location: workspace > project > empty
+  // state. Reads the DEDICATED projectsLastViewKind/projectsLastProjectId/
+  // projectsLastWorkspaceId fields — NOT lastViewKind/lastProjectId/
+  // lastWorkspaceId — because handleSelectSurface's dashboard/panes branches
+  // (and handleSelectSettings/handleOpenUpdates) intentionally NULL/overwrite
+  // those shared fields for their own top-level-surface bookkeeping whenever
+  // the user navigates to Home/Panes/Settings. The projectsLast* fields are
+  // written ONLY by Projects navigation (handleSelectWorkspace/
+  // handleSelectProject below and the empty-state fallthrough here), so they
+  // survive those surface switches and correctly restore Projects state on
+  // return instead of incorrectly falling back to the empty state.
+  //
+  // This is the SAME branch order as the restart-restore hydration effect
+  // below (workspace > project > sessions/landing) — factored out here so
+  // both the app-launch restore and the Projects-rail click delegate to one
+  // path instead of drifting (that effect still uses lastViewKind/
+  // lastProjectId/lastWorkspaceId for full-app-restart restore, which is
+  // correct there — see its own comment). handleSelectWorkspace/
+  // handleSelectProject each persist their own lastViewKind/lastProjectId/
+  // lastWorkspaceId AND projectsLast* fields internally (see their bodies
+  // above), so this callback must NOT null those ids when delegating to
+  // them — only the genuinely-empty fallthrough nulls the ids, because
+  // that's the one case where there really is nothing to restore.
+  const restoreLastProjectsLocation = useCallback((): void => {
+    // uiState is null only until the initial fetch resolves; the Projects
+    // rail click can't fire before mount completes that fetch in practice,
+    // but guard anyway and fall through to the empty state rather than throw.
+    if (
+      uiState &&
+      uiState.projectsLastViewKind === 'workspace' &&
+      uiState.projectsLastWorkspaceId &&
+      uiState.projectsLastProjectId
+    ) {
+      const proj = projects.find((p) => p.id === uiState.projectsLastProjectId)
+      if (proj) {
+        handleSelectWorkspace(uiState.projectsLastWorkspaceId, uiState.projectsLastProjectId)
+        return
+      }
+    }
+    if (uiState && uiState.projectsLastViewKind === 'project' && uiState.projectsLastProjectId) {
+      const proj = projects.find((p) => p.id === uiState.projectsLastProjectId)
+      if (proj) {
+        handleSelectProject(uiState.projectsLastProjectId)
+        return
+      }
+    }
+    // No resolvable last location — land on the empty state (ProjectsHome,
+    // rendered by the 'sessions' view kind) and persist a genuinely-empty
+    // selection on both the shared and Projects-scoped fields.
+    setView({ kind: 'sessions' })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
-    window.api.uiState
-      .update({ lastViewKind: nav, lastProjectId: null, lastWorkspaceId: null })
-      .catch(console.error)
-  }, [])
+    updateUiState({
+      lastViewKind: 'sessions',
+      lastProjectId: null,
+      lastWorkspaceId: null,
+      projectsLastViewKind: 'sessions',
+      projectsLastProjectId: null,
+      projectsLastWorkspaceId: null
+    })
+  }, [uiState, projects, handleSelectWorkspace, handleSelectProject])
+
+  // Switches the top-level SURFACE (dashboard | projects | panes) — wired
+  // from ActivityRail. Supersedes the old handleSelectNav/handleSelectPanes
+  // pair now that the surface switch lives in the rail instead of Sidebar's
+  // top nav.
+  const handleSelectSurface = useCallback(
+    (surface: 'dashboard' | 'projects' | 'panes'): void => {
+      if (surface === 'dashboard') {
+        setView({ kind: 'dashboard' })
+        setSelectedProjectId(null)
+        setSelectedWorkspaceId(null)
+        // NOTE: uiState read-coercion maps stored 'dashboard'→'sessions' on read (U1
+        // preserved this for legacy DB rows) — that's fine here: the rail derives the
+        // active surface from the LIVE `view` state (not from persisted lastViewKind),
+        // so the dashboard surface still displays correctly during this session even
+        // though a relaunch would coerce the persisted value back to sessions/Workspaces
+        // (governed instead by defaultSurface, which IS 'dashboard'-aware).
+        // Deliberately NOT clearing projectsLastViewKind/projectsLastProjectId/
+        // projectsLastWorkspaceId here — those are Projects-scoped memory that
+        // must survive this surface switch (see restoreLastProjectsLocation).
+        updateUiState({ lastViewKind: 'dashboard', lastProjectId: null, lastWorkspaceId: null })
+        return
+      }
+      if (surface === 'projects') {
+        // Restore wherever the user last was within Projects (workspace/project/
+        // empty state) instead of hardcoding the empty state and wiping the
+        // persisted last-location — see restoreLastProjectsLocation above.
+        restoreLastProjectsLocation()
+        return
+      }
+      setView({ kind: 'panes' })
+      setSelectedProjectId(null)
+      setSelectedWorkspaceId(null)
+      // Deliberately NOT clearing projectsLastViewKind/projectsLastProjectId/
+      // projectsLastWorkspaceId here — see the dashboard branch's comment above.
+      updateUiState({ lastViewKind: 'panes', lastProjectId: null, lastWorkspaceId: null })
+    },
+    [restoreLastProjectsLocation]
+  )
 
   // ---------------------------------------------------------------------------
   // Effects that use the above callbacks — must come after
@@ -513,9 +736,43 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // the callback current without requiring it in the dep array; the ref is
   // updated by the no-dep useLayoutEffect placed after handleSelectWorkspace.
   useEffect(() => {
-    return window.api.workspaces.onNavigateTo((workspaceId) => {
+    return window.api.workspaces.onNavigateTo((workspaceId, projectId) => {
+      // Prefer the projectId from the notification payload — the target
+      // project may not be loaded in workspacesByProjectRef yet (it's lazily
+      // populated), and handleSelectWorkspace lazy-loads it on demand.
+      let resolvedProjectId = projectId
+      if (resolvedProjectId === undefined) {
+        const byProject = workspacesByProjectRef.current
+        for (const [pid, wsList] of Object.entries(byProject)) {
+          if (wsList.some((w) => w.id === workspaceId)) {
+            resolvedProjectId = pid
+            break
+          }
+        }
+      }
+      if (resolvedProjectId !== undefined) {
+        handleSelectWorkspaceRef.current(workspaceId, resolvedProjectId)
+      }
+    })
+  }, [])
+
+  // onWorkspaceRequestOpen: main → renderer signal so the command server can ask
+  // the renderer to open (and mount) a workspace — the entry point for U8/U12
+  // and for the CLI's --focus/--background flags.
+  //
+  // focus=true  → current behavior: handleSelectWorkspace (navigate + mount).
+  // focus=false → BACKGROUND MOUNT: mount the surface (backgroundMountWorkspace,
+  //               see its doc comment above) WITHOUT setView/selectedWorkspaceId
+  //               changing — the user stays exactly where they are.
+  //
+  // Uses the same zero-dep ref pattern as onNavigateTo so it never re-subscribes.
+  useEffect(() => {
+    return window.api.workspaces.onWorkspaceRequestOpen(({ workspaceId, focus }) => {
+      if (!focus) {
+        backgroundMountWorkspace(workspaceId)
+        return
+      }
       const byProject = workspacesByProjectRef.current
-      // Build a flat Map<workspaceId, projectId> for O(1) lookup instead of O(n*m) find-in-loop
       const wsToProject = new Map<string, string>()
       for (const [projectId, wsList] of Object.entries(byProject)) {
         for (const w of wsList) wsToProject.set(w.id, projectId)
@@ -524,8 +781,11 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       if (projectId !== undefined) {
         handleSelectWorkspaceRef.current(workspaceId, projectId)
       }
+      // If the workspace isn't in the loaded list yet (e.g. newly created by the
+      // CLI before the renderer has fetched), we don't crash — the workspace will
+      // become visible on the next workspaces:created broadcast or the next fetch.
     })
-  }, [])
+  }, [backgroundMountWorkspace])
 
   useEffect(() => {
     window.api.projects
@@ -611,39 +871,39 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // success so a cancelled mid-flight fetch retries on re-mount.
     const missing = workspaces.filter((w) => !hasFetchedRef.current!.has(w.id))
 
-    // Git + PR: concurrent per-workspace using Promise.allSettled
+    // Git + PR: concurrent per-workspace, capped at 5 in-flight to avoid
+    // unbounded subprocess fan-out (via mapWithConcurrency) when a project
+    // has many workspaces.
     if (missing.length > 0) {
-      Promise.allSettled(
-        missing.map(async (ws) => {
-          let status: GitStatus | null = null
-          try {
-            status = await window.api.git.status(ws.cwd)
-            if (!cancelled) {
-              // Mark as fetched only after a successful response so a
-              // cancelled mid-flight fetch retries on re-mount.
-              hasFetchedRef.current!.add(ws.id)
-              setGitStatus(ws.id, status)
-            }
-          } catch (err) {
-            console.error('[dashboard] git status failed for', ws.id, err)
-            if (!cancelled) {
-              hasFetchedRef.current!.add(ws.id)
-              setGitStatus(ws.id, null)
-            }
+      mapWithConcurrency(missing, 5, async (ws) => {
+        let status: GitStatus | null = null
+        try {
+          status = await window.api.git.status(ws.cwd)
+          if (!cancelled) {
+            // Mark as fetched only after a successful response so a
+            // cancelled mid-flight fetch retries on re-mount.
+            hasFetchedRef.current!.add(ws.id)
+            setGitStatus(ws.id, status)
           }
-          if (status?.branch) {
-            try {
-              const pr = await window.api.github.prForBranch(ws.cwd, status.branch)
-              if (!cancelled) setPr(ws.id, pr)
-            } catch (err) {
-              console.error('[dashboard] gh pr lookup failed for', ws.id, err)
-              if (!cancelled) setPr(ws.id, null)
-            }
-          } else {
+        } catch (err) {
+          console.error('[dashboard] git status failed for', ws.id, err)
+          if (!cancelled) {
+            hasFetchedRef.current!.add(ws.id)
+            setGitStatus(ws.id, null)
+          }
+        }
+        if (status?.branch) {
+          try {
+            const pr = await window.api.github.prForBranch(ws.cwd, status.branch)
+            if (!cancelled) setPr(ws.id, pr)
+          } catch (err) {
+            console.error('[dashboard] gh pr lookup failed for', ws.id, err)
             if (!cancelled) setPr(ws.id, null)
           }
-        })
-      ).catch((err) => console.error('[dashboard] fetchMissing allSettled failed', err))
+        } else {
+          if (!cancelled) setPr(ws.id, null)
+        }
+      }).catch((err) => console.error('[dashboard] fetchMissing allSettled failed', err))
     }
 
     // Titles: seed from getTitle for all workspaces in this poll key
@@ -687,7 +947,17 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // Honor openAtLastView toggle — when false, ignore the saved view and start at dashboard
     if (!uiState.openAtLastView) return
 
-    // Restore view: workspace > project > sessions > dashboard
+    // Restore view: workspace > project > sessions > panes
+    //
+    // This mirrors restoreLastProjectsLocation's workspace>project branch
+    // order exactly (kept as ONE path conceptually — see that callback above,
+    // used by the Projects-rail click), but is NOT delegated to it here: this
+    // effect's fallthrough must consider defaultSurface (dashboard/panes) via
+    // resolveLandingView, whereas restoreLastProjectsLocation's fallthrough is
+    // always the Projects empty state (correct for a rail click, wrong for
+    // app-launch restore when the user's default surface isn't Projects). Any
+    // change to the workspace/project resolution rule must be made in BOTH
+    // places.
     if (uiState.lastViewKind === 'workspace' && uiState.lastWorkspaceId && uiState.lastProjectId) {
       const proj = projects.find((p) => p.id === uiState.lastProjectId)
       if (proj) {
@@ -702,24 +972,30 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         return
       }
     }
-    if (uiState.lastViewKind === 'sessions' || (uiState.lastViewKind as string) === 'dashboard') {
-      setView({ kind: 'sessions' })
-      return
-    }
-    // default — Workspaces is the fallback landing
-    setView({ kind: 'sessions' })
+    // No concrete workspace/project to restore — land on the saved top-level
+    // view if there is one, else fall back to the configured default surface.
+    // See resolveLandingView (dashboard.helpers.ts) for the branch logic.
+    setView(resolveLandingView(uiState))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uiState, projectsLoading, projects])
   /* eslint-enable react-hooks/set-state-in-effect */
+
+  const { available: updateAvailable, latest: updateLatest } = useUpdateAvailable()
 
   const handleSelectSettings = useCallback((): void => {
     setView({ kind: 'settings' })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
     // Persist as 'sessions' — 'settings' is not in the DB enum; so on restore land on Workspaces
-    window.api.uiState
-      .update({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
-      .catch(console.error)
+    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
+  }, [])
+
+  const handleOpenUpdates = useCallback((): void => {
+    setView({ kind: 'settings', section: 'orpheus-updates' })
+    setSelectedProjectId(null)
+    setSelectedWorkspaceId(null)
+    // Persist as 'sessions' — 'settings' is not in the DB enum; so on restore land on Workspaces
+    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
   }, [])
 
   const handleAddProject = useCallback(async (): Promise<void> => {
@@ -728,7 +1004,14 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       const result = await window.api.projects.pickAndAdd()
       if (result) {
         playSound('success')
-        setProjects((arr) => [result, ...arr.filter((p) => p.id !== result.id)])
+        setProjects((arr) => {
+          const rest = arr.filter((p) => p.id !== result.id)
+          // New projects are always unpinned, so insert after the pinned
+          // prefix (top of the unpinned tier) instead of the very front.
+          const firstUnpinnedIndex = rest.findIndex((p) => p.pinnedAt == null)
+          const insertAt = firstUnpinnedIndex === -1 ? rest.length : firstUnpinnedIndex
+          return [...rest.slice(0, insertAt), result, ...rest.slice(insertAt)]
+        })
         // Fetch the auto-created Default workspace directly so we can navigate
         // into it. fetchWorkspacesForProject only writes state and doesn't
         // return the workspaces, hence the inline call here.
@@ -754,9 +1037,11 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           setSelectedProjectId(result.id)
           setSelectedWorkspaceId(null)
           setView({ kind: 'project', projectId: result.id })
-          window.api.uiState
-            .update({ lastViewKind: 'project', lastProjectId: result.id, lastWorkspaceId: null })
-            .catch(console.error)
+          updateUiState({
+            lastViewKind: 'project',
+            lastProjectId: result.id,
+            lastWorkspaceId: null
+          })
         }
       }
     } catch (err) {
@@ -896,6 +1181,22 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleArchiveWorkspaceFromSidebar = useCallback(
     async (workspaceId: string, projectId: string): Promise<void> => {
+      // Look up the workspace record to detect whether it is worktree-backed.
+      const ws = (workspacesByProjectRef.current[projectId] ?? []).find((w) => w.id === workspaceId)
+
+      // Worktree-backed workspace: always show a confirm before removing
+      // (the branch is kept but the working directory disappears).
+      // Show the light confirm first; if the backend detects uncommitted
+      // changes (wasDirty:true) the confirm escalates to the dirty variant.
+      if (ws?.worktreeParentCwd) {
+        // Show the "branch is kept" confirm (native modal) upfront; the flow
+        // itself handles the dirty-escalation confirm if the backend reports
+        // uncommitted changes.
+        await runWorktreeArchiveFlowRef.current(ws, projectId)
+        return
+      }
+
+      // Non-worktree workspace: original behaviour.
       // Destroy the terminal surface before archiving so the shell process is cleaned up.
       // Don't block on failure — the DB archive can proceed regardless.
       window.api.terminal
@@ -908,8 +1209,12 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deletePr(workspaceId)
+      removeWorkbenchEntry(workspaceId)
+      removeWorkbenchTerminalsEntry(workspaceId)
+      removeFilesTabEntry(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
+      clearLiveChipCache(workspaceId)
       clearContextBudgetCache(workspaceId)
       try {
         // "Archive" is a hard delete now (v34+). The DB row is gone after this.
@@ -930,6 +1235,112 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     },
     [fetchWorkspacesForProject, refreshPins]
   )
+
+  // Shared post-archive cleanup for worktree workspaces. Sole owner of
+  // post-archive navigation for workspaces archived via this (local) flow —
+  // see locallyArchivedWorkspaceIdsRef for why the workspaces:archived
+  // broadcast listener must NOT also navigate for the same id.
+  const finishWorktreeArchive = useCallback(
+    async (workspaceId: string, projectId: string): Promise<void> => {
+      // Stamp BEFORE navigating so the broadcast listener (which may fire
+      // before or after this local completion, depending on IPC scheduling)
+      // sees the id and skips its own navigation regardless of ordering.
+      locallyArchivedWorkspaceIdsRef.current.add(workspaceId)
+      deleteActivity(workspaceId)
+      deleteActivityTime(workspaceId)
+      deleteTitle(workspaceId)
+      deleteGitStatus(workspaceId)
+      deletePr(workspaceId)
+      removeWorkbenchEntry(workspaceId)
+      removeWorkbenchTerminalsEntry(workspaceId)
+      removeFilesTabEntry(workspaceId)
+      hasFetchedRef.current!.delete(workspaceId)
+      clearFooterActionsCache(workspaceId)
+      clearLiveChipCache(workspaceId)
+      clearContextBudgetCache(workspaceId)
+      playSound('archive')
+      await fetchWorkspacesForProject(projectId)
+      const wasSelected = selectedWorkspaceIdRef.current === workspaceId
+      if (wasSelected) {
+        setSelectedWorkspaceId(null)
+        setView({ kind: 'project', projectId })
+      } else if (selectedWorkspaceIdRef.current) {
+        // A different workspace remained active throughout (the archived one
+        // was a background sidebar row) — the confirm modal still stole first
+        // responder from it, so re-assert focus now that the modal is closed.
+        void window.api.terminal.focus(selectedWorkspaceIdRef.current).catch(() => {})
+      }
+      refreshPins()
+    },
+    [fetchWorkspacesForProject, refreshPins]
+  )
+
+  // Worktree archive flow (both clean and dirty-escalation cases). Shows the
+  // "branch is kept" confirm first; if the backend detects uncommitted
+  // changes (wasDirty:true) it escalates to a "Remove anyway" confirm before
+  // actually force-removing. Renders via the overlay layer's confirmModal
+  // kind (overlayClient.showConfirmModalReact).
+  const runWorktreeArchiveFlow = useCallback(
+    async (workspace: WorkspaceRecord, projectId: string): Promise<void> => {
+      // Cancel/error paths below don't run finishWorktreeArchive (which owns
+      // the success-path focus re-assert), so each one re-asserts focus itself
+      // if a workspace is still selected/visible — the modal stole first
+      // responder from it regardless of how the flow ends.
+      const refocusIfSelected = (): void => {
+        if (selectedWorkspaceIdRef.current) {
+          void window.api.terminal.focus(selectedWorkspaceIdRef.current).catch(() => {})
+        }
+      }
+
+      const clean = await showConfirmModalReact({
+        title: 'Remove worktree?',
+        body: `Remove worktree ${workspace.worktreeBranch ?? ''}? The branch is kept.`,
+        buttons: [
+          { id: 'cancel', label: 'Cancel' },
+          { id: 'confirm', label: 'Remove worktree', style: 'danger' }
+        ]
+      })
+      if (clean.buttonId !== 'confirm') {
+        refocusIfSelected()
+        return
+      }
+
+      const result = await window.api.workspaces.archive(workspace.id, { force: false })
+      if (result.wasDirty) {
+        // Backend says the worktree is dirty — escalate to the "remove anyway" confirm.
+        const dirty = await showConfirmModalReact({
+          title: 'Remove worktree?',
+          body: `Remove worktree ${workspace.worktreeBranch ?? ''}? It has uncommitted changes.\nUncommitted changes will be lost. The branch is kept.`,
+          buttons: [
+            { id: 'cancel', label: 'Cancel' },
+            { id: 'force', label: 'Remove anyway', style: 'danger' }
+          ]
+        })
+        if (dirty.buttonId !== 'force') {
+          refocusIfSelected()
+          return
+        }
+        const forced = await window.api.workspaces.archive(workspace.id, { force: true })
+        if (!forced.archived) {
+          console.error('[dashboard] worktree archive failed', forced)
+          refocusIfSelected()
+          return
+        }
+        await finishWorktreeArchive(workspace.id, projectId)
+        return
+      }
+      if (!result.archived) {
+        console.error('[dashboard] worktree archive failed', result)
+        refocusIfSelected()
+        return
+      }
+      await finishWorktreeArchive(workspace.id, projectId)
+    },
+    [finishWorktreeArchive]
+  )
+  useLayoutEffect(() => {
+    runWorktreeArchiveFlowRef.current = runWorktreeArchiveFlow
+  })
 
   const handleCloseWorkspace = useCallback((workspaceId: string): void => {
     void window.api.workspaces.close(workspaceId).catch(console.error)
@@ -952,60 +1363,136 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     [refreshPins]
   )
 
-  const handleRequestRemoveProject = useCallback((project: ProjectRecord): void => {
-    setRemoveConfirmTarget(project)
-  }, [])
+  // Shared post-remove cleanup after a project delete succeeds.
+  const finishProjectRemove = useCallback(
+    (target: ProjectRecord): void => {
+      const projectWorkspaces = workspacesByProjectRef.current[target.id] ?? []
+      playSound('delete')
+      // Drop cached data for all removed workspaces from all stores.
+      for (const ws of projectWorkspaces) {
+        deleteActivity(ws.id)
+        deleteActivityTime(ws.id)
+        deleteTitle(ws.id)
+        deleteGitStatus(ws.id)
+        deletePr(ws.id)
+        removeWorkbenchEntry(ws.id)
+        removeWorkbenchTerminalsEntry(ws.id)
+        removeFilesTabEntry(ws.id)
+        hasFetchedRef.current!.delete(ws.id)
+        clearFooterActionsCache(ws.id)
+        clearLiveChipCache(ws.id)
+        clearContextBudgetCache(ws.id)
+      }
+      setProjects((arr) => arr.filter((p) => p.id !== target.id))
+      setExpandedProjectIds((prev) => {
+        const next = new Set(prev)
+        next.delete(target.id)
+        return next
+      })
+      // Read selectedProjectId via ref to avoid capturing it in closure
+      if (selectedProjectIdRef.current === target.id) {
+        setSelectedProjectId(null)
+        setSelectedWorkspaceId(null)
+        setView({ kind: 'sessions' })
+      } else if (selectedWorkspaceIdRef.current) {
+        // The removed project wasn't the one in view — a different workspace
+        // stayed selected/visible throughout, but the confirm modal(s) still
+        // stole first responder from it. Re-assert focus now that they're closed.
+        void window.api.terminal.focus(selectedWorkspaceIdRef.current).catch(() => {})
+      }
+      refreshPins()
+    },
+    [refreshPins]
+  )
 
-  const handleConfirmRemove = useCallback(async (): Promise<void> => {
-    if (!removeConfirmTarget) return
-    const target = removeConfirmTarget
-    // Destroy all terminal surfaces for this project's workspaces before the
-    // DB cascade-delete removes the workspace rows.
-    // Serialised with a microtask yield between each destroy so AppKit can drain
-    // main-queue work (ghostty_surface_free stalls ~200ms-2s per surface) without
-    // blocking the event loop for the full N-surface burst.
-    const projectWorkspaces = workspacesByProjectRef.current[target.id] ?? []
-    for (const ws of projectWorkspaces) {
-      await window.api.terminal
-        .destroy(ws.id)
-        .catch((e) =>
-          console.error('[dashboard] terminal.destroy before project remove failed:', ws.id, e)
-        )
-      // Yield to the event loop between each destroy so AppKit can drain between frees.
-      await new Promise<void>((r) => setTimeout(r, 0))
-    }
-    await window.api.projects.remove(target.id)
-    playSound('delete')
-    setRemoveConfirmTarget(null)
-    // Drop cached data for all removed workspaces from all stores.
-    for (const ws of projectWorkspaces) {
-      deleteActivity(ws.id)
-      deleteActivityTime(ws.id)
-      deleteTitle(ws.id)
-      deleteGitStatus(ws.id)
-      deletePr(ws.id)
-      hasFetchedRef.current!.delete(ws.id)
-      clearFooterActionsCache(ws.id)
-      clearContextBudgetCache(ws.id)
-    }
-    setProjects((arr) => arr.filter((p) => p.id !== target.id))
-    setExpandedProjectIds((prev) => {
-      const next = new Set(prev)
-      next.delete(target.id)
-      return next
-    })
-    // Read selectedProjectId via ref to avoid capturing it in closure
-    if (selectedProjectIdRef.current === target.id) {
-      setSelectedProjectId(null)
-      setSelectedWorkspaceId(null)
-      setView({ kind: 'sessions' })
-    }
-    refreshPins()
-  }, [removeConfirmTarget, refreshPins])
+  // Destroy all terminal surfaces for a project's workspaces before the DB
+  // cascade-delete removes the workspace rows. Serialised with a microtask
+  // yield between each destroy so AppKit can drain main-queue work
+  // (ghostty_surface_free stalls ~200ms-2s per surface) without blocking the
+  // event loop for the full N-surface burst.
+  const destroyProjectWorkspaceSurfaces = useCallback(
+    async (projectId: string, logLabel: string): Promise<void> => {
+      const projectWorkspaces = workspacesByProjectRef.current[projectId] ?? []
+      for (const ws of projectWorkspaces) {
+        await window.api.terminal
+          .destroy(ws.id)
+          .catch((e) => console.error(`[dashboard] terminal.destroy before ${logLabel}:`, ws.id, e))
+        await new Promise<void>((r) => setTimeout(r, 0))
+      }
+    },
+    []
+  )
 
-  const handleCancelRemove = useCallback((): void => {
-    setRemoveConfirmTarget(null)
-  }, [])
+  // Project removal flow. Probes the project's worktree count so the "Also
+  // delete worktrees" checkbox is only offered when relevant; escalates to a
+  // "Delete anyway" confirm if the backend reports dirty worktrees blocking
+  // the first attempt. Same confirm-modal pattern as runWorktreeArchiveFlow
+  // above.
+  const handleRequestRemoveProject = useCallback(
+    async (project: ProjectRecord): Promise<void> => {
+      let worktreeCount = 0
+      try {
+        const summary = await window.api.projects.worktreeSummary(project.id)
+        worktreeCount = summary.count
+      } catch (err) {
+        console.error('[dashboard] worktreeSummary failed', err)
+      }
+
+      const first = await showConfirmModalReact({
+        title: 'Remove?',
+        body: `${project.name} will be removed from Orpheus along with its workspaces and sessions. Files on disk are untouched. You can re-add the folder later.`,
+        buttons: [
+          { id: 'cancel', label: 'Cancel' },
+          { id: 'confirm', label: 'Remove', style: 'danger' }
+        ],
+        checkbox:
+          worktreeCount > 0
+            ? {
+                id: 'deleteWorktrees',
+                label: 'Also delete worktrees (branches are kept)',
+                checked: false
+              }
+            : undefined
+      })
+      if (first.buttonId !== 'confirm') {
+        // Cancelled — the modal still stole first responder from whatever
+        // workspace terminal was active; re-assert focus now that it's closed.
+        if (selectedWorkspaceIdRef.current) {
+          void window.api.terminal.focus(selectedWorkspaceIdRef.current).catch(() => {})
+        }
+        return
+      }
+
+      await destroyProjectWorkspaceSurfaces(project.id, 'project remove failed')
+      const result = await window.api.projects.remove(project.id, {
+        deleteWorktrees: first.checkboxChecked
+      })
+      if (!result.deleted && result.dirtyWorktrees > 0) {
+        // Escalate: some worktrees are dirty — ask for force confirmation.
+        const dirtyCount = result.dirtyWorktrees
+        const escalate = await showConfirmModalReact({
+          title: 'Remove worktrees with uncommitted changes?',
+          body: `${dirtyCount} ${dirtyCount === 1 ? 'worktree has' : 'worktrees have'} uncommitted changes.\nUncommitted changes will be lost. Branches are kept.`,
+          buttons: [
+            { id: 'cancel', label: 'Cancel' },
+            { id: 'force', label: 'Delete anyway', style: 'danger' }
+          ]
+        })
+        if (escalate.buttonId !== 'force') {
+          if (selectedWorkspaceIdRef.current) {
+            void window.api.terminal.focus(selectedWorkspaceIdRef.current).catch(() => {})
+          }
+          return
+        }
+        await destroyProjectWorkspaceSurfaces(project.id, 'force project remove failed')
+        await window.api.projects.remove(project.id, { deleteWorktrees: true, force: true })
+        finishProjectRemove(project)
+        return
+      }
+      finishProjectRemove(project)
+    },
+    [destroyProjectWorkspaceSurfaces, finishProjectRemove]
+  )
 
   const handleReorderProjects = useCallback((orderedIds: string[]): void => {
     // Optimistic reorder — update local state immediately using functional updater
@@ -1014,6 +1501,18 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       console.error('[dashboard] reorder failed; refetching', err)
       window.api.projects.list().then(setProjects).catch(console.error)
     })
+  }, [])
+
+  const handleReorderProjectsByActivity = useCallback((): void => {
+    window.api.projects
+      .reorderByActivity()
+      .then((orderedIds) => {
+        setProjects((arr) => reorderById(arr, orderedIds))
+      })
+      .catch((err) => {
+        console.error('[dashboard] reorder by activity failed; refetching', err)
+        window.api.projects.list().then(setProjects).catch(console.error)
+      })
   }, [])
 
   const handleReorderWorkspaces = useCallback(
@@ -1044,7 +1543,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const activeProject =
     view.kind === 'project' || view.kind === 'workspace'
-      ? projects.find((p) => p.id === (view.kind === 'project' ? view.projectId : view.projectId))
+      ? projects.find((p) => p.id === view.projectId)
       : undefined
 
   const activeProjectForWorkspace =
@@ -1057,53 +1556,98 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const activeView = viewToSidebarActiveView(view)
 
+  // Which top-level surface ActivityRail highlights, and which secondary
+  // sidebar column (if any) renders to its right. null while in Settings —
+  // Sidebar (Projects) is still shown behind Settings so the tree stays
+  // visible/navigable while the settings panel is open.
+  const surface = deriveSurface(view.kind)
+  const resolvedSidebarWidth = uiState?.sidebarWidth ?? UI_STATE_DEFAULTS.sidebarWidth
+  let secondaryColumn: React.JSX.Element | null = null
+  if (surface === 'panes') {
+    // Structural parity with the Projects <Sidebar> aside (Sidebar.tsx
+    // ~1463-1472) is deliberate: both asides must share the exact same
+    // non-width classes and collapsed mechanism (mounted at w-14 rather
+    // than unmounted) so switching Projects<->Panes never shifts the
+    // layout — see the "Sidebar shifts when switching surfaces" fix.
+    secondaryColumn = (
+      <aside
+        className={[
+          sidebarCollapsed ? 'w-14' : '',
+          'transition-[width] duration-150 ease-out',
+          'bg-surface-raised border-r border-border-default',
+          'flex flex-col overflow-hidden shrink-0 h-full'
+        ].join(' ')}
+        style={sidebarCollapsed ? undefined : { width: resolvedSidebarWidth + 'px' }}
+      >
+        <PanelsSection collapsed={sidebarCollapsed} />
+      </aside>
+    )
+  } else if (surface !== 'dashboard') {
+    secondaryColumn = (
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        projects={projects}
+        projectsLoading={projectsLoading}
+        selectedProjectId={selectedProjectId}
+        selectedWorkspaceId={selectedWorkspaceId}
+        activeView={activeView}
+        currentViewKind={view.kind}
+        expandedProjectIds={expandedProjectIds}
+        workspacesByProject={workspacesByProject}
+        workspaceCountInline={uiState?.workspaceCountInline ?? true}
+        sidebarWidth={resolvedSidebarWidth}
+        fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
+        pinnedItems={pinnedItems}
+        onSelectProject={handleSelectProject}
+        onAddProject={handleAddProject}
+        addingProject={addingProject}
+        onToggleProjectExpand={handleToggleProjectExpand}
+        onSelectWorkspace={handleSelectWorkspace}
+        onRenameProject={handleRenameProject}
+        onRequestRemoveProject={handleRequestRemoveProject}
+        onAddWorkspace={handleAddWorkspace}
+        onRenameWorkspace={handleRenameWorkspace}
+        onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
+        onCloseWorkspace={handleCloseWorkspace}
+        onTogglePinWorkspace={handleToggleWorkspacePin}
+        onTogglePinProject={handleToggleProjectPin}
+        onReorderProjects={handleReorderProjects}
+        onReorderProjectsByActivity={handleReorderProjectsByActivity}
+        onReorderWorkspaces={handleReorderWorkspaces}
+        onRefreshPins={refreshPins}
+      />
+    )
+  }
+
   return (
     <div className="flex flex-col h-screen">
       <TopBar
         onToggleCollapsed={handleToggleSidebarCollapsed}
         sidebarCollapsed={sidebarCollapsed}
-        sidebarWidth={uiState?.sidebarWidth ?? 256}
+        sidebarWidth={resolvedSidebarWidth}
       />
 
       <div className="flex flex-1 min-h-0">
-        <Sidebar
-          collapsed={sidebarCollapsed}
-          projects={projects}
-          projectsLoading={projectsLoading}
-          selectedProjectId={selectedProjectId}
-          selectedWorkspaceId={selectedWorkspaceId}
-          activeView={activeView}
-          currentViewKind={view.kind}
-          expandedProjectIds={expandedProjectIds}
-          workspacesByProject={workspacesByProject}
-          workspaceCountInline={uiState?.workspaceCountInline ?? true}
-          sidebarWidth={uiState?.sidebarWidth ?? 256}
-          fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
-          pinnedItems={pinnedItems}
-          onSelectProject={handleSelectProject}
-          onSelectNav={handleSelectNav}
+        <ActivityRail
+          activeSurface={surface}
+          settingsActive={view.kind === 'settings'}
+          updateAvailable={updateAvailable}
+          updateLatest={updateLatest}
+          onSelectSurface={handleSelectSurface}
           onSelectSettings={handleSelectSettings}
-          onAddProject={handleAddProject}
-          addingProject={addingProject}
-          onToggleProjectExpand={handleToggleProjectExpand}
-          onSelectWorkspace={handleSelectWorkspace}
-          onRenameProject={handleRenameProject}
-          onRequestRemoveProject={handleRequestRemoveProject}
-          onAddWorkspace={handleAddWorkspace}
-          onRenameWorkspace={handleRenameWorkspace}
-          onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
-          onCloseWorkspace={handleCloseWorkspace}
-          onTogglePinWorkspace={handleToggleWorkspacePin}
-          onTogglePinProject={handleToggleProjectPin}
-          onReorderProjects={handleReorderProjects}
-          onReorderWorkspaces={handleReorderWorkspaces}
-          onRefreshPins={refreshPins}
+          onOpenUpdates={handleOpenUpdates}
         />
+
+        {secondaryColumn}
 
         <main
           className={
-            // Workspace view: terminal always sits above web layer (native z-order),
-            // so this container stays transparent to let the NSView paint through.
+            // Workspace view: the libghostty terminal NSView always sits above
+            // this window's web layer (native z-order), so this container stays
+            // transparent to let it paint through. React UI that needs to sit
+            // above the terminal uses the child-window overlay layer
+            // (overlayClient.ts) instead — see
+            // docs/learnings/overlay-child-window-macos.md.
             mainContainerClassName(view.kind)
           }
         >
@@ -1112,7 +1656,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
             workspace={activeWorkspace}
             workspacesForProject={
-              view.kind === 'project' ? (workspacesByProject[view.projectId] ?? null) : null
+              view.kind === 'project' || view.kind === 'workspace'
+                ? (workspacesByProject[view.projectId] ?? null)
+                : null
             }
             onRequestRemoveProject={handleRequestRemoveProject}
             onSelectWorkspace={handleSelectWorkspace}
@@ -1128,27 +1674,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           />
         </main>
       </div>
-
-      {removeConfirmTarget && (
-        <ConfirmModal
-          title="Remove?"
-          body={
-            <>
-              <p className="mb-2">
-                <span className="font-medium text-text-primary">{removeConfirmTarget.name}</span>{' '}
-                will be removed from Orpheus along with its workspaces and sessions.
-              </p>
-              <p className="text-text-muted">
-                Files on disk are untouched. You can re-add the folder later.
-              </p>
-            </>
-          }
-          confirmLabel="Remove"
-          destructive
-          onConfirm={handleConfirmRemove}
-          onCancel={handleCancelRemove}
-        />
-      )}
     </div>
   )
 }

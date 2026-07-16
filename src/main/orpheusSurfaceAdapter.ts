@@ -21,6 +21,7 @@ import { shimPath } from './orpheusNotify'
 import { getCachedShellPath } from './shellHelpers'
 import { writeGhosttyConfigFile } from './ghosttyConfig'
 import { getAppUiState } from './uiState'
+import { isDev } from './appMode'
 
 // ---------------------------------------------------------------------------
 // loadOrpheusSurface
@@ -72,12 +73,18 @@ export type MountEnvResult = {
 // @param projectId    The owning project (for per-project setting overrides).
 // @param sockPath     notifyServer.sockPath if the notify server is running,
 //                     undefined otherwise (ORPHEUS_SOCK is omitted).
+// @param cmdServer    { sockPath, token } from the running command server,
+//                     undefined if the command server has not started yet.
+//                     When present, ORPHEUS_CMD_SOCK and ORPHEUS_CMD_TOKEN are
+//                     injected so the CLI can reach the server zero-config from
+//                     inside a workspace terminal.
 // ---------------------------------------------------------------------------
 
 export function buildMountEnv(
   workspaceId: string,
   projectId: string | undefined,
-  sockPath: string | undefined
+  sockPath: string | undefined,
+  cmdServer?: { sockPath: string; token: string }
 ): MountEnvResult {
   // Compose claude settings → flags, settingsJson, base env vars.
   const launch = composeClaudeLaunch(projectId, workspaceId)
@@ -93,22 +100,45 @@ export function buildMountEnv(
 
   const ghosttyConfigPath = writeGhosttyConfigFile()
 
-  // Only inject hook-plumbing env vars when hooks integration is enabled.
-  // When disabled, ORPHEUS_NOTIFY is absent so the managed hook command's
-  // guard (`[ -n "$ORPHEUS_NOTIFY" ]`) short-circuits to a no-op, and
-  // ORPHEUS_WORKSPACE_ID is not needed (consumed only by the hook shim).
+  // Only inject ORPHEUS_NOTIFY (hook plumbing) when hooks integration is enabled.
+  // ORPHEUS_WORKSPACE_ID is injected UNCONDITIONALLY because it is now load-bearing
+  // for the CLI (spawn guardrails use parentId from context.workspaceId, self-archive
+  // guard compares args.id === context.workspaceId). Gating it on hooksEnabled was a
+  // bug: hooks default OFF, so ORPHEUS_WORKSPACE_ID was always absent, disabling the
+  // `if (parentId != null)` cap checks and making the self-action guard always false.
   const hooksEnabled = getAppUiState().hooksIntegrationEnabled
+
+  // Resolve the Resources/bin dir so we can prepend it to PATH.
+  // Both packaged and dev builds install to an .app bundle where the Electron
+  // binary lives at Contents/MacOS/<AppName> and the shim at
+  // Contents/Resources/bin/orpheus.  process.resourcesPath == Contents/Resources
+  // in both cases, so we always derive the bin dir from there (same as shimPath()).
+  const orpheusBinDir = join(process.resourcesPath, 'bin')
 
   const env: Record<string, string> = {
     ...launch.env,
     ...authEnv, // auth env wins on conflict
     ...(launch.flags ? { ORPHEUS_CLAUDE_FLAGS: launch.flags } : {}),
     ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {}),
-    ...(hooksEnabled ? { ORPHEUS_WORKSPACE_ID: workspaceId } : {}),
+    ORPHEUS_WORKSPACE_ID: workspaceId, // always present — load-bearing for CLI guardrails
     ...(sockPath ? { ORPHEUS_SOCK: sockPath } : {}),
     ...(hooksEnabled ? { ORPHEUS_NOTIFY: shimPath() } : {}),
     ...(cachedUserPath ? { ORPHEUS_USER_PATH: cachedUserPath } : {}),
-    ORPHEUS_GHOSTTY_CONFIG: ghosttyConfigPath
+    ORPHEUS_GHOSTTY_CONFIG: ghosttyConfigPath,
+    // CLI plumbing: prepend orpheusBinDir to PATH so `orpheus` resolves inside
+    // every workspace terminal without a global symlink (deferred to Phase 2).
+    // PATH is assembled as: orpheusBinDir : cachedUserPath (if any) : existing PATH.
+    // The orpheus-claude.sh wrapper already splices ORPHEUS_USER_PATH into PATH,
+    // so we set ORPHEUS_BIN_DIR separately and let the wrapper prepend it.
+    ORPHEUS_BIN_DIR: orpheusBinDir,
+    // Data variant — tells the CLI which data dir to target (dev or prod).
+    ORPHEUS_DATA_VARIANT: isDev ? 'dev' : 'prod',
+    // Command server plumbing — injected when the server is running so the CLI
+    // resolves sock/token zero-config from within a workspace terminal.
+    // The CLI also falls back to reading cmd.token from disk, so this is a
+    // convenience that avoids a file read on every invocation.
+    ...(cmdServer ? { ORPHEUS_CMD_SOCK: cmdServer.sockPath } : {}),
+    ...(cmdServer ? { ORPHEUS_CMD_TOKEN: cmdServer.token } : {})
   }
 
   // Resolve the wrapper script path.

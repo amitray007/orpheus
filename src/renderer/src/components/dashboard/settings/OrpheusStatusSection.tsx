@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState, ClaudeStatusSnapshot } from '@shared/types'
+import {
+  UI_STATE_DEFAULTS,
+  VALID_STATUS_POLL_INTERVALS_SEC,
+  VALID_USAGE_POLL_INTERVALS_SEC
+} from '@shared/uiStateDefaults'
 import { SettingRow, Toggle, Select, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { ArrowSquareOut } from '@phosphor-icons/react'
@@ -113,18 +118,56 @@ function handleOpenPage(): void {
 // OrpheusStatusSection
 // ---------------------------------------------------------------------------
 
-const POLL_INTERVAL_OPTIONS = [
-  { value: '300', label: '5 minutes' },
-  { value: '600', label: '10 minutes' },
-  { value: '900', label: '15 minutes' },
-  { value: '1800', label: '30 minutes' },
-  { value: '3600', label: '1 hour' },
-  { value: '7200', label: '2 hours' },
-  { value: '10800', label: '3 hours' }
-] as const
+// Human-readable labels have no numeric source and must stay hand-authored;
+// the set of valid values itself derives from the shared constant so the two
+// can never drift out of sync.
+const POLL_INTERVAL_LABELS: Record<number, string> = {
+  300: '5 minutes',
+  600: '10 minutes',
+  900: '15 minutes',
+  1800: '30 minutes',
+  3600: '1 hour',
+  7200: '2 hours',
+  10800: '3 hours'
+}
+const POLL_INTERVAL_OPTIONS = VALID_STATUS_POLL_INTERVALS_SEC.map((sec) => ({
+  value: String(sec),
+  label: POLL_INTERVAL_LABELS[sec]
+}))
 
-type PollIntervalValue = (typeof POLL_INTERVAL_OPTIONS)[number]['value']
-const DEFAULT_POLL_INTERVAL: PollIntervalValue = '1800'
+type PollIntervalValue = string
+const DEFAULT_POLL_INTERVAL: PollIntervalValue = String(UI_STATE_DEFAULTS.statusPollIntervalSec)
+
+// Dashboard "Usage" card background poll interval (D3) — same label-source
+// pattern as the status poll interval above, keyed off its own valid set
+// (no sub-5min option, 1hr ceiling — see uiStateDefaults.ts).
+const USAGE_POLL_INTERVAL_LABELS: Record<number, string> = {
+  300: '5 minutes',
+  600: '10 minutes',
+  900: '15 minutes',
+  1800: '30 minutes',
+  3600: '1 hour'
+}
+const USAGE_POLL_INTERVAL_OPTIONS = VALID_USAGE_POLL_INTERVALS_SEC.map((sec) => ({
+  value: String(sec),
+  label: USAGE_POLL_INTERVAL_LABELS[sec]
+}))
+const DEFAULT_USAGE_POLL_INTERVAL: PollIntervalValue = String(
+  UI_STATE_DEFAULTS.usagePollIntervalSec
+)
+
+/** Resolve a stored interval value against its option set, falling back to
+ *  the default when the stored value is missing or no longer valid (e.g. an
+ *  older DB row predating a set change). Shared by both poll-interval
+ *  Selects below to keep the component body's branching flat. */
+function resolvePollInterval(
+  options: { value: PollIntervalValue }[],
+  stored: number | undefined,
+  fallback: PollIntervalValue
+): PollIntervalValue {
+  const str = String(stored ?? Number(fallback)) as PollIntervalValue
+  return options.some((o) => o.value === str) ? str : fallback
+}
 
 export function OrpheusStatusSection(): React.JSX.Element {
   const [uiState, setUiState] = useState<AppUiState | null>(null)
@@ -204,12 +247,16 @@ export function OrpheusStatusSection(): React.JSX.Element {
     )
   }
 
-  const pollIntervalStr = String(
-    uiState.statusPollIntervalSec ?? Number(DEFAULT_POLL_INTERVAL)
-  ) as PollIntervalValue
-  const validPollInterval = POLL_INTERVAL_OPTIONS.some((o) => o.value === pollIntervalStr)
-    ? pollIntervalStr
-    : DEFAULT_POLL_INTERVAL
+  const validPollInterval = resolvePollInterval(
+    POLL_INTERVAL_OPTIONS,
+    uiState.statusPollIntervalSec,
+    DEFAULT_POLL_INTERVAL
+  )
+  const validUsagePollInterval = resolvePollInterval(
+    USAGE_POLL_INTERVAL_OPTIONS,
+    uiState.usagePollIntervalSec,
+    DEFAULT_USAGE_POLL_INTERVAL
+  )
 
   const hasData =
     snapshot !== null &&
@@ -355,7 +402,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
             description="How often Orpheus polls status.claude.com for live service health."
           >
             <Select
-              options={POLL_INTERVAL_OPTIONS as unknown as { value: string; label: string }[]}
+              options={POLL_INTERVAL_OPTIONS}
               value={validPollInterval}
               onChange={(v) => patch({ statusPollIntervalSec: parseInt(v, 10) })}
               ariaLabel="Status check interval"
@@ -369,6 +416,17 @@ export function OrpheusStatusSection(): React.JSX.Element {
               value={uiState.muteStatusNotifications ?? false}
               onChange={(v) => patch({ muteStatusNotifications: v })}
               ariaLabel="Mute status notifications"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Usage refresh interval"
+            description="How often Orpheus refreshes the Dashboard Usage card in the background."
+          >
+            <Select
+              options={USAGE_POLL_INTERVAL_OPTIONS}
+              value={validUsagePollInterval}
+              onChange={(v) => patch({ usagePollIntervalSec: parseInt(v, 10) })}
+              ariaLabel="Usage refresh interval"
             />
           </SettingRow>
         </div>

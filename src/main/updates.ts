@@ -2,6 +2,8 @@ import { app, BrowserWindow } from 'electron'
 import { spawn, execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { getDb } from './db'
+import { PUSH_CHANNELS } from '../shared/ipc'
+import type { PushChannel, PushPayload } from '../shared/ipc'
 import type {
   UpdateCheckResult,
   UpdatePhase,
@@ -62,7 +64,7 @@ const SNAPSHOT_LOG_CAP = 200
 // Broadcast helpers
 // ---------------------------------------------------------------------------
 
-function broadcast(channel: string, payload: unknown): void {
+function broadcast<C extends PushChannel>(channel: C, payload: PushPayload<C>): void {
   for (const w of BrowserWindow.getAllWindows()) {
     w.webContents.send(channel, payload)
   }
@@ -76,7 +78,11 @@ function refreshTap(done: () => void): void {
   const repoChild = spawn(BREW, ['--repository', 'amitray007/homebrew-tap'], {
     stdio: ['ignore', 'pipe', 'pipe']
   })
-  repoChild.on('error', () => done())
+  const repoKillTimer = setTimeout(() => repoChild.kill('SIGTERM'), 60_000)
+  repoChild.on('error', () => {
+    clearTimeout(repoKillTimer)
+    done()
+  })
 
   let tapPath = ''
   repoChild.stdout.on('data', (chunk: Buffer) => (tapPath += chunk.toString()))
@@ -84,6 +90,7 @@ function refreshTap(done: () => void): void {
   repoChild.stderr.on('data', () => {})
 
   repoChild.on('exit', (code) => {
+    clearTimeout(repoKillTimer)
     tapPath = tapPath.trim()
     if (code !== 0 || !tapPath || !existsSync(tapPath)) {
       done()
@@ -92,11 +99,18 @@ function refreshTap(done: () => void): void {
     const pullChild = spawn('git', ['-C', tapPath, 'pull', '--ff-only'], {
       stdio: ['ignore', 'pipe', 'pipe']
     })
-    pullChild.on('error', () => done())
+    const pullKillTimer = setTimeout(() => pullChild.kill('SIGTERM'), 60_000)
+    pullChild.on('error', () => {
+      clearTimeout(pullKillTimer)
+      done()
+    })
     // consume stdout/stderr to avoid pipe buffer blocks
     pullChild.stdout.on('data', () => {})
     pullChild.stderr.on('data', () => {})
-    pullChild.on('exit', () => done())
+    pullChild.on('exit', () => {
+      clearTimeout(pullKillTimer)
+      done()
+    })
   })
 }
 
@@ -118,11 +132,13 @@ function runOutdated(
   const child = spawn(BREW, ['outdated', '--cask', 'orpheus', '--json', '--fetch'], {
     stdio: ['ignore', 'pipe', 'pipe']
   })
+  const killTimer = setTimeout(() => child.kill('SIGTERM'), 60_000)
   let stdout = ''
   let stderr = ''
   child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()))
   child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()))
   child.on('exit', (code) => {
+    clearTimeout(killTimer)
     // brew outdated exits 1 when casks are outdated — that's not an error.
     // Only treat non-zero as an error when stdout is empty (real failure).
     if (code !== 0 && !stdout.trim()) {
@@ -178,7 +194,7 @@ function runOutdated(
  *   "  #####      ##                             5.6%  --:--"  (curl bar)
  *   "Already downloaded: …"  (cached; skip % extraction)
  */
-export function parseBrewLine(
+function parseBrewLine(
   line: string,
   prevPhase: UpdatePhase
 ): { phase: UpdatePhase; percent: number | null } {
@@ -234,6 +250,7 @@ export function checkForUpdates(): Promise<UpdateCheckResult> {
             lastChecked: result.checkedAt
           })
         }
+        broadcast(PUSH_CHANNELS.updatesCheckResult, result)
         resolve(result)
       })
     )
@@ -249,7 +266,7 @@ export function installUpdate(): void {
     line: 'Refreshing tap…'
   }
   setSnapshot({ kind: 'installing', phase: 'refresh', percent: null, log: [], reason: null })
-  broadcast('updates:progress', refreshProgress)
+  broadcast(PUSH_CHANNELS.updatesProgress, refreshProgress)
 
   refreshTap(() => {
     let currentPhase: UpdatePhase = 'download'
@@ -258,6 +275,7 @@ export function installUpdate(): void {
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe']
     })
+    const killTimer = setTimeout(() => child.kill('SIGTERM'), 180_000)
 
     function handleLine(raw: string): void {
       // Split on newlines — a single data event may carry multiple lines
@@ -272,13 +290,14 @@ export function installUpdate(): void {
             : [...currentLog, line]
         setSnapshot({ phase, percent, log: newLog })
         const progress: UpdateProgress = { phase, percent, line }
-        broadcast('updates:progress', progress)
+        broadcast(PUSH_CHANNELS.updatesProgress, progress)
       }
     }
 
     child.stdout.on('data', (chunk: Buffer) => handleLine(chunk.toString()))
     child.stderr.on('data', (chunk: Buffer) => handleLine(chunk.toString()))
     child.on('exit', (code) => {
+      clearTimeout(killTimer)
       if (code === 0) {
         setSnapshot({ kind: 'installed', phase: null, percent: null })
       } else {
@@ -289,7 +308,7 @@ export function installUpdate(): void {
           percent: null
         })
       }
-      broadcast('updates:done', { success: code === 0, code })
+      broadcast(PUSH_CHANNELS.updatesDone, { success: code === 0, code })
     })
   })
 }
@@ -322,8 +341,7 @@ function isAutoCheckEnabled(): boolean {
 async function runAutoCheck(): Promise<void> {
   if (!isAutoCheckEnabled()) return
   try {
-    const result = await checkForUpdates()
-    broadcast('updates:checkResult', result)
+    await checkForUpdates()
   } catch (err) {
     console.warn('[updates] auto-check failed:', err)
   }

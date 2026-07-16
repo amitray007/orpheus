@@ -3,11 +3,23 @@ import type {
   AppUiState,
   AppUiStatePatch,
   AppViewKind,
+  ProjectsLastViewKind,
   Theme,
   AccentColor,
   UiFontScale,
   SoundPack
 } from '../shared/types'
+import {
+  UI_STATE_DEFAULTS,
+  VALID_STATUS_POLL_INTERVALS_SEC,
+  VALID_USAGE_POLL_INTERVALS_SEC,
+  VALID_FILES_SORT_ORDERS,
+  VALID_DEFAULT_SURFACES,
+  SIDEBAR_WIDTH_MIN,
+  SIDEBAR_WIDTH_MAX,
+  WORKBENCH_TREE_WIDTH_MIN,
+  WORKBENCH_TREE_WIDTH_MAX
+} from '../shared/uiStateDefaults'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -19,6 +31,14 @@ type AppUiStateRow = {
   last_view_kind: string
   last_project_id: string | null
   last_workspace_id: string | null
+  // Panes v2 active-panel/active-layout persistence (issue #1) — mirrors
+  // last_project_id/last_workspace_id exactly.
+  last_panel_id: string | null
+  last_layout_id: string | null
+  // Projects-surface-scoped location memory — see AppUiState.projectsLastViewKind.
+  projects_last_view_kind: string
+  projects_last_project_id: string | null
+  projects_last_workspace_id: string | null
   window_x: number | null
   window_y: number | null
   window_width: number | null
@@ -33,6 +53,8 @@ type AppUiStateRow = {
   workspace_count_inline: number
   sidebar_width: number
   default_project_expanded: number
+  // Projects surface — optional Workspaces board (kanban) visibility (U3).
+  show_workspaces_board: number
   // Launch + hotkey (v18)
   launch_at_login: number
   global_hotkey: string
@@ -75,8 +97,31 @@ type AppUiStateRow = {
   // Status polling preferences (v42)
   status_poll_interval_sec: number | null
   mute_status_notifications: number | null
+  // Dashboard "Usage" card background poll interval (D3)
+  usage_poll_interval_sec: number | null
   // Workspace footer visibility (v45)
   show_workspace_footer: number | null
+  // Files-tab editor save mode (v62)
+  files_auto_save: number | null
+  // Files-tab tree view preferences (v67)
+  files_show_hidden: number
+  files_dim_gitignored: number
+  files_wrap_lines: number
+  files_sort_order: string
+  files_flatten_empty_dirs: number
+  // Workbench Git-tab diff view preferences (v68)
+  git_diff_wrap_lines: number
+  // Token-hover popover (Pierre Batch 3)
+  token_hover_enabled: number
+  // Per-hunk "Revert" on the working-tree diff
+  hunk_actions_enabled: number
+  // Panes v2 top-level view visibility toggles
+  show_panes_view: number
+  show_workspaces_view: number
+  // Open-at-launch surface
+  default_surface: string
+  // Workbench tree/code split pane width (v69)
+  workbench_tree_width: number
   // Diagnostics capture toggles (v56)
   diag_error: number | null
   diag_lifecycle: number | null
@@ -84,13 +129,21 @@ type AppUiStateRow = {
   diag_anomaly: number | null
   // Trace capture (v61)
   diag_trace: number | null
+  // GitHub username greeting (D4)
+  github_username: string | null
   updated_at: number
 }
 
 function rowToRecord(row: AppUiStateRow): AppUiState {
   // Clamp sidebar_width to valid range at read time — guards against manual DB edits
-  const rawWidth = row.sidebar_width ?? 256
-  const clampedWidth = Math.min(480, Math.max(200, rawWidth))
+  const rawWidth = row.sidebar_width ?? UI_STATE_DEFAULTS.sidebarWidth
+  const clampedWidth = Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, rawWidth))
+  // Clamp workbench_tree_width the same way (see sidebar_width above).
+  const rawTreeWidth = row.workbench_tree_width ?? UI_STATE_DEFAULTS.workbenchTreeWidth
+  const clampedTreeWidth = Math.min(
+    WORKBENCH_TREE_WIDTH_MAX,
+    Math.max(WORKBENCH_TREE_WIDTH_MIN, rawTreeWidth)
+  )
   return {
     sidebarCollapsed: row.sidebar_collapsed === 1,
     // 'dashboard' was a valid kind in older DB rows — coerce to 'sessions' on read.
@@ -99,6 +152,19 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
       : row.last_view_kind) as AppViewKind,
     lastProjectId: row.last_project_id,
     lastWorkspaceId: row.last_workspace_id,
+    // Panes v2 active-panel/active-layout persistence (issue #1)
+    lastPanelId: row.last_panel_id,
+    lastLayoutId: row.last_layout_id,
+    // Projects-surface-scoped location memory — defensive coercion mirrors
+    // how lastViewKind coerces legacy 'dashboard' → 'sessions' on read;
+    // default to 'sessions' if the stored value is somehow invalid.
+    projectsLastViewKind: (['sessions', 'project', 'workspace'] as const).includes(
+      row.projects_last_view_kind as 'sessions' | 'project' | 'workspace'
+    )
+      ? (row.projects_last_view_kind as ProjectsLastViewKind)
+      : 'sessions',
+    projectsLastProjectId: row.projects_last_project_id,
+    projectsLastWorkspaceId: row.projects_last_workspace_id,
     windowX: row.window_x,
     windowY: row.window_y,
     windowWidth: row.window_width,
@@ -113,11 +179,14 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     workspaceCountInline: (row.workspace_count_inline ?? 1) === 1,
     sidebarWidth: clampedWidth,
     defaultProjectExpanded: (row.default_project_expanded ?? 0) === 1,
+    // Projects surface — optional Workspaces board (kanban) visibility (U3).
+    showWorkspacesBoard: (row.show_workspaces_board ?? 0) === 1,
     // Launch + hotkey (v18)
     launchAtLogin: (row.launch_at_login ?? 0) === 1,
     globalHotkey: row.global_hotkey ?? '',
     // Archive cap (v25)
-    archivedWorkspaceLimit: row.archived_workspace_limit ?? 20,
+    archivedWorkspaceLimit:
+      row.archived_workspace_limit ?? UI_STATE_DEFAULTS.archivedWorkspaceLimit,
     // Hooks integration (v60) — default false (off)
     hooksIntegrationEnabled: (row.hooks_integration_enabled ?? 0) === 1,
     // Notification preferences (v29)
@@ -128,7 +197,7 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     notifySuppressWhenFocused: (row.notify_suppress_when_focused ?? 0) === 1,
     notifyMaxAttentionRepeats: row.notify_max_attention_repeats ?? 5,
     inProgressWatchdogSec: row.in_progress_watchdog_sec ?? 120,
-    staleAfterMinutes: row.stale_after_minutes ?? 60,
+    staleAfterMinutes: row.stale_after_minutes ?? UI_STATE_DEFAULTS.staleAfterMinutes,
     autoCloseAfterMinutes: row.auto_close_after_minutes ?? 120,
     // App picker preferences (v32) — undefined when column absent (old DB pre-migration)
     preferredEditorApp: row.preferred_editor_app ?? null,
@@ -148,10 +217,37 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     // Updates (v40) — default true
     autoCheckUpdates: (row.auto_check_updates ?? 1) === 1,
     // Status polling preferences (v42)
-    statusPollIntervalSec: row.status_poll_interval_sec ?? 1800,
+    statusPollIntervalSec: row.status_poll_interval_sec ?? UI_STATE_DEFAULTS.statusPollIntervalSec,
     muteStatusNotifications: (row.mute_status_notifications ?? 0) === 1,
+    // Dashboard "Usage" card background poll interval (D3)
+    usagePollIntervalSec: row.usage_poll_interval_sec ?? UI_STATE_DEFAULTS.usagePollIntervalSec,
     // Workspace footer visibility (v45) — default true
     showWorkspaceFooter: (row.show_workspace_footer ?? 1) === 1,
+    // Files-tab editor save mode (v62) — default false (manual save)
+    filesAutoSave: (row.files_auto_save ?? 0) === 1,
+    // Files-tab tree view preferences (v67) — mirrors UI_STATE_DEFAULTS in
+    // src/shared/uiStateDefaults.ts (filesFlattenEmptyDirs defaults true, Fix 3)
+    filesShowHidden: (row.files_show_hidden ?? 0) === 1,
+    filesDimGitignored: (row.files_dim_gitignored ?? 1) === 1,
+    filesWrapLines: (row.files_wrap_lines ?? 1) === 1,
+    filesSortOrder: row.files_sort_order === 'name' ? 'name' : 'default',
+    filesFlattenEmptyDirs: (row.files_flatten_empty_dirs ?? 1) === 1,
+    // Workbench Git-tab diff view preferences (v68) — default true (wrap on)
+    gitDiffWrapLines: (row.git_diff_wrap_lines ?? 1) === 1,
+    // Token-hover popover (Pierre Batch 3) — default false (off)
+    tokenHoverEnabled: (row.token_hover_enabled ?? 0) === 1,
+    // Per-hunk "Revert" on the working-tree diff — default false (off)
+    hunkActionsEnabled: (row.hunk_actions_enabled ?? 0) === 1,
+    // Panes v2 top-level view visibility toggles — showPanesView defaults
+    // true, showWorkspacesView defaults false (matches schema DEFAULTs)
+    showPanesView: (row.show_panes_view ?? 1) === 1,
+    showWorkspacesView: (row.show_workspaces_view ?? 1) === 1,
+    // Open-at-launch surface — default 'projects' (matches schema DEFAULT)
+    defaultSurface: (VALID_DEFAULT_SURFACES as readonly string[]).includes(row.default_surface)
+      ? (row.default_surface as AppUiState['defaultSurface'])
+      : 'projects',
+    // Workbench tree/code split pane width (v69) — shared Files+Git divider width
+    workbenchTreeWidth: clampedTreeWidth,
     // Diagnostics capture toggles (v56)
     diagError: row.diag_error == null ? true : row.diag_error === 1,
     diagLifecycle: row.diag_lifecycle === 1,
@@ -159,6 +255,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     diagAnomaly: row.diag_anomaly === 1,
     // Trace capture (v61) — off by default
     diagTrace: row.diag_trace === 1,
+    // GitHub username greeting (D4) — nullable, no default
+    githubUsername: row.github_username ?? null,
     updatedAt: row.updated_at
   }
 }
@@ -167,7 +265,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
 // Validation
 // ---------------------------------------------------------------------------
 
-const VALID_VIEW_KINDS: AppViewKind[] = ['sessions', 'project', 'workspace']
+const VALID_VIEW_KINDS: AppViewKind[] = ['dashboard', 'sessions', 'project', 'workspace', 'panes']
+const VALID_PROJECTS_LAST_VIEW_KINDS: ProjectsLastViewKind[] = ['sessions', 'project', 'workspace']
 const VALID_THEMES: Theme[] = ['midnight', 'daylight', 'eclipse']
 const VALID_ACCENT_COLORS: AccentColor[] = ['gold', 'blue', 'teal', 'orange', 'pink']
 const VALID_FONT_SCALES: UiFontScale[] = ['small', 'default', 'large']
@@ -184,69 +283,203 @@ const VALID_SOUND_PACKS: SoundPack[] = [
 // Allowed values for the status poller interval. Must stay in sync with the
 // Select options surfaced in OrpheusStatusSection.tsx (5/10/15/30 min,
 // 1/2/3 hr) so the UI never offers a value the validator rejects.
-const VALID_STATUS_POLL_INTERVALS = [300, 600, 900, 1800, 3600, 7200, 10800] as const
+const VALID_STATUS_POLL_INTERVALS = VALID_STATUS_POLL_INTERVALS_SEC
+// Allowed values for the Claude usage background poller interval (D3). Must
+// stay in sync with the Select options surfaced in OrpheusStatusSection.tsx
+// (5/10/15/30 min, 1 hr) so the UI never offers a value the validator rejects.
+const VALID_USAGE_POLL_INTERVALS = VALID_USAGE_POLL_INTERVALS_SEC
+
+// ---------------------------------------------------------------------------
+// Table-driven validators
+//
+// The bulk of validatePatch is a flat sequence of independent per-key checks
+// that fall into a few uniform shapes (enum membership, nullable-string,
+// plain boolean). Each shape is factored into a small helper applied over a
+// table of keys — but ONLY where the predicate + thrown message are
+// byte-for-byte identical across every key in that table. Keys whose check
+// has a different guard (e.g. no `!== undefined`) or message phrasing (e.g.
+// "or null" suffix) are kept as their own standalone block below.
+// ---------------------------------------------------------------------------
+
+// Enum keys that use the `!== undefined` guard and the plain
+// "<label> must be one of <list>" message (no "or null" suffix).
+function validateEnumField<K extends keyof AppUiStatePatch>(
+  patch: AppUiStatePatch,
+  key: K,
+  validValues: readonly AppUiStatePatch[K][],
+  label: string
+): void {
+  const value = patch[key]
+  if (key in patch && value !== undefined) {
+    if (!validValues.includes(value)) {
+      throw new Error(`uiState: ${label} must be one of ${validValues.join(', ')}`)
+    }
+  }
+}
+
+// Nullable-string keys: "<label> must be a string or null", no `undefined` guard.
+function validateNullableStringField<K extends keyof AppUiStatePatch>(
+  patch: AppUiStatePatch,
+  key: K,
+  label: string
+): void {
+  const value = patch[key]
+  if (key in patch) {
+    if (value !== null && typeof value !== 'string') {
+      throw new Error(`uiState: ${label} must be a string or null`)
+    }
+  }
+}
+
+// Plain-boolean keys: "<label> must be a boolean", with `!== undefined` guard.
+function validateBooleanField<K extends keyof AppUiStatePatch>(
+  patch: AppUiStatePatch,
+  key: K,
+  label: string
+): void {
+  const value = patch[key]
+  if (key in patch && value !== undefined) {
+    if (typeof value !== 'boolean') {
+      throw new Error(`uiState: ${label} must be a boolean`)
+    }
+  }
+}
+
+const NULLABLE_STRING_FIELDS: {
+  key: keyof AppUiStatePatch
+  label: string
+}[] = [
+  { key: 'lastProjectId', label: 'lastProjectId' },
+  { key: 'lastWorkspaceId', label: 'lastWorkspaceId' },
+  { key: 'projectsLastProjectId', label: 'projectsLastProjectId' },
+  { key: 'projectsLastWorkspaceId', label: 'projectsLastWorkspaceId' },
+  { key: 'githubUsername', label: 'githubUsername' }
+]
+
+// Note: muteStatusNotifications sits between the two poll-interval checks in
+// validatePatch's original order, so it's validated standalone there rather
+// than folded into this table (keeps the checks in their original sequence).
+const BOOLEAN_FIELDS: { key: keyof AppUiStatePatch; label: string }[] = [
+  { key: 'showWorkspaceFooter', label: 'showWorkspaceFooter' },
+  { key: 'filesAutoSave', label: 'filesAutoSave' },
+  { key: 'gitDiffWrapLines', label: 'gitDiffWrapLines' },
+  { key: 'tokenHoverEnabled', label: 'tokenHoverEnabled' },
+  { key: 'hunkActionsEnabled', label: 'hunkActionsEnabled' },
+  { key: 'showPanesView', label: 'showPanesView' },
+  { key: 'showWorkspacesView', label: 'showWorkspacesView' }
+]
+
+// Numeric-membership keys: "<label> must be one of <list>", requires
+// typeof === 'number' AND membership in the valid-values list.
+function validateNumericEnumField(
+  patch: AppUiStatePatch,
+  key: 'statusPollIntervalSec' | 'usagePollIntervalSec',
+  validValues: readonly number[],
+  label: string
+): void {
+  const value = patch[key]
+  if (key in patch && value !== undefined) {
+    if (typeof value !== 'number' || !validValues.includes(value)) {
+      throw new Error(`uiState: ${label} must be one of ${validValues.join(', ')}`)
+    }
+  }
+}
 
 function validatePatch(patch: AppUiStatePatch): void {
+  // lastViewKind: no `undefined` guard (differs from the enum table below).
   if ('lastViewKind' in patch) {
     if (!VALID_VIEW_KINDS.includes(patch.lastViewKind as AppViewKind)) {
       throw new Error(`uiState: lastViewKind must be one of ${VALID_VIEW_KINDS.join(', ')}`)
     }
   }
-  if ('lastProjectId' in patch) {
-    if (patch.lastProjectId !== null && typeof patch.lastProjectId !== 'string') {
-      throw new Error('uiState: lastProjectId must be a string or null')
-    }
-  }
-  if ('lastWorkspaceId' in patch) {
-    if (patch.lastWorkspaceId !== null && typeof patch.lastWorkspaceId !== 'string') {
-      throw new Error('uiState: lastWorkspaceId must be a string or null')
-    }
-  }
-  if ('theme' in patch && patch.theme !== undefined) {
-    if (!VALID_THEMES.includes(patch.theme as Theme)) {
-      throw new Error(`uiState: theme must be one of ${VALID_THEMES.join(', ')}`)
-    }
-  }
-  if ('accentColor' in patch && patch.accentColor !== undefined) {
+  // projectsLastViewKind: no `undefined` guard (differs from the enum table below).
+  if ('projectsLastViewKind' in patch) {
     if (
-      patch.accentColor !== null &&
-      !VALID_ACCENT_COLORS.includes(patch.accentColor as AccentColor)
+      !VALID_PROJECTS_LAST_VIEW_KINDS.includes(patch.projectsLastViewKind as ProjectsLastViewKind)
     ) {
+      throw new Error(
+        `uiState: projectsLastViewKind must be one of ${VALID_PROJECTS_LAST_VIEW_KINDS.join(', ')}`
+      )
+    }
+  }
+
+  for (const { key, label } of NULLABLE_STRING_FIELDS) {
+    validateNullableStringField(patch, key, label)
+  }
+
+  validateEnumField(patch, 'theme', VALID_THEMES, 'theme')
+
+  // accentColor: nullable enum with a distinct "or null" message suffix —
+  // kept standalone rather than forced into validateEnumField.
+  if ('accentColor' in patch && patch.accentColor !== undefined) {
+    if (patch.accentColor !== null && !VALID_ACCENT_COLORS.includes(patch.accentColor)) {
       throw new Error(
         `uiState: accentColor must be one of ${VALID_ACCENT_COLORS.join(', ')} or null`
       )
     }
   }
-  if ('uiFontScale' in patch && patch.uiFontScale !== undefined) {
-    if (!VALID_FONT_SCALES.includes(patch.uiFontScale as UiFontScale)) {
-      throw new Error(`uiState: uiFontScale must be one of ${VALID_FONT_SCALES.join(', ')}`)
-    }
+
+  validateEnumField(patch, 'uiFontScale', VALID_FONT_SCALES, 'uiFontScale')
+  validateEnumField(patch, 'soundPack', VALID_SOUND_PACKS, 'soundPack')
+
+  validateNumericEnumField(
+    patch,
+    'statusPollIntervalSec',
+    VALID_STATUS_POLL_INTERVALS,
+    'statusPollIntervalSec'
+  )
+
+  validateBooleanField(patch, 'muteStatusNotifications', 'muteStatusNotifications')
+
+  validateNumericEnumField(
+    patch,
+    'usagePollIntervalSec',
+    VALID_USAGE_POLL_INTERVALS,
+    'usagePollIntervalSec'
+  )
+
+  for (const { key, label } of BOOLEAN_FIELDS) {
+    validateBooleanField(patch, key, label)
   }
-  if ('soundPack' in patch && patch.soundPack !== undefined) {
-    if (!VALID_SOUND_PACKS.includes(patch.soundPack as SoundPack)) {
-      throw new Error(`uiState: soundPack must be one of ${VALID_SOUND_PACKS.join(', ')}`)
-    }
-  }
-  if ('statusPollIntervalSec' in patch && patch.statusPollIntervalSec !== undefined) {
+
+  validateEnumField(patch, 'defaultSurface', VALID_DEFAULT_SURFACES, 'defaultSurface')
+
+  // workbenchTreeWidth: numeric range check, one-of-a-kind shape.
+  if ('workbenchTreeWidth' in patch && patch.workbenchTreeWidth !== undefined) {
     if (
-      typeof patch.statusPollIntervalSec !== 'number' ||
-      !VALID_STATUS_POLL_INTERVALS.includes(
-        patch.statusPollIntervalSec as (typeof VALID_STATUS_POLL_INTERVALS)[number]
-      )
+      typeof patch.workbenchTreeWidth !== 'number' ||
+      patch.workbenchTreeWidth < WORKBENCH_TREE_WIDTH_MIN ||
+      patch.workbenchTreeWidth > WORKBENCH_TREE_WIDTH_MAX
     ) {
       throw new Error(
-        `uiState: statusPollIntervalSec must be one of ${VALID_STATUS_POLL_INTERVALS.join(', ')}`
+        `uiState: workbenchTreeWidth must be a number between ${WORKBENCH_TREE_WIDTH_MIN} and ${WORKBENCH_TREE_WIDTH_MAX}`
       )
     }
   }
-  if ('muteStatusNotifications' in patch && patch.muteStatusNotifications !== undefined) {
-    if (typeof patch.muteStatusNotifications !== 'boolean') {
-      throw new Error('uiState: muteStatusNotifications must be a boolean')
+
+  validateFilesViewPatch(patch)
+}
+
+// Split out of validatePatch to keep its cognitive complexity under the
+// ratchet ceiling — the 5 Files-tab tree view-preference fields (Fix 2) are
+// all boolean except filesSortOrder, which is a small enum.
+function validateFilesViewPatch(patch: AppUiStatePatch): void {
+  const boolFields = [
+    'filesShowHidden',
+    'filesDimGitignored',
+    'filesWrapLines',
+    'filesFlattenEmptyDirs'
+  ] as const
+  for (const key of boolFields) {
+    if (key in patch && patch[key] !== undefined && typeof patch[key] !== 'boolean') {
+      throw new Error(`uiState: ${key} must be a boolean`)
     }
   }
-  if ('showWorkspaceFooter' in patch && patch.showWorkspaceFooter !== undefined) {
-    if (typeof patch.showWorkspaceFooter !== 'boolean') {
-      throw new Error('uiState: showWorkspaceFooter must be a boolean')
+  if ('filesSortOrder' in patch && patch.filesSortOrder !== undefined) {
+    if (!VALID_FILES_SORT_ORDERS.includes(patch.filesSortOrder)) {
+      throw new Error(
+        `uiState: filesSortOrder must be one of ${VALID_FILES_SORT_ORDERS.join(', ')}`
+      )
     }
   }
 }
@@ -256,11 +489,6 @@ function validatePatch(patch: AppUiStatePatch): void {
 // ---------------------------------------------------------------------------
 
 let cachedState: AppUiState | null = null
-
-/** Invalidate the in-memory cache (call after external mutations, e.g. in tests). */
-export function invalidateAppUiStateCache(): void {
-  cachedState = null
-}
 
 export function getAppUiState(): AppUiState {
   if (cachedState !== null) return cachedState
@@ -282,6 +510,13 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     lastViewKind: 'last_view_kind',
     lastProjectId: 'last_project_id',
     lastWorkspaceId: 'last_workspace_id',
+    // Panes v2 active-panel/active-layout persistence (issue #1)
+    lastPanelId: 'last_panel_id',
+    lastLayoutId: 'last_layout_id',
+    // Projects-surface-scoped location memory
+    projectsLastViewKind: 'projects_last_view_kind',
+    projectsLastProjectId: 'projects_last_project_id',
+    projectsLastWorkspaceId: 'projects_last_workspace_id',
     windowX: 'window_x',
     windowY: 'window_y',
     windowWidth: 'window_width',
@@ -296,6 +531,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     workspaceCountInline: 'workspace_count_inline',
     sidebarWidth: 'sidebar_width',
     defaultProjectExpanded: 'default_project_expanded',
+    // Projects surface — optional Workspaces board (kanban) visibility (U3).
+    showWorkspacesBoard: 'show_workspaces_board',
     // Launch + hotkey (v18)
     launchAtLogin: 'launch_at_login',
     globalHotkey: 'global_hotkey',
@@ -337,15 +574,39 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Status polling preferences (v42)
     statusPollIntervalSec: 'status_poll_interval_sec',
     muteStatusNotifications: 'mute_status_notifications',
+    usagePollIntervalSec: 'usage_poll_interval_sec',
     // Workspace footer visibility (v45)
     showWorkspaceFooter: 'show_workspace_footer',
+    // Files-tab editor save mode (v62)
+    filesAutoSave: 'files_auto_save',
+    // Files-tab tree view preferences (v67)
+    filesShowHidden: 'files_show_hidden',
+    filesDimGitignored: 'files_dim_gitignored',
+    filesWrapLines: 'files_wrap_lines',
+    filesSortOrder: 'files_sort_order',
+    filesFlattenEmptyDirs: 'files_flatten_empty_dirs',
+    // Workbench Git-tab diff view preferences (v68)
+    gitDiffWrapLines: 'git_diff_wrap_lines',
+    // Token-hover popover (Pierre Batch 3)
+    tokenHoverEnabled: 'token_hover_enabled',
+    // Per-hunk "Revert" on the working-tree diff
+    hunkActionsEnabled: 'hunk_actions_enabled',
+    // Panes v2 top-level view visibility toggles
+    showPanesView: 'show_panes_view',
+    showWorkspacesView: 'show_workspaces_view',
+    // Open-at-launch surface
+    defaultSurface: 'default_surface',
+    // Workbench tree/code split pane width (v69)
+    workbenchTreeWidth: 'workbench_tree_width',
     // Diagnostics capture toggles (v56)
     diagError: 'diag_error',
     diagLifecycle: 'diag_lifecycle',
     diagPerf: 'diag_perf',
     diagAnomaly: 'diag_anomaly',
     // Trace capture (v61)
-    diagTrace: 'diag_trace'
+    diagTrace: 'diag_trace',
+    // GitHub username greeting (D4)
+    githubUsername: 'github_username'
   }
 
   const setClauses: string[] = []

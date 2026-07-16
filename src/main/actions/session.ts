@@ -24,9 +24,11 @@ import type {
   SessionMeta,
   SessionUsage,
   SessionCost,
-  SessionLastTurn
+  SessionLastTurn,
+  WorkspaceRecord
 } from '../../shared/types'
 import { getClaudeGlobalSettings } from '../claudeSettings'
+import { encodePathToClaudeDir } from '../claudeProjectDir'
 import { getWorkspace } from '../workspaces'
 import { getPricing } from '../pricing'
 
@@ -75,6 +77,8 @@ export function invalidateSessionCache(workspaceId: string): void {
 export function evictAccumulator(workspaceId: string): void {
   accumulators.delete(workspaceId)
   parseCache.delete(workspaceId)
+  // Note: any inFlight entry for this workspace self-cleans via getParsed's
+  // own finally block once it settles — no explicit cleanup needed here.
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +86,7 @@ export function evictAccumulator(workspaceId: string): void {
 // ---------------------------------------------------------------------------
 
 function getJsonlPath(cwd: string, sessionId: string): string {
-  const encoded = cwd.replace(/\//g, '-')
+  const encoded = encodePathToClaudeDir(cwd)
   return nodePath.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`)
 }
 
@@ -135,6 +139,14 @@ type AccumulatorState = {
   inode: number // inode at last stat — rotation/replacement detection
   fileSize: number // size at last stat (for truncation detection)
   tail: string // incomplete line fragment after the last newline
+  /** Raw bytes held back because they were the start of a not-yet-complete
+   *  UTF-8 multi-byte sequence at the end of a chunked read (ACT-6 chunking
+   *  can cut a 256KB slice mid-character; a single-shot read never could,
+   *  since it always spanned bytesToRead in one call). Empty outside of a
+   *  chunk boundary. Prepended (as bytes) to the next chunk's raw buffer
+   *  before decoding, so the decoded string is byte-for-byte identical to
+   *  decoding the unsplit span in one shot. */
+  pendingUtf8Bytes: Buffer
 
   // Aggregates (updated incrementally)
   sessionId: string | null
@@ -166,6 +178,10 @@ type AccumulatorState = {
 const MAX_TEXT_PREVIEW_BYTES = 4096
 
 const accumulators = new Map<string, AccumulatorState>()
+// Per-workspace promise chain — serializes concurrent getParsed() calls so
+// overlapping advanceAccumulator() passes never interleave writes to the
+// same shared AccumulatorState. See runAccumulatorPass()/getParsed() below.
+const inFlight = new Map<string, Promise<ParsedSession | null>>()
 
 function newAccumulator(): AccumulatorState {
   return {
@@ -173,6 +189,7 @@ function newAccumulator(): AccumulatorState {
     inode: -1,
     fileSize: 0,
     tail: '',
+    pendingUtf8Bytes: Buffer.alloc(0),
     sessionId: null,
     model: null,
     startedAt: null,
@@ -196,6 +213,7 @@ function resetAccumulator(acc: AccumulatorState): void {
   acc.inode = -1
   acc.fileSize = 0
   acc.tail = ''
+  acc.pendingUtf8Bytes = Buffer.alloc(0)
   acc.sessionId = null
   acc.model = null
   acc.startedAt = null
@@ -216,13 +234,102 @@ function resetAccumulator(acc: AccumulatorState): void {
 function extractText(content: unknown): string | null {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
-    for (const block of content) {
+    const blocks = content as unknown[]
+    for (const block of blocks) {
       if (block && typeof block === 'object' && 'type' in block && block.type === 'text') {
         if ('text' in block && typeof block.text === 'string') return block.text
       }
     }
   }
   return null
+}
+
+/** Update acc.startedAt / acc.lastMessageAt from a line's timestamp, if valid. */
+function updateTimestampBounds(acc: AccumulatorState, ts: number | null): void {
+  if (ts && !isNaN(ts)) {
+    if (acc.startedAt === null || ts < acc.startedAt) acc.startedAt = ts
+    if (acc.lastMessageAt === null || ts > acc.lastMessageAt) acc.lastMessageAt = ts
+  }
+}
+
+/** Extract sessionId (from system events) and the first-seen model into acc. */
+function updateSessionIdentity(
+  acc: AccumulatorState,
+  parsed: JsonlLine,
+  lineModel: string | null
+): void {
+  if (parsed.type === 'system' && parsed.sessionId) {
+    acc.sessionId = parsed.sessionId
+  }
+  if (lineModel && !acc.model) {
+    acc.model = lineModel
+  }
+}
+
+/** Fold one assistant-turn's usage numbers into acc's running + per-model tallies,
+ *  and overwrite the point-in-time context occupancy field. */
+function accumulateAssistantUsage(
+  acc: AccumulatorState,
+  usage: NonNullable<JsonlLine['message']>['usage'],
+  lineModelKey: string
+): void {
+  if (!usage) return
+  const inp = usage.input_tokens ?? 0
+  const out = usage.output_tokens ?? 0
+  const cacheRead = usage.cache_read_input_tokens ?? 0
+  const cacheCreate = usage.cache_creation_input_tokens ?? 0
+
+  acc.inputTokens += inp
+  acc.outputTokens += out
+  acc.cacheReadTokens += cacheRead
+  acc.cacheCreationTokens += cacheCreate
+
+  // Point-in-time context occupancy: OVERWRITE each turn (not cumulative).
+  // Used for the footer context chip — reflects only the current turn's window.
+  // Includes output: matches claude's /context, where the turn's response is
+  // resident in the window (the next turn's input+cache absorbs it).
+  acc.lastTurnContextTokens = inp + cacheRead + cacheCreate + out
+
+  // Accumulate per-model token tallies for deferred cost computation
+  if (lineModelKey) {
+    let mt = acc.tokensByModel.get(lineModelKey)
+    if (!mt) {
+      mt = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 }
+      acc.tokensByModel.set(lineModelKey, mt)
+    }
+    mt.input += inp
+    mt.output += out
+    mt.cacheRead += cacheRead
+    mt.cacheCreate += cacheCreate
+  }
+}
+
+/** Process an assistant-role line: turn count, usage accounting, last-text capture. */
+function processAssistantLine(
+  acc: AccumulatorState,
+  parsed: JsonlLine,
+  lineModel: string | null,
+  ts: number | null
+): void {
+  acc.turnCount++
+  accumulateAssistantUsage(acc, parsed.message?.usage, lineModel ?? acc.model ?? '')
+
+  const text = extractText(parsed.message?.content)
+  if (text !== null && ts !== null) {
+    acc.lastAssistantText =
+      text.length > MAX_TEXT_PREVIEW_BYTES ? text.slice(0, MAX_TEXT_PREVIEW_BYTES) : text
+    acc.lastAssistantAt = ts
+  }
+}
+
+/** Process a user-role line: last-text capture. */
+function processUserLine(acc: AccumulatorState, parsed: JsonlLine, ts: number | null): void {
+  const text = extractText(parsed.message?.content)
+  if (text !== null && ts !== null) {
+    acc.lastUserText =
+      text.length > MAX_TEXT_PREVIEW_BYTES ? text.slice(0, MAX_TEXT_PREVIEW_BYTES) : text
+    acc.lastUserAt = ts
+  }
 }
 
 /** Process a single complete JSONL line string into the accumulator. */
@@ -238,79 +345,151 @@ function processLine(acc: AccumulatorState, rawLine: string): void {
   }
 
   const ts = parsed.timestamp ? new Date(parsed.timestamp).getTime() : null
-  if (ts && !isNaN(ts)) {
-    if (acc.startedAt === null || ts < acc.startedAt) acc.startedAt = ts
-    if (acc.lastMessageAt === null || ts > acc.lastMessageAt) acc.lastMessageAt = ts
-  }
-
-  // Session ID and model from system events
-  if (parsed.type === 'system' && parsed.sessionId) {
-    acc.sessionId = parsed.sessionId
-  }
+  updateTimestampBounds(acc, ts)
 
   const lineModel = parsed.message?.model ?? parsed.model ?? null
-  if (lineModel && !acc.model) {
-    acc.model = lineModel
-  }
+  updateSessionIdentity(acc, parsed, lineModel)
 
   // Token accounting from assistant message events
   if (parsed.type === 'assistant' || parsed.message?.role === 'assistant') {
-    acc.turnCount++
-    const usage = parsed.message?.usage
-    if (usage) {
-      const inp = usage.input_tokens ?? 0
-      const out = usage.output_tokens ?? 0
-      const cacheRead = usage.cache_read_input_tokens ?? 0
-      const cacheCreate = usage.cache_creation_input_tokens ?? 0
-
-      acc.inputTokens += inp
-      acc.outputTokens += out
-      acc.cacheReadTokens += cacheRead
-      acc.cacheCreationTokens += cacheCreate
-
-      // Point-in-time context occupancy: OVERWRITE each turn (not cumulative).
-      // Used for the footer context chip — reflects only the current turn's window.
-      // Includes output: matches claude's /context, where the turn's response is
-      // resident in the window (the next turn's input+cache absorbs it).
-      acc.lastTurnContextTokens = inp + cacheRead + cacheCreate + out
-
-      // Accumulate per-model token tallies for deferred cost computation
-      const lineModelKey = lineModel ?? acc.model ?? ''
-      if (lineModelKey) {
-        let mt = acc.tokensByModel.get(lineModelKey)
-        if (!mt) {
-          mt = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 }
-          acc.tokensByModel.set(lineModelKey, mt)
-        }
-        mt.input += inp
-        mt.output += out
-        mt.cacheRead += cacheRead
-        mt.cacheCreate += cacheCreate
-      }
-    }
-
-    const text = extractText(parsed.message?.content)
-    if (text !== null && ts !== null) {
-      acc.lastAssistantText =
-        text.length > MAX_TEXT_PREVIEW_BYTES ? text.slice(0, MAX_TEXT_PREVIEW_BYTES) : text
-      acc.lastAssistantAt = ts
-    }
+    processAssistantLine(acc, parsed, lineModel, ts)
   }
 
   // User messages
   if (parsed.type === 'user' || parsed.message?.role === 'user') {
-    const text = extractText(parsed.message?.content)
-    if (text !== null && ts !== null) {
-      acc.lastUserText =
-        text.length > MAX_TEXT_PREVIEW_BYTES ? text.slice(0, MAX_TEXT_PREVIEW_BYTES) : text
-      acc.lastUserAt = ts
-    }
+    processUserLine(acc, parsed, ts)
   }
 }
 
-/** Advance the accumulator by reading newly-appended bytes from the file.
- *  Returns false only on unrecoverable I/O error (caller should give up). */
-function advanceAccumulator(acc: AccumulatorState, jsonlPath: string): boolean {
+// PERF (ACT-6): cap each readSync slice so a cold accumulator (offset 0) on a
+// multi-MB transcript doesn't block the main thread reading + parsing the
+// whole file in one synchronous burst. Chunk boundaries are NOT line
+// boundaries — a JSONL line (or even a \r\n pair) can straddle two chunks,
+// and a single UTF-8 character can too. Two separate carry-forward
+// mechanisms handle this:
+//   - acc.pendingUtf8Bytes: raw bytes held back at the END of a chunk when
+//     they're the start of an incomplete multi-byte UTF-8 sequence (see
+//     lastSafeUtf8Boundary). Prepended, as BYTES, to the next chunk's raw
+//     buffer before decoding — so the decoded string is byte-for-byte
+//     identical to decoding the unsplit span in one shot. Without this, a
+//     multi-byte character split across a 256KB boundary would decode as
+//     U+FFFD replacement characters on each side instead of the real glyph.
+//   - acc.tail: the existing incomplete-line carry-forward (a decoded
+//     string), unchanged — this is the exact same mechanism the
+//     incremental accumulator already relies on across separate
+//     advanceAccumulator calls as the file grows over time. Chunking here
+//     just invokes it more often within one call instead of changing it.
+// A stray \r left at a chunk boundary (when \r and \n land in different
+// chunks, so the intra-chunk `\r\n` → `\n` regex can't see the pair) is
+// still stripped by processLine's `rawLine.trim()`, so line content is
+// unaffected either way.
+const ACCUMULATOR_CHUNK_BYTES = 256 * 1024
+
+/** Returns the byte offset of the start of any incomplete trailing UTF-8
+ *  multi-byte sequence in `buf`, or `buf.length` if the buffer ends on a
+ *  complete character (including plain ASCII). Walks back at most 3 bytes
+ *  (the longest continuation run before a lead byte in valid UTF-8). */
+function lastSafeUtf8Boundary(buf: Buffer): number {
+  const len = buf.length
+  const maxBack = Math.min(3, len)
+  for (let back = 1; back <= maxBack; back++) {
+    const b = buf[len - back]
+    if (b === undefined) break
+    if ((b & 0xc0) !== 0x80) {
+      // Not a continuation byte — this is a lead byte (or plain ASCII).
+      let seqLen: number
+      if ((b & 0x80) === 0x00) seqLen = 1
+      else if ((b & 0xe0) === 0xc0) seqLen = 2
+      else if ((b & 0xf0) === 0xe0) seqLen = 3
+      else if ((b & 0xf8) === 0xf0) seqLen = 4
+      else seqLen = 1 // invalid lead byte — don't hold bytes back for it
+      return seqLen > back ? len - back : len
+    }
+  }
+  // 3 continuation bytes in a row with no lead byte in the window — not
+  // valid UTF-8 within the last 3 bytes; nothing more to hold back.
+  return len
+}
+
+/** Read up to `maxBytes` starting at `offset` and process complete lines into `acc`,
+ *  carrying any trailing partial line forward in `acc.tail` and any trailing partial
+ *  UTF-8 character forward in `acc.pendingUtf8Bytes`. Returns the number of bytes
+ *  actually read from the file this call (0 at EOF or on read failure) — NOT
+ *  including bytes carried over from a previous call's pendingUtf8Bytes. */
+function readAndProcessChunk(
+  acc: AccumulatorState,
+  jsonlPath: string,
+  offset: number,
+  maxBytes: number
+): number {
+  let rawBuf: Buffer
+  let fd: number | null = null
+  try {
+    fd = fs.openSync(jsonlPath, 'r')
+    const buf = Buffer.allocUnsafe(maxBytes)
+    const bytesRead = fs.readSync(fd, buf, 0, maxBytes, offset)
+    if (bytesRead <= 0) return 0
+    rawBuf = buf.slice(0, bytesRead)
+  } catch {
+    return 0
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  const bytesReadFromFile = rawBuf.length
+
+  // Prepend any incomplete multi-byte sequence held back from the previous
+  // chunk, then trim the END of the combined buffer back to a safe
+  // character boundary, holding back any new incomplete trailing sequence.
+  const withPending =
+    acc.pendingUtf8Bytes.length > 0 ? Buffer.concat([acc.pendingUtf8Bytes, rawBuf]) : rawBuf
+  const boundary = lastSafeUtf8Boundary(withPending)
+  const decodable = withPending.slice(0, boundary)
+  acc.pendingUtf8Bytes = withPending.slice(boundary)
+
+  // Advance offset by exactly the bytes read from the file this call — NOT
+  // the decoded string length, which can differ from the byte count for
+  // non-ASCII content. Bytes held back in pendingUtf8Bytes are still
+  // "ingested" (they came from this read); offset tracks file position, not
+  // decode progress, so it must include them.
+  acc.offset += bytesReadFromFile
+
+  const chunk = decodable.toString('utf8')
+
+  // Normalize \r\n to \n so the split works correctly
+  const combined = acc.tail + chunk.replace(/\r\n/g, '\n')
+
+  // Split on newlines — the last fragment may be an incomplete line
+  const parts = combined.split('\n')
+
+  // Everything except the last element is a complete line
+  const completeLines = parts.slice(0, -1)
+  // The last element is either empty (if combined ended with '\n') or a partial line
+  acc.tail = parts[parts.length - 1]
+
+  for (const rawLine of completeLines) {
+    processLine(acc, rawLine)
+  }
+
+  return bytesReadFromFile
+}
+
+/** Yield control back to the event loop between chunks so a large cold read
+ *  doesn't block the main thread for the whole file at once. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+/** Advance the accumulator by reading newly-appended bytes from the file, in
+ *  bounded chunks (see ACCUMULATOR_CHUNK_BYTES), yielding to the event loop
+ *  between chunks. Returns false only on unrecoverable I/O error (caller
+ *  should give up). */
+async function advanceAccumulator(acc: AccumulatorState, jsonlPath: string): Promise<boolean> {
   let stat: fs.Stats
   try {
     stat = fs.statSync(jsonlPath)
@@ -332,57 +511,33 @@ function advanceAccumulator(acc: AccumulatorState, jsonlPath: string): boolean {
   acc.inode = currentInode
   acc.fileSize = currentSize
 
-  const bytesToRead = currentSize - acc.offset
+  let bytesToRead = currentSize - acc.offset
   if (bytesToRead <= 0) {
     // Nothing new to read — accumulator is up to date
     return true
   }
 
-  // Read only the new bytes
-  let chunk: string
-  let fd: number | null = null
-  try {
-    fd = fs.openSync(jsonlPath, 'r')
-    const buf = Buffer.allocUnsafe(bytesToRead)
-    const bytesRead = fs.readSync(fd, buf, 0, bytesToRead, acc.offset)
-    chunk = buf.slice(0, bytesRead).toString('utf8')
-  } catch {
-    if (fd !== null) {
-      try {
-        fs.closeSync(fd)
-      } catch {
-        /* ignore */
-      }
+  let first = true
+  while (bytesToRead > 0) {
+    if (!first) {
+      // Only yield BETWEEN chunks, never before the first or after the last —
+      // keeps the common (small, warm) case a single synchronous pass.
+      await yieldToEventLoop()
     }
-    return false
-  } finally {
-    if (fd !== null) {
-      try {
-        fs.closeSync(fd)
-      } catch {
-        /* ignore */
-      }
+    first = false
+
+    const sliceSize = Math.min(bytesToRead, ACCUMULATOR_CHUNK_BYTES)
+    const bytesRead = readAndProcessChunk(acc, jsonlPath, acc.offset, sliceSize)
+    if (bytesRead <= 0) {
+      // Read failed, or returned nothing at an offset stat() said had more
+      // bytes (e.g. a racing truncation between statSync and readSync).
+      // Treat as unrecoverable for this pass — matches the original
+      // single-shot code's behavior on read failure; the next poll's
+      // stat() will re-establish ground truth (or trigger the truncation
+      // reset above).
+      return false
     }
-  }
-
-  // Advance offset unconditionally — offset tracks how many file bytes have been
-  // ingested (tail included), NOT the last-newline boundary. On the next read we
-  // start here and prepend acc.tail so the incomplete fragment is re-joined.
-  acc.offset += bytesToRead
-
-  // Normalize \r\n to \n so the split works correctly
-  const combined = acc.tail + chunk.replace(/\r\n/g, '\n')
-
-  // Split on newlines — the last fragment may be an incomplete line
-  const parts = combined.split('\n')
-
-  // Everything except the last element is a complete line
-  const completeLines = parts.slice(0, -1)
-  // The last element is either empty (if combined ended with '\n') or a partial line
-  acc.tail = parts[parts.length - 1]
-
-  for (const rawLine of completeLines) {
-    processLine(acc, rawLine)
+    bytesToRead -= bytesRead
   }
 
   return true
@@ -457,7 +612,41 @@ function getEffectiveContextBudget(): number {
 // Shared parse entrypoint
 // ---------------------------------------------------------------------------
 
-function getParsed(workspaceId: string): ParsedSession | null {
+/** Critical section: get-or-create the shared accumulator, advance it from the
+ *  JSONL file, and derive+cache a ParsedSession. Callers MUST run this only
+ *  one-at-a-time per workspaceId (see getParsed's inFlight chain below) —
+ *  advanceAccumulator mutates shared AccumulatorState across await points, so
+ *  overlapping passes for the same workspace would interleave and corrupt it. */
+async function runAccumulatorPass(
+  workspaceId: string,
+  _ws: WorkspaceRecord,
+  jsonlPath: string
+): Promise<ParsedSession | null> {
+  // Re-check: a prior pass in the same chain may have just refreshed the
+  // cache while this call was waiting its turn — skip a redundant re-read.
+  const cached = getCached(workspaceId)
+  if (cached) return cached
+
+  try {
+    let acc = accumulators.get(workspaceId)
+    if (!acc) {
+      acc = newAccumulator()
+      accumulators.set(workspaceId, acc)
+    }
+
+    const ok = await advanceAccumulator(acc, jsonlPath)
+    if (!ok) return null
+
+    const parsed = accumulatorToSession(acc)
+    setCache(workspaceId, parsed)
+    return parsed
+  } catch (err) {
+    console.error('[actions:session] parse failed', { workspaceId, err })
+    return null
+  }
+}
+
+async function getParsed(workspaceId: string): Promise<ParsedSession | null> {
   // Short-circuit: TTL cache avoids even the stat() call during hot windows
   const cached = getCached(workspaceId)
   if (cached) return cached
@@ -468,22 +657,21 @@ function getParsed(workspaceId: string): ParsedSession | null {
   const jsonlPath = getJsonlPath(ws.cwd, ws.claudeSessionId)
   if (!fs.existsSync(jsonlPath)) return null
 
+  // Serialize concurrent callers for this workspace: chain onto whatever is
+  // already in flight so each call gets its own fresh pass after the prior
+  // one settles (success or failure), never a raw interleave of two passes
+  // sharing the same AccumulatorState.
+  const prior = inFlight.get(workspaceId) ?? Promise.resolve(null)
+  const next = prior.then(
+    () => runAccumulatorPass(workspaceId, ws, jsonlPath),
+    () => runAccumulatorPass(workspaceId, ws, jsonlPath)
+  )
+  inFlight.set(workspaceId, next)
+
   try {
-    let acc = accumulators.get(workspaceId)
-    if (!acc) {
-      acc = newAccumulator()
-      accumulators.set(workspaceId, acc)
-    }
-
-    const ok = advanceAccumulator(acc, jsonlPath)
-    if (!ok) return null
-
-    const parsed = accumulatorToSession(acc)
-    setCache(workspaceId, parsed)
-    return parsed
-  } catch (err) {
-    console.error('[actions:session] parse failed', { workspaceId, err })
-    return null
+    return await next
+  } finally {
+    if (inFlight.get(workspaceId) === next) inFlight.delete(workspaceId)
   }
 }
 
@@ -523,7 +711,7 @@ export async function handleGetMeta(
   _params: Record<string, unknown>,
   workspaceId: string
 ): Promise<ActionResult<SessionMeta>> {
-  const parsed = getParsed(workspaceId)
+  const parsed = await getParsed(workspaceId)
   if (!parsed) return { ok: true, value: emptyMeta() }
   return { ok: true, value: parsed.meta }
 }
@@ -532,7 +720,7 @@ export async function handleGetUsage(
   _params: Record<string, unknown>,
   workspaceId: string
 ): Promise<ActionResult<SessionUsage>> {
-  const parsed = getParsed(workspaceId)
+  const parsed = await getParsed(workspaceId)
   const contextBudget = getEffectiveContextBudget()
 
   if (!parsed) {
@@ -564,7 +752,7 @@ export async function handleGetCost(
   _params: Record<string, unknown>,
   workspaceId: string
 ): Promise<ActionResult<SessionCost>> {
-  const parsed = getParsed(workspaceId)
+  const parsed = await getParsed(workspaceId)
   if (!parsed) return { ok: true, value: emptyCost() }
   return { ok: true, value: parsed.cost }
 }
@@ -573,7 +761,7 @@ export async function handleGetLastTurn(
   _params: Record<string, unknown>,
   workspaceId: string
 ): Promise<ActionResult<SessionLastTurn>> {
-  const parsed = getParsed(workspaceId)
+  const parsed = await getParsed(workspaceId)
   if (!parsed) return { ok: true, value: emptyLastTurn() }
   return { ok: true, value: parsed.lastTurn }
 }

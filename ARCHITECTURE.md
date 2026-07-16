@@ -27,26 +27,27 @@ Runs in Node 22 under Electron 39. This process owns all privileged operations:
 
 - **SQLite database** — opened at startup, holds projects, workspaces, sessions, and all settings.
 - **Native terminal addon** — loads `packages/ghostty-surface/ghostty_native.node` and manages the lifecycle of libghostty surfaces (one per workspace).
-- **IPC handlers** — every operation the renderer can request is exposed as an `ipcMain.handle(...)` call in `src/main/index.ts`, which is the central entry point and wiring hub.
+- **IPC handlers** — cross-cutting handlers are wired directly in `src/main/index.ts` (the central entry point), while per-domain handlers live in `src/main/ipc/*.ts` modules (e.g. `git.ts`, `mcp.ts`, `updates.ts`), each registered from `index.ts` via a typed `registerXxxIpc(deps)` call. All handlers go through the typed `handle()` wrapper in `src/main/ipc/handle.ts`, which is generic over the channel map in `src/shared/ipc.ts` — an unmapped channel is a compile error.
 - **Hook server** — a Unix-domain socket server that receives events from a small shim (`resources/bin/orpheus-notify`) installed as a claude hook.
 - **Workspace activity watcher** — `src/main/sessionState.ts` monitors `~/.claude/sessions/` for live session status files written by claude.
 
 Key modules in `src/main/`:
 
-| File                                            | Responsibility                                                    |
-| ----------------------------------------------- | ----------------------------------------------------------------- |
-| `index.ts`                                      | Entry point; wires all IPC handlers                               |
-| `claudeSettings.ts`                             | `composeClaudeLaunch()` — the central settings-to-CLI abstraction |
-| `db.ts`                                         | Schema, migrations, all DB accessors                              |
-| `sessionState.ts`                               | File-watching loop for workspace activity status                  |
-| `orpheusNotify.ts`                              | Status dispatch, OS notifications, hook socket server             |
-| `claudeAuth.ts`                                 | Auth env composition (API key / OAuth token)                      |
-| `projects.ts` / `workspaces.ts` / `sessions.ts` | Domain CRUD helpers                                               |
-| `updates.ts`                                    | In-app update check via `brew outdated` / `brew upgrade`          |
+| File                                            | Responsibility                                                                                        |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `index.ts`                                      | Entry point; wires cross-cutting IPC handlers and delegates per-domain handlers to `ipc/*.ts` modules |
+| `claudeSettings.ts`                             | `composeClaudeLaunch()` — the central settings-to-CLI abstraction                                     |
+| `db/`                                           | Declarative schema (`schema.ts`) + migration engine (diff/rebuild/cutover/backup)                     |
+| `ipc/`                                          | Per-domain typed IPC handler modules, registered from `index.ts` via `registerXxxIpc(deps)`           |
+| `sessionState.ts`                               | File-watching loop for workspace activity status                                                      |
+| `orpheusNotify.ts`                              | Status dispatch, OS notifications, hook socket server                                                 |
+| `claudeAuth.ts`                                 | Auth env composition (API key / OAuth token)                                                          |
+| `projects.ts` / `workspaces.ts` / `sessions.ts` | Domain CRUD helpers                                                                                   |
+| `updates.ts`                                    | In-app update check via `brew outdated` / `brew upgrade`                                              |
 
 ### Preload — `src/preload/`
 
-`src/preload/index.ts` is the context-bridge layer. It exposes a typed `window.api.*` object to the renderer. The contract is defined by `src/preload/index.d.ts`, which the renderer's TypeScript compilation resolves against. No IPC channel names or payload shapes are duplicated — the renderer only calls methods on `window.api`, never `ipcRenderer` directly.
+`src/preload/index.ts` is the context-bridge layer. It exposes a typed `window.api.*` object to the renderer. `src/preload/index.d.ts` is a thin (~7-line) shim that derives the `Window.api` type as `typeof api` from the preload module — the authoritative IPC contract is the typed `InvokeChannelMap` / `RendererPushMap` in `src/shared/ipc.ts`, which the preload's `invoke()`/`subscribe()` helpers are generic over. No IPC channel names or payload shapes are duplicated — the renderer only calls methods on `window.api`, never `ipcRenderer` directly.
 
 ### Renderer — `src/renderer/src/`
 
@@ -59,9 +60,11 @@ A single-page React 19 application styled with Tailwind v4 and the Geist typefac
 
 The renderer has three primary view kinds controlled by `AppUiState.lastViewKind`: `sessions` (workspace list for a project), `project` (project settings), and `workspace` (the active terminal surface).
 
-### Shared types — `src/shared/types.ts`
+### Shared types — `src/shared/types.ts` and `src/shared/ipc.ts`
 
-The single source of truth for every IPC payload shape, database record type, and settings draft type. Both the main process and the renderer import from here. If a type is used across the boundary it lives in this file.
+`types.ts` is the single source of truth for every IPC payload shape, database record type, and settings draft type. Both the main process and the renderer import from here. If a type is used across the boundary it lives in this file.
+
+`ipc.ts` is the companion typed channel map: `InvokeChannelMap` (request/response, driven via `ipcMain.handle`/`ipcRenderer.invoke`) and `RendererPushMap` + the `PUSH_CHANNELS` const (main → renderer push channels). It imports only from `./types`, enforced by dependency-cruiser rules, so it stays a leaf shared module.
 
 ---
 
@@ -144,11 +147,18 @@ Ghostty's terminfo definitions and shell integration scripts are bundled under `
 
 ## SQLite Schema and Migrations
 
-`src/main/db.ts` implements a migrations-as-code pattern.
+`src/main/db/` implements a **declarative schema + migration engine**, replacing the old imperative `db.ts`.
 
-- **`CURRENT_VERSION`** is an integer constant that is the single source of truth for the expected schema version. On startup, the DB is compared against this constant and the migration block runs if needed.
-- **Additive, non-destructive** migrations only. A new column is added both to the `CREATE TABLE` statement (for fresh installs) and via a defensive `try { db.exec("ALTER TABLE ... ADD COLUMN ...") } catch {}` call at the bottom of the migration block (for existing installs). Destructive migrations — dropping columns, renaming tables — are not used.
-- **Bump `CURRENT_VERSION`** when adding a migration so the block runs exactly once on each existing install.
+- **`schema.ts`** is the single source of truth for the desired schema — every table declared once as a structured `TableDef` (columns, types, `CHECK` enums, indexes, explicit `dropColumns`).
+- **`introspect.ts`** reads the live DB's actual table/column/index shape.
+- **`diff.ts`** compares the live shape against `schema.ts` and produces an ordered plan (create table, add/drop column, add/drop index, or a full rebuild when a change touches a `CHECK` constraint, column type, or `NOT NULL`).
+- **`engine.ts`** applies that plan (delegating full-table rebuilds to `rebuild.ts`, which performs SQLite's 12-step rebuild dance), while `backup.ts` snapshots the DB via `VACUUM INTO` before any destructive step and verifies row counts after.
+- **`cutover.ts`** is the ordered first-boot entry point that takes any DB — fresh install or a legacy DB from the old version-ladder — and reconciles it to the `schema.ts` desired state, then runs `data-steps.ts` (named, ledger-tracked, run-once data transforms).
+- **`index.ts`** exposes the public surface (`getDb()` / `migrate()`) unchanged for callers elsewhere in main.
+
+To add a column: edit the table's `TableDef` in `schema.ts`; the engine adds it on the next boot. No more CREATE-block + defensive-ALTER double-declaration, no version bump. To add a data transform, append a named step to `data-steps.ts`.
+
+Verified by `scripts/verify-migration-engine.ts`, run via `bun run test:db` — exercises render/introspect/diff/rebuild/backup/engine/schema-fresh/convergence/data-steps/cutover.
 
 ---
 
@@ -201,9 +211,11 @@ The bundle is **ad-hoc codesigned** (no Developer ID) because macOS 15+ rejects 
 orpheus/
 ├── src/
 │   ├── main/           # Electron main process — IPC, SQLite, terminal addon, hooks
+│   │   ├── ipc/        # Per-domain typed IPC handler modules (registerXxxIpc)
+│   │   └── db/         # Declarative schema + migration engine
 │   ├── preload/        # Context bridge (window.api.*) and its type contract (index.d.ts)
 │   ├── renderer/src/   # React 19 + Tailwind v4 renderer
-│   └── shared/         # types.ts — single source of truth for all cross-process types
+│   └── shared/         # types.ts (cross-process types) + ipc.ts (typed channel map)
 │
 ├── packages/
 │   └── ghostty-surface/ # NAPI C++ addon (addon.mm) wrapping libghostty

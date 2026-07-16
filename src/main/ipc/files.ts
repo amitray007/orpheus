@@ -1,0 +1,636 @@
+// ---------------------------------------------------------------------------
+// src/main/ipc/files.ts
+//
+// Workbench Files tab — main-process data sources (Stage A). Three typed IPCs
+// feed @pierre/trees (a FLAT path list + per-path git-status decorations) and
+// the file viewer:
+//
+//   files:listDir  → FilesListing      gitignore-aware flat walk of the cwd
+//   files:gitStatus → GitStatusEntry[]  per-path porcelain=v1 status
+//   files:readFile → FileContents       path-guarded, size-capped, UTF-8 read
+//
+// The workspace's cwd is resolved from `workspaceId` via the injected
+// getWorkspaceCwd resolver (mirrors how index.ts owns getWorkspace). Every
+// handler is total: missing cwd / non-repo / denied paths return an empty
+// result rather than throwing. See docs/learnings/pierre-libraries.md §7.
+// ---------------------------------------------------------------------------
+
+import * as childProcess from 'node:child_process'
+import * as fs from 'node:fs/promises'
+import * as nodePath from 'node:path'
+import { promisify } from 'node:util'
+import { shell } from 'electron'
+import ignore, { type Ignore } from 'ignore'
+import type {
+  FileContents,
+  FileEntry,
+  FileImage,
+  FilesListing,
+  FilesMutationResult,
+  FileTier,
+  GitFileStatusKind,
+  GitStatusEntry,
+  WriteFileResult
+} from '../../shared/types'
+import { handle } from './handle'
+import { startFilesWatch, stopFilesWatch } from '../filesWatcher'
+
+const execFile = promisify(childProcess.execFile)
+
+export type FilesIpcDeps = {
+  /** Resolve a workspace's cwd from its id; null when the workspace is gone. */
+  getWorkspaceCwd: (workspaceId: string) => string | null
+}
+
+// ── Walk caps ──────────────────────────────────────────────────────────────
+// Guardrails so a giant tree (node_modules a user didn't gitignore, a monorepo)
+// can't stall the walk or flood the renderer. Hitting either sets `truncated`.
+const MAX_DEPTH = 12
+const MAX_ENTRIES = 5000
+
+// ── Read caps ──────────────────────────────────────────────────────────────
+const MAX_READ_BYTES = 3 * 1024 * 1024 // 3 MB — larger files are truncated.
+const BINARY_SNIFF_BYTES = 8192 // scan the leading chunk for a NUL byte.
+
+const GITIGNORE = '.gitignore'
+const EMPTY_LISTING: FilesListing = { entries: [], truncated: false }
+
+// ── Denylist ─────────────────────────────────────────────────────────────
+// Noisy machine dirs/files that are HIDDEN by default (tier `denylisted`),
+// independent of whether the project's own `.gitignore` happens to mention
+// them — so a repo with a thin/missing `.gitignore` still gets a sane default
+// tree (§11). Two axes: directory basenames (we do NOT recurse into these —
+// see walkDir) and file patterns (exact basenames + a couple of suffix
+// globs). Roughly mirrors this repo's own `.gitignore` noise.
+const DENYLIST_DIRS = new Set(['node_modules', '.git', 'vendor', 'out', 'dist', 'build', 'target'])
+const DENYLIST_FILES = new Set(['.DS_Store', '.eslintcache'])
+const DENYLIST_FILE_SUFFIXES = ['.log', '.tsbuildinfo']
+
+/** True if a file basename is denylisted (exact match or a denylisted suffix). */
+function isDenylistedFile(name: string): boolean {
+  if (DENYLIST_FILES.has(name)) return true
+  return DENYLIST_FILE_SUFFIXES.some((suffix) => name.endsWith(suffix))
+}
+
+/**
+ * Resolve an entry's visibility tier (§11). Denylist wins over gitignore: a
+ * path that's both denylisted AND gitignored is tagged `denylisted` (the
+ * harder cut), so revealing it via "Show hidden" shows it undimmed.
+ */
+function tierFor(name: string, rel: string, isDir: boolean, ig: Ignore): FileTier {
+  if (isDir ? DENYLIST_DIRS.has(name) : isDenylistedFile(name)) return 'denylisted'
+  // `ignore` wants a trailing slash to match dir-only rules correctly.
+  if (ig.ignores(isDir ? `${rel}/` : rel)) return 'gitignored'
+  return 'normal'
+}
+
+// ---------------------------------------------------------------------------
+// files:listDir — flat, gitignore-aware directory walk.
+// ---------------------------------------------------------------------------
+
+type WalkState = {
+  entries: FileEntry[]
+  truncated: boolean
+}
+
+/**
+ * Build the Ignore matcher for a directory by combining the inherited gitignore
+ * text with this directory's own `.gitignore` (if any), so nested ignore files
+ * stack the way git resolves them. Matcher rules are always evaluated against
+ * root-relative paths, which is why patterns accumulate as text and a single
+ * matcher is rebuilt per level (`ignore` matches relative to where it's tested,
+ * and we always test the full repo-relative path). `.git` is not special-cased
+ * here — the denylist (see `tierFor`) suppresses it and its whole subtree.
+ */
+async function buildIgnore(
+  absDir: string,
+  inheritedText: string
+): Promise<{ ig: Ignore; text: string }> {
+  let text = inheritedText
+  try {
+    const own = await fs.readFile(nodePath.join(absDir, GITIGNORE), 'utf8')
+    text = text ? `${text}\n${own}` : own
+  } catch {
+    // No local .gitignore — inherit as-is.
+  }
+  const ig = ignore().add(text)
+  return { ig, text }
+}
+
+/**
+ * Recursively walk `absDir`, appending tier-tagged repo-relative POSIX paths
+ * to `state.entries`. Every entry is included (no path is dropped) and tagged
+ * with its `tier` (`normal`/`gitignored`/`denylisted`) — the renderer filters
+ * client-side per the tree-options toggles (§11). Directories carry a trailing
+ * slash; files do not. `.gitignore` files layer per-directory.
+ *
+ * PERFORMANCE: a `denylisted` DIRECTORY is included as a single collapsed entry
+ * but we do NOT recurse into it — so `node_modules` (~20k entries) contributes
+ * exactly ONE dimmed folder row, not thousands. (Limitation: expanding such a
+ * folder in the tree shows it empty; we don't lazy-load its children in this
+ * pass.) A `gitignored` directory is still walked — it's real content the user
+ * wants dimmed — unless it's also denylisted. Stops (setting `state.truncated`)
+ * once the depth or entry cap is hit.
+ */
+async function walkDir(
+  absDir: string,
+  relDir: string,
+  depth: number,
+  inheritedText: string,
+  state: WalkState
+): Promise<void> {
+  if (state.truncated) return
+  if (depth > MAX_DEPTH) {
+    state.truncated = true
+    return
+  }
+
+  const { ig, text } = await buildIgnore(absDir, inheritedText)
+
+  let entries: import('node:fs').Dirent[]
+  try {
+    entries = await fs.readdir(absDir, { withFileTypes: true })
+  } catch {
+    return // permission denied / vanished — skip this subtree.
+  }
+
+  for (const entry of entries) {
+    if (state.entries.length >= MAX_ENTRIES) {
+      state.truncated = true
+      return
+    }
+    const name = entry.name
+    const rel = relDir ? `${relDir}/${name}` : name
+    const isDir = entry.isDirectory()
+
+    if (isDir) {
+      const tier = tierFor(name, rel, true, ig)
+      state.entries.push({ path: `${rel}/`, tier })
+      // Only skip recursion for denylisted dirs (perf) — gitignored dirs are
+      // still walked so their real (dimmed) contents show.
+      if (tier !== 'denylisted') {
+        await walkDir(nodePath.join(absDir, name), rel, depth + 1, text, state)
+        if (state.truncated) return
+      }
+    } else if (entry.isFile()) {
+      state.entries.push({ path: rel, tier: tierFor(name, rel, false, ig) })
+    }
+    // Symlinks and other special entries are intentionally skipped.
+  }
+}
+
+async function listDir(cwd: string): Promise<FilesListing> {
+  try {
+    const stat = await fs.stat(cwd)
+    if (!stat.isDirectory()) return EMPTY_LISTING
+  } catch {
+    return EMPTY_LISTING
+  }
+
+  const state: WalkState = { entries: [], truncated: false }
+  await walkDir(cwd, '', 0, '', state)
+  state.entries.sort((a, b) => a.path.localeCompare(b.path))
+  return { entries: state.entries, truncated: state.truncated }
+}
+
+// ---------------------------------------------------------------------------
+// files:gitStatus — per-path porcelain=v1 status.
+// ---------------------------------------------------------------------------
+
+/**
+ * Map a git porcelain XY status code to the GitStatusEntry enum. Order matters:
+ * untracked/renamed are exact 2-char forms; the rest test either column.
+ */
+function mapXyToStatus(xy: string): GitFileStatusKind | null {
+  if (xy === '??') return 'untracked'
+  const x = xy[0]
+  const y = xy[1]
+  if (x === 'R' || y === 'R') return 'renamed'
+  if (x === 'A' || y === 'A') return 'added'
+  if (x === 'D' || y === 'D') return 'deleted'
+  if (x === 'M' || y === 'M') return 'modified'
+  return null
+}
+
+/**
+ * Extract the repo-relative POSIX path from a porcelain=v1 line. Renames are
+ * `R  old -> new`; we keep the NEW path. Quoted paths (core.quotePath) are left
+ * as-is since we pass `-z`-free porcelain but disable quoting via `-c`.
+ */
+function parsePorcelainPath(rest: string): string {
+  const arrow = rest.indexOf(' -> ')
+  const path = arrow >= 0 ? rest.slice(arrow + 4) : rest
+  return path.trim()
+}
+
+async function gitStatus(cwd: string): Promise<GitStatusEntry[]> {
+  if (!cwd) return []
+  let stdout: string
+  try {
+    // core.quotePath=false keeps non-ASCII paths literal (POSIX, matching
+    // listDir) instead of octal-escaped.
+    const result = await execFile(
+      'git',
+      ['-C', cwd, '-c', 'core.quotePath=false', 'status', '--porcelain=v1'],
+      { timeout: 4000, maxBuffer: 16 * 1024 * 1024 }
+    )
+    stdout = result.stdout
+  } catch {
+    return [] // not a repo / git missing — empty, no throw.
+  }
+
+  const entries: GitStatusEntry[] = []
+  for (const line of stdout.split('\n')) {
+    if (line.length < 4) continue // need "XY " + at least one path char.
+    const xy = line.slice(0, 2)
+    const status = mapXyToStatus(xy)
+    if (!status) continue
+    const path = parsePorcelainPath(line.slice(3))
+    if (path) entries.push({ path, status })
+  }
+  return entries
+}
+
+// ---------------------------------------------------------------------------
+// files:readFile — path-guarded, size-capped, binary-aware UTF-8 read.
+// ---------------------------------------------------------------------------
+
+const EMPTY_CONTENTS: FileContents = {
+  contents: '',
+  name: '',
+  size: 0,
+  truncated: false,
+  binary: false,
+  lineCount: 0,
+  maxLineLength: 0
+}
+
+// ── Cheap line-shape scan (crash fix #2) ────────────────────────────────────
+// Bounds the scan itself so a multi-MB minified single-line file doesn't turn
+// "count the lines" into an O(n) worst case with a huge constant (scanning
+// literally every byte of a 3MB buffer looking for a newline that never
+// comes). Once either cap is hit, the result is already decisive: `lineCount`
+// past MAX_LINE_COUNT_SCAN is "plenty of lines", and `maxLineLength` past
+// MAX_LINE_LENGTH_SCAN is "plenty long" — the renderer only needs a threshold
+// comparison, not an exact count.
+const MAX_LINE_COUNT_SCAN = 20_000
+const MAX_LINE_LENGTH_SCAN = 20_000
+
+/** Cheap bounded scan for line count + longest line length — no `.split`
+ *  allocation, just a single forward pass with two early-exit caps. */
+function scanLineShape(text: string): { lineCount: number; maxLineLength: number } {
+  let lineCount = text.length > 0 ? 1 : 0
+  let maxLineLength = 0
+  let lineStart = 0
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\n') {
+      maxLineLength = Math.max(maxLineLength, i - lineStart)
+      lineStart = i + 1
+      lineCount++
+      if (lineCount >= MAX_LINE_COUNT_SCAN && maxLineLength >= MAX_LINE_LENGTH_SCAN) break
+    } else if (i - lineStart >= MAX_LINE_LENGTH_SCAN) {
+      // This line alone already exceeds the length cap — record it and skip
+      // ahead to the next newline rather than continuing to increment i one
+      // byte at a time through the rest of a huge minified line.
+      maxLineLength = Math.max(maxLineLength, MAX_LINE_LENGTH_SCAN)
+      const next = text.indexOf('\n', i)
+      if (next === -1) break
+      lineStart = next + 1
+      lineCount++
+      i = next
+      if (lineCount >= MAX_LINE_COUNT_SCAN) break
+    }
+  }
+  maxLineLength = Math.max(maxLineLength, Math.min(text.length - lineStart, MAX_LINE_LENGTH_SCAN))
+  return { lineCount, maxLineLength }
+}
+
+/**
+ * Resolve `relPath` against `cwd` and assert it stays inside the workspace.
+ * Returns the absolute path, or null if it escapes (`../`, absolute path, or a
+ * symlink-free lexical escape). Lexical containment is sufficient here because
+ * we never follow the path through symlinks with elevated privilege — we just
+ * read it — but we still reject anything that resolves outside the root.
+ */
+function resolveInside(cwd: string, relPath: string): string | null {
+  const root = nodePath.resolve(cwd)
+  const abs = nodePath.resolve(root, relPath)
+  const rel = nodePath.relative(root, abs)
+  // Reject an escape (`..` as a whole segment) or an absolute rel — but allow
+  // legitimate names that merely start with dots (e.g. `..foo`, `.env`).
+  if (rel === '' || rel === '..' || rel.startsWith(`..${nodePath.sep}`) || nodePath.isAbsolute(rel))
+    return null
+  return abs
+}
+
+/** True if the leading chunk contains a NUL byte (binary heuristic). */
+function looksBinary(buf: Buffer): boolean {
+  const end = Math.min(buf.length, BINARY_SNIFF_BYTES)
+  for (let i = 0; i < end; i++) {
+    if (buf[i] === 0) return true
+  }
+  return false
+}
+
+async function readFileContents(cwd: string, relPath: string): Promise<FileContents> {
+  if (!cwd || !relPath) return EMPTY_CONTENTS
+  const abs = resolveInside(cwd, relPath)
+  if (!abs) return EMPTY_CONTENTS // traversal escape — refuse.
+
+  const name = nodePath.basename(abs)
+  let buf: Buffer
+  let size: number
+  try {
+    const stat = await fs.stat(abs)
+    if (!stat.isFile()) return { ...EMPTY_CONTENTS, name }
+    size = stat.size
+    const readBytes = Math.min(size, MAX_READ_BYTES)
+    const handle = await fs.open(abs, 'r')
+    try {
+      buf = Buffer.alloc(readBytes)
+      await handle.read(buf, 0, readBytes, 0)
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return { ...EMPTY_CONTENTS, name } // missing / denied — empty, no throw.
+  }
+
+  if (looksBinary(buf)) {
+    return {
+      contents: '',
+      name,
+      size,
+      truncated: false,
+      binary: true,
+      lineCount: 0,
+      maxLineLength: 0
+    }
+  }
+
+  const truncated = size > MAX_READ_BYTES
+  const contents = buf.toString('utf8')
+  const { lineCount, maxLineLength } = scanLineShape(contents)
+  return { contents, name, size, truncated, binary: false, lineCount, maxLineLength }
+}
+
+// ---------------------------------------------------------------------------
+// files:readImage — path-guarded, size-capped image read → base64 data URL.
+// ---------------------------------------------------------------------------
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024 // 5 MB — larger images refuse with 'too-large'.
+const IMAGE_NO_WORKSPACE: FileImage = { ok: false, error: 'missing' }
+
+// Extension → MIME map for the data URL. Falls back to a generic octet-stream
+// type for an unrecognized extension rather than refusing (isImagePath on the
+// renderer side already gates which paths reach this handler).
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  avif: 'image/avif'
+}
+
+/** Derive the data-URL MIME type from a file's extension (lowercased, no dot). */
+function imageMimeFor(relPath: string): string {
+  const dot = relPath.lastIndexOf('.')
+  const ext = dot === -1 ? '' : relPath.slice(dot + 1).toLowerCase()
+  return IMAGE_MIME_BY_EXT[ext] ?? 'application/octet-stream'
+}
+
+/**
+ * Resolve `relPath` inside `cwd` (same `resolveInside` traversal guard as
+ * every other read/write handler), size-cap it (`MAX_IMAGE_BYTES`), and
+ * return the whole file as a base64 `data:<mime>;base64,...` URL for the
+ * viewer's `<img src>`. Total — never throws; every failure collapses to a
+ * typed `FileImage` error ('missing' for a traversal escape / no-file /
+ * unreadable path, 'too-large' for an oversized file).
+ */
+async function readImageContents(cwd: string, relPath: string): Promise<FileImage> {
+  const abs = resolveInside(cwd, relPath)
+  if (!abs) return { ok: false, error: 'missing' } // traversal escape — refuse.
+
+  let stat: Awaited<ReturnType<typeof fs.stat>>
+  try {
+    stat = await fs.stat(abs)
+  } catch {
+    return { ok: false, error: 'missing' }
+  }
+  if (!stat.isFile()) return { ok: false, error: 'missing' }
+  if (stat.size > MAX_IMAGE_BYTES) return { ok: false, error: 'too-large' }
+
+  try {
+    const buf = await fs.readFile(abs)
+    const mime = imageMimeFor(abs)
+    const dataUrl = `data:${mime};base64,${buf.toString('base64')}`
+    return { ok: true, dataUrl, size: stat.size }
+  } catch {
+    return { ok: false, error: 'denied' }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// files:writeFile — path-guarded UTF-8 write (Files-tab editor save).
+// ---------------------------------------------------------------------------
+
+/**
+ * Write `contents` as UTF-8 to `relPath` inside `cwd`, reusing the same
+ * `resolveInside` traversal guard as the read path — a `../` escape, an
+ * absolute path, or the cwd root itself is refused with `{ ok: false,
+ * error: 'traversal' }` and no write happens. All fs failures collapse to
+ * `{ ok: false, error: 'denied' }`; the handler never throws.
+ */
+async function writeFileContents(
+  cwd: string,
+  relPath: string,
+  contents: string
+): Promise<WriteFileResult> {
+  const abs = resolveInside(cwd, relPath)
+  if (!abs) return { ok: false, error: 'traversal' }
+  try {
+    await fs.writeFile(abs, contents, 'utf8')
+    return { ok: true }
+  } catch {
+    return { ok: false, error: 'denied' }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// files:createFile / files:createDir / files:rename / files:delete — tree
+// mutations (Phase 4). Every one reuses the same `resolveInside` traversal
+// guard as the read/write paths and is total (a FilesMutationResult, never a
+// throw). Deletes go to the OS Trash (recoverable), not a hard fs remove.
+// ---------------------------------------------------------------------------
+
+/** Map a Node fs error code to a FilesMutationResult error. `ENOENT` (missing
+ *  parent/target) is `missing`; anything else collapses to `denied`. */
+function fsErrorToResult(err: unknown): FilesMutationResult {
+  const code = (err as { code?: string } | null)?.code
+  if (code === 'ENOENT') return { ok: false, error: 'missing' }
+  return { ok: false, error: 'denied' }
+}
+
+/** Create an EMPTY file at `relPath` inside `cwd`. Fails with `exists` if the
+ *  path is already present (open flag `wx`), `traversal` on an escape, and
+ *  `missing`/`denied` for a missing parent or an fs failure. */
+async function createFile(cwd: string, relPath: string): Promise<FilesMutationResult> {
+  const abs = resolveInside(cwd, relPath)
+  if (!abs) return { ok: false, error: 'traversal' }
+  try {
+    // 'wx' — create+write but FAIL if it already exists (no silent overwrite).
+    await fs.writeFile(abs, '', { encoding: 'utf8', flag: 'wx' })
+    return { ok: true }
+  } catch (err) {
+    if ((err as { code?: string }).code === 'EEXIST') return { ok: false, error: 'exists' }
+    return fsErrorToResult(err)
+  }
+}
+
+/** Create a directory at `relPath` inside `cwd`. mkdir with `recursive: false`
+ *  so an existing path (dir or file) surfaces `exists` rather than silently
+ *  succeeding; `traversal` on an escape, `missing`/`denied` otherwise. */
+async function createDir(cwd: string, relPath: string): Promise<FilesMutationResult> {
+  const abs = resolveInside(cwd, relPath)
+  if (!abs) return { ok: false, error: 'traversal' }
+  try {
+    // recursive: false — a colliding path (existing dir OR file) throws EEXIST
+    // so the user gets a clear "exists" instead of a no-op.
+    await fs.mkdir(abs, { recursive: false })
+    return { ok: true }
+  } catch (err) {
+    if ((err as { code?: string }).code === 'EEXIST') return { ok: false, error: 'exists' }
+    return fsErrorToResult(err)
+  }
+}
+
+/** Rename/move `from` → `to`, both inside `cwd`. BOTH paths are guarded via
+ *  resolveInside (a rename target could itself be crafted to escape). Fails
+ *  with `exists` if `to` already exists (checked first — fs.rename would
+ *  otherwise overwrite it), `missing` if `from` is gone, `traversal`/`denied`
+ *  otherwise. */
+async function renamePath(cwd: string, from: string, to: string): Promise<FilesMutationResult> {
+  const absFrom = resolveInside(cwd, from)
+  const absTo = resolveInside(cwd, to)
+  if (!absFrom || !absTo) return { ok: false, error: 'traversal' }
+  try {
+    // Guard against fs.rename's silent-overwrite: refuse if the destination is
+    // already taken. (A rename to the SAME path is a no-op no-collision case.)
+    if (absTo !== absFrom) {
+      try {
+        await fs.access(absTo)
+        return { ok: false, error: 'exists' }
+      } catch {
+        // Destination free — proceed.
+      }
+    }
+    await fs.rename(absFrom, absTo)
+    return { ok: true }
+  } catch (err) {
+    return fsErrorToResult(err)
+  }
+}
+
+/** Move `relPath` (file OR directory) inside `cwd` to the OS Trash — recoverable
+ *  from Finder, never a hard delete (mirrors sessions.ts deleteSession). Fails
+ *  with `missing` if the path is gone, `traversal` on an escape, `denied`
+ *  otherwise. */
+async function deletePath(cwd: string, relPath: string): Promise<FilesMutationResult> {
+  const abs = resolveInside(cwd, relPath)
+  if (!abs) return { ok: false, error: 'traversal' }
+  try {
+    await fs.access(abs) // surface a clear `missing` before attempting the trash.
+  } catch {
+    return { ok: false, error: 'missing' }
+  }
+  try {
+    // trashItem (vs fs.rm) so the user can still recover from Finder Trash if
+    // they hit delete by accident. Works for files AND directories on macOS.
+    await shell.trashItem(abs)
+    return { ok: true }
+  } catch {
+    return { ok: false, error: 'denied' }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Registration.
+// ---------------------------------------------------------------------------
+
+export function registerFilesIpc(deps: FilesIpcDeps): void {
+  const { getWorkspaceCwd } = deps
+
+  handle('files:listDir', (_e, { workspaceId }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? listDir(cwd) : Promise.resolve(EMPTY_LISTING)
+  })
+
+  handle('files:gitStatus', (_e, { workspaceId }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? gitStatus(cwd) : Promise.resolve([])
+  })
+
+  handle('files:readFile', (_e, { workspaceId, path }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? readFileContents(cwd, path) : Promise.resolve(EMPTY_CONTENTS)
+  })
+
+  handle('files:readImage', (_e, { workspaceId, path }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? readImageContents(cwd, path) : Promise.resolve(IMAGE_NO_WORKSPACE)
+  })
+
+  handle('files:writeFile', (_e, { workspaceId, path, contents }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    if (!cwd) return Promise.resolve({ ok: false, error: 'no-workspace' } as WriteFileResult)
+    return writeFileContents(cwd, path, contents)
+  })
+
+  // ── Tree mutations (Phase 4) ──────────────────────────────────────────────
+  const NO_WORKSPACE: FilesMutationResult = { ok: false, error: 'no-workspace' }
+
+  handle('files:createFile', (_e, { workspaceId, path }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? createFile(cwd, path) : Promise.resolve(NO_WORKSPACE)
+  })
+
+  handle('files:createDir', (_e, { workspaceId, path }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? createDir(cwd, path) : Promise.resolve(NO_WORKSPACE)
+  })
+
+  handle('files:rename', (_e, { workspaceId, from, to }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? renamePath(cwd, from, to) : Promise.resolve(NO_WORKSPACE)
+  })
+
+  handle('files:delete', (_e, { workspaceId, path }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? deletePath(cwd, path) : Promise.resolve(NO_WORKSPACE)
+  })
+
+  // Resolve a workspace-relative path to its absolute form for the shell:*
+  // IPCs. Returns null on a traversal escape / missing workspace (so the caller
+  // never passes an out-of-tree path to assertAbsolutePath).
+  handle('files:absolutePath', (_e, { workspaceId, path }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return Promise.resolve(cwd ? resolveInside(cwd, path) : null)
+  })
+
+  // ── Working-tree watcher (live tree refresh while the Files tab is open) ──
+  // See src/main/filesWatcher.ts. AT MOST ONE watcher is active at a time —
+  // starting a new one (even for a different workspace) stops any previous
+  // watch, matching the "only the visible Files tab" scope.
+  handle('files:watchStart', (e, { workspaceId }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    if (cwd) startFilesWatch(workspaceId, cwd, e.sender)
+    return Promise.resolve()
+  })
+
+  handle('files:watchStop', (_e, { workspaceId }) => {
+    stopFilesWatch(workspaceId)
+    return Promise.resolve()
+  })
+}

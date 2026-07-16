@@ -5,6 +5,7 @@ import { createWorkspace } from './workspaces'
 import { refreshGithubData } from './githubAvatar'
 import * as nodePath from 'node:path'
 import { invalidateClaudeProjectSettingsCache } from './claudeProjectSettings'
+import { encodePathToClaudeDir } from './claudeProjectDir'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -74,6 +75,42 @@ export function reorderProjects(orderedIds: string[]): void {
   tx(orderedIds)
 }
 
+/**
+ * Reorders projects so that, WITHIN EACH TIER SEPARATELY (pinned / unpinned —
+ * the tiers never merge, pinned always sorts first via listProjects()'s own
+ * `pinned_at IS NULL` primary ORDER BY key), projects with at least one
+ * active (non-archived) workspace float to the top of their tier. Order is
+ * stable within each has/has-not subgroup — current relative order among
+ * projects sharing active-workspace status is preserved. Persists via the
+ * same sort_order mechanism as reorderProjects. Returns the new ordered id
+ * list so the renderer can apply it optimistically.
+ */
+export function reorderProjectsByActivity(): string[] {
+  const db = getDb()
+  const projects = listProjects() // current display order: pinned first, then sort_order/added_at
+
+  // One grouped query rather than N per-project lookups.
+  const activeCounts = db
+    .prepare(
+      `SELECT project_id, COUNT(*) as cnt FROM workspaces WHERE archived_at IS NULL GROUP BY project_id`
+    )
+    .all() as { project_id: string; cnt: number }[]
+  const hasActiveById = new Set(activeCounts.filter((r) => r.cnt > 0).map((r) => r.project_id))
+
+  function stablePartition(list: ProjectRecord[]): ProjectRecord[] {
+    const withActive = list.filter((p) => hasActiveById.has(p.id))
+    const withoutActive = list.filter((p) => !hasActiveById.has(p.id))
+    return [...withActive, ...withoutActive]
+  }
+
+  const pinned = projects.filter((p) => p.pinnedAt != null)
+  const unpinned = projects.filter((p) => p.pinnedAt == null)
+  const newOrder = [...stablePartition(pinned), ...stablePartition(unpinned)]
+  const orderedIds = newOrder.map((p) => p.id)
+  reorderProjects(orderedIds)
+  return orderedIds
+}
+
 export function addProject(path: string): ProjectRecord {
   const db = getDb()
 
@@ -91,8 +128,8 @@ export function addProject(path: string): ProjectRecord {
 
   const id = crypto.randomUUID()
   const name = nodePath.basename(path)
-  // Encode absolute path to Claude Code's directory-name format: replace / with -
-  const claudeEncodedName = path.replace(/\//g, '-')
+  // Encode absolute path to Claude Code's directory-name format: slashes and dots -> dashes (see claudeProjectDir.ts).
+  const claudeEncodedName = encodePathToClaudeDir(path)
   const addedAt = Date.now()
 
   // Insert project + default workspace atomically.
@@ -133,6 +170,13 @@ export function openProject(id: string): ProjectRecord {
   db.prepare('UPDATE projects SET last_opened_at = ? WHERE id = ?').run(Date.now(), id)
   const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow
   return rowToRecord(row)
+}
+
+/** Fetch a single project by id without touching last_opened_at. */
+export function getProject(id: string): ProjectRecord | null {
+  const db = getDb()
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined
+  return row ? rowToRecord(row) : null
 }
 
 export function deleteProject(id: string): void {

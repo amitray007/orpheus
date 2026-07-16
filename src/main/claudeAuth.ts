@@ -132,6 +132,58 @@ export function invalidateClaudeAuthEnvCache(): void {
 }
 
 /**
+ * Assign `env[key] = value` only when `value` is a non-empty string.
+ * Shared by all per-provider env builders below.
+ */
+function setIfPresent(env: Record<string, string>, key: string, value: string): void {
+  if (value) env[key] = value
+}
+
+/**
+ * Foundry provider env vars (§getClaudeAuthEnv).
+ */
+function buildFoundryEnv(row: Row): Record<string, string> {
+  const env: Record<string, string> = { CLAUDE_CODE_USE_FOUNDRY: '1' }
+  setIfPresent(env, 'ANTHROPIC_FOUNDRY_API_KEY', row.auth_foundry_api_key)
+  setIfPresent(env, 'ANTHROPIC_FOUNDRY_RESOURCE', row.auth_foundry_resource)
+  setIfPresent(env, 'ANTHROPIC_FOUNDRY_BASE_URL', row.auth_foundry_base_url)
+  return env
+}
+
+/**
+ * Bedrock provider env vars (§getClaudeAuthEnv).
+ */
+function buildBedrockEnv(row: Row): Record<string, string> {
+  const env: Record<string, string> = { CLAUDE_CODE_USE_BEDROCK: '1' }
+  setIfPresent(env, 'AWS_REGION', row.auth_aws_region)
+  setIfPresent(env, 'AWS_BEARER_TOKEN_BEDROCK', row.auth_bedrock_bearer_token)
+  setIfPresent(env, 'ANTHROPIC_BEDROCK_BASE_URL', row.auth_base_url)
+  return env
+}
+
+/**
+ * Vertex provider env vars (§getClaudeAuthEnv).
+ */
+function buildVertexEnv(row: Row): Record<string, string> {
+  const env: Record<string, string> = { CLAUDE_CODE_USE_VERTEX: '1' }
+  setIfPresent(env, 'ANTHROPIC_VERTEX_PROJECT_ID', row.auth_vertex_project_id)
+  setIfPresent(env, 'CLOUD_ML_REGION', row.auth_vertex_region)
+  setIfPresent(env, 'ANTHROPIC_VERTEX_BASE_URL', row.auth_base_url)
+  return env
+}
+
+/**
+ * Anthropic (default) provider env vars (§getClaudeAuthEnv).
+ */
+function buildAnthropicEnv(row: Row): Record<string, string> {
+  const env: Record<string, string> = {}
+  setIfPresent(env, 'ANTHROPIC_API_KEY', row.auth_api_key)
+  setIfPresent(env, 'ANTHROPIC_AUTH_TOKEN', row.auth_token)
+  setIfPresent(env, 'ANTHROPIC_BASE_URL', row.auth_base_url)
+  return env
+}
+
+/**
  * Compose plaintext env vars needed at claude launch time.
  * NEVER log values — they may contain a real API key.
  */
@@ -142,28 +194,17 @@ export function getClaudeAuthEnv(): Record<string, string> {
     cachedAuthEnv = {}
     return cachedAuthEnv
   }
-  const env: Record<string, string> = {}
 
+  let env: Record<string, string>
   if (row.cloud_provider === 'foundry') {
-    env.CLAUDE_CODE_USE_FOUNDRY = '1'
-    if (row.auth_foundry_api_key) env.ANTHROPIC_FOUNDRY_API_KEY = row.auth_foundry_api_key
-    if (row.auth_foundry_resource) env.ANTHROPIC_FOUNDRY_RESOURCE = row.auth_foundry_resource
-    if (row.auth_foundry_base_url) env.ANTHROPIC_FOUNDRY_BASE_URL = row.auth_foundry_base_url
+    env = buildFoundryEnv(row)
   } else if (row.cloud_provider === 'bedrock') {
-    env.CLAUDE_CODE_USE_BEDROCK = '1'
-    if (row.auth_aws_region) env.AWS_REGION = row.auth_aws_region
-    if (row.auth_bedrock_bearer_token) env.AWS_BEARER_TOKEN_BEDROCK = row.auth_bedrock_bearer_token
-    if (row.auth_base_url) env.ANTHROPIC_BEDROCK_BASE_URL = row.auth_base_url
+    env = buildBedrockEnv(row)
   } else if (row.cloud_provider === 'vertex') {
-    env.CLAUDE_CODE_USE_VERTEX = '1'
-    if (row.auth_vertex_project_id) env.ANTHROPIC_VERTEX_PROJECT_ID = row.auth_vertex_project_id
-    if (row.auth_vertex_region) env.CLOUD_ML_REGION = row.auth_vertex_region
-    if (row.auth_base_url) env.ANTHROPIC_VERTEX_BASE_URL = row.auth_base_url
+    env = buildVertexEnv(row)
   } else {
     // anthropic (default)
-    if (row.auth_api_key) env.ANTHROPIC_API_KEY = row.auth_api_key
-    if (row.auth_token) env.ANTHROPIC_AUTH_TOKEN = row.auth_token
-    if (row.auth_base_url) env.ANTHROPIC_BASE_URL = row.auth_base_url
+    env = buildAnthropicEnv(row)
   }
 
   cachedAuthEnv = env

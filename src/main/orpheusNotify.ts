@@ -10,6 +10,7 @@ import type { WorkspaceStatus, WorkspaceActivityDetail } from '../shared/types'
 import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 import { stageActivityUpdate } from './activitySink'
+import { UI_STATE_DEFAULTS } from '../shared/uiStateDefaults'
 
 export type WorkspaceActivityEvent =
   | 'session-start'
@@ -76,8 +77,9 @@ export function invalidateWatchdogCache(): void {
 }
 
 let autoCloseHandler: ((workspaceId: string) => void) | null = null
-let fileStatusProvider: ((workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'unknown') | null =
-  null
+let fileStatusProvider:
+  | ((workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'shell' | 'unknown')
+  | null = null
 
 const idleWatchdogs = new Map<string, NodeJS.Timeout>()
 const autoCloseWatchdogs = new Map<string, NodeJS.Timeout>()
@@ -120,7 +122,7 @@ function clearAutoCloseWatchdog(workspaceId: string): void {
 function armIdleWatchdog(workspaceId: string): void {
   clearIdleWatchdog(workspaceId)
   if (cachedStaleMinutes === null) {
-    cachedStaleMinutes = getAppUiState().staleAfterMinutes ?? 60
+    cachedStaleMinutes = getAppUiState().staleAfterMinutes ?? UI_STATE_DEFAULTS.staleAfterMinutes
   }
   const minutes = cachedStaleMinutes
   if (minutes <= 0) return
@@ -186,7 +188,7 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   // dispatch must still pass through.
   if (status === 'awaiting_input' || status === 'idle') {
     const fileStatus = fileStatusProvider?.(workspaceId)
-    if (fileStatus === 'busy' || fileStatus === 'waiting') return
+    if (fileStatus === 'busy' || fileStatus === 'waiting' || fileStatus === 'shell') return
   }
   const prev = activityMap.get(workspaceId)
   if (prev === status) return
@@ -211,6 +213,13 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
     setWorkspaceStatus(workspaceId, status)
   } catch (err) {
     console.warn('[orpheusNotify] setWorkspaceStatus failed for', workspaceId, err)
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.STATUS_PERSIST_FAILED,
+      workspaceId,
+      data: { err: String(err) }
+    })
   }
   notifyForTransition(workspaceId, prev, status)
 
@@ -306,7 +315,7 @@ export function setAutoCloseHandler(fn: (workspaceId: string) => void): void {
 }
 
 export function setFileStatusProvider(
-  fn: (workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'unknown'
+  fn: (workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'shell' | 'unknown'
 ): void {
   fileStatusProvider = fn
 }
@@ -347,9 +356,21 @@ export function ensureManagedHooks(): void {
   let parsed: Record<string, unknown> = {}
   try {
     const raw = fs.readFileSync(settingsPath, 'utf-8')
-    const p = JSON.parse(raw)
+    const p: unknown = JSON.parse(raw)
     if (typeof p === 'object' && p !== null && !Array.isArray(p)) {
       parsed = p as Record<string, unknown>
+    } else {
+      // Valid JSON but not a plain object (array/string/number/null) — bail
+      // without writing so we don't clobber whatever this file legitimately is.
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: DIAG_EVENTS.MANAGED_HOOKS_BAILED_NONOBJECT
+      })
+      console.warn(
+        '[orpheusNotify] ~/.claude/settings.json is valid JSON but not an object — skipping hook install to avoid clobbering it'
+      )
+      return
     }
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException).code
@@ -358,8 +379,15 @@ export function ensureManagedHooks(): void {
         '[orpheusNotify] could not read ~/.claude/settings.json — skipping hook install:',
         err
       )
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: DIAG_EVENTS.HOOK_INSTALL_FAILED,
+        data: { err: String(err) }
+      })
       return
     }
+    // ENOENT: parsed stays {} — proceed to create fresh.
   }
 
   if (
@@ -417,6 +445,29 @@ export function ensureManagedHooks(): void {
   fs.renameSync(tmp, settingsPath)
 }
 
+/** True if `h` is a hook-command object whose command is Orpheus-managed. */
+function isManagedHookEntry(h: unknown): boolean {
+  return (
+    typeof h === 'object' &&
+    h !== null &&
+    typeof (h as Record<string, unknown>)['command'] === 'string' &&
+    isManagedCommand((h as Record<string, unknown>)['command'] as string)
+  )
+}
+
+/** Count Orpheus-managed hook commands within a single settings.json `entry` (an
+ *  element of a hooks[event] array), i.e. entry.hooks that match isManagedHookEntry. */
+function countManagedHooksInEntry(entry: unknown): number {
+  if (typeof entry !== 'object' || entry === null) return 0
+  const hookList = (entry as Record<string, unknown>)['hooks']
+  if (!Array.isArray(hookList)) return 0
+  let count = 0
+  for (const h of hookList) {
+    if (isManagedHookEntry(h)) count++
+  }
+  return count
+}
+
 /**
  * Count the number of Orpheus-managed hook entries currently present in
  * ~/.claude/settings.json. Returns 0 if the file is absent or unreadable.
@@ -426,26 +477,14 @@ export function countManagedHooks(): number {
   let count = 0
   try {
     const raw = fs.readFileSync(settingsPath, 'utf-8')
-    const parsed = JSON.parse(raw)
+    const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 0
     const hooksObj = (parsed as Record<string, unknown>)['hooks']
     if (!hooksObj || typeof hooksObj !== 'object' || Array.isArray(hooksObj)) return 0
     for (const eventArr of Object.values(hooksObj as Record<string, unknown>)) {
       if (!Array.isArray(eventArr)) continue
       for (const entry of eventArr) {
-        if (typeof entry !== 'object' || entry === null) continue
-        const hookList = (entry as Record<string, unknown>)['hooks']
-        if (!Array.isArray(hookList)) continue
-        for (const h of hookList) {
-          if (
-            typeof h === 'object' &&
-            h !== null &&
-            typeof (h as Record<string, unknown>)['command'] === 'string' &&
-            isManagedCommand((h as Record<string, unknown>)['command'] as string)
-          ) {
-            count++
-          }
-        }
+        count += countManagedHooksInEntry(entry)
       }
     }
   } catch {
@@ -470,21 +509,38 @@ export function uninstallManagedHooks(): void {
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ENOENT') return // nothing to clean
     console.warn('[orpheusNotify] uninstallManagedHooks: could not read settings.json:', err)
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.HOOK_UNINSTALL_FAILED,
+      data: { err: String(err) }
+    })
     return
   }
 
   let parsed: Record<string, unknown>
   try {
-    const p = JSON.parse(raw)
+    const p: unknown = JSON.parse(raw)
     if (typeof p !== 'object' || p === null || Array.isArray(p)) {
       console.warn(
         '[orpheusNotify] uninstallManagedHooks: settings.json is not an object — skipping'
       )
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: DIAG_EVENTS.HOOK_UNINSTALL_FAILED
+      })
       return
     }
     parsed = p as Record<string, unknown>
   } catch (err) {
     console.warn('[orpheusNotify] uninstallManagedHooks: failed to parse settings.json:', err)
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.HOOK_UNINSTALL_FAILED,
+      data: { err: String(err) }
+    })
     return
   }
 
@@ -550,6 +606,12 @@ export function uninstallManagedHooks(): void {
     fs.renameSync(tmp, settingsPath)
   } catch (err) {
     console.warn('[orpheusNotify] uninstallManagedHooks: failed to write settings.json:', err)
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.HOOK_UNINSTALL_FAILED,
+      data: { err: String(err) }
+    })
   }
 }
 
@@ -598,7 +660,7 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
         eventName = headerEvent
         if (bodyText.trim()) {
           try {
-            const parsed = JSON.parse(bodyText)
+            const parsed: unknown = JSON.parse(bodyText)
             if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
               payload = parsed as Record<string, unknown>
             }

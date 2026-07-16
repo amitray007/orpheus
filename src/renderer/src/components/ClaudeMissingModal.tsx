@@ -34,6 +34,7 @@ export function ClaudeMissingModal({ onRecheck }: ClaudeMissingModalProps): Reac
     <Overlay
       open
       interactive
+      dialog
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
     >
       {/* Modal card — pointer-events-auto so clicks land here, not behind */}

@@ -5,6 +5,7 @@ import type { GitBranchInfo, GitCommit } from '@shared/types'
 import { Select } from '../settings/primitives'
 import { CommitListSkeleton } from '../../Skeleton'
 import { PaginationFooter } from '../../DataTable'
+import { useDebouncedValue } from '@/lib/useDebouncedValue'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -135,7 +136,7 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
   const [branches, setBranches] = useState<GitBranchInfo[]>([])
   const [branch, setBranch] = useState<string>('')
   const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const debouncedSearch = useDebouncedValue(search, 250).trim()
   const [dateRange, setDateRange] = useState<DateRange>('d3')
 
   const [commits, setCommits] = useState<GitCommit[]>([])
@@ -146,12 +147,6 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
   // Total commits on the selected branch with no filters applied. Used to
   // distinguish "no commits at all on this branch" from "filtered to zero".
   const [allTimeTotal, setAllTimeTotal] = useState<number | null>(null)
-
-  // Debounce search
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim()), 250)
-    return () => clearTimeout(t)
-  }, [search])
 
   // Load branch list (and pre-select current branch)
   useEffect(() => {
