@@ -17,6 +17,12 @@ export type OfferedModes = { local: boolean; worktree: boolean; reason?: string 
 const configNotices: string[] = []
 const selfWrites = new Set<string>()
 
+// Repeated path segments for the per-project/global config file — hoisted
+// since '.orpheus' and 'config.yml' each show up across path.join/resolve
+// calls and fs.watch filename checks below.
+const ORPHEUS_DIR_NAME = '.orpheus'
+const CONFIG_FILE_NAME = 'config.yml'
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -44,7 +50,7 @@ function parseWorkspacesBlock(raw: unknown): {
   for (const key of ['allowLocal', 'allowWorktree'] as const) {
     if (key in block) {
       if (typeof block[key] === 'boolean') {
-        value[key] = block[key] as boolean
+        value[key] = block[key]
       } else {
         notices.push(`.orpheus/config.yml: workspaces.${key} must be true/false — ignoring`)
       }
@@ -76,8 +82,8 @@ export function consumeConfigNotices(): string[] {
 export async function resolveWorkspacesConfig(projectCwd: string): Promise<WorkspacesConfig> {
   const defaults: WorkspacesConfig = { allowLocal: true, allowWorktree: true }
 
-  const globalPath = path.join(os.homedir(), '.orpheus', 'config.yml')
-  const projectPath = path.join(projectCwd, '.orpheus', 'config.yml')
+  const globalPath = path.join(os.homedir(), ORPHEUS_DIR_NAME, CONFIG_FILE_NAME)
+  const projectPath = path.join(projectCwd, ORPHEUS_DIR_NAME, CONFIG_FILE_NAME)
 
   let merged: WorkspacesConfig = { ...defaults }
 
@@ -130,7 +136,7 @@ export async function writeProjectOverride(
   projectCwd: string,
   patch: Partial<WorkspacesConfig>
 ): Promise<void> {
-  const configPath = path.join(projectCwd, '.orpheus', 'config.yml')
+  const configPath = path.join(projectCwd, ORPHEUS_DIR_NAME, CONFIG_FILE_NAME)
   const dir = path.dirname(configPath)
 
   await fs.promises.mkdir(dir, { recursive: true })
@@ -168,14 +174,14 @@ export async function writeProjectOverride(
 }
 
 export function watchOrpheusConfig(projectCwd: string | null, onChange: () => void): () => void {
-  const globalDir = path.join(os.homedir(), '.orpheus')
+  const globalDir = path.join(os.homedir(), ORPHEUS_DIR_NAME)
   const watchers: fs.FSWatcher[] = []
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
   function handleEvent(dir: string, filename: string | null): void {
-    if (filename !== 'config.yml') return
+    if (filename !== CONFIG_FILE_NAME) return
 
-    const resolved = path.resolve(dir, 'config.yml')
+    const resolved = path.resolve(dir, CONFIG_FILE_NAME)
     if (selfWrites.has(resolved)) {
       selfWrites.delete(resolved)
       return
@@ -196,7 +202,7 @@ export function watchOrpheusConfig(projectCwd: string | null, onChange: () => vo
   }
 
   if (projectCwd) {
-    const projectDir = path.join(projectCwd, '.orpheus')
+    const projectDir = path.join(projectCwd, ORPHEUS_DIR_NAME)
     try {
       const w = fs.watch(projectDir, (_, filename) => handleEvent(projectDir, filename))
       watchers.push(w)

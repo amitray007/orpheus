@@ -356,7 +356,7 @@ export function ensureManagedHooks(): void {
   let parsed: Record<string, unknown> = {}
   try {
     const raw = fs.readFileSync(settingsPath, 'utf-8')
-    const p = JSON.parse(raw)
+    const p: unknown = JSON.parse(raw)
     if (typeof p === 'object' && p !== null && !Array.isArray(p)) {
       parsed = p as Record<string, unknown>
     } else {
@@ -454,7 +454,7 @@ export function countManagedHooks(): number {
   let count = 0
   try {
     const raw = fs.readFileSync(settingsPath, 'utf-8')
-    const parsed = JSON.parse(raw)
+    const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 0
     const hooksObj = (parsed as Record<string, unknown>)['hooks']
     if (!hooksObj || typeof hooksObj !== 'object' || Array.isArray(hooksObj)) return 0
@@ -509,7 +509,7 @@ export function uninstallManagedHooks(): void {
 
   let parsed: Record<string, unknown>
   try {
-    const p = JSON.parse(raw)
+    const p: unknown = JSON.parse(raw)
     if (typeof p !== 'object' || p === null || Array.isArray(p)) {
       console.warn(
         '[orpheusNotify] uninstallManagedHooks: settings.json is not an object — skipping'
@@ -649,7 +649,7 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
         eventName = headerEvent
         if (bodyText.trim()) {
           try {
-            const parsed = JSON.parse(bodyText)
+            const parsed: unknown = JSON.parse(bodyText)
             if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
               payload = parsed as Record<string, unknown>
             }

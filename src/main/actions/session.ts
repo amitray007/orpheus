@@ -234,7 +234,8 @@ function resetAccumulator(acc: AccumulatorState): void {
 function extractText(content: unknown): string | null {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
-    for (const block of content) {
+    const blocks = content as unknown[]
+    for (const block of blocks) {
       if (block && typeof block === 'object' && 'type' in block && block.type === 'text') {
         if ('text' in block && typeof block.text === 'string') return block.text
       }

@@ -112,9 +112,13 @@ export function openDiagConsole(): void {
     })
 
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-      created.loadURL(`${process.env['ELECTRON_RENDERER_URL']}?view=diag-console`)
+      created
+        .loadURL(`${process.env['ELECTRON_RENDERER_URL']}?view=diag-console`)
+        .catch((err) => console.error('[diagConsole] loadURL failed:', err))
     } else {
-      created.loadFile(join(__dirname, '../renderer/index.html'), { search: 'view=diag-console' })
+      created
+        .loadFile(join(__dirname, '../renderer/index.html'), { search: 'view=diag-console' })
+        .catch((err) => console.error('[diagConsole] loadFile failed:', err))
     }
   } catch (err) {
     console.error('[diagConsole] failed to open console window:', err)

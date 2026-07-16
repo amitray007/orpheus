@@ -377,7 +377,7 @@ async function _runReconcile(): Promise<void> {
 // INVARIANT: reconcile() must stay await-free between its liveSessionMap/lastRawActed
 // reads and writes; forceReconcile guards against re-entrancy but provides no
 // protection if an await is introduced here.
-async function reconcile(): Promise<void> {
+function reconcile(): Promise<void> {
   const t0 = Date.now()
   // 1. Read all session files
   let files: string[] = []
@@ -403,7 +403,7 @@ async function reconcile(): Promise<void> {
     const filePath = path.join(SESSIONS_DIR, filename)
     try {
       const raw = fs.readFileSync(filePath, 'utf8')
-      const parsed: SessionFile = JSON.parse(raw)
+      const parsed = JSON.parse(raw) as SessionFile
       if (!parsed.sessionId) continue
 
       // Check for unknown versions
@@ -484,7 +484,7 @@ async function reconcile(): Promise<void> {
       event: DIAG_EVENTS.SESSION_RECONCILE_FAILED,
       data: { err: String(err) }
     })
-    return
+    return Promise.resolve()
   }
 
   // 4. For each owned (non-archived) workspace, compute file-derived status and log
@@ -642,6 +642,7 @@ async function reconcile(): Promise<void> {
       data: { liveCount: liveSessionMap.size }
     })
   }
+  return Promise.resolve()
 }
 
 // ---------------------------------------------------------------------------
@@ -717,7 +718,7 @@ async function _startupCrossCheck(): Promise<void> {
 
     let agentList: Array<{ sessionId?: string; status?: string }>
     try {
-      agentList = JSON.parse(output)
+      agentList = JSON.parse(output) as Array<{ sessionId?: string; status?: string }>
     } catch {
       console.log(
         '[sessionState] startup cross-check skipped (could not parse claude agents output)'
@@ -768,7 +769,7 @@ function _which(binary: string, PATH: string): Promise<string> {
   return new Promise((resolve, reject) => {
     childProcess.execFile('which', [binary], { env: { ...process.env, PATH } }, (err, stdout) => {
       if (err) {
-        reject(err)
+        reject(err instanceof Error ? err : new Error('which failed'))
       } else {
         resolve(stdout.trim())
       }

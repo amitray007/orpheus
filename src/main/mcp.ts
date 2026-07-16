@@ -65,7 +65,7 @@ function parseMcpServers(
   return result
 }
 
-function readJsonFile(path: string): unknown | null {
+function readJsonFile(path: string): unknown {
   if (!fs.existsSync(path)) return null
   try {
     return JSON.parse(fs.readFileSync(path, 'utf-8'))

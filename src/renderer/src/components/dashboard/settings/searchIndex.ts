@@ -33,12 +33,24 @@ export interface SettingsSearchEntry {
   keywords: string[]
 }
 
+const SECTION_ID_CLAUDE_GENERAL: SectionId = 'claude-general'
+const SECTION_ID_CLAUDE_DISPLAY: SectionId = 'claude-display'
+const SECTION_ID_CLAUDE_PERMISSIONS: SectionId = 'claude-permissions'
+const SECTION_ID_CLAUDE_AUTH: SectionId = 'claude-auth'
+const SECTION_ID_CLAUDE_MEMORY: SectionId = 'claude-memory'
+const SECTION_LABEL_MEMORY_AND_CONTEXT = 'Memory & Context'
+const SECTION_ID_CLAUDE_TOOLS: SectionId = 'claude-tools'
+const SECTION_ID_CLAUDE_DEVELOPER: SectionId = 'claude-developer'
+const SECTION_ID_ORPHEUS_TERMINAL: SectionId = 'orpheus-terminal'
+const SECTION_ID_ORPHEUS_WINDOW: SectionId = 'orpheus-window'
+const SECTION_ID_ORPHEUS_NOTIFICATIONS: SectionId = 'orpheus-notifications'
+
 export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   // ---------------------------------------------------------------------------
   // Claude › General
   // ---------------------------------------------------------------------------
   {
-    sectionId: 'claude-general',
+    sectionId: SECTION_ID_CLAUDE_GENERAL,
     sectionGroup: 'Claude',
     sectionLabel: 'General',
     settingId: 'model',
@@ -58,7 +70,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'claude-general',
+    sectionId: SECTION_ID_CLAUDE_GENERAL,
     sectionGroup: 'Claude',
     sectionLabel: 'General',
     settingId: 'permission-mode',
@@ -78,7 +90,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'claude-general',
+    sectionId: SECTION_ID_CLAUDE_GENERAL,
     sectionGroup: 'Claude',
     sectionLabel: 'General',
     settingId: 'effort',
@@ -88,7 +100,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['speed', 'thoroughness', 'quality', 'effort level', 'thinking depth', 'low high max']
   },
   {
-    sectionId: 'claude-general',
+    sectionId: SECTION_ID_CLAUDE_GENERAL,
     sectionGroup: 'Claude',
     sectionLabel: 'General',
     settingId: 'auto-load-memory',
@@ -105,7 +117,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'claude-general',
+    sectionId: SECTION_ID_CLAUDE_GENERAL,
     sectionGroup: 'Claude',
     sectionLabel: 'General',
     settingId: 'extended-thinking',
@@ -122,7 +134,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'claude-general',
+    sectionId: SECTION_ID_CLAUDE_GENERAL,
     sectionGroup: 'Claude',
     sectionLabel: 'General',
     settingId: 'fallback-model',
@@ -132,7 +144,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['backup model', 'overload', 'unavailable model', 'failover', 'alternate model']
   },
   {
-    sectionId: 'claude-general',
+    sectionId: SECTION_ID_CLAUDE_GENERAL,
     sectionGroup: 'Claude',
     sectionLabel: 'General',
     settingId: 'disable-extended-thinking',
@@ -142,7 +154,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['no thinking', 'disable think', 'fast response', 'no reasoning']
   },
   {
-    sectionId: 'claude-general',
+    sectionId: SECTION_ID_CLAUDE_GENERAL,
     sectionGroup: 'Claude',
     sectionLabel: 'General',
     settingId: 'disable-fast-mode',
@@ -152,7 +164,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['fast mode', 'optimization', 'response speed', 'slow mode']
   },
   {
-    sectionId: 'claude-general',
+    sectionId: SECTION_ID_CLAUDE_GENERAL,
     sectionGroup: 'Claude',
     sectionLabel: 'General',
     settingId: 'max-turns-per-session',
@@ -162,7 +174,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['turn limit', 'session limit', 'agentic turns', 'max iterations', 'loop limit']
   },
   {
-    sectionId: 'claude-general',
+    sectionId: SECTION_ID_CLAUDE_GENERAL,
     sectionGroup: 'Claude',
     sectionLabel: 'General',
     settingId: 'disable-1m-context',
@@ -172,7 +184,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['context window', 'token limit', '1 million tokens', 'long context', 'context size']
   },
   {
-    sectionId: 'claude-general',
+    sectionId: SECTION_ID_CLAUDE_GENERAL,
     sectionGroup: 'Claude',
     sectionLabel: 'General',
     settingId: 'disable-adaptive-thinking',
@@ -183,7 +195,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['adaptive', 'reasoning depth', 'dynamic thinking', 'smart mode']
   },
   {
-    sectionId: 'claude-general',
+    sectionId: SECTION_ID_CLAUDE_GENERAL,
     sectionGroup: 'Claude',
     sectionLabel: 'General',
     settingId: 'disable-legacy-model-remap',
@@ -198,7 +210,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   // Claude › Display
   // ---------------------------------------------------------------------------
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'output-style',
@@ -215,7 +227,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'tui-renderer',
@@ -226,7 +238,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['terminal ui', 'fullscreen', 'tui mode', 'scrollable', 'terminal view']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'editor-mode',
@@ -236,7 +248,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['vim', 'keybindings', 'editor keybindings', 'vi mode', 'normal mode', 'key bindings']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'native-cursor',
@@ -247,7 +259,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['cursor style', 'block cursor', 'system cursor', 'terminal cursor']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'hide-cwd-in-logo',
@@ -257,7 +269,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['working directory', 'cwd', 'banner', 'session header', 'hide path']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'reduce-motion',
@@ -267,7 +279,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['animations', 'transitions', 'accessibility', 'motion', 'no animation', 'a11y']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'no-flicker',
@@ -277,7 +289,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['flicker', 'screen flicker', 'terminal flicker', 'rendering artifact']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'disable-alternate-screen',
@@ -287,7 +299,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['alternate screen', 'terminal buffer', 'screen buffer', 'alt screen']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'disable-virtual-scroll',
@@ -297,7 +309,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['virtual scroll', 'scrolling', 'scroll behavior']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'disable-mouse',
@@ -307,7 +319,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['mouse events', 'mouse support', 'terminal mouse', 'click events']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'disable-terminal-title',
@@ -317,7 +329,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['terminal title', 'window title', 'title bar', 'tab title']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'scroll-speed',
@@ -327,7 +339,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['scroll speed', 'scroll rate', 'terminal scroll', 'scrolling speed']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'code-accessibility',
@@ -337,7 +349,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['a11y', 'accessibility', 'code blocks', 'screen reader']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'omit-attribution-header',
@@ -347,7 +359,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['attribution', 'system prompt', 'header', 'prompt header']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'force-sync-output',
@@ -357,7 +369,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['sync output', 'synchronous', 'output sync', 'terminal output']
   },
   {
-    sectionId: 'claude-display',
+    sectionId: SECTION_ID_CLAUDE_DISPLAY,
     sectionGroup: 'Claude',
     sectionLabel: 'Display',
     settingId: 'enable-prompt-suggestion',
@@ -371,7 +383,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   // Claude › Permissions
   // ---------------------------------------------------------------------------
   {
-    sectionId: 'claude-permissions',
+    sectionId: SECTION_ID_CLAUDE_PERMISSIONS,
     sectionGroup: 'Claude',
     sectionLabel: 'Permissions',
     settingId: 'auto-approve-file-edits',
@@ -382,7 +394,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['allow edits', 'file permission', 'edit permission', 'auto allow', 'approve edits']
   },
   {
-    sectionId: 'claude-permissions',
+    sectionId: SECTION_ID_CLAUDE_PERMISSIONS,
     sectionGroup: 'Claude',
     sectionLabel: 'Permissions',
     settingId: 'ask-before-destructive-bash-commands',
@@ -400,7 +412,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'claude-permissions',
+    sectionId: SECTION_ID_CLAUDE_PERMISSIONS,
     sectionGroup: 'Claude',
     sectionLabel: 'Permissions',
     settingId: 'plan-mode-by-default',
@@ -411,7 +423,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['plan first', 'planning mode', 'safe mode', 'review before execute']
   },
   {
-    sectionId: 'claude-permissions',
+    sectionId: SECTION_ID_CLAUDE_PERMISSIONS,
     sectionGroup: 'Claude',
     sectionLabel: 'Permissions',
     settingId: 'allow-rules',
@@ -421,7 +433,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['allowlist', 'whitelist', 'allow rule', 'tool allow', 'permission rule']
   },
   {
-    sectionId: 'claude-permissions',
+    sectionId: SECTION_ID_CLAUDE_PERMISSIONS,
     sectionGroup: 'Claude',
     sectionLabel: 'Permissions',
     settingId: 'ask-rules',
@@ -431,7 +443,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['ask permission', 'confirm rule', 'prompt before', 'approval rule']
   },
   {
-    sectionId: 'claude-permissions',
+    sectionId: SECTION_ID_CLAUDE_PERMISSIONS,
     sectionGroup: 'Claude',
     sectionLabel: 'Permissions',
     settingId: 'deny-rules',
@@ -441,7 +453,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['denylist', 'blacklist', 'block rule', 'deny permission', 'forbidden']
   },
   {
-    sectionId: 'claude-permissions',
+    sectionId: SECTION_ID_CLAUDE_PERMISSIONS,
     sectionGroup: 'Claude',
     sectionLabel: 'Permissions',
     settingId: 'additional-directories',
@@ -461,7 +473,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   // Claude › Authentication
   // ---------------------------------------------------------------------------
   {
-    sectionId: 'claude-auth',
+    sectionId: SECTION_ID_CLAUDE_AUTH,
     sectionGroup: 'Claude',
     sectionLabel: 'Authentication',
     settingId: 'provider',
@@ -481,7 +493,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'claude-auth',
+    sectionId: SECTION_ID_CLAUDE_AUTH,
     sectionGroup: 'Claude',
     sectionLabel: 'Authentication',
     settingId: 'api-key',
@@ -502,7 +514,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'claude-auth',
+    sectionId: SECTION_ID_CLAUDE_AUTH,
     sectionGroup: 'Claude',
     sectionLabel: 'Authentication',
     settingId: 'verify',
@@ -512,7 +524,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['test connection', 'connection test', 'ping', 'verify key', 'check key', 'test api']
   },
   {
-    sectionId: 'claude-auth',
+    sectionId: SECTION_ID_CLAUDE_AUTH,
     sectionGroup: 'Claude',
     sectionLabel: 'Authentication',
     settingId: 'base-url-override',
@@ -529,7 +541,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'claude-auth',
+    sectionId: SECTION_ID_CLAUDE_AUTH,
     sectionGroup: 'Claude',
     sectionLabel: 'Authentication',
     settingId: 'resource',
@@ -539,7 +551,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['azure', 'foundry', 'resource name', 'ai foundry']
   },
   {
-    sectionId: 'claude-auth',
+    sectionId: SECTION_ID_CLAUDE_AUTH,
     sectionGroup: 'Claude',
     sectionLabel: 'Authentication',
     settingId: 'aws-region',
@@ -549,7 +561,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['bedrock region', 'amazon region', 'aws bedrock', 'us-east', 'eu-west']
   },
   {
-    sectionId: 'claude-auth',
+    sectionId: SECTION_ID_CLAUDE_AUTH,
     sectionGroup: 'Claude',
     sectionLabel: 'Authentication',
     settingId: 'aws-bearer-token',
@@ -559,7 +571,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['bedrock token', 'iam', 'aws credentials', 'bearer token']
   },
   {
-    sectionId: 'claude-auth',
+    sectionId: SECTION_ID_CLAUDE_AUTH,
     sectionGroup: 'Claude',
     sectionLabel: 'Authentication',
     settingId: 'gcp-project-id',
@@ -569,7 +581,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['vertex', 'google cloud', 'gcp', 'project id', 'cloud project']
   },
   {
-    sectionId: 'claude-auth',
+    sectionId: SECTION_ID_CLAUDE_AUTH,
     sectionGroup: 'Claude',
     sectionLabel: 'Authentication',
     settingId: 'region',
@@ -583,9 +595,9 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   // Claude › Memory & Context
   // ---------------------------------------------------------------------------
   {
-    sectionId: 'claude-memory',
+    sectionId: SECTION_ID_CLAUDE_MEMORY,
     sectionGroup: 'Claude',
-    sectionLabel: 'Memory & Context',
+    sectionLabel: SECTION_LABEL_MEMORY_AND_CONTEXT,
     settingId: 'disable-git-instructions',
     label: 'Disable git instructions',
     description: 'Suppress the automatic git-context message that Claude prepends to sessions.',
@@ -593,9 +605,9 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['git context', 'git message', 'suppress git', 'git header', 'session start']
   },
   {
-    sectionId: 'claude-memory',
+    sectionId: SECTION_ID_CLAUDE_MEMORY,
     sectionGroup: 'Claude',
-    sectionLabel: 'Memory & Context',
+    sectionLabel: SECTION_LABEL_MEMORY_AND_CONTEXT,
     settingId: 'max-output-tokens',
     label: 'Max output tokens',
     description: 'Upper bound on tokens in a single Claude response.',
@@ -603,9 +615,9 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['token limit', 'response length', 'output length', 'max tokens', 'token cap']
   },
   {
-    sectionId: 'claude-memory',
+    sectionId: SECTION_ID_CLAUDE_MEMORY,
     sectionGroup: 'Claude',
-    sectionLabel: 'Memory & Context',
+    sectionLabel: SECTION_LABEL_MEMORY_AND_CONTEXT,
     settingId: 'max-context-tokens',
     label: 'Max context tokens',
     description: 'Cap on the total context window sent per turn.',
@@ -613,9 +625,9 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['context limit', 'context cap', 'context window', 'window size', 'total tokens']
   },
   {
-    sectionId: 'claude-memory',
+    sectionId: SECTION_ID_CLAUDE_MEMORY,
     sectionGroup: 'Claude',
-    sectionLabel: 'Memory & Context',
+    sectionLabel: SECTION_LABEL_MEMORY_AND_CONTEXT,
     settingId: 'compaction-threshold',
     label: 'Compaction threshold',
     description: 'Compact older context when usage exceeds this percentage.',
@@ -623,9 +635,9 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['compact', 'compaction', 'context compression', 'memory compression', 'auto compact']
   },
   {
-    sectionId: 'claude-memory',
+    sectionId: SECTION_ID_CLAUDE_MEMORY,
     sectionGroup: 'Claude',
-    sectionLabel: 'Memory & Context',
+    sectionLabel: SECTION_LABEL_MEMORY_AND_CONTEXT,
     settingId: 'max-thinking-tokens',
     label: 'Max thinking tokens',
     description: 'Upper bound on tokens used for extended thinking per response.',
@@ -633,9 +645,9 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['thinking tokens', 'thinking budget', 'reasoning tokens', 'think limit']
   },
   {
-    sectionId: 'claude-memory',
+    sectionId: SECTION_ID_CLAUDE_MEMORY,
     sectionGroup: 'Claude',
-    sectionLabel: 'Memory & Context',
+    sectionLabel: SECTION_LABEL_MEMORY_AND_CONTEXT,
     settingId: 'file-read-max-output-tokens',
     label: 'File read max output tokens',
     description: 'Truncation limit for file-read tool output.',
@@ -643,9 +655,9 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['file read', 'file tokens', 'read limit', 'file output']
   },
   {
-    sectionId: 'claude-memory',
+    sectionId: SECTION_ID_CLAUDE_MEMORY,
     sectionGroup: 'Claude',
-    sectionLabel: 'Memory & Context',
+    sectionLabel: SECTION_LABEL_MEMORY_AND_CONTEXT,
     settingId: 'disable-claude-md-memory-files',
     label: 'Disable CLAUDE.md memory files',
     description: 'Prevent Claude from loading CLAUDE.md files from the filesystem.',
@@ -653,9 +665,9 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['claude md', 'memory files', 'project memory', 'context files', 'disable memory']
   },
   {
-    sectionId: 'claude-memory',
+    sectionId: SECTION_ID_CLAUDE_MEMORY,
     sectionGroup: 'Claude',
-    sectionLabel: 'Memory & Context',
+    sectionLabel: SECTION_LABEL_MEMORY_AND_CONTEXT,
     settingId: 'auto-compact-context-window',
     label: 'Auto-compact context window (tokens)',
     description: 'Token count at which Claude triggers context auto-compaction.',
@@ -663,9 +675,9 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['auto compact', 'compact window', 'context window tokens', 'compaction trigger']
   },
   {
-    sectionId: 'claude-memory',
+    sectionId: SECTION_ID_CLAUDE_MEMORY,
     sectionGroup: 'Claude',
-    sectionLabel: 'Memory & Context',
+    sectionLabel: SECTION_LABEL_MEMORY_AND_CONTEXT,
     settingId: 'auto-compact-percentage-override',
     label: 'Auto-compact percentage override (0–100)',
     description: 'Override the percentage of context used before auto-compaction triggers.',
@@ -677,7 +689,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   // Claude › Tools
   // ---------------------------------------------------------------------------
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: '_section',
@@ -696,7 +708,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'bash-default-timeout',
@@ -706,7 +718,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['bash timeout', 'command timeout', 'shell timeout', 'timeout ms', 'bash limit']
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'bash-max-timeout',
@@ -716,7 +728,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['bash max timeout', 'maximum timeout', 'shell max timeout']
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'bash-max-output-length',
@@ -726,7 +738,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['bash output', 'stdout limit', 'output truncation', 'command output length']
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'tool-concurrency',
@@ -736,7 +748,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['parallel tools', 'concurrent tools', 'tool parallelism', 'simultaneous tools']
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'browser-integration',
@@ -746,7 +758,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['browser', 'chrome', 'web browsing', 'web automation', 'browser tool']
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'bash-maintains-project-cwd',
@@ -756,7 +768,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['working directory', 'cwd', 'bash cwd', 'project root', 'directory reset']
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'perforce-mode',
@@ -766,7 +778,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['perforce', 'p4', 'vcs', 'version control', 'source control']
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'glob-includes-hidden-files',
@@ -776,7 +788,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['dotfiles', 'hidden files', 'glob hidden', 'show hidden', 'dot files']
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'glob-ignores-gitignore',
@@ -787,7 +799,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['gitignore', 'glob ignore', 'ignore patterns', 'file exclusion']
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'glob-timeout',
@@ -797,7 +809,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['glob timeout', 'file search timeout', 'glob time limit']
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'disable-file-checkpointing',
@@ -807,7 +819,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['checkpointing', 'file snapshot', 'rollback', 'undo', 'checkpoint']
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'disable-attachments',
@@ -817,7 +829,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['attachments', 'file upload', 'attach file', 'disable upload']
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'shell-override',
@@ -827,7 +839,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['shell', 'bash', 'zsh', 'shell binary', 'shell path', 'custom shell']
   },
   {
-    sectionId: 'claude-tools',
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
     sectionGroup: 'Claude',
     sectionLabel: 'Tools',
     settingId: 'shell-prefix',
@@ -911,7 +923,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   // Claude › Developer
   // ---------------------------------------------------------------------------
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'debug-logging',
@@ -921,7 +933,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['debug', 'verbose', 'logging', 'log output', 'debug mode']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'log-level',
@@ -931,7 +943,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['log level', 'severity', 'debug info warn error', 'logging level']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'disable-telemetry',
@@ -949,7 +961,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'disable-error-reporting',
@@ -959,7 +971,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['crash reports', 'error reporting', 'stack traces', 'privacy', 'sentry', 'reporting']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'disable-auto-updater',
@@ -969,7 +981,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['auto update', 'updater', 'disable updates', 'no updates', 'update check']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'agent-teams',
@@ -979,7 +991,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['experimental', 'agent teams', 'parallel instances', 'multi agent', 'collaboration']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'forked-subagents',
@@ -989,7 +1001,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['experimental', 'fork', 'subagent process', 'isolated agents', 'spawned agents']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'simple-system-prompt',
@@ -999,7 +1011,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['system prompt', 'minimal prompt', 'bare prompt', 'no injections']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'http-proxy',
@@ -1009,7 +1021,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['proxy', 'network', 'corporate proxy', 'http proxy', 'outbound proxy', 'env var']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'https-proxy',
@@ -1027,7 +1039,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'api-timeout',
@@ -1037,7 +1049,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['timeout', 'api timeout', 'request timeout', 'network timeout', 'connection timeout']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'max-retries',
@@ -1047,7 +1059,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['retry', 'retries', 'retry limit', 'api retry', 'error retry']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'enable-fine-grained-tool-streaming',
@@ -1057,7 +1069,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['streaming', 'tool streaming', 'fine grained', 'latency', 'stream results']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'disable-nonstreaming-fallback',
@@ -1067,7 +1079,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['streaming fallback', 'non streaming', 'fallback mode', 'stream failure']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'proxy-resolves-hosts',
@@ -1077,7 +1089,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['dns', 'hostname', 'proxy dns', 'host resolution', 'name resolution']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'enable-gateway-model-discovery',
@@ -1087,7 +1099,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['gateway', 'model discovery', 'available models', 'dynamic models']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'disable-nonessential-traffic',
@@ -1097,7 +1109,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['traffic', 'network traffic', 'background requests', 'all off', 'privacy bundle']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'honor-do-not-track',
@@ -1107,7 +1119,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['do not track', 'dnt', 'privacy', 'tracking opt out', 'analytics opt out']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'disable-background-tasks',
@@ -1117,7 +1129,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['background', 'background tasks', 'background processing', 'between turns']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'disable-agent-view',
@@ -1127,7 +1139,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['agent view', 'activity view', 'live view', 'agentic view', 'hide agent']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'auto-background-tasks',
@@ -1138,7 +1150,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['auto schedule', 'automatic tasks', 'background schedule']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'async-agent-stall-timeout',
@@ -1148,7 +1160,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['stall timeout', 'agent stall', 'unresponsive', 'async timeout']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'enable-tasks',
@@ -1158,7 +1170,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['tasks', 'task management', 'work items', 'long running tasks']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'disable-cron',
@@ -1168,7 +1180,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['cron', 'scheduled tasks', 'cron jobs', 'disable scheduler']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'exit-after-stop-delay',
@@ -1178,7 +1190,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['exit delay', 'stop delay', 'shutdown delay', 'graceful exit']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'disable-feedback-command',
@@ -1188,7 +1200,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['feedback', 'feedback command', 'slash feedback', 'disable feedback']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'disable-feedback-survey',
@@ -1198,7 +1210,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['survey', 'feedback survey', 'periodic prompt', 'disable survey', 'nps']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'anthropic-beta-headers',
@@ -1208,7 +1220,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['beta', 'beta headers', 'anthropic betas', 'api headers', 'beta features']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'extra-body-json',
@@ -1218,7 +1230,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['extra body', 'request body', 'json body', 'api body', 'raw json']
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'custom-environment-variables',
@@ -1237,7 +1249,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'claude-developer',
+    sectionId: SECTION_ID_CLAUDE_DEVELOPER,
     sectionGroup: 'Claude',
     sectionLabel: 'Developer',
     settingId: 'custom-cli-flags',
@@ -1419,7 +1431,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   // Orpheus › Terminal
   // ---------------------------------------------------------------------------
   {
-    sectionId: 'orpheus-terminal',
+    sectionId: SECTION_ID_ORPHEUS_TERMINAL,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Terminal',
     settingId: 'font-family',
@@ -1429,7 +1441,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['font', 'typeface', 'monospace', 'terminal font', 'font name']
   },
   {
-    sectionId: 'orpheus-terminal',
+    sectionId: SECTION_ID_ORPHEUS_TERMINAL,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Terminal',
     settingId: 'font-size',
@@ -1439,7 +1451,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['font size', 'terminal font size', 'text size', 'pt size']
   },
   {
-    sectionId: 'orpheus-terminal',
+    sectionId: SECTION_ID_ORPHEUS_TERMINAL,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Terminal',
     settingId: 'theme',
@@ -1449,7 +1461,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['ghostty theme', 'color scheme', 'terminal theme', 'terminal colors']
   },
   {
-    sectionId: 'orpheus-terminal',
+    sectionId: SECTION_ID_ORPHEUS_TERMINAL,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Terminal',
     settingId: 'cursor-style',
@@ -1459,7 +1471,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['cursor', 'cursor shape', 'block cursor', 'bar cursor', 'underline cursor']
   },
   {
-    sectionId: 'orpheus-terminal',
+    sectionId: SECTION_ID_ORPHEUS_TERMINAL,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Terminal',
     settingId: 'cursor-style-blink',
@@ -1469,7 +1481,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['cursor blink', 'blinking cursor', 'cursor animation']
   },
   {
-    sectionId: 'orpheus-terminal',
+    sectionId: SECTION_ID_ORPHEUS_TERMINAL,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Terminal',
     settingId: 'background',
@@ -1479,7 +1491,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['background', 'bg color', 'terminal background', 'background color', 'hex color']
   },
   {
-    sectionId: 'orpheus-terminal',
+    sectionId: SECTION_ID_ORPHEUS_TERMINAL,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Terminal',
     settingId: 'foreground',
@@ -1489,7 +1501,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['foreground', 'text color', 'terminal text', 'fg color', 'hex color']
   },
   {
-    sectionId: 'orpheus-terminal',
+    sectionId: SECTION_ID_ORPHEUS_TERMINAL,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Terminal',
     settingId: 'copy-on-select',
@@ -1499,7 +1511,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['copy', 'select', 'copy on select', 'clipboard', 'auto copy']
   },
   {
-    sectionId: 'orpheus-terminal',
+    sectionId: SECTION_ID_ORPHEUS_TERMINAL,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Terminal',
     settingId: 'mouse-hide-while-typing',
@@ -1513,7 +1525,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   // Orpheus › Window
   // ---------------------------------------------------------------------------
   {
-    sectionId: 'orpheus-window',
+    sectionId: SECTION_ID_ORPHEUS_WINDOW,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Window',
     settingId: 'restore-window-geometry-on-launch',
@@ -1530,7 +1542,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'orpheus-window',
+    sectionId: SECTION_ID_ORPHEUS_WINDOW,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Window',
     settingId: 'close-button-hides-orpheus',
@@ -1547,7 +1559,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'orpheus-window',
+    sectionId: SECTION_ID_ORPHEUS_WINDOW,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Window',
     settingId: 'open-at-last-view',
@@ -1558,7 +1570,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ['restore view', 'last view', 'session restore', 'open state', 'last session']
   },
   {
-    sectionId: 'orpheus-window',
+    sectionId: SECTION_ID_ORPHEUS_WINDOW,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Window',
     settingId: 'launch-at-login',
@@ -1576,7 +1588,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'orpheus-window',
+    sectionId: SECTION_ID_ORPHEUS_WINDOW,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Window',
     settingId: 'global-hotkey',
@@ -1601,7 +1613,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   // Orpheus › Notifications
   // ---------------------------------------------------------------------------
   {
-    sectionId: 'orpheus-notifications',
+    sectionId: SECTION_ID_ORPHEUS_NOTIFICATIONS,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Notifications',
     settingId: '_section',
@@ -1621,7 +1633,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'orpheus-notifications',
+    sectionId: SECTION_ID_ORPHEUS_NOTIFICATIONS,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Notifications',
     settingId: 'notify-attention',
@@ -1639,7 +1651,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'orpheus-notifications',
+    sectionId: SECTION_ID_ORPHEUS_NOTIFICATIONS,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Notifications',
     settingId: 'notify-stop',
@@ -1658,7 +1670,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'orpheus-notifications',
+    sectionId: SECTION_ID_ORPHEUS_NOTIFICATIONS,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Notifications',
     settingId: 'notify-always',
@@ -1675,7 +1687,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     ]
   },
   {
-    sectionId: 'orpheus-notifications',
+    sectionId: SECTION_ID_ORPHEUS_NOTIFICATIONS,
     sectionGroup: 'Orpheus',
     sectionLabel: 'Notifications',
     settingId: 'repeat-attention-reminders',

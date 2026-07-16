@@ -111,17 +111,33 @@ export type CommandServerDeps = {
 
 const BODY_SIZE_LIMIT = 10 * 1024 * 1024 // 10 MB
 
+// Shared validation-error message for the many dispatch handlers that require
+// a string args.id — hoisted since it's repeated verbatim across them.
+const ARGS_ID_REQUIRED_ERROR = 'args.id is required'
+
 type CmdBody = {
   action: string
   args?: Record<string, unknown>
   context?: { workspaceId?: string }
 }
 
+// The value a dispatch handler resolves to — always fed straight into
+// JSON.stringify({ ok: true, data }) by the /cmd envelope, so it's
+// constrained to JSON-serializable shapes rather than bare `unknown`.
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | JsonValue[]
+  | { [key: string]: JsonValue }
+
 type DispatchFn = (
   args: Record<string, unknown>,
   context: { workspaceId?: string },
   deps: CommandServerDeps
-) => Promise<unknown> | unknown
+) => Promise<JsonValue> | JsonValue
 
 // ---------------------------------------------------------------------------
 // /subscribe — --until modes (see ws-wait.ts's DURATION PARSING / --UNTIL doc
@@ -134,6 +150,10 @@ type UntilMode = 'done' | 'input' | 'idle'
 function isValidUntilMode(v: string): v is UntilMode {
   return v === 'done' || v === 'input' || v === 'idle'
 }
+
+// Repeated wait-outcome literal — hoisted since it's returned from several
+// branches of the ws-wait status resolution below.
+const BLOCKED_INPUT = 'blocked-input'
 
 // ---------------------------------------------------------------------------
 // Dispatch table — one entry per supported CLI action.
@@ -329,7 +349,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // to exit 3. The same check applies to the recursive root — if the root
     // itself doesn't exist, refuse before doing any BFS/teardown work.
     'workspace.archive': async (args, context) => {
-      if (typeof args.id !== 'string') throw new Error('args.id is required')
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
       const recursive = args.recursive === true
 
       // Root-must-exist check (single AND recursive) — see comment above.
@@ -396,7 +416,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // never existed. Fix: getWorkspace(id) FIRST; existence-before-self-guard
     // so a genuine not-found isn't masked as a self-action refusal.
     'workspace.close': (args, context) => {
-      if (typeof args.id !== 'string') throw new Error('args.id is required')
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
       if (getWorkspace(args.id) == null) {
         throw new Error(`workspace not found: ${args.id}`)
       }
@@ -415,7 +435,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // (success-shaped) even when args.id never existed. Fix: getWorkspace(id)
     // FIRST.
     'workspace.reopen': (args) => {
-      if (typeof args.id !== 'string') throw new Error('args.id is required')
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
       if (getWorkspace(args.id) == null) {
         throw new Error(`workspace not found: ${args.id}`)
       }
@@ -433,7 +453,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // strips control chars, collapses whitespace, trims, caps at 200 chars
     // with an ellipsis, and rejects an empty-after-trim name).
     'workspace.rename': (args) => {
-      if (typeof args.id !== 'string') throw new Error('args.id is required')
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
       if (typeof args.name !== 'string') throw new Error('args.name is required')
       return renameWorkspace(args.id, args.name)
     },
@@ -446,7 +466,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // surface so it becomes injectable without changing what the user is
     // looking at).
     'workspace.open': (args) => {
-      if (typeof args.id !== 'string') throw new Error('args.id is required')
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
       // DATA-INTEGRITY FIX (QA — mirrors workspace.archive/close/reopen): previously
       // this dispatch never checked existence, so `ws open <nonexistent-id>` reported
       // { requested: true } (success-shaped) and exit 0 even though nothing was opened.
@@ -473,7 +493,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // If the surface is not yet injectable, requestOpenWorkspace is called and
     // the dep polls canInject for up to 10 s before injecting.
     'workspace.send': async (args, _context, innerDeps) => {
-      if (typeof args.id !== 'string') throw new Error('args.id is required')
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
       const text = typeof args.text === 'string' && args.text !== '' ? args.text : undefined
       const submit = args.submit === true
       const key = typeof args.key === 'string' && args.key !== '' ? args.key : undefined
@@ -546,7 +566,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // there is no workspaceId to resolve/scope by here; mirrors the
     // reviews:setResolved IPC handler, which also takes only { id, resolved }.
     'reviews.setResolved': (args) => {
-      if (typeof args.id !== 'string' || args.id === '') throw new Error('args.id is required')
+      if (typeof args.id !== 'string' || args.id === '') throw new Error(ARGS_ID_REQUIRED_ERROR)
       if (typeof args.resolved !== 'boolean') throw new Error('args.resolved is required (boolean)')
       return setLocalReviewCommentResolved(args.id, args.resolved)
     }
@@ -952,7 +972,7 @@ export function startCommandServer(deps: CommandServerDeps): {
             // isn't available in this race, so default to the more common case.
             return waitingFor.toLowerCase().includes('permission')
               ? 'blocked-permission'
-              : 'blocked-input'
+              : BLOCKED_INPUT
           }
           if (ws.status === 'in_progress') {
             // DB says the workspace is still actively running — 'unknown' here is a
@@ -977,9 +997,7 @@ export function startCommandServer(deps: CommandServerDeps): {
           if (refreshedInfo.status === 'waiting') {
             everSeenAlive.add(workspaceId)
             const refreshedWaitingFor = (refreshedInfo.waitingFor ?? '').toLowerCase()
-            return refreshedWaitingFor.includes('permission')
-              ? 'blocked-permission'
-              : 'blocked-input'
+            return refreshedWaitingFor.includes('permission') ? 'blocked-permission' : BLOCKED_INPUT
           }
 
           // Second, independent ground-truth source: read the session file straight
@@ -997,7 +1015,7 @@ export function startCommandServer(deps: CommandServerDeps): {
           }
           if (syncStatus === 'waiting') {
             everSeenAlive.add(workspaceId)
-            return 'blocked-input'
+            return BLOCKED_INPUT
           }
 
           // Still genuinely unknown after BOTH ground-truth refreshes. Only now
@@ -1028,7 +1046,7 @@ export function startCommandServer(deps: CommandServerDeps): {
           if (waitingFor.toLowerCase().includes('permission')) {
             return 'blocked-permission'
           }
-          return 'blocked-input'
+          return BLOCKED_INPUT
         }
         // fileStatus === 'busy' — still running; not yet terminal
         return ''
@@ -1075,7 +1093,7 @@ export function startCommandServer(deps: CommandServerDeps): {
         return (
           reason === 'done' ||
           reason === 'blocked-permission' ||
-          reason === 'blocked-input' ||
+          reason === BLOCKED_INPUT ||
           reason === 'died' ||
           reason === 'not-found'
         )

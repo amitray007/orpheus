@@ -54,7 +54,7 @@ function parseHooksFile(
     if (!Array.isArray(matcherEntries)) continue
 
     for (let matcherEntryIdx = 0; matcherEntryIdx < matcherEntries.length; matcherEntryIdx++) {
-      const matcherEntry = matcherEntries[matcherEntryIdx]
+      const matcherEntry: unknown = matcherEntries[matcherEntryIdx]
       if (typeof matcherEntry !== 'object' || matcherEntry === null) continue
 
       const me = matcherEntry as Record<string, unknown>
@@ -64,7 +64,7 @@ function parseHooksFile(
       if (!Array.isArray(hookList)) continue
 
       for (let hookIdx = 0; hookIdx < hookList.length; hookIdx++) {
-        const hook = hookList[hookIdx]
+        const hook: unknown = hookList[hookIdx]
         if (typeof hook !== 'object' || hook === null) continue
         const h = hook as Record<string, unknown>
         if (typeof h['command'] !== 'string' || h['command'].length === 0) continue

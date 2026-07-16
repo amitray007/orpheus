@@ -176,20 +176,24 @@ export async function handleArchive(
 // workspace.rename
 // ---------------------------------------------------------------------------
 
-export async function handleRename(
+export function handleRename(
   params: Record<string, unknown>,
   workspaceId: string
 ): Promise<ActionResult<void>> {
   const name = params['name']
   if (typeof name !== 'string' || name.trim() === '') {
-    return { ok: false, code: 'invalid', error: 'name must be a non-empty string' }
+    return Promise.resolve({ ok: false, code: 'invalid', error: 'name must be a non-empty string' })
   }
   const ws = getWorkspace(workspaceId)
   if (!ws) {
-    return { ok: false, code: 'not_found', error: `Workspace not found: ${workspaceId}` }
+    return Promise.resolve({
+      ok: false,
+      code: 'not_found',
+      error: `Workspace not found: ${workspaceId}`
+    })
   }
   renameWorkspace(workspaceId, name.trim())
-  return { ok: true }
+  return Promise.resolve({ ok: true })
 }
 
 // ---------------------------------------------------------------------------
@@ -247,13 +251,13 @@ export async function handleDuplicate(
 // LiveChip reads this value directly as a string for dot-color and label.
 // ---------------------------------------------------------------------------
 
-export async function handleGetActivityStatus(
+export function handleGetActivityStatus(
   _params: Record<string, unknown>,
   workspaceId: string
 ): Promise<ActionResult<string>> {
   const status = getWorkspaceActivity(workspaceId)
   const detail = computeDetail(workspaceId, status)
-  return { ok: true, value: detail }
+  return Promise.resolve({ ok: true, value: detail })
 }
 
 // ---------------------------------------------------------------------------
@@ -261,16 +265,20 @@ export async function handleGetActivityStatus(
 // Opens the workspace's cwd in macOS Finder.
 // ---------------------------------------------------------------------------
 
-export async function handleOpenInFinder(
+export function handleOpenInFinder(
   _params: Record<string, unknown>,
   workspaceId: string
 ): Promise<ActionResult<void>> {
   const ws = getWorkspace(workspaceId)
   if (!ws) {
-    return { ok: false, code: 'not_found', error: `Workspace not found: ${workspaceId}` }
+    return Promise.resolve({
+      ok: false,
+      code: 'not_found',
+      error: `Workspace not found: ${workspaceId}`
+    })
   }
   shell.showItemInFolder(ws.cwd)
-  return { ok: true }
+  return Promise.resolve({ ok: true })
 }
 
 // ---------------------------------------------------------------------------
@@ -298,14 +306,18 @@ export async function handleOpenInEditor(
 // Copies the workspace's cwd to the system clipboard.
 // ---------------------------------------------------------------------------
 
-export async function handleCopyPath(
+export function handleCopyPath(
   _params: Record<string, unknown>,
   workspaceId: string
 ): Promise<ActionResult<{ copied: string }>> {
   const ws = getWorkspace(workspaceId)
   if (!ws) {
-    return { ok: false, code: 'not_found', error: `Workspace not found: ${workspaceId}` }
+    return Promise.resolve({
+      ok: false,
+      code: 'not_found',
+      error: `Workspace not found: ${workspaceId}`
+    })
   }
   clipboard.writeText(ws.cwd)
-  return { ok: true, value: { copied: ws.cwd } }
+  return Promise.resolve({ ok: true, value: { copied: ws.cwd } })
 }

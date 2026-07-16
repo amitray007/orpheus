@@ -177,17 +177,19 @@ function startSessionSubscription(
     return nodePath.join(os.homedir(), '.claude', 'projects', encoded)
   }
 
-  const fireUpdate = throttleLeadingTrailing(async () => {
+  const fireUpdate = throttleLeadingTrailing(() => {
     if (disposed) return
     invalidateSessionCache(workspaceId)
-    try {
-      const result = await invoke({ id: actionId, params, workspaceId }, 'subscription')
-      if (result.ok && 'value' in result) {
-        sendUpdate(result.value)
+    void (async () => {
+      try {
+        const result = await invoke({ id: actionId, params, workspaceId }, 'subscription')
+        if (result.ok && 'value' in result) {
+          sendUpdate(result.value)
+        }
+      } catch (err) {
+        console.error('[actions:subscriptions] update invoke failed', { subId, actionId, err })
       }
-    } catch (err) {
-      console.error('[actions:subscriptions] update invoke failed', { subId, actionId, err })
-    }
+    })()
   }, SUBSCRIPTION_DEBOUNCE_MS)
 
   function stopFileWatcher(): void {

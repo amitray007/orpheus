@@ -256,29 +256,29 @@ function inferFamilyAlias(modelId: string): string | null {
  */
 export function getPricing(modelId: string): ModelPricing | null {
   // 1. Exact match in runtimeCache
-  if (runtimeCache?.[modelId]) return runtimeCache[modelId]!
+  if (runtimeCache?.[modelId]) return runtimeCache[modelId]
 
   // 2. Exact match in FALLBACK_PRICING
-  if (FALLBACK_PRICING[modelId]) return FALLBACK_PRICING[modelId]!
+  if (FALLBACK_PRICING[modelId]) return FALLBACK_PRICING[modelId]
 
   // 3. Prefix match in runtimeCache — longest match wins so
   // "claude-opus-4-7-20260416" resolves to "claude-opus-4-7", not "claude-opus-4".
   if (runtimeCache) {
     const keys = Object.keys(runtimeCache).sort((a, b) => b.length - a.length)
     for (const key of keys) {
-      if (modelId.startsWith(key)) return runtimeCache[key]!
+      if (modelId.startsWith(key)) return runtimeCache[key]
     }
   }
 
   // 4. Prefix match in FALLBACK_PRICING — same longest-wins semantics.
   const fallbackKeys = Object.keys(FALLBACK_PRICING).sort((a, b) => b.length - a.length)
   for (const key of fallbackKeys) {
-    if (modelId.startsWith(key)) return FALLBACK_PRICING[key]!
+    if (modelId.startsWith(key)) return FALLBACK_PRICING[key]
   }
 
   // 5. Family alias bucket (infer opus/sonnet/haiku from the model id string)
   const alias = inferFamilyAlias(modelId)
-  if (alias && FALLBACK_PRICING[alias]) return FALLBACK_PRICING[alias]!
+  if (alias && FALLBACK_PRICING[alias]) return FALLBACK_PRICING[alias]
 
   // 6. Unknown model
   return null

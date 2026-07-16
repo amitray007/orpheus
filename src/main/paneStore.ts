@@ -224,6 +224,8 @@ export function setPanelExpanded(id: string, expanded: boolean): void {
 // Layouts
 // ---------------------------------------------------------------------------
 
+const SELECT_LAYOUT_BY_ID_SQL = 'SELECT * FROM pane_layouts WHERE id = ?'
+
 export function listLayouts(panelId: string): PaneLayout[] {
   const db = getDb()
   const rows = db
@@ -244,9 +246,7 @@ export function listLayouts(panelId: string): PaneLayout[] {
  *  the caller resolved a real id before mutating it). */
 export function getLayout(id: string): PaneLayout | null {
   const db = getDb()
-  const row = db.prepare('SELECT * FROM pane_layouts WHERE id = ?').get(id) as
-    | PaneLayoutRow
-    | undefined
+  const row = db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(id) as PaneLayoutRow | undefined
   return row ? layoutFromRow(row) : null
 }
 
@@ -274,9 +274,7 @@ export function createLayout(input: CreateLayoutInput): PaneLayout {
      VALUES (?, ?, ?, ?, 'null', ?, ?, ?)`
   ).run(id, input.panelId, input.name, input.dir, position, now, now)
 
-  return layoutFromRow(
-    db.prepare('SELECT * FROM pane_layouts WHERE id = ?').get(id) as PaneLayoutRow
-  )
+  return layoutFromRow(db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(id) as PaneLayoutRow)
 }
 
 export interface UpdateLayoutInput {
@@ -288,9 +286,7 @@ export interface UpdateLayoutInput {
 
 export function updateLayout(id: string, patch: UpdateLayoutInput): PaneLayout {
   const db = getDb()
-  const existing = db.prepare('SELECT * FROM pane_layouts WHERE id = ?').get(id) as
-    | PaneLayoutRow
-    | undefined
+  const existing = db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(id) as PaneLayoutRow | undefined
   if (!existing) throw new Error(`Pane layout not found: ${id}`)
 
   const now = Date.now()
@@ -304,9 +300,7 @@ export function updateLayout(id: string, patch: UpdateLayoutInput): PaneLayout {
     'UPDATE pane_layouts SET name = ?, dir = ?, split_tree_json = ?, position = ?, updated_at = ? WHERE id = ?'
   ).run(name, dir, splitTreeJson, position, now, id)
 
-  return layoutFromRow(
-    db.prepare('SELECT * FROM pane_layouts WHERE id = ?').get(id) as PaneLayoutRow
-  )
+  return layoutFromRow(db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(id) as PaneLayoutRow)
 }
 
 export function deleteLayout(id: string): void {
@@ -323,9 +317,7 @@ export function deleteLayout(id: string): void {
 export function setLayoutAutoStart(id: string, autoStart: boolean): PaneLayout {
   const db = getDb()
   db.prepare('UPDATE pane_layouts SET auto_start = ? WHERE id = ?').run(autoStart ? 1 : 0, id)
-  return layoutFromRow(
-    db.prepare('SELECT * FROM pane_layouts WHERE id = ?').get(id) as PaneLayoutRow
-  )
+  return layoutFromRow(db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(id) as PaneLayoutRow)
 }
 
 /** All layouts flagged for background auto-start at app launch (Fix 4). */

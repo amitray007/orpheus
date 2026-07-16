@@ -58,7 +58,7 @@ export async function invoke(
 
   let result: ActionResult
   try {
-    result = await descriptor.handler(params as Record<string, unknown>, workspaceId)
+    result = await descriptor.handler(params, workspaceId)
   } catch (err) {
     result = { ok: false, code: 'failed', error: String(err) }
   }
@@ -69,7 +69,7 @@ export async function invoke(
       recordAudit({
         workspaceId,
         actionId: id,
-        paramsJson: redactAndSerialize(params as Record<string, unknown>),
+        paramsJson: redactAndSerialize(params),
         resultCode: result.ok ? 'ok' : (result as { code: string }).code,
         consumerHint,
         createdAt: Date.now()

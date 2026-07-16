@@ -169,7 +169,7 @@ type ClaudeSettingsRow = {
 function parseJsonArray(raw: string | null | undefined): string[] {
   if (!raw) return []
   try {
-    const parsed = JSON.parse(raw)
+    const parsed: unknown = JSON.parse(raw)
     if (Array.isArray(parsed)) return parsed as string[]
     return []
   } catch {
@@ -180,7 +180,7 @@ function parseJsonArray(raw: string | null | undefined): string[] {
 function parseJsonRecord(raw: string | null | undefined): Record<string, string> {
   if (!raw) return {}
   try {
-    const parsed = JSON.parse(raw)
+    const parsed: unknown = JSON.parse(raw)
     if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed as Record<string, string>
     }

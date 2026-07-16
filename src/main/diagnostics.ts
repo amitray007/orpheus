@@ -142,7 +142,10 @@ export function queryDiagnostics(q: DiagQuery): DiagRow[] {
 
 function safeParse(s: string): Record<string, unknown> | null {
   try {
-    return JSON.parse(s)
+    const parsed: unknown = JSON.parse(s)
+    return typeof parsed === 'object' && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : null
   } catch {
     return null
   }

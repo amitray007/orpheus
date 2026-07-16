@@ -43,7 +43,7 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
           'which claude',
           { env: { ...process.env, PATH: userPath } },
           (err, stdout) => {
-            if (err) reject(err)
+            if (err) reject(err instanceof Error ? err : new Error('which claude failed'))
             else resolve(stdout.trim())
           }
         )

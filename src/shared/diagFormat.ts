@@ -1,5 +1,21 @@
 import type { DiagEvent, DiagRow } from './types'
 
+/**
+ * Safely stringify a loosely-typed diagnostic field for display.
+ * Avoids relying on values' own `toString()` (which may be `[object Object]`
+ * for plain objects) and template-literal coercion of `unknown`/`object`.
+ */
+function str(v: unknown): string {
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  if (v == null) return ''
+  try {
+    return JSON.stringify(v) ?? Object.prototype.toString.call(v)
+  } catch {
+    return Object.prototype.toString.call(v)
+  }
+}
+
 /** Normalize a row that may have snake_case (raw SQLite) or camelCase (DiagRow) fields. */
 function normalize(r: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -51,13 +67,8 @@ export function formatTraceTree(rows: Array<Record<string, unknown>>): string {
     out.push('(trace in progress — no spans closed yet)')
     const markRows = normRows.filter((r) => r.kind === 'mark' || r.kind === 'event')
     for (const m of markRows) {
-      const label =
-        m.kind === 'mark'
-          ? String(m.name ?? '(unnamed)')
-              .split(':')
-              .slice(1)
-              .join(':') || String(m.name ?? '(unnamed)')
-          : String(m.name ?? '(unnamed)')
+      const mName = m.name != null ? str(m.name) : '(unnamed)'
+      const label = m.kind === 'mark' ? mName.split(':').slice(1).join(':') || mName : mName
       out.push(`  · ${label}  +${Number(m.ts) - t0}ms`)
     }
     return out.join('\n')
@@ -66,18 +77,12 @@ export function formatTraceTree(rows: Array<Record<string, unknown>>): string {
   const walk = (parentSpanId: string | null, depth: number): void => {
     for (const s of childrenOf.get(parentSpanId) ?? []) {
       const pad = '  '.repeat(depth)
-      const dur = s.duration_ms != null ? `${s.duration_ms}ms` : '—'
-      out.push(
-        `${pad}▸ ${String(s.name ?? '(unnamed)')}  (${dur})  +${Number(s.ts) - (Number(s.duration_ms) || 0) - t0}ms`
-      )
+      const dur = s.duration_ms != null ? `${str(s.duration_ms)}ms` : '—'
+      const sName = s.name != null ? str(s.name) : '(unnamed)'
+      out.push(`${pad}▸ ${sName}  (${dur})  +${Number(s.ts) - (Number(s.duration_ms) || 0) - t0}ms`)
       for (const m of marksOf.get(s.span_id as string) ?? []) {
-        const label =
-          m.kind === 'mark'
-            ? String(m.name ?? '(unnamed)')
-                .split(':')
-                .slice(1)
-                .join(':') || String(m.name ?? '(unnamed)')
-            : String(m.name ?? '(unnamed)')
+        const mName = m.name != null ? str(m.name) : '(unnamed)'
+        const label = m.kind === 'mark' ? mName.split(':').slice(1).join(':') || mName : mName
         out.push(`${pad}  · ${label}  +${Number(m.ts) - t0}ms`)
       }
       walk(s.span_id as string, depth + 1)
@@ -85,18 +90,12 @@ export function formatTraceTree(rows: Array<Record<string, unknown>>): string {
   }
   // roots = spans whose parent is null OR whose parent isn't in this trace
   for (const s of rootSpans) {
-    const dur = s.duration_ms != null ? `${s.duration_ms}ms` : '—'
-    out.push(
-      `▸ ${String(s.name ?? '(unnamed)')}  (${dur})  +${Number(s.ts) - (Number(s.duration_ms) || 0) - t0}ms`
-    )
+    const dur = s.duration_ms != null ? `${str(s.duration_ms)}ms` : '—'
+    const sName = s.name != null ? str(s.name) : '(unnamed)'
+    out.push(`▸ ${sName}  (${dur})  +${Number(s.ts) - (Number(s.duration_ms) || 0) - t0}ms`)
     for (const m of marksOf.get(s.span_id as string) ?? []) {
-      const label =
-        m.kind === 'mark'
-          ? String(m.name ?? '(unnamed)')
-              .split(':')
-              .slice(1)
-              .join(':') || String(m.name ?? '(unnamed)')
-          : String(m.name ?? '(unnamed)')
+      const mName = m.name != null ? str(m.name) : '(unnamed)'
+      const label = m.kind === 'mark' ? mName.split(':').slice(1).join(':') || mName : mName
       out.push(`  · ${label}  +${Number(m.ts) - t0}ms`)
     }
     walk(s.span_id as string, 1)
@@ -120,22 +119,22 @@ export function formatEventLine(evt: DiagEvent | DiagRow | Record<string, unknow
   const timeStr = `${hh}:${mm}:${ss}.${ms}`
 
   const e = evt as Record<string, unknown>
-  const proc = String(e.process ?? 'main')
-  const catLevel = `${String(e.category ?? '')}/${String(e.level ?? '')}`
-  const nameOrEvent = String(e.name ?? e.event ?? '')
+  const proc = e.process != null ? str(e.process) : 'main'
+  const catLevel = `${e.category != null ? str(e.category) : ''}/${e.level != null ? str(e.level) : ''}`
+  const nameOrEvent = str(e.name ?? e.event ?? '')
   const workspaceId = e.workspaceId
   const durationMs = e.durationMs
   const message = e.message
 
   const parts: string[] = [timeStr, proc, catLevel, nameOrEvent]
   if (workspaceId != null && workspaceId !== '') {
-    parts.push(`ws=${String(workspaceId).slice(0, 8)}`)
+    parts.push(`ws=${str(workspaceId).slice(0, 8)}`)
   }
   if (durationMs != null) {
-    parts.push(`[${durationMs}ms]`)
+    parts.push(`[${str(durationMs)}ms]`)
   }
   if (message != null && message !== '') {
-    parts.push(String(message))
+    parts.push(str(message))
   }
   return parts.join('  ')
 }

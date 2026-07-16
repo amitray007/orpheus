@@ -58,17 +58,22 @@ const VISIBILITY_OPTIONS: { value: FooterActionVisibility; label: string }[] = [
   { value: 'awaitingInput', label: 'Awaiting input' }
 ]
 
+// actionId literals repeated across switch cases and inline actionId
+// comparisons below — hoisted so they're defined once.
+const ACTION_ID_SEND_INPUT = 'terminal.sendInput'
+const ACTION_ID_RENAME = 'workspace.rename'
+
 // Derive the actionId from a type selection
 function actionIdForType(type: ActionType): string {
   switch (type) {
     case 'sendInput':
-      return 'terminal.sendInput'
+      return ACTION_ID_SEND_INPUT
     case 'fork':
       return 'workspace.fork'
     case 'archive':
       return 'workspace.archive'
     case 'rename':
-      return 'workspace.rename'
+      return ACTION_ID_RENAME
     case 'duplicate':
       return 'workspace.duplicate'
     case 'openInFinder':
@@ -97,13 +102,13 @@ function actionIdForType(type: ActionType): string {
 // Determine ActionType from a descriptor
 function typeForActionId(actionId: string): ActionType {
   switch (actionId) {
-    case 'terminal.sendInput':
+    case ACTION_ID_SEND_INPUT:
       return 'sendInput'
     case 'workspace.fork':
       return 'fork'
     case 'workspace.archive':
       return 'archive'
-    case 'workspace.rename':
+    case ACTION_ID_RENAME:
       return 'rename'
     case 'workspace.duplicate':
       return 'duplicate'
@@ -543,10 +548,10 @@ export function FooterActionEditor({
     action ? typeForActionId(action.actionId) : 'sendInput'
   )
   const [sendText, setSendText] = useState<string>(
-    action?.actionId === 'terminal.sendInput' ? String(action.params.text ?? '') : ''
+    action?.actionId === ACTION_ID_SEND_INPUT ? String(action.params.text ?? '') : ''
   )
   const [submit, setSubmit] = useState<boolean>(
-    action?.actionId === 'terminal.sendInput' ? Boolean(action.params.submit) : true
+    action?.actionId === ACTION_ID_SEND_INPUT ? Boolean(action.params.submit) : true
   )
   const [dupSuffix, setDupSuffix] = useState<string>(
     action?.actionId === 'workspace.duplicate' ? String(action.params.nameSuffix ?? '') : ''
@@ -561,12 +566,12 @@ export function FooterActionEditor({
   // Prompt configuration for workspace.rename — label and pre-fill default for
   // the inline popover that collects the new name before invoking.
   const [renamePromptLabel, setRenamePromptLabel] = useState<string>(
-    action?.actionId === 'workspace.rename' && action.prompts?.[0]
+    action?.actionId === ACTION_ID_RENAME && action.prompts?.[0]
       ? action.prompts[0].label
       : 'New name'
   )
   const [renamePromptDefault, setRenamePromptDefault] = useState<string>(
-    action?.actionId === 'workspace.rename' && action.prompts?.[0]
+    action?.actionId === ACTION_ID_RENAME && action.prompts?.[0]
       ? (action.prompts[0].default ?? '{workspaceName}')
       : '{workspaceName}'
   )
@@ -592,8 +597,8 @@ export function FooterActionEditor({
     setLabel(action?.label ?? '')
     setIcon(action?.icon ?? null)
     setActionType(action ? typeForActionId(action.actionId) : 'sendInput')
-    setSendText(action?.actionId === 'terminal.sendInput' ? String(action.params.text ?? '') : '')
-    setSubmit(action?.actionId === 'terminal.sendInput' ? Boolean(action.params.submit) : true)
+    setSendText(action?.actionId === ACTION_ID_SEND_INPUT ? String(action.params.text ?? '') : '')
+    setSubmit(action?.actionId === ACTION_ID_SEND_INPUT ? Boolean(action.params.submit) : true)
     setDupSuffix(
       action?.actionId === 'workspace.duplicate' ? String(action.params.nameSuffix ?? '') : ''
     )
@@ -603,12 +608,12 @@ export function FooterActionEditor({
         : []
     )
     setRenamePromptLabel(
-      action?.actionId === 'workspace.rename' && action.prompts?.[0]
+      action?.actionId === ACTION_ID_RENAME && action.prompts?.[0]
         ? action.prompts[0].label
         : 'New name'
     )
     setRenamePromptDefault(
-      action?.actionId === 'workspace.rename' && action.prompts?.[0]
+      action?.actionId === ACTION_ID_RENAME && action.prompts?.[0]
         ? (action.prompts[0].default ?? '{workspaceName}')
         : '{workspaceName}'
     )

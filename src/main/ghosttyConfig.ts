@@ -17,7 +17,7 @@ export function getGhosttyUserConfig(): GhosttyUserConfig {
     .get() as { ghostty_config_json: string } | undefined
   if (!row) return { settings: {}, keybinds: [] }
   try {
-    const parsed = JSON.parse(row.ghostty_config_json)
+    const parsed = JSON.parse(row.ghostty_config_json) as Partial<GhosttyUserConfig>
     return {
       settings: parsed.settings && typeof parsed.settings === 'object' ? parsed.settings : {},
       keybinds: Array.isArray(parsed.keybinds) ? parsed.keybinds : []

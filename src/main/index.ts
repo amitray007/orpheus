@@ -79,6 +79,7 @@ import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor } from '../shared/types'
 import type { SplitTree, PaneLayout, TerminalRect } from '../shared/types'
+import type { DiagEvent } from '../shared/types'
 import { bootActions, setTerminalAddonRef, registerWebContentsCleanup } from './actions/index'
 import { evictAccumulator } from './actions/session'
 import { seedDefaultFooterActions } from './footerActions'
@@ -727,7 +728,7 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    if (isSafeExternalUrl(details.url)) shell.openExternal(details.url)
+    if (isSafeExternalUrl(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
@@ -832,9 +833,9 @@ function createWindow(): void {
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    void mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 }
 
@@ -1002,7 +1003,7 @@ registerOrpheusConfigIpc({ getProject })
 // Diagnostics IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.on('diag:event', (_e, evt) => {
+ipcMain.on('diag:event', (_e, evt: DiagEvent) => {
   ingestDiagEvent(evt)
 })
 
@@ -1183,7 +1184,7 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
 
   let launch!: ReturnType<typeof buildMountEnv>['launch']
   const _mountStart = Date.now()
-  const result = await diag.trace('terminal.mount', { workspaceId }, async (s) => {
+  const result = await diag.trace('terminal.mount', { workspaceId }, (s) => {
     // Compose launch env as a child span nested under terminal.mount.
     // buildMountEnv is sync; use diag.span (not diag.trace).
     let buildResult!: ReturnType<typeof buildMountEnv>
@@ -1967,6 +1968,7 @@ function resolveNamedKey(name: string): TerminalSendKeyDescriptor | null {
 // paste-then-submit automation typically needs 50-200ms).
 const SUBMIT_DELAY_MS = 150
 const delay = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms))
+const UNKNOWN_ERROR_MESSAGE = 'unknown error'
 
 // ---------------------------------------------------------------------------
 // Quick Actions — terminal interaction primitives
@@ -2304,7 +2306,7 @@ if (!app.requestSingleInstanceLock()) {
                   const addon = loadTerminalAddon()
                   const inputResult = terminalActions.sendInput(addon, workspaceId, taskText)
                   if (!inputResult.ok) {
-                    return `seed-failed: could not send task text — ${inputResult.error ?? 'unknown error'}`
+                    return `seed-failed: could not send task text — ${inputResult.error ?? UNKNOWN_ERROR_MESSAGE}`
                   }
                   // submit=false: caller wants the task STAGED (typed into claude's input
                   // box) but not sent — e.g. for review/editing before the user presses
@@ -2335,7 +2337,7 @@ if (!app.requestSingleInstanceLock()) {
                     if (submitResult.code === 'busy') {
                       return `seed-submit-busy: text was sent; workspace became busy before the explicit submit — it may have already been submitted`
                     }
-                    return `seed-submit-failed: text was sent but submit failed — ${submitResult.error ?? 'unknown error'}`
+                    return `seed-submit-failed: text was sent but submit failed — ${submitResult.error ?? UNKNOWN_ERROR_MESSAGE}`
                   }
                   return null
                 })
@@ -2454,7 +2456,7 @@ if (!app.requestSingleInstanceLock()) {
                       return {
                         ok: false,
                         notFound: inputResult.code === 'not_found',
-                        error: `send-text failed: ${inputResult.error ?? 'unknown error'}`
+                        error: `send-text failed: ${inputResult.error ?? UNKNOWN_ERROR_MESSAGE}`
                       }
                     }
                     wasStaged = true
@@ -2469,7 +2471,7 @@ if (!app.requestSingleInstanceLock()) {
                       return {
                         ok: false,
                         notFound: keysResult.code === 'not_found',
-                        error: `send-key failed: ${keysResult.error ?? 'unknown error'}`
+                        error: `send-key failed: ${keysResult.error ?? UNKNOWN_ERROR_MESSAGE}`
                       }
                     }
                     wasStaged = true
@@ -2499,7 +2501,7 @@ if (!app.requestSingleInstanceLock()) {
                       return {
                         ok: false,
                         notFound: submitResult.code === 'not_found',
-                        error: `submit failed: ${submitResult.error ?? 'unknown error'}`
+                        error: `submit failed: ${submitResult.error ?? UNKNOWN_ERROR_MESSAGE}`
                       }
                     }
                   }

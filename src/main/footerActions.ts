@@ -44,7 +44,7 @@ type WorkspaceRow = GlobalRow & { workspace_id: string }
 
 function parseParams(json: string): Record<string, unknown> {
   try {
-    const parsed = JSON.parse(json)
+    const parsed: unknown = JSON.parse(json)
     if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>
     }
@@ -57,7 +57,7 @@ function parseParams(json: string): Record<string, unknown> {
 function parsePrompts(json: string | null): PromptDescriptor[] | undefined {
   if (!json) return undefined
   try {
-    const parsed = JSON.parse(json)
+    const parsed: unknown = JSON.parse(json)
     if (Array.isArray(parsed)) return parsed as PromptDescriptor[]
   } catch {
     // fall through
@@ -421,6 +421,8 @@ export function reorder(
 // Idempotent: skips entirely if any row already exists.
 // ---------------------------------------------------------------------------
 
+const ACTION_TERMINAL_SEND_INPUT = 'terminal.sendInput'
+
 const DEFAULT_SEEDS: Array<{
   label: string
   icon: string | null
@@ -439,35 +441,35 @@ const DEFAULT_SEEDS: Array<{
   {
     label: '/copy',
     icon: 'Clipboard',
-    actionId: 'terminal.sendInput',
+    actionId: ACTION_TERMINAL_SEND_INPUT,
     params: { text: '/copy', submit: true },
     visibleWhen: 'idle'
   },
   {
     label: '/context',
     icon: 'Brain',
-    actionId: 'terminal.sendInput',
+    actionId: ACTION_TERMINAL_SEND_INPUT,
     params: { text: '/context', submit: true },
     visibleWhen: 'always'
   },
   {
     label: '/clear',
     icon: 'Eraser',
-    actionId: 'terminal.sendInput',
+    actionId: ACTION_TERMINAL_SEND_INPUT,
     params: { text: '/clear', submit: true },
     visibleWhen: 'idle'
   },
   {
     label: '/compact',
     icon: 'ArrowsInLineHorizontal',
-    actionId: 'terminal.sendInput',
+    actionId: ACTION_TERMINAL_SEND_INPUT,
     params: { text: '/compact', submit: true },
     visibleWhen: 'idle'
   },
   {
     label: '/cost',
     icon: 'CurrencyDollar',
-    actionId: 'terminal.sendInput',
+    actionId: ACTION_TERMINAL_SEND_INPUT,
     params: { text: '/cost', submit: true },
     visibleWhen: 'always'
   },

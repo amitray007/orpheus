@@ -421,21 +421,27 @@ export function initOverlayLayer(
 
   wireOverlayWebContentsListeners(overlayWin)
 
-  try {
-    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-      overlayWin.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/overlay.html`)
-    } else {
-      overlayWin.loadFile(join(__dirname, '../renderer/overlay.html'))
-    }
-  } catch (err) {
+  function handleLoadFailure(err: unknown): void {
     state = 'unavailable'
     console.error('[overlayLayer] child window load failed — overlay unavailable:', err)
     try {
-      overlayWin.destroy()
+      overlayWin?.destroy()
     } catch {
       /* already gone */
     }
     overlayWin = null
+  }
+
+  try {
+    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+      overlayWin
+        .loadURL(`${process.env['ELECTRON_RENDERER_URL']}/overlay.html`)
+        .catch(handleLoadFailure)
+    } else {
+      overlayWin.loadFile(join(__dirname, '../renderer/overlay.html')).catch(handleLoadFailure)
+    }
+  } catch (err) {
+    handleLoadFailure(err)
     return
   }
 

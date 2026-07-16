@@ -135,13 +135,14 @@ function appExists(name: string): boolean {
   }
 }
 
-export async function revealInFinder(path: string): Promise<void> {
+export function revealInFinder(path: string): Promise<void> {
   try {
     // showItemInFolder works on both files and directories and highlights the item
     shell.showItemInFolder(path)
   } catch (err) {
     console.warn('[shellHelpers] revealInFinder failed:', err)
   }
+  return Promise.resolve()
 }
 
 export async function openInEditor(path: string, preferredApp?: string): Promise<void> {

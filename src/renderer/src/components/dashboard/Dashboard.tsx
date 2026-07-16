@@ -1543,7 +1543,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const activeProject =
     view.kind === 'project' || view.kind === 'workspace'
-      ? projects.find((p) => p.id === (view.kind === 'project' ? view.projectId : view.projectId))
+      ? projects.find((p) => p.id === view.projectId)
       : undefined
 
   const activeProjectForWorkspace =
