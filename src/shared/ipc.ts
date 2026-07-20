@@ -73,6 +73,9 @@ import type {
   RoutingProxySnapshot,
   RoutingProxyUpdateCheckResult,
   RoutingProxyAssetInfo,
+  ProviderDescriptorSummary,
+  ProviderConfigSummary,
+  ProviderApiKeyEntrySummary,
   ActionResult,
   ActionKind,
   ActionAuditEntry,
@@ -617,6 +620,27 @@ export interface InvokeChannelMap {
   'routingProxy:getAssetInfo': { req: []; res: RoutingProxyAssetInfo | null }
   'routingProxy:checkForUpdate': { req: []; res: RoutingProxyUpdateCheckResult }
   'routingProxy:refreshAuthFiles': { req: []; res: RoutingProxySnapshot }
+
+  // Provider framework (model-routing unit 05) — see
+  // src/main/routingProxy/providers/. 'providers:descriptors' returns the
+  // static declarative list (PROVIDERS in providers/registry.ts) so the UI
+  // can render an unconfigured provider before any config row exists.
+  // 'providers:list' returns each configured provider merged with its live
+  // connection status.
+  'providers:descriptors': { req: []; res: ProviderDescriptorSummary[] }
+  'providers:list': { req: []; res: ProviderConfigSummary[] }
+  'providers:setEnabled': {
+    req: [{ providerId: string; enabled: boolean }]
+    res: ProviderConfigSummary[]
+  }
+  'providers:setApiKeys': {
+    req: [{ providerId: string; apiKeys: ProviderApiKeyEntrySummary[] }]
+    res: ProviderConfigSummary[]
+  }
+  'providers:setBaseUrl': {
+    req: [{ providerId: string; baseUrl: string | null }]
+    res: ProviderConfigSummary[]
+  }
   'status:get': { req: []; res: ClaudeStatusSnapshot }
   'status:refresh': { req: []; res: ClaudeStatusSnapshot }
   'status:openPage': { req: []; res: void }

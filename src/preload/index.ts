@@ -69,6 +69,9 @@ import type {
   RoutingProxySnapshot,
   RoutingProxyAssetInfo,
   RoutingProxyUpdateCheckResult,
+  ProviderDescriptorSummary,
+  ProviderConfigSummary,
+  ProviderApiKeyEntrySummary,
   ClaudeStatusSnapshot,
   ActionResult,
   ActionAuditEntry,
@@ -822,6 +825,18 @@ const api = {
     refreshAuthFiles: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:refreshAuthFiles'),
     onSnapshot: (cb: (snapshot: RoutingProxySnapshot) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.routingProxySnapshot, cb)
+  },
+  providers: {
+    descriptors: (): Promise<ProviderDescriptorSummary[]> => invoke('providers:descriptors'),
+    list: (): Promise<ProviderConfigSummary[]> => invoke('providers:list'),
+    setEnabled: (providerId: string, enabled: boolean): Promise<ProviderConfigSummary[]> =>
+      invoke('providers:setEnabled', { providerId, enabled }),
+    setApiKeys: (
+      providerId: string,
+      apiKeys: ProviderApiKeyEntrySummary[]
+    ): Promise<ProviderConfigSummary[]> => invoke('providers:setApiKeys', { providerId, apiKeys }),
+    setBaseUrl: (providerId: string, baseUrl: string | null): Promise<ProviderConfigSummary[]> =>
+      invoke('providers:setBaseUrl', { providerId, baseUrl })
   },
   status: {
     get: (): Promise<ClaudeStatusSnapshot> => invoke('status:get'),

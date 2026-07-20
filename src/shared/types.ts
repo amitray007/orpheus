@@ -2104,3 +2104,55 @@ export interface RoutingProxyAssetInfo {
   assetName: string
   sizeBytes: number | null
 }
+
+// ---------------------------------------------------------------------------
+// Provider framework (model-routing unit 05) — declarative non-Claude
+// provider descriptors + per-provider stored config, surfaced to the
+// renderer's Settings > Model Routing > Providers section. See
+// src/main/routingProxy/providers/ for the main-process source of truth;
+// these are renderer-facing mirrors (never re-derive "is this a known
+// provider" client-side — the descriptor list always comes from main via
+// providers:list).
+// ---------------------------------------------------------------------------
+
+export type ProviderAuthMethodShared = 'oauth' | 'apiKey' | 'openaiCompatible'
+
+/** One provider descriptor, as sent to the renderer (docsUrl/oauthLoginFlag
+ *  included for display only — this unit does not build the OAuth
+ *  connect-button flow; see the oauthLoginFlag field's own doc comment in
+ *  providers/types.ts). */
+export interface ProviderDescriptorSummary {
+  id: string
+  label: string
+  authMethods: ProviderAuthMethodShared[]
+  oauthLoginFlag?: string
+  apiKeyConfigKey?: string
+  openaiCompatibleDefaultBaseUrl?: string
+  docsUrl?: string
+}
+
+/** One stored API-key entry, as sent to/from the renderer. The renderer only
+ *  ever displays a redacted form of `apiKey` (see the Settings UI's own
+ *  masking) — the real value is still present on this wire type because the
+ *  add/update flow needs to send a new key value up; it is never logged. */
+export interface ProviderApiKeyEntrySummary {
+  id: string
+  apiKey: string
+  prefix?: string
+  baseUrl?: string
+}
+
+/** One provider's full stored config + live connection status, as sent to
+ *  the renderer. `connection` is populated from the routing-proxy snapshot's
+ *  authFiles (oauth providers) — null when the proxy isn't running or the
+ *  provider hasn't connected via OAuth. */
+export interface ProviderConfigSummary {
+  providerId: string
+  enabled: boolean
+  authMethod: ProviderAuthMethodShared
+  apiKeys: ProviderApiKeyEntrySummary[]
+  baseUrl?: string
+  displayName?: string
+  prefix?: string
+  connection: RoutingProxyAuthFile | null
+}
