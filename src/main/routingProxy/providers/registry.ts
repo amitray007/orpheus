@@ -41,10 +41,16 @@ export const PROVIDERS: ProviderDescriptor[] = [
     docsUrl: CLIPROXYAPI_DOCS_URL
   },
   {
+    // Gemini has NO `/v0/management/gemini-auth-url` route in CLIProxyAPI
+    // v7.2.92 (verified against internal/api/server.go) — the OAuth
+    // providers are exactly codex/anthropic/antigravity/kimi/xai. Gemini
+    // must therefore never claim 'oauth' in authMethods and must never
+    // declare oauthLoginFlag — see oauth.ts's eligibleOAuthDescriptors(),
+    // which derives Connect-button eligibility purely from this field, so a
+    // wrong claim here would silently render a broken Connect button.
     id: 'gemini',
     label: 'Gemini (Google)',
-    authMethods: ['oauth', 'apiKey'],
-    oauthLoginFlag: '-gemini-login',
+    authMethods: ['apiKey'],
     apiKeyConfigKey: 'gemini-api-key',
     docsUrl: CLIPROXYAPI_DOCS_URL
   },
