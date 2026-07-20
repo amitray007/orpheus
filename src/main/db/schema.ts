@@ -26,6 +26,11 @@ const EDITOR_MODE = ['normal', 'vim'] as const
 // ANTHROPIC_BASE_URL. See ClaudeCloudProvider in src/shared/types.ts.
 const CLOUD_PROVIDER = ['anthropic', 'bedrock', 'vertex', 'foundry', 'routed'] as const
 const LOG_LEVEL = ['debug', 'info', 'warn', 'error'] as const
+// Mirrors ProviderAuthMethod in src/main/routingProxy/providers/types.ts.
+// Fixed vocabulary (part of the ProviderDescriptor shape) — unlike
+// routing_proxy_providers.provider_id, which is deliberately free-text so
+// adding a new PROVIDER never requires a schema change.
+const PROVIDER_AUTH_METHOD = ['oauth', 'apiKey', 'openaiCompatible'] as const
 
 // 'panes' added (KTD2 nav-rail work) so lastViewKind='panes' doesn't violate
 // the CHECK; 'dashboard' is kept for legacy rows and a future rail surface
@@ -980,6 +985,72 @@ export const schema: SchemaDef = {
       payload_json: TEXT_NOT_NULL,
       fetched_at: INTEGER_NOT_NULL
     }
+  },
+
+  // ---------------------------------------------------------------------
+  // routing_proxy_providers — model-routing unit 05 (provider framework).
+  // One row per provider a user has configured (codex, xai, gemini,
+  // openrouter, ollama, ...) — provider_id is free-text, NOT an enum CHECK,
+  // deliberately: the whole point of the descriptor layer
+  // (src/main/routingProxy/providers/registry.ts) is that a new provider is
+  // addable as data, and an enum CHECK here would turn "add a provider" back
+  // into a migration. Validity against the known descriptor set is enforced
+  // in code (getProviderDescriptor), not the schema.
+  // auth_method mirrors ProviderAuthMethod ('oauth' | 'apiKey' |
+  // 'openaiCompatible') — kept as a CHECK since that vocabulary IS fixed
+  // (part of the ProviderDescriptor shape, not per-provider data).
+  // ---------------------------------------------------------------------
+  routing_proxy_providers: {
+    columns: {
+      provider_id: TEXT_PK,
+      enabled: bool('enabled', '0'),
+      auth_method: {
+        type: 'TEXT',
+        notNull: true,
+        default: "'apiKey'",
+        check: enumCheck('auth_method', PROVIDER_AUTH_METHOD)
+      },
+      base_url: 'TEXT',
+      display_name: 'TEXT',
+      prefix: 'TEXT',
+      updated_at: INTEGER_NOT_NULL
+    }
+  },
+
+  // ---------------------------------------------------------------------
+  // routing_proxy_provider_api_keys — one row per stored API-key credential
+  // entry for a provider (a provider can have multiple, e.g. several
+  // OpenRouter keys pooled under the same alias — mirrors CLIProxyAPI's own
+  // `<provider>-api-key:` LIST shape). api_key is plaintext, same convention
+  // as auth_api_key/auth_token elsewhere in this schema (see CLAUDE.md's
+  // "Plaintext SQLite columns are intentional" note) — never logged (see
+  // config.ts's writeRoutingProxyConfig doc comment) and the generated
+  // config.yaml this feeds is written 0600.
+  // models_json is a JSON-serialized ProviderModelEntry[] (upstream
+  // name/alias/display-name/thinking-levels/... — see providers/types.ts) —
+  // kept as one JSON blob rather than a child table since it's read/written
+  // wholesale with the owning key, never queried/filtered independently.
+  // ---------------------------------------------------------------------
+  routing_proxy_provider_api_keys: {
+    columns: {
+      id: TEXT_PK,
+      provider_id: TEXT_NOT_NULL,
+      api_key: TEXT_NOT_NULL,
+      prefix: 'TEXT',
+      base_url: 'TEXT',
+      proxy_url: 'TEXT',
+      disable_cooling: bool('disable_cooling', '0'),
+      models_json: { type: 'TEXT', notNull: true, default: "'[]'" },
+      excluded_models_json: { type: 'TEXT', notNull: true, default: "'[]'" },
+      sort_order: { type: 'INTEGER', notNull: true, default: '0' },
+      created_at: INTEGER_NOT_NULL
+    },
+    foreignKeys: [
+      { columns: ['provider_id'], ref: 'routing_proxy_providers(provider_id)', onDelete: 'CASCADE' }
+    ],
+    indexes: {
+      idx_routing_proxy_provider_api_keys_provider: ['provider_id']
+    }
   }
 }
 
@@ -995,6 +1066,7 @@ export {
   EDITOR_MODE,
   CLOUD_PROVIDER,
   LOG_LEVEL,
+  PROVIDER_AUTH_METHOD,
   LAST_VIEW_KIND,
   PROJECTS_LAST_VIEW_KIND,
   THEME,
