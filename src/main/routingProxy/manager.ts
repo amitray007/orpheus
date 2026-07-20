@@ -38,6 +38,8 @@ import {
 import { fetchRoutingProxyAuthFiles } from './authFiles'
 import { checkRoutingProxyUpdate } from './updateCheck'
 import { cleanStoppedStatus, disableTransitionPatch } from './state'
+import { refreshCliProxyModelCache } from '../models/sources/cliproxy'
+import { listProviderConfigs } from './providers/storage'
 
 // ---------------------------------------------------------------------------
 // Snapshot state
@@ -134,7 +136,8 @@ export async function install(deps: InstallDeps = defaultInstallDeps()): Promise
     await writeRoutingProxyConfig(configPath(result.version), {
       host: proxyHost(),
       port: proxyPort(),
-      authDir: authDir()
+      authDir: authDir(),
+      providers: listProviderConfigs()
     })
     setSnapshot({
       status: 'stopped',
@@ -160,6 +163,12 @@ async function refreshAuthFiles(): Promise<void> {
   if (!secret || !isRunning()) return
   const files = await fetchRoutingProxyAuthFiles(getRoutingProxyUrl(), secret)
   setSnapshot({ authFiles: files, authFilesCheckedAt: Date.now() })
+  // Best-effort — refreshCliProxyModelCache never throws (see its own doc
+  // comment) and populates the model registry's cliProxyModelSource cache so
+  // routed-provider models pick up real context/thinking facts once the
+  // proxy is reachable. Piggybacks on the same 30s interval as auth-files
+  // rather than a separate timer.
+  void refreshCliProxyModelCache(getRoutingProxyUrl(), secret)
 }
 
 /** IPC-facing manual refresh — returns the updated snapshot. */
@@ -196,11 +205,14 @@ export async function start(): Promise<void> {
   setSnapshot({ status: 'starting', error: null })
 
   // Regenerate config on every start so it always reflects the current
-  // getRoutingProxyUrl() (host/port never drift from a stale prior write).
+  // getRoutingProxyUrl() (host/port never drift from a stale prior write)
+  // AND the current stored provider configs (a provider added/edited while
+  // the proxy was stopped must take effect on the next start).
   await writeRoutingProxyConfig(configPath(version), {
     host: proxyHost(),
     port: proxyPort(),
-    authDir: authDir()
+    authDir: authDir(),
+    providers: listProviderConfigs()
   })
 
   startRoutingProxy({
@@ -321,6 +333,25 @@ export function hydrateSnapshotAtBoot(): Promise<void> {
 
 export async function checkForComponentUpdate(): Promise<RoutingProxyUpdateCheckResult> {
   return checkRoutingProxyUpdate(snapshot.installedVersion ?? PINNED_VERSION)
+}
+
+// ---------------------------------------------------------------------------
+// Provider config changes (unit 05) — regenerate + rewrite config.yaml
+// immediately so an edit made from Settings takes effect without requiring
+// the user to manually toggle the proxy off/on. Only writes when a version
+// is actually installed (nothing to write otherwise — start()/install() will
+// pick up listProviderConfigs() on their own next run regardless).
+// ---------------------------------------------------------------------------
+
+export async function regenerateConfigNow(): Promise<void> {
+  const version = snapshot.installedVersion
+  if (!version) return
+  await writeRoutingProxyConfig(configPath(version), {
+    host: proxyHost(),
+    port: proxyPort(),
+    authDir: authDir(),
+    providers: listProviderConfigs()
+  })
 }
 
 // ---------------------------------------------------------------------------
