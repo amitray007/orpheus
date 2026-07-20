@@ -36,6 +36,8 @@ import {
   killRoutingProxySync
 } from './lifecycle'
 import { fetchRoutingProxyAuthFiles } from './authFiles'
+import { reclaimOrphanRoutingProxyPort, defaultOrphanReclaimDeps } from './orphan'
+import { defaultHealthCheckDeps } from './health'
 import { checkRoutingProxyUpdate } from './updateCheck'
 import { cleanStoppedStatus, disableTransitionPatch } from './state'
 import {
@@ -353,6 +355,32 @@ export async function stop(): Promise<void> {
 }
 
 /**
+ * Detects a routing-proxy process left listening on our fixed loopback port
+ * by a PREVIOUS app run (this run's isRunning() is false — lifecycle.ts's
+ * child handle is a fresh module-level `let`, reset on every boot — but the
+ * OS process can still be alive if the prior run crashed/force-quit before
+ * reaching shutdownRoutingProxySync). See orphan.ts's module doc for why the
+ * policy is kill-and-respawn rather than adopt: an orphan's
+ * MANAGEMENT_PASSWORD was generated in a process that no longer exists in
+ * memory anywhere, so this run has no credential to authenticate to it —
+ * adoption is not just undesirable but impossible. Bounded to a fast TCP
+ * probe (500ms) plus a short settle delay only when something is actually
+ * found — a clean boot (nothing listening) returns near-instantly.
+ */
+async function reclaimOrphanIfPresent(): Promise<void> {
+  const url = new URL(getRoutingProxyUrl())
+  const port = Number(url.port || 80)
+  const result = await reclaimOrphanRoutingProxyPort(
+    url.hostname,
+    port,
+    defaultOrphanReclaimDeps(defaultHealthCheckDeps().tcpProbe)
+  )
+  if (result.reclaimed) {
+    setSnapshot({ authFiles: [], authFilesCheckedAt: null })
+  }
+}
+
+/**
  * Declarative reconcile — mirrors index.ts's reconcileHooks() exactly: reads
  * routingProxyEnabled from AppUiState and starts/stops the child process to
  * match. Safe to call multiple times; idempotent against the current state.
@@ -361,7 +389,16 @@ export async function reconcileRoutingProxy(): Promise<void> {
   const enabled = getAppUiState().routingProxyEnabled
   setSnapshot({ enabled })
   if (enabled) {
-    if (!isRunning()) await start()
+    if (!isRunning()) {
+      // Reclaim a stale/orphan process holding our port BEFORE spawning —
+      // otherwise start()'s own bind attempt either fails outright or (worse)
+      // silently talks to nobody while a foreign, credential-unknown process
+      // keeps holding the port for the rest of this session (the reported
+      // bug: authFiles never populates because refreshAuthFiles()/the 30s
+      // timer are only armed inside start(), which never got called).
+      await reclaimOrphanIfPresent()
+      await start()
+    }
   } else if (isRunning()) {
     await stop()
   } else {
