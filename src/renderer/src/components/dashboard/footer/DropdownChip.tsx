@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
-import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import type { ChipDropdownItem, ClaudeEffort } from '@shared/types'
 import { IconByName } from './iconMap'
 import {
@@ -12,6 +11,8 @@ import {
   chipTooltipId
 } from '@/lib/overlayClient'
 import { playSound } from '../../../lib/sound'
+import { useSelectableModels } from '@/lib/useSelectableModels'
+import { buildModelDropdownItems } from '@/lib/modelPickerOptions'
 import type { FooterActionItem } from './useFooterActions'
 
 // Bounded retry policy for FIX B (bug 2): the overlay hide + focus-restore
@@ -40,9 +41,9 @@ const INJECT_RETRY_DELAY_MS = 200
 // computed by a small dispatcher block keyed on `item.actionId`.
 // ---------------------------------------------------------------------------
 
-function labelForModel(value: string): string {
+function labelForModel(value: string, models: { id: string; label: string }[]): string {
   if (!value) return 'Default'
-  const known = CLAUDE_MODEL_OPTIONS.find((o) => o.value === value)
+  const known = models.find((o) => o.id === value)
   return known ? known.label : value
 }
 
@@ -182,6 +183,25 @@ export function DropdownChip({
     refetchEffectiveModel()
   }, [refetchEffectiveModel])
 
+  // Data-driven model list (Claude always present; routed models gated on
+  // proxy/provider health server-side) — see useSelectableModels' own doc
+  // comment. Only fetched for the modelSelect chip; passing modelValue keeps
+  // an already-selected-but-now-unavailable routed model represented (never
+  // silently dropped from the dropdown, even though it can no longer be
+  // freshly selected as "available").
+  const { models: selectableModels } = useSelectableModels(
+    item.actionId === 'footer.modelSelect' ? modelValue : undefined
+  )
+  // isClaude lookup for the CURRENT effective model, used below to decide
+  // whether a model switch is live-applicable (see onSelect's own comment).
+  // A model not present in the list (e.g. transient fetch gap) is treated as
+  // non-Claude — the conservative choice, since injecting `/model` into a
+  // routed workspace's terminal would be meaningless/wrong.
+  const currentModelIsClaude = useMemo(
+    () => selectableModels.find((m) => m.id === modelValue)?.isClaude ?? modelValue === '',
+    [selectableModels, modelValue]
+  )
+
   // ---------------------------------------------------------------------
   // Case 2 — footer.effortSelect: local state = effective effort value
   // ('' from the IPC means unset/auto — normalized to 'auto' below).
@@ -210,16 +230,36 @@ export function DropdownChip({
   let onSelect: (value: string) => void = () => {}
 
   if (item.actionId === 'footer.modelSelect') {
-    dropdownItems = CLAUDE_MODEL_OPTIONS.map((o) => ({ value: o.value, label: o.label }))
+    dropdownItems = buildModelDropdownItems(selectableModels)
     selectedValue = modelValue
-    faceLabel = labelForModel(modelValue)
+    faceLabel = labelForModel(modelValue, selectableModels)
     chipTitle = `${item.label}: ${faceLabel}`
     onSelect = (value: string): void => {
+      const newModelIsClaude = selectableModels.find((m) => m.id === value)?.isClaude ?? false
       setModelValue(value)
-      // Persist first (also suppresses the dirty flag) so a genuinely busy
-      // workspace still saves the setting even if injection never lands.
+      // Persist first (also suppresses the dirty flag when the switch is
+      // live-applicable — see setWorkspaceSettingAndSuppressDirty's own
+      // isLiveApplicableModelChange gate) so a genuinely busy workspace
+      // still saves the setting even if injection never lands.
       window.api.workspaces.setModel(workspaceId, value).catch(() => {})
-      runInject(`/model ${value}`, true, 'Model set — applies next turn')
+      // `/model <value>` is a Claude CLI slash command — it is only
+      // meaningful for a Claude -> Claude switch (same backend, same running
+      // process, just a different --model argument). A switch involving a
+      // routed model needs a NEW process with different
+      // ANTHROPIC_BASE_URL/ANTHROPIC_MODEL/ANTHROPIC_AUTH_TOKEN env (see
+      // src/main/modelRouting.ts computeRoutingEnv), which no in-terminal
+      // slash command can apply — injecting it there would be silently
+      // wrong (either a no-op inside the wrong backend's REPL, or Claude's
+      // own CLI misinterpreting a routed model id as one of its own).
+      // Persisting the setting above already marks the workspace dirty via
+      // the same isLiveApplicableModelChange gate main-side, so the existing
+      // "Restart to apply" chip is what surfaces the change instead.
+      if (currentModelIsClaude && newModelIsClaude) {
+        runInject(`/model ${value}`, true, 'Model set — applies next turn')
+      } else {
+        playSound('success')
+        showTooltip('Model set — restart workspace to apply')
+      }
     }
   } else if (item.actionId === 'footer.effortSelect') {
     dropdownItems = EFFORT_VALUES.map((v) => ({ value: v, label: capitalize(v) }))

@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import { ArrowCounterClockwise, X } from '@phosphor-icons/react'
 import {
-  CLAUDE_MODEL_OPTIONS,
-  CLAUDE_MODEL_ALIAS_START_INDEX,
   type ClaudeEffort,
   type ClaudeGlobalSettings,
   type ClaudePermissionMode,
@@ -13,6 +11,8 @@ import {
 import { Select, CliFlagsEditor, CustomEnvVarsEditor } from '../settings/primitives'
 import { Overlay } from '@/components/ui/Overlay'
 import { WorkspaceCreationSettings } from './WorkspaceCreationSettings'
+import { useSelectableModels } from '@/lib/useSelectableModels'
+import { buildModelSelectOptions, MODEL_CUSTOM_VALUE } from '@/lib/modelPickerOptions'
 
 // ---------------------------------------------------------------------------
 // Per-project settings drawer
@@ -23,15 +23,12 @@ import { WorkspaceCreationSettings } from './WorkspaceCreationSettings'
 // side panel slot like WorkspaceView does).
 // ---------------------------------------------------------------------------
 
-// Grouped model options: "Use global" → specific versions → separator → aliases.
-const MODEL_CUSTOM = 'custom' as const
-const MODEL_OPTIONS = [
-  { value: 'default', label: 'Use global' },
-  ...CLAUDE_MODEL_OPTIONS.slice(0, CLAUDE_MODEL_ALIAS_START_INDEX),
-  { value: '__sep_model', label: '' }, // visual divider — Select renders "Always latest"
-  ...CLAUDE_MODEL_OPTIONS.slice(CLAUDE_MODEL_ALIAS_START_INDEX),
-  { value: MODEL_CUSTOM, label: 'Custom…' }
-] as const
+// Model options are data-driven (models:listSelectable — Claude always
+// present, routed models gated on proxy/provider health; see
+// buildModelSelectOptions) rather than a hardcoded CLAUDE_MODEL_OPTIONS
+// slice — see the useSelectableModels() call below. MODEL_CUSTOM_VALUE is
+// the shared 'Custom…' escape hatch (unit 01).
+type ModelOption = string
 
 const PERMISSION_OPTIONS = [
   { value: 'default', label: 'Use global' },
@@ -50,7 +47,6 @@ const EFFORT_OPTIONS = [
   { value: 'max', label: 'Max' }
 ] as const
 
-type ModelOption = (typeof MODEL_OPTIONS)[number]['value']
 type PermissionOption = (typeof PERMISSION_OPTIONS)[number]['value']
 type EffortOption = (typeof EFFORT_OPTIONS)[number]['value']
 
@@ -139,6 +135,16 @@ export function SettingsDrawer({
   const [showCustomModel, setShowCustomModel] = useState(false)
   const [customModelValue, setCustomModelValue] = useState('')
 
+  // Data-driven model list (Claude always present; routed models gated on
+  // proxy/provider health server-side) — refetches whenever the currently
+  // selected model changes so an unavailable-but-selected routed model is
+  // never silently dropped (see useSelectableModels' own doc comment).
+  const { models: selectableModels } = useSelectableModels(localOverrides.model)
+  const modelOptions = useMemo(
+    () => buildModelSelectOptions(selectableModels, { value: 'default', label: 'Use global' }),
+    [selectableModels]
+  )
+
   useEffect(() => {
     if (!open) return
     let cancelled = false
@@ -149,7 +155,7 @@ export function SettingsDrawer({
         setSettings(s)
         setLocalOverrides(s.overrides)
         const m = s.overrides.model
-        const isCustom = m !== undefined && !MODEL_OPTIONS.some((o) => o.value === m)
+        const isCustom = m !== undefined && !selectableModels.some((o) => o.id === m)
         setShowCustomModel(isCustom)
         setCustomModelValue(isCustom ? m : '')
       })
@@ -163,6 +169,7 @@ export function SettingsDrawer({
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectableModels intentionally excluded: this effect only runs on open/projectId change (initial load), not every time the list refetches, to avoid fighting in-progress custom-model typing.
   }, [open, projectId])
 
   // Stable patch: uses functional setState so it doesn't close over
@@ -197,10 +204,10 @@ export function SettingsDrawer({
 
   function handleModel(v: ModelOption): void {
     // Guard: separator values start with '__sep' and should never be committed
-    if ((v as string).startsWith('__sep')) return
+    if (v.startsWith('__sep')) return
     // 'custom' is a picker-only sentinel (switches to the free-text input
     // below) — never a real model id, so never commit it as one.
-    if (v === MODEL_CUSTOM) {
+    if (v === MODEL_CUSTOM_VALUE) {
       setShowCustomModel(true)
       return
     }
@@ -263,9 +270,9 @@ export function SettingsDrawer({
 
   const modelValue: ModelOption =
     localOverrides.model !== undefined
-      ? MODEL_OPTIONS.some((o) => o.value === localOverrides.model)
-        ? (localOverrides.model as ModelOption)
-        : MODEL_CUSTOM
+      ? selectableModels.some((o) => o.id === localOverrides.model)
+        ? localOverrides.model
+        : MODEL_CUSTOM_VALUE
       : 'default'
 
   const permissionValue: PermissionOption =
@@ -340,12 +347,12 @@ export function SettingsDrawer({
             <div className={!settings ? 'opacity-50 pointer-events-none' : ''}>
               <OverrideField
                 label="Model"
-                options={MODEL_OPTIONS}
+                options={modelOptions}
                 value={modelValue}
                 onChange={handleModel}
                 isOverridden={localOverrides.model !== undefined}
                 ariaLabel="Project model override"
-                description="Default Claude model for new workspaces in this project."
+                description="Default model for new workspaces in this project — Claude or a connected routed provider."
               >
                 {showCustomModel && (
                   <input

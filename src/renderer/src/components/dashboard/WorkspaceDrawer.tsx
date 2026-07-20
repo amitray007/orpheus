@@ -3,15 +3,15 @@
 // the Workbench; kept so a future "overrides" home (e.g. a Workbench tab) can
 // reuse it.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import { X, ArrowCounterClockwise } from '@phosphor-icons/react'
 import { Select } from './settings/primitives'
 import { ActivityIndicator } from './ActivityIndicator'
 import { WorkspaceOverridesSkeleton } from '../Skeleton'
+import { useSelectableModels } from '@/lib/useSelectableModels'
+import { buildModelSelectOptions, MODEL_CUSTOM_VALUE } from '@/lib/modelPickerOptions'
 import {
-  CLAUDE_MODEL_OPTIONS,
-  CLAUDE_MODEL_ALIAS_START_INDEX,
   type WorkspaceRecord,
   type WorkspaceStatus,
   type WorkspaceActivityDetail,
@@ -84,19 +84,13 @@ function ActivitySection({ activity, detail }: ActivitySectionProps): React.JSX.
 // Overrides section
 // ---------------------------------------------------------------------------
 
-// Grouped model options: default → specific versions → separator → aliases.
-// The separator sentinel value is never committed; the Select renders it as a
-// visual divider. We use a plain array (not `as const`) so we can add the
-// dynamic separator without fighting TypeScript's tuple inference.
-const MODEL_SEP = '__sep_model' as const
-const MODEL_CUSTOM = 'custom' as const
-const MODEL_OPTIONS = [
-  { value: 'default', label: 'Default' },
-  ...CLAUDE_MODEL_OPTIONS.slice(0, CLAUDE_MODEL_ALIAS_START_INDEX),
-  { value: MODEL_SEP, label: '── Always latest ──' },
-  ...CLAUDE_MODEL_OPTIONS.slice(CLAUDE_MODEL_ALIAS_START_INDEX),
-  { value: MODEL_CUSTOM, label: 'Custom…' }
-] as const
+// Model options are now data-driven (models:listSelectable — Claude always
+// present, routed models gated on proxy/provider health; see
+// buildModelSelectOptions), not a hardcoded CLAUDE_MODEL_OPTIONS slice — see
+// the useSelectableModels() call inside OverridesSection below. 'default' is
+// still a picker-only leading option (never a real model id), and
+// MODEL_CUSTOM_VALUE is still the shared 'Custom…' escape hatch (unit 01).
+type ModelOption = string
 
 const PERMISSION_OPTIONS = [
   { value: 'default', label: 'Default' },
@@ -115,7 +109,6 @@ const EFFORT_OPTIONS = [
   { value: 'max', label: 'Max' }
 ] as const
 
-type ModelOption = (typeof MODEL_OPTIONS)[number]['value']
 type PermissionOption = (typeof PERMISSION_OPTIONS)[number]['value']
 type EffortOption = (typeof EFFORT_OPTIONS)[number]['value']
 
@@ -143,6 +136,16 @@ function OverridesSection({
   const [showCustomModel, setShowCustomModel] = useState(false)
   const [customModelValue, setCustomModelValue] = useState('')
 
+  // Data-driven model list (Claude always present; routed models gated on
+  // proxy/provider health server-side) — refetches whenever the currently
+  // selected model changes so an unavailable-but-selected routed model is
+  // never silently dropped (see useSelectableModels' own doc comment).
+  const { models: selectableModels } = useSelectableModels(localOverrides.model)
+  const modelOptions = useMemo(
+    () => buildModelSelectOptions(selectableModels, { value: 'default', label: 'Default' }),
+    [selectableModels]
+  )
+
   useEffect(() => {
     let cancelled = false
     window.api.claudeWorkspaceSettings
@@ -152,7 +155,7 @@ function OverridesSection({
           setSettings(s)
           setLocalOverrides(s.overrides)
           const m = s.overrides.model
-          const isCustom = m !== undefined && !MODEL_OPTIONS.some((o) => o.value === m)
+          const isCustom = m !== undefined && !selectableModels.some((o) => o.id === m)
           setShowCustomModel(isCustom)
           setCustomModelValue(isCustom ? m : '')
         }
@@ -161,6 +164,7 @@ function OverridesSection({
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectableModels intentionally excluded: this effect only runs on workspaceId change (initial load), not every time the list refetches, to avoid fighting in-progress custom-model typing.
   }, [workspaceId])
 
   function patch(update: ClaudeWorkspaceSettingsOverrides): void {
@@ -187,10 +191,10 @@ function OverridesSection({
 
   function handleModel(v: ModelOption): void {
     // Guard: separator values start with '__sep' and should never be committed
-    if ((v as string).startsWith('__sep')) return
+    if (v.startsWith('__sep')) return
     // 'custom' is a picker-only sentinel (switches to the free-text input
     // below) — never a real model id, so never commit it as one.
-    if (v === MODEL_CUSTOM) {
+    if (v === MODEL_CUSTOM_VALUE) {
       setShowCustomModel(true)
       return
     }
@@ -224,9 +228,9 @@ function OverridesSection({
 
   const modelValue: ModelOption =
     localOverrides.model !== undefined
-      ? MODEL_OPTIONS.some((o) => o.value === localOverrides.model)
-        ? (localOverrides.model as ModelOption)
-        : MODEL_CUSTOM
+      ? selectableModels.some((o) => o.id === localOverrides.model)
+        ? localOverrides.model
+        : MODEL_CUSTOM_VALUE
       : 'default'
 
   const permissionValue: PermissionOption =
@@ -259,7 +263,7 @@ function OverridesSection({
         <div>
           <OverrideField
             label="Model"
-            options={MODEL_OPTIONS}
+            options={modelOptions}
             value={modelValue}
             onChange={handleModel}
             isOverridden={localOverrides.model !== undefined}

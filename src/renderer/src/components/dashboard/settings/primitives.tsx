@@ -385,7 +385,11 @@ export function Select<T extends string>({
             onKeyDown={onPopoverKeyDown}
           >
             {options.map((opt) => {
-              // Separator — render as non-interactive section divider
+              // Separator — render as non-interactive section divider. Label
+              // is the group heading (e.g. a provider name for the model
+              // picker's Claude-vs-routed-provider grouping); empty-label
+              // separators (the original Claude versions/aliases split)
+              // fall back to "Always latest" for backward compatibility.
               if (opt.value.startsWith('__sep')) {
                 return (
                   <div
@@ -393,7 +397,7 @@ export function Select<T extends string>({
                     aria-hidden="true"
                     className="px-2.5 py-1 mt-1 text-xs text-text-muted uppercase tracking-wider font-medium border-t border-border-default/40"
                   >
-                    Always latest
+                    {opt.label || 'Always latest'}
                   </div>
                 )
               }
