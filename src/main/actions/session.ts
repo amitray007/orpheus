@@ -7,8 +7,9 @@
 // JSONL path: ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl
 // Encoding: slashes in cwd become dashes (mirrors claudeSettings.ts:23-31).
 //
-// Pricing is delegated to src/main/pricing.ts which fetches live data from
-// models.dev at boot and falls back to a hardcoded table for offline use.
+// Pricing/context is delegated to src/main/models/registry.ts, which
+// resolves Claude models offline (builtin source) and everything else via a
+// models.dev-backed cache refreshed at boot.
 //
 // Incremental parsing: instead of reading the whole file on every cache miss,
 // an AccumulatorState per workspace tracks the byte offset consumed so far.
@@ -30,7 +31,7 @@ import type {
 import { getClaudeGlobalSettings } from '../claudeSettings'
 import { encodePathToClaudeDir } from '../claudeProjectDir'
 import { getWorkspace } from '../workspaces'
-import { getPricing } from '../pricing'
+import { resolveModel, effectiveContext } from '../models/registry'
 
 // ---------------------------------------------------------------------------
 // Parse cache — short-circuit repeated reads within the TTL window
@@ -99,7 +100,7 @@ function getJsonlPath(cwd: string, sessionId: string): string {
 // lines, and save any incomplete trailing fragment for the next call.
 //
 // Per-model token tallies are stored raw; cost is derived at read time via
-// getPricing so late-loaded or updated pricing is always reflected.
+// the model registry so late-loaded or updated pricing is always reflected.
 // ---------------------------------------------------------------------------
 
 // Minimal JSONL line shape — only the fields we actually access.
@@ -544,7 +545,8 @@ async function advanceAccumulator(acc: AccumulatorState, jsonlPath: string): Pro
 }
 
 /** Build a ParsedSession from the current accumulator state.
- *  Cost is derived on-demand from per-model token tallies via getPricing. */
+ *  Cost is derived on-demand from per-model token tallies via the model
+ *  registry (src/main/models/registry.ts). */
 function accumulatorToSession(acc: AccumulatorState): ParsedSession {
   const costByModel: Record<string, number> = {}
   // True when a model was tallied (real tokens spent) but has no pricing data
@@ -553,7 +555,7 @@ function accumulatorToSession(acc: AccumulatorState): ParsedSession {
   // "$0.00" (indistinguishable from genuinely free). See SessionCost.hasUnknownPricing.
   let hasUnknownPricing = false
   for (const [modelKey, mt] of acc.tokensByModel) {
-    const pricing = getPricing(modelKey)
+    const pricing = resolveModel(modelKey).pricing
     if (pricing) {
       const lineCost =
         (mt.input / 1_000_000) * pricing.input +
@@ -597,20 +599,28 @@ function accumulatorToSession(acc: AccumulatorState): ParsedSession {
 }
 
 // ---------------------------------------------------------------------------
-// Effective maxContextTokens for a workspace
+// Effective context budget for a workspace
 //
-// Reads global settings; workspace-level overrides don't expose maxContextTokens
-// (they only carry model/permissionMode/effort), so global is the final answer.
+// Resolved through the model registry (src/main/models/registry.ts) so this
+// agrees with getContextBudget in src/main/sessions.ts — previously this
+// path ignored the model entirely and defaulted to a flat 200_000, which
+// disagreed with the title-bar chip's model-aware budget. Reads global
+// settings for the disable1mContext / maxContextTokens caps; workspace-level
+// overrides don't expose maxContextTokens (they only carry
+// model/permissionMode/effort), so global is the final answer for the cap.
+// Returns null when the model's context window is unknown — never fabricate
+// a number (see SessionUsage.contextBudget).
 // ---------------------------------------------------------------------------
 
-const DEFAULT_CONTEXT_BUDGET = 200_000
-
-function getEffectiveContextBudget(): number {
+function getEffectiveContextBudget(modelId: string): number | null {
   try {
     const global = getClaudeGlobalSettings()
-    return global.maxContextTokens ?? DEFAULT_CONTEXT_BUDGET
+    return effectiveContext(modelId, {
+      disable1mContext: global.disable1mContext,
+      capTokens: global.maxContextTokens
+    })
   } catch {
-    return DEFAULT_CONTEXT_BUDGET
+    return effectiveContext(modelId)
   }
 }
 
@@ -689,14 +699,14 @@ function emptyMeta(): SessionMeta {
   return { sessionId: '', model: '', startedAt: 0, lastMessageAt: null, turnCount: 0 }
 }
 
-function emptyUsage(): SessionUsage {
+function emptyUsage(contextBudget: number | null): SessionUsage {
   return {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
     lastTurnContextTokens: 0,
-    contextBudget: getEffectiveContextBudget(),
+    contextBudget,
     usedPct: 0
   }
 }
@@ -727,18 +737,24 @@ export async function handleGetUsage(
   workspaceId: string
 ): Promise<ActionResult<SessionUsage>> {
   const parsed = await getParsed(workspaceId)
-  const contextBudget = getEffectiveContextBudget()
+  // Same fallback default ('sonnet') as getContextBudget in
+  // src/main/sessions.ts, so the two paths agree when no model is known yet.
+  const modelId = parsed?.meta.model || 'sonnet'
+  const contextBudget = getEffectiveContextBudget(modelId)
 
   if (!parsed) {
-    return { ok: true, value: { ...emptyUsage(), contextBudget } }
+    return { ok: true, value: emptyUsage(contextBudget) }
   }
 
   const { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, lastTurnContextTokens } =
     parsed.usage
   // Use the most-recent turn's context occupancy (not cumulative) so the chip
   // reflects the current window size, not a monotonically-growing sum.
+  // contextBudget null (unknown model) → usedPct stays 0, nothing to divide by.
   const usedPct =
-    contextBudget > 0 ? Math.min((lastTurnContextTokens / contextBudget) * 100, 100) : 0
+    contextBudget && contextBudget > 0
+      ? Math.min((lastTurnContextTokens / contextBudget) * 100, 100)
+      : 0
 
   return {
     ok: true,

@@ -83,7 +83,7 @@ import type { DiagEvent } from '../shared/types'
 import { bootActions, setTerminalAddonRef, registerWebContentsCleanup } from './actions/index'
 import { evictAccumulator } from './actions/session'
 import { seedDefaultFooterActions } from './footerActions'
-import { refreshFromModelsDev } from './pricing'
+import { refreshModelsDevCache } from './models/registry'
 import {
   startDiagnostics,
   stopDiagnostics,
@@ -142,6 +142,7 @@ import { registerWorktreesIpc } from './ipc/worktrees'
 import { registerHooksIpc } from './ipc/hooks'
 import { registerUiStateIpc, syncDiagFlags } from './ipc/uiState'
 import { registerSessionsIpc } from './ipc/sessions'
+import { registerModelsIpc } from './ipc/models'
 import { registerProjectsIpc } from './ipc/projects'
 import { registerWorkspacesIpc } from './ipc/workspaces'
 import { registerActionsIpc } from './ipc/actions'
@@ -954,6 +955,7 @@ registerWorkspacesIpc({ performArchive, performClose })
 // ---------------------------------------------------------------------------
 
 registerSessionsIpc()
+registerModelsIpc()
 
 // ---------------------------------------------------------------------------
 // Claude Settings IPC (global + per-project + per-workspace + footer
@@ -2176,8 +2178,9 @@ if (!app.requestSingleInstanceLock()) {
         console.error('[footerActions] failed to seed defaults:', err)
       }
 
-      // Refresh model pricing from models.dev — fire-and-forget, never blocks boot.
-      refreshFromModelsDev().catch(() => {})
+      // Refresh model context/pricing from models.dev — fire-and-forget, never
+      // blocks boot. See src/main/models/registry.ts.
+      refreshModelsDevCache().catch(() => {})
 
       // Clear stale in_progress / attention statuses left over from a prior
       // session (crash, hard quit). Without this, the WorkspaceView would show a

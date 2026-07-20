@@ -229,8 +229,17 @@ export interface InvokeChannelMap {
     req: [{ workspaceId: string }]
     // contextBudget is null when the model's pricing/context window is
     // unknown — callers must render an explicit "unknown" state, never a
-    // fabricated number. See ContextBudgetResult in src/main/sessions.ts.
-    res: { contextBudget: number | null; modelId: string }
+    // fabricated number. modelLabel is the registry's one canonical label
+    // (src/main/models/registry.ts) — the renderer must not re-derive a
+    // label from modelId itself. See ContextBudgetResult in
+    // src/main/sessions.ts.
+    res: { contextBudget: number | null; modelId: string; modelLabel: string }
+  }
+  'models:resolveLabels': {
+    req: [{ modelIds: string[] }]
+    // id -> the registry's one canonical label (src/main/models/registry.ts).
+    // The renderer must consume this rather than parsing model ids itself.
+    res: Record<string, string>
   }
   'claudeSettings:get': { req: []; res: ClaudeGlobalSettings }
   'claudeSettings:update': { req: [ClaudeGlobalSettingsPatch]; res: ClaudeGlobalSettings }

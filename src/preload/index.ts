@@ -269,7 +269,7 @@ const api = {
     delete: (id: string): Promise<void> => invoke('sessions:delete', { id }),
     getContextBudget: (
       workspaceId: string
-    ): Promise<{ contextBudget: number | null; modelId: string }> =>
+    ): Promise<{ contextBudget: number | null; modelId: string; modelLabel: string }> =>
       invoke('sessions:getContextBudget', { workspaceId })
   },
   workspaces: {
@@ -376,6 +376,10 @@ const api = {
   },
   pins: {
     listAll: (): Promise<PinnedItem[]> => invoke('pins:listAll')
+  },
+  models: {
+    resolveLabels: (modelIds: string[]): Promise<Record<string, string>> =>
+      invoke('models:resolveLabels', { modelIds })
   },
   claudeSettings: {
     get: (): Promise<ClaudeGlobalSettings> => invoke('claudeSettings:get'),

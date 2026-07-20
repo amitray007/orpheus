@@ -397,8 +397,13 @@ export type KeepAwakeState = {
 //   1. Explicit versioned IDs — unambiguous pricing + context lookup
 //   2. Always-latest aliases — claude resolves the exact version at launch
 //
-// The `family` field is used by the title-bar chip for color-coding and by
-// `getPricing` family-alias resolution.
+// The `family` field here is display metadata only (picker grouping) — it
+// does NOT drive title-bar colour-coding (no such feature exists) and is
+// NOT used for pricing resolution. Model facts (label, family, pricing,
+// context) are owned exclusively by src/main/models/registry.ts, which
+// resolves by exact id / date-stamped-id-prefix only — never by matching
+// this array's `family` string against arbitrary ids (see that module's
+// header comment for why family-substring matching was a landmine).
 export const CLAUDE_MODEL_OPTIONS = [
   // Explicit versions — unambiguous pricing + context lookup
   { value: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus' },
@@ -1376,9 +1381,14 @@ export type SessionUsage = {
    *  = input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens for that turn.
    *  Used for the context chip in the footer. Do NOT use for cost (cost uses cumulative fields). */
   lastTurnContextTokens: number
-  /** Effective maxContextTokens from global settings (or default 200k) */
-  contextBudget: number
-  /** lastTurnContextTokens / contextBudget * 100, capped at 100 */
+  /** Effective context window for the resolved model, in tokens, after
+   *  applying disable1mContext / maxContextTokens caps (see
+   *  src/main/models/registry.ts's resolveContextBudget). `null` when the
+   *  model's context window is unknown — consumers must render an explicit
+   *  "unknown" state, never a fabricated number. */
+  contextBudget: number | null
+  /** lastTurnContextTokens / contextBudget * 100, capped at 100. 0 when
+   *  contextBudget is null (nothing to divide by). */
   usedPct: number
 }
 

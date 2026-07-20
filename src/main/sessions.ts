@@ -9,7 +9,7 @@ import {
   getWorkspace,
   setWorkspaceClaudeSessionId
 } from './workspaces'
-import { getPricing } from './pricing'
+import { resolveContextBudget } from './models/registry'
 import { composeClaudeLaunch, getClaudeGlobalSettings } from './claudeSettings'
 import { encodePathToClaudeDir } from './claudeProjectDir'
 import { findFlagValue } from '../shared/cliFlags'
@@ -1409,20 +1409,26 @@ export async function deleteSession(id: string): Promise<void> {
 //   2. composeClaudeLaunch's merged model (workspace → project → global setting).
 //   3. Fallback to 'sonnet' if neither produces a value.
 //
-// Then: getPricing(modelId).context gives the native context window.
-// If disable1mContext is set, clamp to 200 000 tokens.
+// The context window itself (and the disable1mContext / maxContextTokens
+// caps) is resolved entirely by src/main/models/registry.ts's
+// resolveContextBudget — this function's job is only to find the right
+// modelId to hand it.
 // ---------------------------------------------------------------------------
 
 export type ContextBudgetResult = {
   /** Effective context window size in tokens after applying all settings.
-   *  `null` when the model's pricing/context data is unknown (getPricing
-   *  returned null) — callers must render this as an explicit "unknown"
-   *  state (e.g. an em-dash), never invent a number. Inventing 200k here
-   *  previously made e.g. a 128k model read as a safe percentage while
-   *  actually overflowing. */
+   *  `null` when the model's context data is unknown — callers must render
+   *  this as an explicit "unknown" state (e.g. an em-dash), never invent a
+   *  number. Inventing 200k here previously made e.g. a 128k model read as
+   *  a safe percentage while actually overflowing. */
   contextBudget: number | null
   /** The model ID used to look up the budget. */
   modelId: string
+  /** The registry's ONE canonical label for modelId — see
+   *  src/main/models/registry.ts's modelLabel. The renderer must consume
+   *  this rather than parsing modelId itself (no model-fact computation in
+   *  the renderer — see CLAUDE.md's IPC conventions). */
+  modelLabel: string
 }
 
 /**
@@ -1468,21 +1474,14 @@ export function getContextBudget(workspaceId: string): ContextBudgetResult {
   // 3. Determine effective model ID
   const modelId = modelFromJSONL ?? modelFromSettings ?? 'sonnet'
 
-  // 4. Resolve pricing → context window. Unknown pricing (getPricing returns
-  // null) must stay null — do NOT invent a number (e.g. 200_000) for a model
-  // we don't actually have data for; see ContextBudgetResult.contextBudget.
-  const pricing = getPricing(modelId)
-  if (!pricing) {
-    return { contextBudget: null, modelId }
-  }
-
-  // 5. Apply disable1mContext clamp (Claude-only concept — only reachable
-  // here when pricing IS known, so this never manufactures a number for an
-  // unknown model).
+  // 4. Resolve context window through the registry, applying the
+  // disable1mContext + maxContextTokens caps. Unknown context stays null —
+  // do NOT invent a number for a model we don't actually have data for.
   const globals = getClaudeGlobalSettings()
-  const contextBudget = globals.disable1mContext
-    ? Math.min(pricing.context, 200_000)
-    : pricing.context
+  const { contextBudget, info } = resolveContextBudget(modelId, {
+    disable1mContext: globals.disable1mContext,
+    capTokens: globals.maxContextTokens
+  })
 
-  return { contextBudget, modelId }
+  return { contextBudget, modelId, modelLabel: info.label }
 }
