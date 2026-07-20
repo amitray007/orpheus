@@ -2158,6 +2158,39 @@ export interface ProviderConfigSummary {
 }
 
 // ---------------------------------------------------------------------------
+// OAuth "Connect <provider>" flow (model-routing unit 07) — see
+// src/main/routingProxy/oauth.ts for the main-process implementation this
+// mirrors. Only providers whose descriptor declares 'oauth' in authMethods
+// (see ProviderDescriptorSummary.authMethods) are eligible — Gemini has no
+// OAuth endpoint and must never be offered a Connect action.
+// ---------------------------------------------------------------------------
+
+/** Returned by oauth:start — everything the renderer needs to show the
+ *  connect dialog (a clickable link as a visible fallback to the
+ *  auto-opened browser, plus a device-flow user code when present). */
+export interface OAuthStartResult {
+  url: string
+  state: string
+  flow?: 'device'
+  userCode?: string
+  expiresIn?: number
+}
+
+/** Result of a single get-auth-status check (oauth:poll). The renderer
+ *  drives its own client-side 2s interval calling this repeatedly and stops
+ *  on 'ok' or 'error' (a 401 from the server surfaces as 'error' here too —
+ *  see oauth.ts's pollOAuthLogin doc comment — the renderer must not keep
+ *  polling after an 'error' outcome, mirroring the main-process no-retry
+ *  rule). */
+export type OAuthPollStatus = 'ok' | 'wait' | 'error'
+
+export interface OAuthPollResult {
+  status: OAuthPollStatus
+  /** Populated only when status === 'error'. */
+  error?: string
+}
+
+// ---------------------------------------------------------------------------
 // Model picker (model-routing unit 06) — the single selectable-model list a
 // workspace/project picker renders from. Assembled server-side by
 // models:listSelectable (src/main/ipc/models.ts) from the registry + the

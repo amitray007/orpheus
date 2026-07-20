@@ -72,6 +72,8 @@ import type {
   ProviderDescriptorSummary,
   ProviderConfigSummary,
   ProviderApiKeyEntrySummary,
+  OAuthStartResult,
+  OAuthPollResult,
   SelectableModel,
   ClaudeStatusSnapshot,
   ActionResult,
@@ -840,6 +842,11 @@ const api = {
     ): Promise<ProviderConfigSummary[]> => invoke('providers:setApiKeys', { providerId, apiKeys }),
     setBaseUrl: (providerId: string, baseUrl: string | null): Promise<ProviderConfigSummary[]> =>
       invoke('providers:setBaseUrl', { providerId, baseUrl })
+  },
+  oauth: {
+    start: (providerId: string): Promise<OAuthStartResult> => invoke('oauth:start', { providerId }),
+    poll: (state: string): Promise<OAuthPollResult> => invoke('oauth:poll', { state }),
+    cancel: (state: string): Promise<void> => invoke('oauth:cancel', { state })
   },
   status: {
     get: (): Promise<ClaudeStatusSnapshot> => invoke('status:get'),

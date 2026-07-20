@@ -128,6 +128,7 @@ import { registerSystemIpc } from './ipc/system'
 import { registerUpdatesIpc } from './ipc/updates'
 import { registerRoutingProxyIpc } from './ipc/routingProxy'
 import { registerProvidersIpc } from './ipc/providers'
+import { registerOAuthIpc } from './ipc/oauth'
 import {
   hydrateSnapshotAtBoot,
   reconcileRoutingProxy,
@@ -1052,6 +1053,8 @@ registerUpdatesIpc()
 registerRoutingProxyIpc()
 
 registerProvidersIpc()
+
+registerOAuthIpc()
 
 handle('doctor:check', async (): Promise<DoctorResult> => {
   const { installed, version, path: claudePath } = await checkClaude()

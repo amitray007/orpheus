@@ -111,7 +111,9 @@ import type {
   PanePanelKind,
   PaneLayout,
   PaneTerminal,
-  SplitTree
+  SplitTree,
+  OAuthStartResult,
+  OAuthPollResult
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -653,6 +655,18 @@ export interface InvokeChannelMap {
     req: [{ providerId: string; baseUrl: string | null }]
     res: ProviderConfigSummary[]
   }
+
+  // OAuth "Connect <provider>" flow (model-routing unit 07) — see
+  // src/main/routingProxy/oauth.ts. 'oauth:start' opens the provider's
+  // auth-url in the default browser and returns the url/state (+ device-flow
+  // fields) so the UI can also show them as a fallback. 'oauth:poll' is
+  // called on a client-side 2s interval by the renderer (not server-driven)
+  // so the dialog can show its own countdown/cancel affordance; each call is
+  // a single get-auth-status check, not the whole bounded wait loop — the
+  // renderer decides when to stop polling (success/error/timeout/cancel).
+  'oauth:start': { req: [{ providerId: string }]; res: OAuthStartResult }
+  'oauth:poll': { req: [{ state: string }]; res: OAuthPollResult }
+  'oauth:cancel': { req: [{ state: string }]; res: void }
   'status:get': { req: []; res: ClaudeStatusSnapshot }
   'status:refresh': { req: []; res: ClaudeStatusSnapshot }
   'status:openPage': { req: []; res: void }
