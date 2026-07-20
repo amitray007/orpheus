@@ -11,7 +11,7 @@
 //     <version>/                 -- one dir per installed version, so a
 //                                    version bump never clobbers a working
 //                                    install mid-flight
-//       CLIProxyAPI               -- extracted binary
+//       cli-proxy-api              -- extracted binary (see BINARY_NAME)
 //       config.yaml                -- generated config (see config.ts)
 //     auth/                        -- shared across versions; CLIProxyAPI's
 //                                    `auth-dir` (OAuth credential files),
@@ -22,6 +22,7 @@
 
 import * as path from 'node:path'
 import { app } from 'electron'
+import { BINARY_NAME } from './constants'
 
 export function routingProxyRootDir(): string {
   return path.join(app.getPath('userData'), 'routing-proxy')
@@ -32,9 +33,11 @@ export function versionDir(version: string): string {
 }
 
 export function binaryPath(version: string): string {
-  // CLIProxyAPI's tarball extracts a single executable named `CLIProxyAPI`
-  // at its root (no nested dir) — verified against the release asset layout.
-  return path.join(versionDir(version), 'CLIProxyAPI')
+  // The release archive extracts its entries at the ROOT (no nested/version
+  // dir) — this was empirically verified against the real v7.2.92
+  // darwin_aarch64 asset (see BINARY_NAME's doc comment in constants.ts for
+  // the full verified file listing).
+  return path.join(versionDir(version), BINARY_NAME)
 }
 
 export function configPath(version: string): string {

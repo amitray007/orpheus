@@ -21,6 +21,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import {
+  BINARY_NAME,
   PINNED_TAG,
   PINNED_VERSION,
   assetNameFor,
@@ -44,6 +45,26 @@ export class UnsupportedPlatformError extends Error {
   }
 }
 
+/**
+ * Thrown when the extracted archive doesn't contain a binary at the expected
+ * path. Diagnosable-by-design: names exactly what was expected AND lists
+ * what the archive actually produced, so a future upstream rename (the
+ * archive's internal layout or binary name changing) surfaces as a clear,
+ * actionable error instead of a raw ENOENT bubbling up from chmod().
+ */
+export class BinaryNotFoundError extends Error {
+  constructor(expectedPath: string, actualEntries: string[]) {
+    const listing = actualEntries.length > 0 ? actualEntries.join(', ') : '(directory is empty)'
+    super(
+      `Extracted routing-proxy archive but did not find the expected binary at ` +
+        `"${expectedPath}". Archive contents were: ${listing}. The upstream release ` +
+        `asset layout may have changed — check github.com/router-for-me/CLIProxyAPI ` +
+        `releases and update BINARY_NAME in src/main/routingProxy/constants.ts.`
+    )
+    this.name = 'BinaryNotFoundError'
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Injectable I/O surface — defaults are the real network/fs/tar; tests pass
 // stubs so the harness never touches the network or writes outside a tmpdir.
@@ -56,8 +77,22 @@ export interface InstallDeps {
   extractTarGz: (tarGzBytes: Buffer, destDir: string) => Promise<void>
   mkdir: (dir: string) => Promise<void>
   writeFile: (filePath: string, data: Buffer) => Promise<void>
+  /**
+   * Ensure the exec bit on filePath. Best-effort: the release binary already
+   * ships with mode -rwxr-xr-x, so a chmod failure here (e.g. already-correct
+   * permissions on a filesystem that disallows the syscall) must NOT hard-fail
+   * the install — pathExists() below is the real guard that catches an
+   * actually-missing binary.
+   */
   chmodExecutable: (filePath: string) => Promise<void>
   rm: (dirOrFile: string) => Promise<void>
+  /** True if a file/dir exists at filePath. Used to verify the binary landed
+   *  where expected after extraction — never let a missing binary surface as
+   *  a raw ENOENT from chmod(). */
+  pathExists: (filePath: string) => Promise<boolean>
+  /** List entry names directly under dir (non-recursive). Used to build a
+   *  helpful "here's what the archive actually contained" error message. */
+  listDir: (dir: string) => Promise<string[]>
 }
 
 async function realFetchBytes(url: string): Promise<Buffer> {
@@ -89,8 +124,33 @@ export function defaultInstallDeps(): InstallDeps {
       await fs.mkdir(dir, { recursive: true })
     },
     writeFile: (filePath, data) => fs.writeFile(filePath, data),
-    chmodExecutable: (filePath) => fs.chmod(filePath, 0o755),
-    rm: (target) => fs.rm(target, { recursive: true, force: true })
+    chmodExecutable: async (filePath) => {
+      // Best-effort: the binary already ships with the exec bit set, so a
+      // chmod error on an already-correct file must not hard-fail the
+      // install. BinaryNotFoundError (from the pathExists() check in
+      // installRoutingProxy) is the real guard against a missing binary.
+      try {
+        await fs.chmod(filePath, 0o755)
+      } catch {
+        // intentionally swallowed — see comment above.
+      }
+    },
+    rm: (target) => fs.rm(target, { recursive: true, force: true }),
+    pathExists: async (filePath) => {
+      try {
+        await fs.access(filePath)
+        return true
+      } catch {
+        return false
+      }
+    },
+    listDir: async (dir) => {
+      try {
+        return await fs.readdir(dir)
+      } catch {
+        return []
+      }
+    }
   }
 }
 
@@ -157,6 +217,15 @@ export interface InstallResult {
  * derived internally so this module stays electron-free and testable
  * offline). Refuses (throws, installs nothing) on any checksum mismatch or
  * unsupported arch. Never installs into the app bundle.
+ *
+ * IDEMPOTENT: if destDir already contains a valid binary at the expected
+ * path (e.g. a previous install already completed there — including a dir
+ * left behind by an older, buggy version of this function that used the
+ * wrong binary name and therefore never got this far), the network/extract
+ * steps are skipped entirely and the existing install is reused. A
+ * pre-existing destDir that is NOT valid (partial/corrupt — no binary at the
+ * expected path) is cleanly wiped and reinstalled from scratch, so a stale
+ * or broken directory can never permanently wedge future install attempts.
  */
 export async function installRoutingProxy(
   options: {
@@ -174,6 +243,16 @@ export async function installRoutingProxy(
   const assetName = assetNameFor(version, arch)
   if (!assetName) throw new UnsupportedPlatformError(arch)
 
+  const destDir = options.destDir ?? path.join(os.tmpdir(), 'orpheus-routing-proxy', version)
+  const binPath = path.join(destDir, BINARY_NAME)
+
+  // Reuse a pre-existing, already-valid install: don't re-download/re-extract
+  // just because the version dir already exists (also makes this function
+  // safe to call twice in a row, e.g. a retried enable-toggle).
+  if (await deps.pathExists(binPath)) {
+    return { version, installDir: destDir, binaryPath: binPath }
+  }
+
   options.onProgress?.('downloading')
   const assetUrl = downloadUrlFor(tag, assetName)
   const checksumsUrl = downloadUrlFor(tag, checksumsAssetName())
@@ -187,15 +266,24 @@ export async function installRoutingProxy(
   verifyChecksum(assetName, assetBytes, checksums) // throws + installs nothing on mismatch
 
   options.onProgress?.('extracting')
-  const destDir = options.destDir ?? path.join(os.tmpdir(), 'orpheus-routing-proxy', version)
   // Extract into a scratch dir first, then only after a clean extract does
   // the final dir get populated — avoids leaving a half-extracted destDir
-  // behind if extraction itself throws partway through.
+  // behind if extraction itself throws partway through. This also clears out
+  // any STALE/PARTIAL prior attempt (e.g. one that failed after extraction
+  // but before this function returned) rather than ever getting permanently
+  // wedged on a broken destDir.
   await deps.rm(destDir)
   await deps.mkdir(destDir)
   await deps.extractTarGz(assetBytes, destDir)
 
-  const binPath = path.join(destDir, 'CLIProxyAPI')
+  // Resolve/verify the binary landed where expected. A future upstream
+  // rename (archive layout or binary filename change) must surface here as
+  // a clear, actionable error — never as a raw ENOENT from chmod().
+  if (!(await deps.pathExists(binPath))) {
+    const actualEntries = await deps.listDir(destDir)
+    throw new BinaryNotFoundError(binPath, actualEntries)
+  }
+
   await deps.chmodExecutable(binPath)
 
   return { version, installDir: destDir, binaryPath: binPath }

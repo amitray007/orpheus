@@ -33,11 +33,13 @@ import * as path from 'node:path'
 import {
   archToAssetSegment,
   assetNameFor,
+  BINARY_NAME,
   downloadUrlFor,
   PINNED_TAG,
   PINNED_VERSION
 } from '../src/main/routingProxy/constants.ts'
 import {
+  BinaryNotFoundError,
   ChecksumMismatchError,
   UnsupportedPlatformError,
   installRoutingProxy,
@@ -183,23 +185,51 @@ async function cleanup(): Promise<void> {
   const mkdirCalls: string[] = []
   const rmCalls: string[] = []
 
+  // In-memory fake filesystem so pathExists/listDir/extractTarGz behave
+  // consistently with each other (extractTarGz "writes" BINARY_NAME into the
+  // fake fs; pathExists/listDir read it back) — this is what lets the
+  // idempotency + BinaryNotFoundError assertions below actually exercise the
+  // real control flow in installRoutingProxy, not just stub everything true.
+  function makeFakeFs(): {
+    files: Set<string>
+    deps: Omit<InstallDeps, 'fetchBytes'>
+  } {
+    const files = new Set<string>()
+    return {
+      files,
+      deps: {
+        extractTarGz: async (_bytes, destDir) => {
+          extractCalls++
+          files.add(path.join(destDir, BINARY_NAME))
+        },
+        mkdir: async (dir) => {
+          mkdirCalls.push(dir)
+        },
+        writeFile: async () => {},
+        chmodExecutable: async () => {},
+        rm: async (target) => {
+          rmCalls.push(target)
+          for (const f of [...files]) {
+            if (f === target || f.startsWith(target + path.sep)) files.delete(f)
+          }
+        },
+        pathExists: async (filePath) => files.has(filePath),
+        listDir: async (dir) => {
+          const prefix = dir + path.sep
+          return [...files].filter((f) => f.startsWith(prefix)).map((f) => f.slice(prefix.length))
+        }
+      }
+    }
+  }
+
   function makeDeps(assetBytesToServe: Buffer): InstallDeps {
+    const { deps } = makeFakeFs()
     return {
       fetchBytes: async (url: string) => {
         if (url.endsWith('checksums.txt')) return Buffer.from(checksumsText, 'utf8')
         return assetBytesToServe
       },
-      extractTarGz: async () => {
-        extractCalls++
-      },
-      mkdir: async (dir) => {
-        mkdirCalls.push(dir)
-      },
-      writeFile: async () => {},
-      chmodExecutable: async () => {},
-      rm: async (target) => {
-        rmCalls.push(target)
-      }
+      ...deps
     }
   }
 
@@ -215,16 +245,25 @@ async function cleanup(): Promise<void> {
   assert.equal(extractCalls, 0, 'extractTarGz must NEVER be called after a checksum mismatch')
   console.log('✓ installRoutingProxy REJECTS a bad-hash asset and never extracts it')
 
-  // 4b. Correct hash: extraction proceeds exactly once.
+  // 4b. Correct hash: extraction proceeds exactly once, and the resolved
+  // binary path uses the VERIFIED real binary name (cli-proxy-api), not the
+  // wrong CLIProxyAPI name that caused the original ENOENT bug.
   extractCalls = 0
   const result = await installRoutingProxy({ arch: 'arm64' }, makeDeps(goodBytes))
   assert.equal(extractCalls, 1, 'extractTarGz must be called exactly once on a good hash')
   assert.equal(result.version, PINNED_VERSION)
+  assert.equal(BINARY_NAME, 'cli-proxy-api', 'BINARY_NAME must be the verified real binary name')
   assert.ok(
-    result.binaryPath.endsWith('CLIProxyAPI'),
-    'binary path must point at the extracted binary'
+    result.binaryPath.endsWith(BINARY_NAME),
+    'binary path must point at the extracted binary using BINARY_NAME'
   )
-  console.log('✓ installRoutingProxy extracts exactly once on a matching hash')
+  assert.ok(
+    !result.binaryPath.endsWith('CLIProxyAPI'),
+    'binary path must NOT use the old wrong CLIProxyAPI name'
+  )
+  console.log(
+    '✓ installRoutingProxy extracts exactly once on a matching hash, resolved path uses cli-proxy-api'
+  )
 
   // 4c. Unsupported arch refuses before any network call.
   let fetchCalledForUnsupported = false
@@ -244,6 +283,90 @@ async function cleanup(): Promise<void> {
   )
   assert.equal(fetchCalledForUnsupported, false, 'unsupported arch must fail before any fetch')
   console.log('✓ installRoutingProxy refuses an unsupported arch before touching the network')
+
+  // 4d. Stubbed extraction that produces the WRONG/missing binary name must
+  // yield a clear "binary not found after extraction" error (BinaryNotFoundError),
+  // not a raw ENOENT from chmod — this is the diagnosability guard for a
+  // future upstream rename.
+  {
+    const { files, deps } = makeFakeFs()
+    const wrongNameDeps: InstallDeps = {
+      fetchBytes: async (url: string) => {
+        if (url.endsWith('checksums.txt')) return Buffer.from(checksumsText, 'utf8')
+        return goodBytes
+      },
+      ...deps,
+      extractTarGz: async (_bytes, destDir) => {
+        extractCalls++
+        // Simulate an upstream rename: archive now ships a differently-named
+        // binary instead of BINARY_NAME.
+        files.add(path.join(destDir, 'some-renamed-binary'))
+        files.add(path.join(destDir, 'README.md'))
+      }
+    }
+    await assert.rejects(
+      () => installRoutingProxy({ arch: 'arm64' }, wrongNameDeps),
+      (err: unknown) => {
+        assert.ok(err instanceof BinaryNotFoundError, 'must throw BinaryNotFoundError')
+        assert.ok(
+          !(err instanceof Error && err.constructor.name === 'TypeError'),
+          'must never surface as a raw ENOENT/TypeError'
+        )
+        assert.ok(
+          (err as Error).message.includes('some-renamed-binary'),
+          'error must list what the archive actually contained'
+        )
+        assert.ok(
+          (err as Error).message.includes(BINARY_NAME),
+          'error must name the expected binary path'
+        )
+        return true
+      },
+      'a mismatched/missing binary name after extraction must raise a clear, diagnosable error'
+    )
+    console.log(
+      '✓ installRoutingProxy raises a clear BinaryNotFoundError (listing actual contents) when the archive layout does not match BINARY_NAME'
+    )
+  }
+
+  // 4e. Idempotency: a pre-existing, already-valid version dir (binary
+  // already present) must short-circuit — no re-download, no re-extract —
+  // and installing twice in a row must never fail the second time.
+  {
+    const { files, deps } = makeFakeFs()
+    const preexistingDestDir = path.join(scratchRoot, 'idempotent-install')
+    files.add(path.join(preexistingDestDir, BINARY_NAME))
+    let fetchCalls = 0
+    extractCalls = 0
+    const idempotentDeps: InstallDeps = {
+      fetchBytes: async (url: string) => {
+        fetchCalls++
+        if (url.endsWith('checksums.txt')) return Buffer.from(checksumsText, 'utf8')
+        return goodBytes
+      },
+      ...deps
+    }
+    const first = await installRoutingProxy(
+      { arch: 'arm64', destDir: preexistingDestDir },
+      idempotentDeps
+    )
+    assert.equal(fetchCalls, 0, 'a pre-existing valid install must skip the network entirely')
+    assert.equal(extractCalls, 0, 'a pre-existing valid install must skip extraction entirely')
+    assert.equal(first.binaryPath, path.join(preexistingDestDir, BINARY_NAME))
+
+    // Run install() a second time against the SAME dir — must still succeed,
+    // proving the whole path (not just the fake-fs short-circuit) is
+    // idempotent.
+    const second = await installRoutingProxy(
+      { arch: 'arm64', destDir: preexistingDestDir },
+      idempotentDeps
+    )
+    assert.equal(second.binaryPath, first.binaryPath)
+    assert.equal(fetchCalls, 0, 'second install call must also skip the network')
+    console.log(
+      '✓ installRoutingProxy is idempotent against a pre-existing version dir (reuses it, no re-download/re-extract, safe to call twice)'
+    )
+  }
 }
 
 // ---------------------------------------------------------------------------
