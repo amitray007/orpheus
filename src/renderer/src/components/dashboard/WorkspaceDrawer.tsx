@@ -89,11 +89,13 @@ function ActivitySection({ activity, detail }: ActivitySectionProps): React.JSX.
 // visual divider. We use a plain array (not `as const`) so we can add the
 // dynamic separator without fighting TypeScript's tuple inference.
 const MODEL_SEP = '__sep_model' as const
+const MODEL_CUSTOM = 'custom' as const
 const MODEL_OPTIONS = [
   { value: 'default', label: 'Default' },
   ...CLAUDE_MODEL_OPTIONS.slice(0, CLAUDE_MODEL_ALIAS_START_INDEX),
   { value: MODEL_SEP, label: '── Always latest ──' },
-  ...CLAUDE_MODEL_OPTIONS.slice(CLAUDE_MODEL_ALIAS_START_INDEX)
+  ...CLAUDE_MODEL_OPTIONS.slice(CLAUDE_MODEL_ALIAS_START_INDEX),
+  { value: MODEL_CUSTOM, label: 'Custom…' }
 ] as const
 
 const PERMISSION_OPTIONS = [
@@ -130,6 +132,16 @@ function OverridesSection({
 }: OverridesSectionProps): React.JSX.Element {
   const [settings, setSettings] = useState<ClaudeWorkspaceSettings | null>(null)
   const [localOverrides, setLocalOverrides] = useState<ClaudeWorkspaceSettingsOverrides>({})
+  // "Custom…" escape hatch (mirrors ModelPicker in settings/primitives.tsx):
+  // an override whose model id isn't one of the hardcoded MODEL_OPTIONS
+  // (e.g. commandServer set an arbitrary string) must still render AS that
+  // value, not silently collapse to 'default' — collapsing was bug-prone
+  // because `localOverrides.model !== undefined` stayed true (still showed
+  // "overridden") while the Select displayed 'Default', and the next
+  // unrelated field edit would commit `model: undefined` and destroy the
+  // override. showCustomModel/customModelValue back the free-text input.
+  const [showCustomModel, setShowCustomModel] = useState(false)
+  const [customModelValue, setCustomModelValue] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -139,6 +151,10 @@ function OverridesSection({
         if (!cancelled) {
           setSettings(s)
           setLocalOverrides(s.overrides)
+          const m = s.overrides.model
+          const isCustom = m !== undefined && !MODEL_OPTIONS.some((o) => o.value === m)
+          setShowCustomModel(isCustom)
+          setCustomModelValue(isCustom ? m : '')
         }
       })
       .catch((err) => console.error('[WorkspaceDrawer] overrides load failed', err))
@@ -172,7 +188,19 @@ function OverridesSection({
   function handleModel(v: ModelOption): void {
     // Guard: separator values start with '__sep' and should never be committed
     if ((v as string).startsWith('__sep')) return
+    // 'custom' is a picker-only sentinel (switches to the free-text input
+    // below) — never a real model id, so never commit it as one.
+    if (v === MODEL_CUSTOM) {
+      setShowCustomModel(true)
+      return
+    }
+    setShowCustomModel(false)
     patch({ model: v === 'default' ? undefined : v })
+  }
+
+  function handleCustomModelBlur(): void {
+    const v = customModelValue.trim()
+    if (v) patch({ model: v })
   }
 
   function handlePermission(v: PermissionOption): void {
@@ -184,6 +212,8 @@ function OverridesSection({
   }
 
   function resetAll(): void {
+    setShowCustomModel(false)
+    setCustomModelValue('')
     patch({ model: undefined, permissionMode: undefined, effort: undefined })
   }
 
@@ -196,7 +226,7 @@ function OverridesSection({
     localOverrides.model !== undefined
       ? MODEL_OPTIONS.some((o) => o.value === localOverrides.model)
         ? (localOverrides.model as ModelOption)
-        : 'default'
+        : MODEL_CUSTOM
       : 'default'
 
   const permissionValue: PermissionOption =
@@ -234,7 +264,18 @@ function OverridesSection({
             onChange={handleModel}
             isOverridden={localOverrides.model !== undefined}
             ariaLabel="Workspace model override"
-          />
+          >
+            {showCustomModel && (
+              <input
+                aria-label="Custom model ID"
+                value={customModelValue}
+                onChange={(e) => setCustomModelValue(e.target.value)}
+                onBlur={handleCustomModelBlur}
+                placeholder="model-id (e.g. claude-opus-4-7)"
+                className="mt-1.5 w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus:border-accent/50 transition-colors duration-150 font-mono"
+              />
+            )}
+          </OverrideField>
           <OverrideField
             label="Permission mode"
             options={PERMISSION_OPTIONS}
@@ -297,6 +338,9 @@ interface OverrideFieldProps<T extends string> {
   onChange: (v: T) => void
   isOverridden: boolean
   ariaLabel: string
+  /** Optional extra control rendered below the Select — e.g. the "Custom…"
+   *  free-text fallback (see MODEL_CUSTOM / showCustomModel above). */
+  children?: React.ReactNode
 }
 
 function OverrideField<T extends string>({
@@ -305,7 +349,8 @@ function OverrideField<T extends string>({
   value,
   onChange,
   isOverridden,
-  ariaLabel
+  ariaLabel,
+  children
 }: OverrideFieldProps<T>): React.JSX.Element {
   return (
     <div className="px-4 py-3 border-t border-border-default/30 first:border-t-0">
@@ -321,6 +366,7 @@ function OverrideField<T extends string>({
         )}
       </div>
       <Select options={options} value={value} onChange={onChange} ariaLabel={ariaLabel} />
+      {children}
     </div>
   )
 }

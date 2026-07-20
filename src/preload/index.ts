@@ -267,7 +267,9 @@ const api = {
     refreshMetadata: (projectId: string): Promise<void> =>
       invoke('sessions:refreshMetadata', { projectId }),
     delete: (id: string): Promise<void> => invoke('sessions:delete', { id }),
-    getContextBudget: (workspaceId: string): Promise<{ contextBudget: number; modelId: string }> =>
+    getContextBudget: (
+      workspaceId: string
+    ): Promise<{ contextBudget: number | null; modelId: string }> =>
       invoke('sessions:getContextBudget', { workspaceId })
   },
   workspaces: {

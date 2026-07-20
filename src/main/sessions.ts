@@ -1414,8 +1414,13 @@ export async function deleteSession(id: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export type ContextBudgetResult = {
-  /** Effective context window size in tokens after applying all settings. */
-  contextBudget: number
+  /** Effective context window size in tokens after applying all settings.
+   *  `null` when the model's pricing/context data is unknown (getPricing
+   *  returned null) — callers must render this as an explicit "unknown"
+   *  state (e.g. an em-dash), never invent a number. Inventing 200k here
+   *  previously made e.g. a 128k model read as a safe percentage while
+   *  actually overflowing. */
+  contextBudget: number | null
   /** The model ID used to look up the budget. */
   modelId: string
 }
@@ -1463,13 +1468,21 @@ export function getContextBudget(workspaceId: string): ContextBudgetResult {
   // 3. Determine effective model ID
   const modelId = modelFromJSONL ?? modelFromSettings ?? 'sonnet'
 
-  // 4. Resolve pricing → context window
+  // 4. Resolve pricing → context window. Unknown pricing (getPricing returns
+  // null) must stay null — do NOT invent a number (e.g. 200_000) for a model
+  // we don't actually have data for; see ContextBudgetResult.contextBudget.
   const pricing = getPricing(modelId)
-  const nativeContext = pricing?.context ?? 200_000
+  if (!pricing) {
+    return { contextBudget: null, modelId }
+  }
 
-  // 5. Apply disable1mContext clamp
+  // 5. Apply disable1mContext clamp (Claude-only concept — only reachable
+  // here when pricing IS known, so this never manufactures a number for an
+  // unknown model).
   const globals = getClaudeGlobalSettings()
-  const contextBudget = globals.disable1mContext ? Math.min(nativeContext, 200_000) : nativeContext
+  const contextBudget = globals.disable1mContext
+    ? Math.min(pricing.context, 200_000)
+    : pricing.context
 
   return { contextBudget, modelId }
 }

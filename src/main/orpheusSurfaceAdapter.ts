@@ -55,6 +55,16 @@ export type MountEnvResult = {
    * recomputeDirty can detect settings drift after mount.
    */
   launch: ClaudeLaunch
+  /**
+   * The auth env layer (ANTHROPIC_API_KEY, cloud-provider routing vars, etc.)
+   * merged into `env` above. Returned separately (not folded into `launch`)
+   * because composeClaudeLaunch's own output must stay auth-free — callers
+   * that only need settings composition (e.g. sessions.ts context sizing)
+   * shouldn't have to reason about auth. The caller stores this alongside
+   * `launch` in the mount snapshot so auth changes participate in dirty
+   * detection. NEVER log this value — plaintext secrets.
+   */
+  authEnv: Record<string, string>
 }
 
 // ---------------------------------------------------------------------------
@@ -148,5 +158,5 @@ export function buildMountEnv(
     ? join(process.resourcesPath, 'orpheus-claude.sh')
     : join(__dirname, '../../resources/orpheus-claude.sh')
 
-  return { command, env, launch }
+  return { command, env, launch, authEnv }
 }

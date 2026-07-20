@@ -24,11 +24,13 @@ import { WorkspaceCreationSettings } from './WorkspaceCreationSettings'
 // ---------------------------------------------------------------------------
 
 // Grouped model options: "Use global" → specific versions → separator → aliases.
+const MODEL_CUSTOM = 'custom' as const
 const MODEL_OPTIONS = [
   { value: 'default', label: 'Use global' },
   ...CLAUDE_MODEL_OPTIONS.slice(0, CLAUDE_MODEL_ALIAS_START_INDEX),
   { value: '__sep_model', label: '' }, // visual divider — Select renders "Always latest"
-  ...CLAUDE_MODEL_OPTIONS.slice(CLAUDE_MODEL_ALIAS_START_INDEX)
+  ...CLAUDE_MODEL_OPTIONS.slice(CLAUDE_MODEL_ALIAS_START_INDEX),
+  { value: MODEL_CUSTOM, label: 'Custom…' }
 ] as const
 
 const PERMISSION_OPTIONS = [
@@ -82,6 +84,9 @@ interface OverrideFieldProps<T extends string> {
   isOverridden: boolean
   ariaLabel: string
   description?: string
+  /** Optional extra control rendered below the Select — e.g. the "Custom…"
+   *  free-text fallback (see MODEL_CUSTOM / showCustomModel below). */
+  children?: React.ReactNode
 }
 
 function OverrideField<T extends string>({
@@ -91,7 +96,8 @@ function OverrideField<T extends string>({
   onChange,
   isOverridden,
   ariaLabel,
-  description
+  description,
+  children
 }: OverrideFieldProps<T>): React.JSX.Element {
   return (
     <div className="px-4 py-3 border-t border-border-default/30 first:border-t-0">
@@ -108,6 +114,7 @@ function OverrideField<T extends string>({
       </div>
       {description && <p className="text-xs text-text-muted mb-2">{description}</p>}
       <Select options={options} value={value} onChange={onChange} ariaLabel={ariaLabel} />
+      {children}
     </div>
   )
 }
@@ -123,6 +130,14 @@ export function SettingsDrawer({
   // Global settings, fetched alongside project settings — needed only to
   // render inherited CLI flags (muted) in the CliFlagsEditor preview.
   const [globalSettings, setGlobalSettings] = useState<ClaudeGlobalSettings | null>(null)
+  // "Custom…" escape hatch (mirrors ModelPicker in settings/primitives.tsx):
+  // an override whose model id isn't one of the hardcoded MODEL_OPTIONS must
+  // still render AS that value, not silently collapse to 'default' —
+  // collapsing was bug-prone because isOverridden stayed true (still showed
+  // the override dot) while the Select displayed 'Use global', and the next
+  // unrelated field edit would commit `model: undefined` and destroy it.
+  const [showCustomModel, setShowCustomModel] = useState(false)
+  const [customModelValue, setCustomModelValue] = useState('')
 
   useEffect(() => {
     if (!open) return
@@ -133,6 +148,10 @@ export function SettingsDrawer({
         if (cancelled) return
         setSettings(s)
         setLocalOverrides(s.overrides)
+        const m = s.overrides.model
+        const isCustom = m !== undefined && !MODEL_OPTIONS.some((o) => o.value === m)
+        setShowCustomModel(isCustom)
+        setCustomModelValue(isCustom ? m : '')
       })
       .catch((err) => console.error('[settings-drawer] failed to load', err))
     window.api.claudeSettings
@@ -179,7 +198,18 @@ export function SettingsDrawer({
   function handleModel(v: ModelOption): void {
     // Guard: separator values start with '__sep' and should never be committed
     if ((v as string).startsWith('__sep')) return
+    // 'custom' is a picker-only sentinel (switches to the free-text input
+    // below) — never a real model id, so never commit it as one.
+    if (v === MODEL_CUSTOM) {
+      setShowCustomModel(true)
+      return
+    }
+    setShowCustomModel(false)
     patch({ model: v === 'default' ? undefined : v })
+  }
+  function handleCustomModelBlur(): void {
+    const v = customModelValue.trim()
+    if (v) patch({ model: v })
   }
   function handlePermission(v: PermissionOption): void {
     patch({ permissionMode: v === 'default' ? undefined : (v as ClaudePermissionMode) })
@@ -189,6 +219,8 @@ export function SettingsDrawer({
   }
 
   function resetAll(): void {
+    setShowCustomModel(false)
+    setCustomModelValue('')
     patch({
       model: undefined,
       permissionMode: undefined,
@@ -230,9 +262,10 @@ export function SettingsDrawer({
   if (!open) return null
 
   const modelValue: ModelOption =
-    localOverrides.model !== undefined &&
-    MODEL_OPTIONS.some((o) => o.value === localOverrides.model)
-      ? (localOverrides.model as ModelOption)
+    localOverrides.model !== undefined
+      ? MODEL_OPTIONS.some((o) => o.value === localOverrides.model)
+        ? (localOverrides.model as ModelOption)
+        : MODEL_CUSTOM
       : 'default'
 
   const permissionValue: PermissionOption =
@@ -313,7 +346,18 @@ export function SettingsDrawer({
                 isOverridden={localOverrides.model !== undefined}
                 ariaLabel="Project model override"
                 description="Default Claude model for new workspaces in this project."
-              />
+              >
+                {showCustomModel && (
+                  <input
+                    aria-label="Custom model ID"
+                    value={customModelValue}
+                    onChange={(e) => setCustomModelValue(e.target.value)}
+                    onBlur={handleCustomModelBlur}
+                    placeholder="model-id (e.g. claude-opus-4-7)"
+                    className="mt-1.5 w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus:border-accent/50 transition-colors duration-150 font-mono"
+                  />
+                )}
+              </OverrideField>
               <OverrideField
                 label="Permission mode"
                 options={PERMISSION_OPTIONS}

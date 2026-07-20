@@ -1385,6 +1385,12 @@ export type SessionUsage = {
 export type SessionCost = {
   usd: number
   byModel: Record<string, number>
+  /** True when at least one model tallied in this session has no known
+   *  pricing (getPricing returned null) and was therefore excluded from
+   *  `usd`/`byModel`. Consumers must show this — otherwise a session that
+   *  used only unpriced models silently reads as "$0.00", indistinguishable
+   *  from genuinely free. */
+  hasUnknownPricing: boolean
 }
 
 export type SessionLastTurn = {

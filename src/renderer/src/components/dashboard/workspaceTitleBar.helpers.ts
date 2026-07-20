@@ -3,7 +3,10 @@
 // (Dashboard needs clearContextBudgetCache to evict on workspace removal).
 // ---------------------------------------------------------------------------
 
-export type ContextBudgetInfo = { contextBudget: number; modelId: string }
+// contextBudget is null when the model's pricing/context window is unknown —
+// consumers must render an explicit "unknown" state (em-dash), never a
+// fabricated number. See ContextBudgetResult in src/main/sessions.ts.
+export type ContextBudgetInfo = { contextBudget: number | null; modelId: string }
 
 // Keyed by `${workspaceId}:${claudeSessionId}` so the cache is automatically
 // invalidated when the session changes (new conversation in same workspace).

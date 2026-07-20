@@ -547,6 +547,11 @@ async function advanceAccumulator(acc: AccumulatorState, jsonlPath: string): Pro
  *  Cost is derived on-demand from per-model token tallies via getPricing. */
 function accumulatorToSession(acc: AccumulatorState): ParsedSession {
   const costByModel: Record<string, number> = {}
+  // True when a model was tallied (real tokens spent) but has no pricing data
+  // — that model's cost is silently excluded from totalCost below, so the UI
+  // must be told explicitly rather than reading a possibly-nonzero session as
+  // "$0.00" (indistinguishable from genuinely free). See SessionCost.hasUnknownPricing.
+  let hasUnknownPricing = false
   for (const [modelKey, mt] of acc.tokensByModel) {
     const pricing = getPricing(modelKey)
     if (pricing) {
@@ -557,6 +562,7 @@ function accumulatorToSession(acc: AccumulatorState): ParsedSession {
         (mt.cacheCreate / 1_000_000) * pricing.cacheWrite
       costByModel[modelKey] = lineCost
     } else {
+      hasUnknownPricing = true
       console.warn(`[actions:session] unknown model for cost accounting: ${modelKey}`)
     }
   }
@@ -580,7 +586,7 @@ function accumulatorToSession(acc: AccumulatorState): ParsedSession {
       contextBudget: 0, // filled in by getUsage — needs workspace context
       usedPct: 0
     },
-    cost: { usd: totalCost, byModel: costByModel },
+    cost: { usd: totalCost, byModel: costByModel, hasUnknownPricing },
     lastTurn: {
       userText: acc.lastUserText,
       assistantText: acc.lastAssistantText,
@@ -696,7 +702,7 @@ function emptyUsage(): SessionUsage {
 }
 
 function emptyCost(): SessionCost {
-  return { usd: 0, byModel: {} }
+  return { usd: 0, byModel: {}, hasUnknownPricing: false }
 }
 
 function emptyLastTurn(): SessionLastTurn {

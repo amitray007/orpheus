@@ -227,7 +227,10 @@ export interface InvokeChannelMap {
   'sessions:delete': { req: [{ id: string }]; res: void }
   'sessions:getContextBudget': {
     req: [{ workspaceId: string }]
-    res: { contextBudget: number; modelId: string }
+    // contextBudget is null when the model's pricing/context window is
+    // unknown — callers must render an explicit "unknown" state, never a
+    // fabricated number. See ContextBudgetResult in src/main/sessions.ts.
+    res: { contextBudget: number | null; modelId: string }
   }
   'claudeSettings:get': { req: []; res: ClaudeGlobalSettings }
   'claudeSettings:update': { req: [ClaudeGlobalSettingsPatch]; res: ClaudeGlobalSettings }

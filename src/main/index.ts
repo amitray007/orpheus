@@ -1168,7 +1168,10 @@ async function traceTerminalMount(
   addon: GhosttySurfaceAddon,
   rect: TerminalRect,
   scaleFactor: number,
-  launchOut: { launch?: ReturnType<typeof buildMountEnv>['launch'] }
+  launchOut: {
+    launch?: ReturnType<typeof buildMountEnv>['launch']
+    authEnv?: ReturnType<typeof buildMountEnv>['authEnv']
+  }
 ): Promise<{ workspaceId: string; created: boolean }> {
   const _mountStart = Date.now()
   return diag.trace('terminal.mount', { workspaceId }, (s) => {
@@ -1190,8 +1193,9 @@ async function traceTerminalMount(
       })
       throw err
     }
-    const { command, env: surfaceEnv, launch: composedLaunch } = buildResult
+    const { command, env: surfaceEnv, launch: composedLaunch, authEnv } = buildResult
     launchOut.launch = composedLaunch
+    launchOut.authEnv = authEnv
 
     console.log(
       '[terminal] mount workspaceId=%s flags=%s settingsJson=%s envKeys=%s',
@@ -1332,7 +1336,10 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     return { workspaceId, aborted: 'gone' as const }
   }
 
-  const launchBox: { launch?: ReturnType<typeof buildMountEnv>['launch'] } = {}
+  const launchBox: {
+    launch?: ReturnType<typeof buildMountEnv>['launch']
+    authEnv?: ReturnType<typeof buildMountEnv>['authEnv']
+  } = {}
   const result = await traceTerminalMount(
     workspaceId,
     projectId,
@@ -1344,6 +1351,7 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     launchBox
   )
   const launch = launchBox.launch!
+  const authEnv = launchBox.authEnv!
 
   if (result.created) {
     logDiagMain({
@@ -1356,8 +1364,9 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
 
   handlePostMountOverlay(workspaceId, result.created)
 
-  // Snapshot the composed launch so we can detect settings drift later.
-  setLaunchSnapshot(workspaceId, launch)
+  // Snapshot the composed launch (+ auth env layer) so we can detect settings
+  // AND auth drift later — see LaunchSnapshot in workspaceResources.ts.
+  setLaunchSnapshot(workspaceId, { ...launch, authEnv })
   setDirty(workspaceId, false)
 
   // Push the current canInject state so the renderer chip gets an immediate

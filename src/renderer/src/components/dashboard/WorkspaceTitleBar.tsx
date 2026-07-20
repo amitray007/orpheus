@@ -72,6 +72,35 @@ function shortTokens(n: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// Context-text composer — "1.2k / 200k · 85%" when the budget is known, or an
+// explicit em-dash for the unknown parts when it isn't (getContextBudget
+// returns null for models with no pricing/context data). Never fabricates a
+// number or percentage for an unknown budget — a wrong "safe-looking" percent
+// on an overflowing context was the bug this replaces.
+// ---------------------------------------------------------------------------
+function formatContextText(usage: SessionUsage | null, contextBudget: number | null): string {
+  if (contextBudget === null) {
+    return usage ? `${shortTokens(usage.lastTurnContextTokens)} / —` : '—'
+  }
+  return usage
+    ? `${shortTokens(usage.lastTurnContextTokens)} / ${shortTokens(contextBudget)} · ${Math.round(usage.usedPct)}%`
+    : shortTokens(contextBudget)
+}
+
+// ---------------------------------------------------------------------------
+// Cost-text composer. When every model in the session had known pricing,
+// this is a plain "$X.XX". When some tokens were spent on a model with no
+// pricing data (hasUnknownPricing), those tokens are excluded from `usd` —
+// so a $0.00-looking total would be indistinguishable from "actually free".
+// Surface that explicitly instead of ever printing a bare "$0.00" in that case.
+// ---------------------------------------------------------------------------
+function formatCostText(cost: SessionCost): string {
+  const known = `$${cost.usd.toFixed(2)}`
+  if (!cost.hasUnknownPricing) return known
+  return cost.usd > 0 ? `${known} + —` : '—'
+}
+
+// ---------------------------------------------------------------------------
 // Workbench region of the top bar (right of the claude identity region).
 // Extracted into its own component so WorkspaceTitleBar's render body stays
 // under the cognitive-complexity ceiling — this holds the dormant-vs-open
@@ -332,9 +361,7 @@ export function WorkspaceTitleBar({
               usageResult.ok && usageResult.value != null
                 ? (usageResult.value as SessionUsage)
                 : null
-            const ctxText = usage
-              ? `${shortTokens(usage.lastTurnContextTokens)} / ${shortTokens(result.contextBudget)} · ${Math.round(usage.usedPct)}%`
-              : shortTokens(result.contextBudget)
+            const ctxText = formatContextText(usage, result.contextBudget)
             updateDetails({
               model: modelLabel(result.modelId),
               contextText: ctxText,
@@ -353,7 +380,7 @@ export function WorkspaceTitleBar({
         if (result.ok && result.value != null) {
           const cost = result.value as SessionCost
           updateDetails({
-            cost: `$${cost.usd.toFixed(2)}`,
+            cost: formatCostText(cost),
             costLoading: false
           })
         } else {

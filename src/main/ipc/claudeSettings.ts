@@ -24,7 +24,7 @@ import {
   updateClaudeGlobalSettings,
   composeClaudeLaunch
 } from '../claudeSettings'
-import type { ClaudeLaunch } from '../claudeSettings'
+import { getClaudeAuthEnv } from '../claudeAuth'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from '../claudeProjectSettings'
 import {
   getClaudeWorkspaceSettings,
@@ -39,6 +39,7 @@ import {
   launchSnapshotCount,
   setDirty
 } from '../workspaceResources'
+import type { LaunchSnapshot } from '../workspaceResources'
 import { handle } from './handle'
 import {
   FLAG_DELIMITER,
@@ -47,26 +48,44 @@ import {
   findFlagValue
 } from '../../shared/cliFlags'
 
-function launchEquals(a: ClaudeLaunch, b: ClaudeLaunch): boolean {
-  if (a.flags !== b.flags || a.settingsJson !== b.settingsJson) return false
-  const ak = Object.keys(a.env).sort()
-  const bk = Object.keys(b.env).sort()
+// Compares two env-like records by key/value (order-independent). Shared by
+// launchEquals for both the settings `env` layer and the `authEnv` layer.
+function envEquals(a: Record<string, string>, b: Record<string, string>): boolean {
+  const ak = Object.keys(a).sort()
+  const bk = Object.keys(b).sort()
   if (ak.length !== bk.length) return false
   for (let i = 0; i < ak.length; i++) {
     if (ak[i] !== bk[i]) return false
-    if (a.env[ak[i]] !== b.env[ak[i]]) return false
+    if (a[ak[i]] !== b[ak[i]]) return false
   }
+  return true
+}
+
+function launchEquals(a: LaunchSnapshot, b: LaunchSnapshot): boolean {
+  if (a.flags !== b.flags || a.settingsJson !== b.settingsJson) return false
+  if (!envEquals(a.env, b.env)) return false
+  // Auth env (cloud_provider, api key/token, base URL, etc.) is merged in
+  // downstream of composeClaudeLaunch (see buildMountEnv), so it must be
+  // compared separately — this is the fix for auth changes not marking the
+  // workspace dirty. NEVER log these values.
+  if (!envEquals(a.authEnv, b.authEnv)) return false
   return true
 }
 
 // Recomputes the dirty flag for every workspace with a tracked launch
 // snapshot, comparing it against a freshly composed launch. Called whenever
-// any settings layer (global/project/workspace) mutates.
-function recomputeDirty(): void {
+// any settings layer (global/project/workspace) OR auth layer mutates.
+// Exported so registerClaudeAuthIpc (a separate IPC domain — auth changes
+// alter the env layer merged downstream of composeClaudeLaunch, see
+// LaunchSnapshot) can trigger the same drift recheck.
+export function recomputeDirty(): void {
   if (launchSnapshotCount() === 0) return
   // Fetch global settings once — shared across all workspaces in the loop.
   // Each composeClaudeLaunch would otherwise run a redundant DB read.
   const globalSettings = getClaudeGlobalSettings()
+  // getClaudeAuthEnv is cached (invalidated on updateClaudeAuth) and identical
+  // for every workspace (auth is global, not per-workspace), so read once.
+  const authEnv = getClaudeAuthEnv()
   for (const [workspaceId, snap] of launchSnapshotEntries()) {
     const ws = getWorkspace(workspaceId)
     if (!ws) {
@@ -78,7 +97,7 @@ function recomputeDirty(): void {
       continue
     }
     const fresh = composeClaudeLaunch(ws.projectId, workspaceId, globalSettings)
-    setDirty(workspaceId, !launchEquals(snap, fresh))
+    setDirty(workspaceId, !launchEquals(snap, { ...fresh, authEnv }))
   }
 }
 
