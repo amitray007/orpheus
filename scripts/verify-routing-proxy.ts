@@ -55,7 +55,9 @@ import {
 import {
   checkRoutingProxyHealth,
   ensureHealthyForRouting,
-  type HealthCheckDeps
+  waitForRoutingProxyReady,
+  type HealthCheckDeps,
+  type RoutingProxyReadyDeps
 } from '../src/main/routingProxy/health.ts'
 import {
   checkRoutingProxyUpdate,
@@ -650,6 +652,204 @@ async function cleanup(): Promise<void> {
   )
   console.log(
     '✓ full repro: enable (fails, offline) -> disable leaves a CLEAN state, no lingering error, install still reachable'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 10. Readiness polling (waitForRoutingProxyReady) — the perf fix. A fake
+//    clock + fake sleep so every assertion is deterministic and instant: real
+//    time never advances, `now()` is driven purely by how many times `sleep`
+//    has been "awaited", and `sleep` itself resolves synchronously (no real
+//    setTimeout) while still recording the requested delay for assertions.
+// ---------------------------------------------------------------------------
+
+{
+  function makeFakeClockDeps(tcpProbe: HealthCheckDeps['tcpProbe']): {
+    deps: RoutingProxyReadyDeps
+    sleepCalls: number[]
+    probeCallCount: () => number
+  } {
+    let elapsed = 0
+    const sleepCalls: number[] = []
+    let probeCalls = 0
+    const wrappedProbe: HealthCheckDeps['tcpProbe'] = async (host, port, timeoutMs) => {
+      probeCalls++
+      return tcpProbe(host, port, timeoutMs)
+    }
+    return {
+      sleepCalls,
+      probeCallCount: () => probeCalls,
+      deps: {
+        tcpProbe: wrappedProbe,
+        now: () => elapsed,
+        sleep: async (ms: number) => {
+          sleepCalls.push(ms)
+          elapsed += ms
+        }
+      }
+    }
+  }
+
+  // 10a. Probes IMMEDIATELY after spawn — no initial sleep before the first
+  // probe. A proxy reachable on the very first probe must resolve healthy
+  // with ZERO sleeps recorded.
+  {
+    const { deps, sleepCalls, probeCallCount } = makeFakeClockDeps(async () => true)
+    const ready = await waitForRoutingProxyReady('http://127.0.0.1:18765', {}, deps)
+    assert.equal(ready, true, 'must report ready when the very first probe succeeds')
+    assert.equal(probeCallCount(), 1, 'exactly one probe when the first one succeeds')
+    assert.equal(
+      sleepCalls.length,
+      0,
+      'no sleep must occur before the first probe (or after success)'
+    )
+    console.log(
+      '✓ waitForRoutingProxyReady probes immediately (no initial sleep) and returns on first success'
+    )
+  }
+
+  // 10b. A proxy that becomes reachable on the Nth probe is detected
+  // promptly: the total simulated wait must be materially lower than the old
+  // flat-500ms-per-probe behaviour would have produced for the same N.
+  {
+    const successOnProbe = 5 // fails 4 times, succeeds on the 5th
+    let calls = 0
+    const { deps, sleepCalls, probeCallCount } = makeFakeClockDeps(async () => {
+      calls++
+      return calls >= successOnProbe
+    })
+    const ready = await waitForRoutingProxyReady('http://127.0.0.1:18765', {}, deps)
+    assert.equal(ready, true, 'must eventually report ready once a later probe succeeds')
+    assert.equal(probeCallCount(), successOnProbe, `must probe exactly ${successOnProbe} times`)
+
+    const totalSimulatedWaitMs = sleepCalls.reduce((a, b) => a + b, 0)
+    const oldFlatBehaviourMs = (successOnProbe - 1) * 500 // old: flat 500ms between every probe
+    assert.ok(
+      totalSimulatedWaitMs < oldFlatBehaviourMs,
+      `new backoff wait (${totalSimulatedWaitMs}ms) must be materially lower than the old flat-500ms ` +
+        `wait (${oldFlatBehaviourMs}ms) for the same probe count`
+    )
+    // Backoff must actually grow between sleeps (not flat), starting well
+    // below 500ms.
+    assert.ok(sleepCalls[0]! < 500, 'first backoff delay must start well below the old flat 500ms')
+    for (let i = 1; i < sleepCalls.length; i++) {
+      assert.ok(
+        sleepCalls[i]! >= sleepCalls[i - 1]!,
+        'backoff delay must never shrink between probes'
+      )
+    }
+    console.log(
+      `✓ waitForRoutingProxyReady detects an Nth-probe success promptly (total simulated wait ${totalSimulatedWaitMs}ms ` +
+        `vs old flat behaviour ${oldFlatBehaviourMs}ms for N=${successOnProbe})`
+    )
+  }
+
+  // 10c. Backoff is bounded by the cap — sleeping many times in a row must
+  // never exceed maxDelayMs on any single sleep, even though it keeps
+  // growing early on.
+  {
+    let calls = 0
+    const maxDelayMs = 500
+    const { deps, sleepCalls } = makeFakeClockDeps(async () => {
+      calls++
+      return calls >= 20 // never succeeds within the deadline below
+    })
+    await waitForRoutingProxyReady(
+      'http://127.0.0.1:18765',
+      { deadlineMs: 5000, initialDelayMs: 50, maxDelayMs, backoffFactor: 2 },
+      deps
+    )
+    assert.ok(sleepCalls.length > 0, 'must have slept at least once while retrying')
+    for (const ms of sleepCalls) {
+      assert.ok(
+        ms <= maxDelayMs,
+        `no single backoff delay may exceed the cap (${ms} > ${maxDelayMs})`
+      )
+    }
+    assert.ok(
+      sleepCalls[sleepCalls.length - 1]! === maxDelayMs,
+      'backoff must actually reach the cap when retried enough times'
+    )
+    console.log('✓ waitForRoutingProxyReady backoff is bounded by maxDelayMs and reaches the cap')
+  }
+
+  // 10d. The overall deadline still terminates a never-reachable proxy —
+  // must return false (not hang) once the simulated clock crosses the
+  // deadline, and the elapsed simulated time must respect the deadline
+  // (allowing for one final probe's worth of overshoot).
+  {
+    const deadlineMs = 15_000
+    const { deps, sleepCalls } = makeFakeClockDeps(async () => false)
+    const ready = await waitForRoutingProxyReady('http://127.0.0.1:18765', { deadlineMs }, deps)
+    assert.equal(ready, false, 'must report NOT ready once the deadline elapses with no success')
+    const totalSimulatedWaitMs = sleepCalls.reduce((a, b) => a + b, 0)
+    assert.ok(
+      totalSimulatedWaitMs >= deadlineMs,
+      'must have waited at least the full deadline before giving up'
+    )
+    console.log(
+      `✓ waitForRoutingProxyReady still terminates a never-reachable proxy at the ${deadlineMs}ms deadline (simulated)`
+    )
+  }
+
+  // 10e. Readiness uses the cheap/TCP signal only — the expensive
+  // management-API round trip must never be invoked for readiness. Prove it
+  // by asserting waitForRoutingProxyReady's deps shape has no
+  // managementProbe at all (a compile-time guarantee) AND that a tcpProbe
+  // returning true is sufficient on its own with no management secret
+  // involved anywhere in the call.
+  {
+    let managementProbeCalled = false
+    const readyDeps: RoutingProxyReadyDeps = {
+      tcpProbe: async () => {
+        return true
+      },
+      now: () => 0,
+      sleep: async () => {
+        managementProbeCalled = true // would only flip if we ever slept, i.e. tcp failed first
+      }
+    }
+    const ready = await waitForRoutingProxyReady('http://127.0.0.1:18765', {}, readyDeps)
+    assert.equal(ready, true)
+    assert.equal(
+      managementProbeCalled,
+      false,
+      'a bare TCP-accept must be sufficient for readiness — no management round trip required'
+    )
+    console.log(
+      '✓ waitForRoutingProxyReady is satisfied by the cheap TCP signal alone — no management-API round trip required for readiness'
+    )
+  }
+
+  // 10f. Invalid URL never throws — resolves false.
+  {
+    const { deps } = makeFakeClockDeps(async () => true)
+    const ready = await waitForRoutingProxyReady('not a url', {}, deps)
+    assert.equal(ready, false, 'an invalid base URL must resolve false, never throw')
+    console.log('✓ waitForRoutingProxyReady resolves false (never throws) for an invalid URL')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 11. ensureHealthyForRouting still fail-closed (regression guard specific to
+//    this perf change — the readiness speedup must NOT have touched the
+//    fail-closed gate's own default timeout/behaviour). Re-asserts the same
+//    invariant as section 7 but explicitly framed as a no-regression check
+//    tied to this change.
+// ---------------------------------------------------------------------------
+
+{
+  const unreachableDeps: HealthCheckDeps = {
+    tcpProbe: async () => false,
+    managementProbe: async () => false
+  }
+  await assert.rejects(
+    () => ensureHealthyForRouting('http://127.0.0.1:18765', {}, unreachableDeps),
+    /not reachable/,
+    'ensureHealthyForRouting must still reject an unreachable proxy after the readiness-polling change'
+  )
+  console.log(
+    '✓ (no-regression) ensureHealthyForRouting remains fail-closed after the readiness-polling perf change'
   )
 }
 

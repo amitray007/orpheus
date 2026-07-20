@@ -133,3 +133,97 @@ export async function ensureHealthyForRouting(
     )
   }
 }
+
+// ---------------------------------------------------------------------------
+// Readiness polling — used right after spawning the child (manager.ts's
+// start()) to detect "the proxy is listening" as fast as possible.
+//
+// A local process either accepts a loopback TCP connection almost instantly
+// once it's up, or it isn't up yet — there's no reason to wait a fixed
+// interval between probes, and no reason to give any single probe 2000ms
+// (checkRoutingProxyHealth's *default* timeoutMs, tuned for the management
+// round-trip, not a bare TCP accept). This function:
+//   - probes IMMEDIATELY after spawn (no initial sleep)
+//   - uses TCP-only probing (deps.tcpProbe) — the cheapest true "is anything
+//     listening on the port" signal, skipping the management-API round trip
+//     entirely for readiness purposes (readiness just needs "the port is
+//     open", not "the management API answered a real request")
+//   - retries on a short backoff that grows from `initialDelayMs` to
+//     `maxDelayMs`, rather than a flat interval
+//   - is bounded by `deadlineMs` total, so a broken binary still can't spin
+//     forever
+//
+// Clock/sleep are injected (RoutingProxyReadyDeps) so scripts/verify-routing-
+// proxy.ts can assert the exact probe count/timing without any real delay.
+// ---------------------------------------------------------------------------
+
+export interface RoutingProxyReadyOptions {
+  /** Per-probe TCP-connect timeout. Loopback accept/refuse is near-instant —
+   *  this only needs to be long enough to not misreport a genuinely slow
+   *  first probe as failure, not the 2000ms tuned for a real HTTP round trip. */
+  probeTimeoutMs?: number
+  /** Delay before the SECOND probe (the first fires immediately). */
+  initialDelayMs?: number
+  /** Upper bound the backoff grows to. */
+  maxDelayMs?: number
+  /** Multiplier applied to the delay after each failed probe. */
+  backoffFactor?: number
+  /** Total time budget across all probes. */
+  deadlineMs?: number
+}
+
+export interface RoutingProxyReadyDeps {
+  tcpProbe: HealthCheckDeps['tcpProbe']
+  sleep: (ms: number) => Promise<void>
+  now: () => number
+}
+
+export function defaultRoutingProxyReadyDeps(): RoutingProxyReadyDeps {
+  return {
+    tcpProbe: realTcpProbe,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: () => Date.now()
+  }
+}
+
+const DEFAULT_READY_PROBE_TIMEOUT_MS = 200
+const DEFAULT_READY_INITIAL_DELAY_MS = 50
+const DEFAULT_READY_MAX_DELAY_MS = 500
+const DEFAULT_READY_BACKOFF_FACTOR = 2
+const DEFAULT_READY_DEADLINE_MS = 15_000
+
+/**
+ * Poll the loopback port with a fast, backing-off cadence until it accepts a
+ * TCP connection (or the deadline elapses). Returns true as soon as the port
+ * is reachable, false once the deadline is exhausted without success. Never
+ * throws.
+ */
+export async function waitForRoutingProxyReady(
+  baseUrl: string,
+  options: RoutingProxyReadyOptions = {},
+  deps: RoutingProxyReadyDeps = defaultRoutingProxyReadyDeps()
+): Promise<boolean> {
+  const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_READY_PROBE_TIMEOUT_MS
+  const initialDelayMs = options.initialDelayMs ?? DEFAULT_READY_INITIAL_DELAY_MS
+  const maxDelayMs = options.maxDelayMs ?? DEFAULT_READY_MAX_DELAY_MS
+  const backoffFactor = options.backoffFactor ?? DEFAULT_READY_BACKOFF_FACTOR
+  const deadlineMs = options.deadlineMs ?? DEFAULT_READY_DEADLINE_MS
+
+  let url: URL
+  try {
+    url = new URL(baseUrl)
+  } catch {
+    return false
+  }
+  const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80))
+  const deadline = deps.now() + deadlineMs
+
+  let delay = initialDelayMs
+  while (true) {
+    const ok = await deps.tcpProbe(url.hostname, port, probeTimeoutMs)
+    if (ok) return true
+    if (deps.now() >= deadline) return false
+    await deps.sleep(delay)
+    delay = Math.min(delay * backoffFactor, maxDelayMs)
+  }
+}

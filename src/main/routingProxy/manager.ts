@@ -24,8 +24,8 @@ import { authDir, binaryPath, configPath, versionDir } from './paths'
 import { installRoutingProxy, defaultInstallDeps, type InstallDeps } from './install'
 import { writeRoutingProxyConfig } from './config'
 import {
-  checkRoutingProxyHealth,
-  ensureHealthyForRouting as ensureHealthyForRoutingImpl
+  ensureHealthyForRouting as ensureHealthyForRoutingImpl,
+  waitForRoutingProxyReady
 } from './health'
 import {
   startRoutingProxy,
@@ -314,21 +314,14 @@ export async function start(): Promise<void> {
     }
   })
 
-  // Poll health until reachable (bounded), then flip to running and start
-  // polling auth-files. Bounded so a broken binary can't spin forever.
-  const deadline = Date.now() + 15_000
-  let healthy = false
-  while (Date.now() < deadline) {
-    const result = await checkRoutingProxyHealth(getRoutingProxyUrl(), {
-      managementSecret: getManagementSecret(),
-      timeoutMs: 1000
-    })
-    if (result.healthy) {
-      healthy = true
-      break
-    }
-    await new Promise((r) => setTimeout(r, 500))
-  }
+  // Poll readiness until the port is listening (bounded), then flip to
+  // running and start polling auth-files. Uses the cheap TCP-only probe with
+  // a fast, backing-off cadence (immediate first probe, short probe timeout)
+  // rather than the management-API round trip used elsewhere — readiness
+  // only needs "something is listening on the port", and a local process
+  // either accepts a loopback connection almost instantly or isn't up yet.
+  // Still bounded overall so a broken binary can't spin forever.
+  const healthy = await waitForRoutingProxyReady(getRoutingProxyUrl())
 
   if (!healthy) {
     setSnapshot({ status: 'error', error: 'Proxy process started but never became reachable.' })
@@ -336,7 +329,11 @@ export async function start(): Promise<void> {
   }
 
   setSnapshot({ status: 'running', error: null, installedVersion: version })
-  await refreshAuthFiles()
+  // Fire-and-forget: the 'running' status must be observable to the renderer
+  // (via the snapshot push above) immediately, not gated on this network
+  // round trip. refreshAuthFiles is best-effort and already re-broadcasts
+  // its own result (setSnapshot) when it completes.
+  void refreshAuthFiles()
   authRefreshTimer = setInterval(() => {
     void refreshAuthFiles()
   }, 30_000)
