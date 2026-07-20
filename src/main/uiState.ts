@@ -131,6 +131,8 @@ type AppUiStateRow = {
   diag_trace: number | null
   // GitHub username greeting (D4)
   github_username: string | null
+  // Managed routing proxy (v70)
+  routing_proxy_enabled: number | null
   updated_at: number
 }
 
@@ -257,6 +259,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     diagTrace: row.diag_trace === 1,
     // GitHub username greeting (D4) — nullable, no default
     githubUsername: row.github_username ?? null,
+    // Managed routing proxy (v70) — default false (off)
+    routingProxyEnabled: (row.routing_proxy_enabled ?? 0) === 1,
     updatedAt: row.updated_at
   }
 }
@@ -366,7 +370,8 @@ const BOOLEAN_FIELDS: { key: keyof AppUiStatePatch; label: string }[] = [
   { key: 'tokenHoverEnabled', label: 'tokenHoverEnabled' },
   { key: 'hunkActionsEnabled', label: 'hunkActionsEnabled' },
   { key: 'showPanesView', label: 'showPanesView' },
-  { key: 'showWorkspacesView', label: 'showWorkspacesView' }
+  { key: 'showWorkspacesView', label: 'showWorkspacesView' },
+  { key: 'routingProxyEnabled', label: 'routingProxyEnabled' }
 ]
 
 // Numeric-membership keys: "<label> must be one of <list>", requires
@@ -606,7 +611,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Trace capture (v61)
     diagTrace: 'diag_trace',
     // GitHub username greeting (D4)
-    githubUsername: 'github_username'
+    githubUsername: 'github_username',
+    // Managed routing proxy (v70)
+    routingProxyEnabled: 'routing_proxy_enabled'
   }
 
   const setClauses: string[] = []

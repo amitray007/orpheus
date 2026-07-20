@@ -66,6 +66,9 @@ import type {
   UpdateCheckResult,
   UpdateProgress,
   UpdateSnapshot,
+  RoutingProxySnapshot,
+  RoutingProxyAssetInfo,
+  RoutingProxyUpdateCheckResult,
   ClaudeStatusSnapshot,
   ActionResult,
   ActionAuditEntry,
@@ -807,6 +810,18 @@ const api = {
       subscribe(PUSH_CHANNELS.updatesDone, cb),
     onCheckResult: (cb: (result: UpdateCheckResult) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.updatesCheckResult, cb)
+  },
+  routingProxy: {
+    getState: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:getState'),
+    setEnabled: (enabled: boolean): Promise<RoutingProxySnapshot> =>
+      invoke('routingProxy:setEnabled', { enabled }),
+    install: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:install'),
+    getAssetInfo: (): Promise<RoutingProxyAssetInfo | null> => invoke('routingProxy:getAssetInfo'),
+    checkForUpdate: (): Promise<RoutingProxyUpdateCheckResult> =>
+      invoke('routingProxy:checkForUpdate'),
+    refreshAuthFiles: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:refreshAuthFiles'),
+    onSnapshot: (cb: (snapshot: RoutingProxySnapshot) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.routingProxySnapshot, cb)
   },
   status: {
     get: (): Promise<ClaudeStatusSnapshot> => invoke('status:get'),

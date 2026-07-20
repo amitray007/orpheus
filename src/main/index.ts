@@ -73,7 +73,7 @@ import { startUsagePoller, stopUsagePoller } from './usagePoller'
 import { startClaudeActivityPoller, stopClaudeActivityPoller } from './claudeActivityPoller'
 import { getUserShellPath, getCachedShellPath } from './shellHelpers'
 import type { WorkspaceRecord } from '../shared/types'
-import { loadOrpheusSurface, buildMountEnv } from './orpheusSurfaceAdapter'
+import { loadOrpheusSurface, buildMountEnv, isRoutedMount } from './orpheusSurfaceAdapter'
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
@@ -126,6 +126,13 @@ import { registerFilesIpc } from './ipc/files'
 import { registerShellIpc } from './ipc/shell'
 import { registerSystemIpc } from './ipc/system'
 import { registerUpdatesIpc } from './ipc/updates'
+import { registerRoutingProxyIpc } from './ipc/routingProxy'
+import {
+  hydrateSnapshotAtBoot,
+  reconcileRoutingProxy,
+  shutdownRoutingProxySync,
+  ensureHealthyForRouting
+} from './routingProxy/manager'
 import { registerMcpIpc } from './ipc/mcp'
 import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
 import { registerClaudeHooksIpc } from './ipc/claudeHooks'
@@ -1041,6 +1048,8 @@ registerSystemIpc({ getAppUiState })
 
 registerUpdatesIpc()
 
+registerRoutingProxyIpc()
+
 handle('doctor:check', async (): Promise<DoctorResult> => {
   const { installed, version, path: claudePath } = await checkClaude()
   return {
@@ -1336,6 +1345,21 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
   if (isWorkspaceGone(workspaceId)) {
     hideLoadingOverlay(workspaceId)
     return { workspaceId, aborted: 'gone' as const }
+  }
+
+  // Fail-closed gate (model-routing unit 04): an unreachable routing proxy
+  // makes Claude Code hang ~44-128s silently (measured) once addon.mount
+  // spawns the wrapper script against it. Check reachability BEFORE spawning
+  // for routed-model workspaces only — this is a strict no-op (zero extra
+  // network calls, zero added latency) for Claude-model workspaces, mirroring
+  // computeRoutingEnv's own no-op guarantee for the Claude path.
+  if (isRoutedMount(projectId, workspaceId)) {
+    try {
+      await ensureHealthyForRouting()
+    } catch (err) {
+      hideLoadingOverlay(workspaceId)
+      throw err
+    }
   }
 
   const launchBox: {
@@ -2275,6 +2299,13 @@ if (!app.requestSingleInstanceLock()) {
         // do NOT start the socket server.
         reconcileHooks()
 
+        // Managed routing proxy (model-routing unit 04) — mirrors reconcileHooks
+        // exactly: hydrate the snapshot (detect an already-installed binary),
+        // then start/stop the child process to match routingProxyEnabled
+        // (default off). Never blocks first-frame paint — deferred into this
+        // same setImmediate as the hook reconcile above.
+        void hydrateSnapshotAtBoot().then(() => reconcileRoutingProxy())
+
         // Start the command server unconditionally — the CLI shouldn't depend on
         // hooks being enabled. Provides a request/response channel for CLI workspace
         // actions (create, archive, close, reopen, rename, whoami.resolve).
@@ -2694,6 +2725,7 @@ if (!app.requestSingleInstanceLock()) {
     stopAllGitWatches()
     stopFilesWatch()
     stopDiagnostics()
+    shutdownRoutingProxySync()
   })
 
   app.on('window-all-closed', () => {

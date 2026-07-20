@@ -70,6 +70,9 @@ import type {
   GitBranchInfo,
   GitCommit,
   UpdateSnapshot,
+  RoutingProxySnapshot,
+  RoutingProxyUpdateCheckResult,
+  RoutingProxyAssetInfo,
   ActionResult,
   ActionKind,
   ActionAuditEntry,
@@ -607,6 +610,13 @@ export interface InvokeChannelMap {
   'updates:install': { req: []; res: void }
   'updates:restart': { req: []; res: void }
   'updates:getState': { req: []; res: UpdateSnapshot }
+  // Managed routing proxy (model-routing unit 04) — see src/main/routingProxy/.
+  'routingProxy:getState': { req: []; res: RoutingProxySnapshot }
+  'routingProxy:setEnabled': { req: [{ enabled: boolean }]; res: RoutingProxySnapshot }
+  'routingProxy:install': { req: []; res: RoutingProxySnapshot }
+  'routingProxy:getAssetInfo': { req: []; res: RoutingProxyAssetInfo | null }
+  'routingProxy:checkForUpdate': { req: []; res: RoutingProxyUpdateCheckResult }
+  'routingProxy:refreshAuthFiles': { req: []; res: RoutingProxySnapshot }
   'status:get': { req: []; res: ClaudeStatusSnapshot }
   'status:refresh': { req: []; res: ClaudeStatusSnapshot }
   'status:openPage': { req: []; res: void }
@@ -813,6 +823,9 @@ export interface RendererPushMap {
   'updates:progress': UpdateProgress
   'updates:done': { success: boolean; code: number | null }
   'updates:checkResult': UpdateCheckResult
+  // Managed routing proxy — pushed on every status/progress/authFiles change
+  // so the Settings panel updates live without polling (mirrors updates:*).
+  'routingProxy:snapshot': RoutingProxySnapshot
   'status:change': ClaudeStatusSnapshot
   // Dashboard "Usage" card background poller (D3) — pushed on each successful
   // poll tick (see src/main/usagePoller.ts) so the renderer can silently
@@ -872,6 +885,7 @@ export const PUSH_CHANNELS = {
   updatesProgress: 'updates:progress',
   updatesDone: 'updates:done',
   updatesCheckResult: 'updates:checkResult',
+  routingProxySnapshot: 'routingProxy:snapshot',
   statusChange: 'status:change',
   claudeUsagePushed: 'claude:usagePushed',
   claudeActivityPushed: 'claude:activityPushed',

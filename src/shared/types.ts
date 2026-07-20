@@ -353,6 +353,11 @@ export type AppUiState = {
   // fallback), refreshed on each app open via `gh api user`. Null when gh
   // is missing/unauth or has never been resolved.
   githubUsername: string | null
+  // Managed routing proxy (v70) — opt-in, off by default. Mirrors
+  // hooksIntegrationEnabled exactly: a declarative reconcile (see
+  // src/main/index.ts) starts/stops the managed CLIProxyAPI child process
+  // when this flips. See src/main/routingProxy/.
+  routingProxyEnabled: boolean
   updatedAt: number
 }
 
@@ -2034,3 +2039,68 @@ export type FilesMutationResult =
 export type FileImage =
   | { ok: true; dataUrl: string; size: number }
   | { ok: false; error: 'too-large' | 'denied' | 'missing' }
+
+// ---------------------------------------------------------------------------
+// Managed routing proxy (model-routing unit 04) — CLIProxyAPI component
+//
+// An opt-in, Orpheus-downloaded/managed CLIProxyAPI binary that non-Claude
+// ("routed") model workspaces talk to instead of api.anthropic.com directly.
+// See src/main/routingProxy/ for the manager; src/main/modelRouting.ts for
+// how a workspace's launch env points at this proxy's URL/token.
+// ---------------------------------------------------------------------------
+
+/** Component lifecycle state, mirroring the shape of UpdateSnapshot's 'kind' union. */
+export type RoutingProxyStatus =
+  | 'not_installed'
+  | 'installing'
+  | 'stopped'
+  | 'starting'
+  | 'running'
+  | 'error'
+
+/** One connected-provider row from GET /v0/management/auth-files. */
+export interface RoutingProxyAuthFile {
+  provider: string
+  /** Display label / filename as reported by the management API. */
+  label: string
+  /** Best-effort health signal — the management API's own field name varies
+   *  by provider, so this is normalized to a small enum by the manager. */
+  health: 'ok' | 'error' | 'unknown'
+}
+
+/** Rehydratable snapshot the renderer polls/subscribes to — mirrors UpdateSnapshot. */
+export interface RoutingProxySnapshot {
+  enabled: boolean
+  status: RoutingProxyStatus
+  /** Installed version (e.g. "7.2.92"), or null if never installed. */
+  installedVersion: string | null
+  /** Version this build of Orpheus is pinned to. */
+  pinnedVersion: string
+  /** Set only while status === 'installing'. */
+  installProgress: {
+    phase: 'downloading' | 'verifying' | 'extracting'
+    percent: number | null
+  } | null
+  /** Human-readable error, set only when status === 'error'. */
+  error: string | null
+  /** Connected accounts, populated only while status === 'running'. */
+  authFiles: RoutingProxyAuthFile[]
+  /** Last time authFiles was refreshed, or null. */
+  authFilesCheckedAt: number | null
+}
+
+/** Result of a "check for updates" call against the GitHub latest-release API. */
+export interface RoutingProxyUpdateCheckResult {
+  current: string | null
+  latest: string | null
+  available: boolean
+  checkedAt: number
+  error?: string
+}
+
+/** Download size info surfaced before an install, so the Settings UI can show it. */
+export interface RoutingProxyAssetInfo {
+  version: string
+  assetName: string
+  sizeBytes: number | null
+}

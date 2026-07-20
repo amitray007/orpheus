@@ -17,7 +17,7 @@ import { join } from 'path'
 import { loadGhosttySurface, type GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import { composeClaudeLaunch, type ClaudeLaunch } from './claudeSettings'
 import { getClaudeAuthEnv } from './claudeAuth'
-import { computeRoutingEnv } from './modelRouting'
+import { computeRoutingEnv, isRoutedModel } from './modelRouting'
 import { shimPath } from './orpheusNotify'
 import { getCachedShellPath } from './shellHelpers'
 import { writeGhosttyConfigFile } from './ghosttyConfig'
@@ -188,4 +188,26 @@ export function buildMountEnv(
     : join(__dirname, '../../resources/orpheus-claude.sh')
 
   return { command, env, launch, authEnv }
+}
+
+// ---------------------------------------------------------------------------
+// isRoutedMount
+//
+// Fail-closed gate hook point (model-routing unit 04): cheaply resolves
+// whether a workspace's composed launch model is routed (non-Claude) WITHOUT
+// paying for the rest of buildMountEnv's env assembly, so the terminal:mount
+// handler (index.ts) can call routingProxy's ensureHealthyForRouting() BEFORE
+// spawning the surface for a routed workspace. composeClaudeLaunch is a pure
+// settings read (no I/O) so calling it twice (once here, once inside the
+// real buildMountEnv a few lines later in the same handler) is cheap — far
+// cheaper than restructuring the diag.trace-wrapped mount pipeline to thread
+// an async health-check through it.
+//
+// An unreachable proxy makes Claude Code hang ~44-128s silently (measured) —
+// this is the one check standing between that and a clear, immediate error.
+// ---------------------------------------------------------------------------
+
+export function isRoutedMount(projectId: string | undefined, workspaceId: string): boolean {
+  const launch = composeClaudeLaunch(projectId, workspaceId)
+  return isRoutedModel(launch.model)
 }

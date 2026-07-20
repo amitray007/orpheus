@@ -14,19 +14,22 @@
 // and src/main/orpheusSurfaceAdapter.ts buildMountEnv for the caller-side
 // ordering argument (why this must run AFTER the authEnv spread).
 //
-// Proxy lifecycle/health-check/download is unit 04's job — this unit only
-// needs a well-named URL constant with an env override for that unit to
-// later replace with real config.
+// Proxy lifecycle/health-check/download is unit 04's job (src/main/routingProxy/) —
+// this module stays deliberately electron-free/DB-free (per
+// scripts/verify-routing.ts's own doc comment) so it can be exercised by that
+// offline harness without booting Electron. That's why the real per-run auth
+// token is threaded in via setRuntimeRoutingAuthToken() below (a plain
+// module-level setter) rather than by importing routingProxy/manager.ts
+// directly, which pulls in `electron` (BrowserWindow) transitively.
 // ---------------------------------------------------------------------------
 
 import { isClaude } from './models/registry'
 
 /**
  * Default local translating-proxy base URL. Override via
- * ORPHEUS_ROUTING_PROXY_URL for local testing. Unit 04 (proxy lifecycle)
- * will replace this with real, possibly-dynamic config (e.g. a port picked
- * at proxy-start time) — kept as a single named constant here so that swap
- * is a one-line change.
+ * ORPHEUS_ROUTING_PROXY_URL for local testing. The managed proxy
+ * (src/main/routingProxy/) always runs on this same host:port — its
+ * config.yaml is generated from this exact URL (see routingProxy/manager.ts).
  */
 export const DEFAULT_ROUTING_PROXY_URL = 'http://127.0.0.1:18765'
 
@@ -35,22 +38,33 @@ export function getRoutingProxyUrl(): string {
 }
 
 /**
- * Placeholder bearer value sent as ANTHROPIC_AUTH_TOKEN for routed
- * workspaces. The proxy (unit 04+) translates requests to a different
- * backend/credential entirely — real per-proxy credential management is out
- * of scope for this unit (no proxy manager exists yet). What matters here is
- * the MECHANISM: setting ANTHROPIC_AUTH_TOKEN (sent as `Authorization:
- * Bearer`) rather than ANTHROPIC_API_KEY, because ANTHROPIC_API_KEY triggers
- * a one-time interactive approval prompt in the Claude CLI that would hang a
- * terminal-less/headless workspace. A non-empty ANTHROPIC_AUTH_TOKEN avoids
- * that prompt regardless of whether the value itself is checked by the
- * proxy. Overridable via ORPHEUS_ROUTING_AUTH_TOKEN so unit 04 (or a user)
- * can supply a real per-proxy token once one exists.
+ * Fallback bearer value sent as ANTHROPIC_AUTH_TOKEN when no managed proxy
+ * has ever been started this run (e.g. a routed model is selected before the
+ * proxy component has been enabled/installed). Real per-run tokens are
+ * supplied via setRuntimeRoutingAuthToken() once the proxy starts — see
+ * routingProxy/manager.ts's start(). This constant only matters for the
+ * MECHANISM: a non-empty ANTHROPIC_AUTH_TOKEN (sent as `Authorization:
+ * Bearer`) avoids the one-time interactive approval prompt that
+ * ANTHROPIC_API_KEY triggers in the Claude CLI, which would hang a
+ * terminal-less/headless workspace, regardless of whether the value itself
+ * is ever checked by anything (there's nothing running to check it yet in
+ * that fallback case).
  */
 export const DEFAULT_ROUTING_AUTH_TOKEN = 'orpheus-routed'
 
+// Late-bound by routingProxy/manager.ts each time the managed proxy starts —
+// a fresh crypto-random token generated per run, matching what the proxy's
+// own config expects. Never persisted; reset to null on proxy stop so a
+// stale token from a previous run is never reused against a proxy that no
+// longer recognizes it.
+let runtimeAuthToken: string | null = null
+
+export function setRuntimeRoutingAuthToken(token: string | null): void {
+  runtimeAuthToken = token
+}
+
 export function getRoutingAuthToken(): string {
-  return process.env.ORPHEUS_ROUTING_AUTH_TOKEN || DEFAULT_ROUTING_AUTH_TOKEN
+  return process.env.ORPHEUS_ROUTING_AUTH_TOKEN || runtimeAuthToken || DEFAULT_ROUTING_AUTH_TOKEN
 }
 
 /**
