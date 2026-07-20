@@ -185,12 +185,20 @@ export function DropdownChip({
 
   // Data-driven model list (Claude always present; routed models gated on
   // proxy/provider health server-side) — see useSelectableModels' own doc
-  // comment. Only fetched for the modelSelect chip; passing modelValue keeps
-  // an already-selected-but-now-unavailable routed model represented (never
-  // silently dropped from the dropdown, even though it can no longer be
-  // freshly selected as "available").
+  // comment. `enabled` gates the fetch to ONLY the modelSelect chip (BUG B
+  // fix: DropdownChip also renders for footer.effortSelect/footer.dropdown,
+  // neither of which touches the model list — without this gate every chip
+  // instance fired its own redundant models:listSelectable IPC call per
+  // workspace mount). The hook itself is still called unconditionally on
+  // every render (Rules of Hooks); only its internal subscription/IPC is
+  // skipped when disabled. Passing modelValue keeps an already-selected-but-
+  // now-unavailable routed model represented (never silently dropped from
+  // the dropdown, even though it can no longer be freshly selected as
+  // "available").
+  const isModelSelect = item.actionId === 'footer.modelSelect'
   const { models: selectableModels } = useSelectableModels(
-    item.actionId === 'footer.modelSelect' ? modelValue : undefined
+    isModelSelect ? modelValue : undefined,
+    isModelSelect
   )
   // isClaude lookup for the CURRENT effective model, used below to decide
   // whether a model switch is live-applicable (see onSelect's own comment).

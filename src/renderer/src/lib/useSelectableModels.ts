@@ -1,19 +1,32 @@
 // ---------------------------------------------------------------------------
-// useSelectableModels — fetches the single selectable-model list (Claude +
-// gated routed models) from models:listSelectable (model-routing unit 06).
+// useSelectableModels — the single hook every picker (WorkspaceDrawer/
+// SettingsDrawer/DropdownChip) uses to read the selectable-model list
+// (Claude + gated routed models). Thin wrapper over the shared
+// useSyncExternalStore-backed cache in selectableModelsStore.ts, which owns:
 //
-// The renderer must never compute model facts or availability itself —
-// gating (proxy running? provider connected/healthy?) happens entirely
-// server-side in src/main/models/selectable.ts. This hook is the one place
-// a picker component (WorkspaceDrawer/SettingsDrawer/DropdownChip) asks main
-// for that list, refetching whenever `currentModelId` changes so an
-// already-selected-but-now-unavailable model is always represented (see
-// models:listSelectable's own doc comment for the "never lose the user's
-// setting" contract).
+//   - the synchronous, zero-IPC Claude fallback (first paint AND any IPC
+//     failure — never `[]`, see claudeFallbackModels' own doc comment)
+//   - request coalescing across concurrent callers for the same
+//     currentModelId (so DropdownChip + WorkspaceDrawer + SettingsDrawer
+//     mounted together still fire ONE models:listSelectable round-trip)
+//   - cache invalidation on routingProxy:onSnapshot pushes, instead of
+//     polling
+//
+// The renderer must never compute model facts itself — gating (proxy
+// running? provider connected/healthy?) happens entirely server-side in
+// src/main/models/selectable.ts. This hook only decides WHETHER to ask (via
+// `enabled`), never WHAT the answer is.
+//
+// `enabled` (default true) lets a caller that renders a model picker only
+// conditionally (e.g. DropdownChip, which also handles non-model dropdown
+// actionIds) skip the fetch entirely for chips that never touch the model
+// list — WITHOUT calling this hook conditionally, which would violate the
+// Rules of Hooks. The hook itself is always called; only the internal
+// subscription/IPC is gated by `enabled`.
 // ---------------------------------------------------------------------------
 
-import { useEffect, useRef, useState } from 'react'
 import type { SelectableModel } from '@shared/types'
+import { useSelectableModelsStore } from './selectableModelsStore'
 
 export interface UseSelectableModelsResult {
   models: SelectableModel[]
@@ -25,39 +38,13 @@ export interface UseSelectableModelsResult {
  *   (if any) — passed through so an unavailable-but-selected routed model is
  *   still included in the result, marked `available: false`, rather than
  *   silently dropped from the list.
+ * @param enabled when false, no IPC/subscription happens at all and the
+ *   result is the synchronous Claude-only fallback — for callers that don't
+ *   need the routed list this render (default true).
  */
-export function useSelectableModels(currentModelId?: string): UseSelectableModelsResult {
-  const [models, setModels] = useState<SelectableModel[]>([])
-  const [loading, setLoading] = useState(true)
-  // Bumped once per effect run (not read reactively) so a stale in-flight
-  // response from a superseded `currentModelId` never overwrites a newer
-  // one. `setLoading(true)` is intentionally NOT called synchronously in the
-  // effect body (that would cascade a render on every dependency change) —
-  // loading only flips true->false->true across actual async completions.
-  const requestIdRef = useRef(0)
-
-  useEffect(() => {
-    const requestId = ++requestIdRef.current
-    let cancelled = false
-    window.api.models
-      .listSelectable(currentModelId)
-      .then((list) => {
-        if (!cancelled && requestId === requestIdRef.current) {
-          setModels(list)
-          setLoading(false)
-        }
-      })
-      .catch((err) => {
-        console.error('[useSelectableModels] listSelectable failed', err)
-        if (!cancelled && requestId === requestIdRef.current) {
-          setModels([])
-          setLoading(false)
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [currentModelId])
-
-  return { models, loading }
+export function useSelectableModels(
+  currentModelId?: string,
+  enabled = true
+): UseSelectableModelsResult {
+  return useSelectableModelsStore(currentModelId, enabled)
 }

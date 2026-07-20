@@ -43,6 +43,7 @@ import type {
 } from '../src/main/models/selectable.ts'
 import { computeRoutingEnv, isRoutedModel } from '../src/main/modelRouting.ts'
 import { CLAUDE_MODEL_OPTIONS } from '../src/shared/types.ts'
+import { claudeFallbackModels } from '../src/renderer/src/lib/selectableModelsStore.ts'
 
 const PROVIDER_DESCRIPTORS: ProviderDescriptorInput[] = [
   { id: 'codex', label: 'Codex (OpenAI)' },
@@ -376,6 +377,86 @@ function baseInput(
 
   console.log(
     '✓ effort levels come from real cliproxy thinking.levels data; a model with none yields null, never fabricated'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 7. Renderer-boundary guarantee (bug-fix regression coverage): the fallback
+//    used when models:listSelectable's IPC has not yet resolved OR has
+//    failed outright must contain the FULL Claude model list — never `[]` —
+//    and that fallback must be derived from the built-in CLAUDE_MODEL_OPTIONS
+//    constant, not from any proxy/routing state. Exercises
+//    claudeFallbackModels() directly (the exact function
+//    src/renderer/src/lib/selectableModelsStore.ts seeds its initial
+//    useSyncExternalStore snapshot with AND falls back to on IPC failure) so
+//    this is asserted without needing React/Electron.
+// ---------------------------------------------------------------------------
+
+{
+  // 7a. No currentModelId — the bare fallback must equal the full Claude
+  // list, in CLAUDE_MODEL_OPTIONS' own order, every entry available.
+  const fallback = claudeFallbackModels()
+  assert.equal(
+    fallback.length,
+    CLAUDE_MODEL_OPTIONS.length,
+    'the zero-IPC fallback must contain the FULL Claude model list, never empty'
+  )
+  assert.ok(
+    fallback.every((m) => m.isClaude && m.available),
+    'every fallback entry must be Claude and available (the offline guarantee)'
+  )
+  assert.deepEqual(
+    fallback.map((m) => m.id),
+    CLAUDE_MODEL_OPTIONS.map((o) => o.value),
+    'the fallback must be derived from CLAUDE_MODEL_OPTIONS, not proxy/routing state'
+  )
+  console.log(
+    '✓ the renderer fallback (first paint AND IPC failure) is the full Claude list, never empty'
+  )
+}
+
+{
+  // 7b. Routed models are additive ON TOP of the fallback, never a
+  // replacement — the store's cache entry always starts from
+  // claudeFallbackModels() and is only ever REPLACED wholesale by a
+  // successful models:listSelectable response (which itself always leads
+  // with the same Claude entries per buildSelectableModels — assertion 1
+  // above), so a caller reading the fallback mid-fetch never sees routed
+  // models before Claude, and Claude entries are never displaced.
+  const fallback = claudeFallbackModels()
+  const claudeIds = new Set(CLAUDE_MODEL_OPTIONS.map((o) => o.value))
+  assert.ok(
+    fallback.every((m) => claudeIds.has(m.id)),
+    'the bare fallback must contain ONLY Claude entries — routed models only ever layer in via a resolved IPC response'
+  )
+  console.log('✓ routed models are additive on top of the Claude fallback, never a replacement')
+}
+
+{
+  // 7c. An already-selected-but-unavailable (routed) model must survive in
+  // the FALLBACK path too, not just in buildSelectableModels' server-side
+  // result — otherwise a workspace pinned to a routed model would see its
+  // own selection vanish from the dropdown for the entire window between
+  // mount and IPC resolution (or permanently, if the IPC call fails).
+  const withCurrent = claudeFallbackModels('grok-4.5')
+  const preserved = withCurrent.find((m) => m.id === 'grok-4.5')
+  assert.ok(
+    preserved,
+    'an already-selected-but-unavailable model must survive in the renderer fallback path'
+  )
+  assert.equal(preserved!.available, false, 'it must be marked unavailable, not fabricated as ok')
+  assert.equal(preserved!.isClaude, false)
+
+  // A Claude currentModelId must NOT produce a duplicate entry in the
+  // fallback either (mirrors buildSelectableModels' own case C).
+  const claudeCurrent = claudeFallbackModels('claude-opus-4-8')
+  assert.equal(
+    claudeCurrent.filter((m) => m.id === 'claude-opus-4-8').length,
+    1,
+    'a Claude currentModelId must not produce a second entry in the fallback'
+  )
+  console.log(
+    '✓ an already-selected-but-unavailable model survives the fallback path, without duplicating an already-Claude selection'
   )
 }
 
