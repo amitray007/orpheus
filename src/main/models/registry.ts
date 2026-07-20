@@ -20,16 +20,22 @@
 import type { ModelInfo, ModelSource } from './types'
 import { builtinClaudeSource, isClaudeModelId } from './sources/builtin'
 import { modelsDevSource, refreshModelsDevCache } from './sources/modelsDev'
+import { cliProxyModelSource, refreshCliProxyModelCache } from './sources/cliproxy'
 
 export type { ModelInfo, Pricing, ModelSource } from './types'
 export { isClaudeModelId }
 export { refreshModelsDevCache }
+export { refreshCliProxyModelCache }
 
-// Precedence order. A future CLIProxyAPI source (unit 05) slots in here,
-// after modelsDevSource — the ModelSource interface is intentionally generic
-// enough that adding one is just appending to this array. builtinClaudeSource
-// must never move from index 0.
-const SOURCES: ModelSource[] = [builtinClaudeSource, modelsDevSource]
+// Precedence order. builtinClaudeSource must never move from index 0 — see
+// its own doc comment. cliProxyModelSource (unit 05) is appended AFTER
+// modelsDevSource: models.dev is the richer general catalog (has pricing),
+// so it gets first refusal on any non-Claude id; cliProxyModelSource only
+// ever fills in facts (context/thinking) for routed-provider ids models.dev
+// doesn't already know. Both non-Claude sources degrade to "resolves
+// nothing" independently and safely when unreachable — see each source's own
+// doc comment.
+const SOURCES: ModelSource[] = [builtinClaudeSource, modelsDevSource, cliProxyModelSource]
 
 /**
  * Resolve everything the app knows about a model id. Always returns a
