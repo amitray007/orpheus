@@ -761,7 +761,13 @@ export type ClaudeWorkspaceSettings = {
 // Claude Authentication (v13)
 // ---------------------------------------------------------------------------
 
-export type ClaudeCloudProvider = 'anthropic' | 'bedrock' | 'vertex' | 'foundry'
+// 'routed' sends traffic to Orpheus's local translating proxy instead of a
+// cloud provider. It is structurally mutually exclusive with
+// bedrock/vertex/foundry: each of those emits a CLAUDE_CODE_USE_* env var
+// that makes the Claude CLI take a different code path and ignore
+// ANTHROPIC_BASE_URL entirely, so a workspace can never be routed AND on a
+// cloud provider at once. See src/main/orpheusSurfaceAdapter.ts buildMountEnv.
+export type ClaudeCloudProvider = 'anthropic' | 'bedrock' | 'vertex' | 'foundry' | 'routed'
 
 // Public API shape — what the renderer sees
 export type ClaudeAuthState = {

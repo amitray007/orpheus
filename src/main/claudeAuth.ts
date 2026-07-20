@@ -10,7 +10,13 @@ import type {
 // Constants
 // ---------------------------------------------------------------------------
 
-const VALID_PROVIDERS: ClaudeCloudProvider[] = ['anthropic', 'bedrock', 'vertex', 'foundry']
+const VALID_PROVIDERS: ClaudeCloudProvider[] = [
+  'anthropic',
+  'bedrock',
+  'vertex',
+  'foundry',
+  'routed'
+]
 
 // ---------------------------------------------------------------------------
 // Internal read helper
@@ -202,6 +208,15 @@ export function getClaudeAuthEnv(): Record<string, string> {
     env = buildBedrockEnv(row)
   } else if (row.cloud_provider === 'vertex') {
     env = buildVertexEnv(row)
+  } else if (row.cloud_provider === 'routed') {
+    // Routed workspaces get ANTHROPIC_BASE_URL/ANTHROPIC_MODEL/
+    // ANTHROPIC_AUTH_TOKEN from buildMountEnv's routing conditional
+    // (src/main/orpheusSurfaceAdapter.ts), applied strictly AFTER this env is
+    // merged in — see that file for the ordering rationale. Contributing
+    // nothing here keeps this auth layer a true no-op for routed workspaces
+    // instead of leaking a stale anthropic_api_key/base_url that the routing
+    // block would then have to fight to override.
+    env = {}
   } else {
     // anthropic (default)
     env = buildAnthropicEnv(row)

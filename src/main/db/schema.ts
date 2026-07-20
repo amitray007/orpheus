@@ -20,7 +20,11 @@ const EFFORT = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 const OUTPUT_STYLE = ['default', 'explanatory', 'proactive', 'learning'] as const
 const TUI_MODE = ['default', 'fullscreen'] as const
 const EDITOR_MODE = ['normal', 'vim'] as const
-const CLOUD_PROVIDER = ['anthropic', 'bedrock', 'vertex', 'foundry'] as const
+// 'routed' (unit 03, model routing) sends traffic to Orpheus's local
+// translating proxy — structurally mutually exclusive with the other three,
+// which each emit a CLAUDE_CODE_USE_* var that makes the CLI ignore
+// ANTHROPIC_BASE_URL. See ClaudeCloudProvider in src/shared/types.ts.
+const CLOUD_PROVIDER = ['anthropic', 'bedrock', 'vertex', 'foundry', 'routed'] as const
 const LOG_LEVEL = ['debug', 'info', 'warn', 'error'] as const
 
 // 'panes' added (KTD2 nav-rail work) so lastViewKind='panes' doesn't violate
