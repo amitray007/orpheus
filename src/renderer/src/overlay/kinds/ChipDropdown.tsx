@@ -26,6 +26,7 @@ export function ChipDropdown({ props, emit }: OverlayKindProps): React.JSX.Eleme
   )
   const [highlighted, setHighlighted] = useState(initialIndex)
   const containerRef = useRef<HTMLDivElement>(null)
+  const highlightedRowRef = useRef<HTMLButtonElement>(null)
 
   function handleSelect(value: string): void {
     emit('select', { value })
@@ -48,6 +49,14 @@ export function ChipDropdown({ props, emit }: OverlayKindProps): React.JSX.Eleme
     return () => window.removeEventListener('blur', handleCancel)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- handleCancel just emits a stable 'cancel' event; re-subscribing per-render would add churn without behavior change.
   }, [])
+
+  // Keep the highlighted row in view as Up/Down navigates — now that the
+  // list can exceed max-h-80 and scroll internally (bug 2 fix), keyboard
+  // navigation needs to scroll the highlighted row into view itself instead
+  // of relying on the (now-clamped) popover growing to fit every row.
+  useEffect(() => {
+    highlightedRowRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [highlighted])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>): void {
     if (e.key === 'ArrowDown') {
@@ -80,7 +89,7 @@ export function ChipDropdown({ props, emit }: OverlayKindProps): React.JSX.Eleme
         // the overlay hides — no dead first click.
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) handleCancel()
       }}
-      className="w-56 bg-surface-overlay border border-border-default rounded-lg shadow-lg p-1.5 flex flex-col gap-0.5 font-[family-name:var(--font-sans)] outline-none"
+      className="w-56 bg-surface-overlay border border-border-default rounded-lg shadow-lg p-1.5 flex flex-col gap-0.5 font-[family-name:var(--font-sans)] outline-none max-h-80 overflow-y-auto"
     >
       {title && (
         <span className="text-xs font-medium text-text-muted uppercase tracking-wider px-1.5 pt-0.5 pb-1">
@@ -114,6 +123,7 @@ export function ChipDropdown({ props, emit }: OverlayKindProps): React.JSX.Eleme
         return (
           <button
             key={item.value}
+            ref={isHighlighted ? highlightedRowRef : undefined}
             type="button"
             onClick={() => handleSelect(item.value)}
             onMouseEnter={() => setHighlighted(idx)}

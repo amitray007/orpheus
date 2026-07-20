@@ -76,26 +76,12 @@ export function claudeFallbackModels(currentModelId?: string): SelectableModel[]
   return claude
 }
 
-interface Entry {
+export interface Entry {
   models: SelectableModel[]
   loading: boolean
 }
 
 const cacheKey = (currentModelId?: string): string => currentModelId ?? ''
-
-// Memoized disabled-path snapshot per key — useSyncExternalStore requires
-// getSnapshot to return a STABLE reference when nothing changed, or it loops
-// re-rendering forever. Kept separate from `store` (the enabled/fetched
-// cache) so a disabled caller never seeds/triggers the real fetch machinery.
-const disabledSnapshots = new Map<string, Entry>()
-function disabledSnapshot(key: string, currentModelId?: string): Entry {
-  let entry = disabledSnapshots.get(key)
-  if (!entry) {
-    entry = { models: claudeFallbackModels(currentModelId), loading: false }
-    disabledSnapshots.set(key, entry)
-  }
-  return entry
-}
 
 const store = new Map<string, Entry>()
 const listeners = new Map<string, Set<() => void>>()
@@ -103,6 +89,54 @@ const listeners = new Map<string, Set<() => void>>()
 // WorkspaceDrawer + SettingsDrawer all asking for the same currentModelId)
 // coalesce into a single models:listSelectable round-trip.
 const inFlight = new Map<string, Promise<void>>()
+
+// Memoized disabled-path snapshot per key — useSyncExternalStore requires
+// getSnapshot to return a STABLE reference when nothing changed, or it loops
+// re-rendering forever. Kept separate from `store` (the enabled/fetched
+// cache) so a disabled caller never seeds/triggers the real fetch machinery.
+//
+// IMPORTANT — this is strictly a first-paint/never-fetched placeholder. It
+// must never be allowed to SHADOW a real (enabled, fetched) entry that
+// exists for the same key: resolveDisabledSnapshot() below always checks
+// `store` first and returns the live entry when one is present, only falling
+// back to (and memoizing) the synchronous Claude-only snapshot when nothing
+// live exists yet. invalidateAll() clears this map on every proxy/health
+// push so a stale placeholder can never survive a state change either — it
+// is re-derived (and re-checked against `store`) the next time it's read.
+const disabledSnapshots = new Map<string, Entry>()
+
+/**
+ * Pure decision logic for the disabled-path cache, factored out of module
+ * state so it's independently testable (scripts/verify-model-picker.ts)
+ * without React/useSyncExternalStore: given the two caches, a key, and an
+ * optional currentModelId, decide what a disabled caller should render.
+ *
+ *   1. If `live` (the enabled/fetched cache) already has an entry for this
+ *      key, return it — live data always wins, a memoized fallback can never
+ *      shadow it.
+ *   2. Otherwise return the memoized fallback for this key, creating
+ *      (and caching) one via claudeFallbackModels() if this is the first
+ *      read for this key since the last invalidation.
+ */
+export function resolveDisabledSnapshot(
+  live: Map<string, Entry>,
+  fallbackCache: Map<string, Entry>,
+  key: string,
+  currentModelId?: string
+): Entry {
+  const liveEntry = live.get(key)
+  if (liveEntry) return liveEntry
+  let entry = fallbackCache.get(key)
+  if (!entry) {
+    entry = { models: claudeFallbackModels(currentModelId), loading: false }
+    fallbackCache.set(key, entry)
+  }
+  return entry
+}
+
+function disabledSnapshot(key: string, currentModelId?: string): Entry {
+  return resolveDisabledSnapshot(store, disabledSnapshots, key, currentModelId)
+}
 
 function notify(key: string): void {
   listeners.get(key)?.forEach((fn) => fn())
@@ -157,7 +191,12 @@ function fetchKey(key: string, currentModelId?: string): void {
 
 /** Invalidate every cached entry and refetch the ones with active
  *  subscribers — called on every routingProxy:onSnapshot push (proxy
- *  started/stopped, provider connected/disconnected) instead of polling. */
+ *  started/stopped, provider connected/disconnected) instead of polling.
+ *  Also clears disabledSnapshots: a memoized disabled-path placeholder must
+ *  not be able to outlive a proxy/health change any more than a real entry
+ *  can — the next read re-derives it (and, per disabledSnapshot()'s own
+ *  live-data check, immediately prefers a fresh `store` entry once one
+ *  exists for that key). */
 function invalidateAll(): void {
   for (const key of store.keys()) {
     if ((listeners.get(key)?.size ?? 0) > 0) {
@@ -166,6 +205,7 @@ function invalidateAll(): void {
       store.delete(key)
     }
   }
+  disabledSnapshots.clear()
 }
 
 let pushSubscribed = false

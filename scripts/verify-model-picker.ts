@@ -43,7 +43,11 @@ import type {
 } from '../src/main/models/selectable.ts'
 import { computeRoutingEnv, isRoutedModel } from '../src/main/modelRouting.ts'
 import { CLAUDE_MODEL_OPTIONS } from '../src/shared/types.ts'
-import { claudeFallbackModels } from '../src/renderer/src/lib/selectableModelsStore.ts'
+import {
+  claudeFallbackModels,
+  resolveDisabledSnapshot,
+  type Entry
+} from '../src/renderer/src/lib/selectableModelsStore.ts'
 
 const PROVIDER_DESCRIPTORS: ProviderDescriptorInput[] = [
   { id: 'codex', label: 'Codex (OpenAI)' },
@@ -457,6 +461,145 @@ function baseInput(
   )
   console.log(
     '✓ an already-selected-but-unavailable model survives the fallback path, without duplicating an already-Claude selection'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 8. Stale-fallback-shadowing regression coverage (bug fix in
+//    selectableModelsStore.ts): a disabled caller's memoized fallback entry
+//    for a key must NEVER shadow a live (enabled, fetched) entry that exists
+//    for the SAME key — this is exactly the "one workspace shows Claude-only
+//    forever" bug. Exercises resolveDisabledSnapshot() directly (the pure
+//    function factored out of the disabled-path branch of
+//    useSelectableModelsStore's getSnapshot) against plain Maps, so this is
+//    asserted fully offline without React/useSyncExternalStore.
+// ---------------------------------------------------------------------------
+
+{
+  // 8a. No live entry yet -> the memoized Claude-only fallback is returned
+  // (and cached) — this is the correct first-paint/no-data-yet behavior.
+  const live = new Map<string, Entry>()
+  const fallbackCache = new Map<string, Entry>()
+  const key = 'gpt-5-codex'
+
+  const first = resolveDisabledSnapshot(live, fallbackCache, key, key)
+  assert.ok(
+    first.models.every((m) => m.isClaude || m.id === key),
+    'with no live entry, resolveDisabledSnapshot must return the Claude-only fallback (plus the preserved current selection)'
+  )
+  assert.ok(fallbackCache.has(key), 'the fallback must be memoized under the key after first read')
+
+  // Same reference returned on a second read with still-no-live-data — this
+  // is the referential-stability property useSyncExternalStore requires:
+  // getSnapshot must not construct a fresh array/object every call or React
+  // infinite-loops re-rendering.
+  const second = resolveDisabledSnapshot(live, fallbackCache, key, key)
+  assert.equal(
+    second,
+    first,
+    'repeated reads with no live data must return the SAME memoized reference (referential stability for useSyncExternalStore)'
+  )
+
+  // 8b. THE CORE REGRESSION: live data now arrives for this key (a routed
+  // model list, including a Codex entry) — resolveDisabledSnapshot must
+  // return the LIVE entry, not the memoized Claude-only fallback from 8a,
+  // even though the fallback is still sitting in fallbackCache un-cleared.
+  const liveEntry: Entry = {
+    models: [
+      ...claudeFallbackModels(),
+      {
+        id: 'gpt-5-codex',
+        label: 'GPT-5 Codex',
+        providerId: 'codex',
+        providerLabel: 'Codex (OpenAI)',
+        isClaude: false,
+        available: true,
+        contextWindow: 400_000,
+        effortLevels: null
+      }
+    ],
+    loading: false
+  }
+  live.set(key, liveEntry)
+
+  const afterLiveArrives = resolveDisabledSnapshot(live, fallbackCache, key, key)
+  assert.equal(
+    afterLiveArrives,
+    liveEntry,
+    'once a live entry exists for a key, resolveDisabledSnapshot must return it — a memoized fallback must never shadow live data'
+  )
+  assert.ok(
+    afterLiveArrives.models.some((m) => m.id === 'gpt-5-codex'),
+    'the returned entry must include the routed (Codex) model, proving the fallback did not shadow it'
+  )
+  console.log(
+    '✓ a memoized fallback entry for a key does NOT shadow live data once live data exists for that key'
+  )
+}
+
+{
+  // 8c. Invalidation clears the fallback memo, so a stale Claude-only entry
+  // cannot survive a proxy/health change: after live data is cleared (as
+  // invalidateAll() does to `store` for keys with no active subscriber) AND
+  // the fallback cache is cleared (as invalidateAll() now also does to
+  // disabledSnapshots), the next read re-derives a FRESH fallback entry
+  // rather than returning a stale pre-invalidation reference.
+  const live = new Map<string, Entry>()
+  const fallbackCache = new Map<string, Entry>()
+  const key = ''
+
+  const beforeInvalidation = resolveDisabledSnapshot(live, fallbackCache, key)
+  assert.ok(fallbackCache.has(key), 'sanity: the fallback must be memoized before invalidation')
+
+  // Mirrors invalidateAll(): clear both the live store's stale entries (none
+  // here) and disabledSnapshots.
+  live.clear()
+  fallbackCache.clear()
+
+  const afterInvalidation = resolveDisabledSnapshot(live, fallbackCache, key)
+  assert.notEqual(
+    afterInvalidation,
+    beforeInvalidation,
+    'after invalidation, the fallback must be RE-DERIVED (a new reference), never the stale pre-invalidation one'
+  )
+  assert.ok(
+    afterInvalidation.models.every((m) => m.isClaude),
+    're-derived fallback must still be the full Claude-only list'
+  )
+
+  // And if live data has meanwhile arrived for this key (the realistic
+  // post-invalidation case — invalidateAll() refetches keys with active
+  // subscribers), the re-derived read must prefer THAT over deriving a new
+  // fallback at all.
+  const liveAfterInvalidation: Entry = { models: claudeFallbackModels(), loading: false }
+  live.set(key, liveAfterInvalidation)
+  const afterInvalidationWithLive = resolveDisabledSnapshot(live, fallbackCache, key)
+  assert.equal(
+    afterInvalidationWithLive,
+    liveAfterInvalidation,
+    'post-invalidation, if live data has arrived for the key, it must be preferred over deriving another fallback'
+  )
+  console.log(
+    '✓ invalidation clears the fallback memo so it is re-derived — a stale Claude-only entry cannot survive a proxy/health change'
+  )
+}
+
+{
+  // 8d. Non-negotiable invariant preserved: the disabled-path fallback is
+  // STILL what would be rendered on first paint (no live data yet, nothing
+  // memoized yet) — and it is never empty. This is the same guarantee
+  // assertion 7 proves for claudeFallbackModels() directly; here it's
+  // re-proven through the exact function the disabled hook branch calls.
+  const live = new Map<string, Entry>()
+  const fallbackCache = new Map<string, Entry>()
+  const firstPaint = resolveDisabledSnapshot(live, fallbackCache, '')
+  assert.ok(firstPaint.models.length > 0, 'first-paint disabled-path snapshot must never be empty')
+  assert.ok(
+    firstPaint.models.every((m) => m.isClaude && m.available),
+    'first-paint disabled-path snapshot must be the fully-available Claude list'
+  )
+  console.log(
+    '✓ the disabled-path fallback is still returned (non-empty, Claude-only) on first paint with no live data'
   )
 }
 
