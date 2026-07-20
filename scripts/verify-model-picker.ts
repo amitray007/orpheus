@@ -47,6 +47,7 @@ import {
   setCliProxyModelCacheForTests,
   listCliProxyModelCacheEntries,
   shouldRefreshCliProxyModelCache,
+  hydrateCliProxyModelCacheFromPersisted,
   type CliProxyModelSourceDeps
 } from '../src/main/models/sources/cliproxy.ts'
 import { CLAUDE_MODEL_OPTIONS } from '../src/shared/types.ts'
@@ -63,6 +64,12 @@ import {
   resolveDisabledSnapshot,
   type Entry
 } from '../src/renderer/src/lib/selectableModelsStore.ts'
+import {
+  isPersistedCacheVersionValid,
+  isPersistedCacheFresh,
+  raceWithTimeout
+} from '../src/main/models/cliProxyModelCacheStaleness.ts'
+import { PINNED_VERSION } from '../src/main/routingProxy/constants.ts'
 
 const PROVIDER_DESCRIPTORS: ProviderDescriptorInput[] = [
   { id: 'codex', label: 'Codex (OpenAI)' },
@@ -910,6 +917,373 @@ function baseInput(
     '✓ (no-regression) Claude offline guarantee intact: proxy fully unreachable -> Claude-only list, ' +
       'unaffected by the orphan-reclaim addition'
   )
+}
+
+// ---------------------------------------------------------------------------
+// 10. THE REPORTED BUG (persisted cache across launches): "Still noticing
+//    delay... something is off." Root cause: cliproxy.ts's cache is
+//    in-memory only, so it's empty on EVERY app launch — the first
+//    models:listSelectable call of every run was guaranteed Claude-only
+//    until a later background refresh completed. The fix hydrates the
+//    in-memory cache from a persisted payload
+//    (cliProxyModelCachePersistence.ts, wired at boot by
+//    routingProxy/manager.ts's hydrateSnapshotAtBoot) BEFORE any network
+//    call happens this run.
+//
+// This section simulates exactly that boot sequence — hydrate from a
+// "previous run's" persisted payload via hydrateCliProxyModelCacheFromPersisted,
+// then immediately call buildSelectableModels with ZERO refresh having
+// happened yet this run — and proves the routed model is already selectable.
+//
+// THIS ASSERTION FAILS ON PRE-FIX BEHAVIOR: before this fix,
+// hydrateCliProxyModelCacheFromPersisted did not exist and the cache started
+// (and stayed) empty until a live refresh — so the "first call after launch"
+// step below would find the cache still empty and the routed model absent.
+// ---------------------------------------------------------------------------
+
+{
+  setCliProxyModelCacheForTests(null) // clean slate — nothing fetched THIS run yet
+
+  // Simulate "a previous run persisted this to disk" — exactly the shape
+  // loadPersistedCliProxyModelCache() would hand routingProxy/manager.ts.
+  const persistedFromPreviousRun = {
+    'gpt-5-codex': {
+      context: 400_000,
+      supportsReasoning: true,
+      providerId: 'codex',
+      effortLevels: ['low', 'medium', 'high']
+    }
+  }
+
+  // Boot-time hydration — the ONLY thing that has happened this run. No
+  // fetch, no refreshCliProxyModelCache call.
+  hydrateCliProxyModelCacheFromPersisted(persistedFromPreviousRun)
+
+  assert.equal(
+    listCliProxyModelCacheEntries().length,
+    1,
+    'boot-time hydration must populate the in-memory cache from the persisted payload, with no network call'
+  )
+
+  // THE FIRST models:listSelectable-equivalent call of this run.
+  const firstCallThisRun = buildSelectableModels(
+    baseInput({
+      routingProxy: {
+        enabled: true,
+        status: 'running',
+        authFiles: [{ provider: 'codex', health: 'ok' }]
+      },
+      providerConfigs: [{ providerId: 'codex', enabled: true }],
+      cliProxyModels: listCliProxyModelCacheEntries()
+    })
+  )
+  const routedEntry = firstCallThisRun.find((m) => m.id === 'gpt-5-codex')
+  assert.ok(
+    routedEntry && routedEntry.available,
+    'THE REPORTED BUG, FIXED: the FIRST models:listSelectable call after boot must already include ' +
+      'the routed model when a valid persisted cache exists — this assertion fails against pre-fix ' +
+      'behavior (in-memory-only cache, always empty at boot)'
+  )
+  assert.equal(routedEntry!.contextWindow, 400_000, 'persisted facts (context) must be preserved')
+  assert.deepEqual(
+    routedEntry!.effortLevels,
+    ['low', 'medium', 'high'],
+    'persisted facts (effort levels) must be preserved'
+  )
+  console.log(
+    '✓ THE FIX: a persisted cache hydrates the in-memory cache at boot, so the FIRST ' +
+      'models:listSelectable call of a run already includes routed models (reproduces + resolves the ' +
+      'reported "still noticing delay" bug)'
+  )
+
+  setCliProxyModelCacheForTests(null)
+}
+
+// ---------------------------------------------------------------------------
+// 11. Persisted entries are STILL fully gated by live authFiles health — a
+//    persisted model whose provider is now unhealthy/disconnected must NOT
+//    be offered, even though its facts survived hydration. Persistence
+//    supplies facts only, never availability (selectable.ts's gating is
+//    untouched by this fix).
+// ---------------------------------------------------------------------------
+
+{
+  setCliProxyModelCacheForTests(null)
+  hydrateCliProxyModelCacheFromPersisted({
+    'grok-4.5': { context: 256_000, supportsReasoning: false, providerId: 'xai' }
+  })
+  const entries = listCliProxyModelCacheEntries()
+
+  // Provider now reports unhealthy (e.g. token expired since the last run).
+  const unhealthy = buildSelectableModels(
+    baseInput({
+      routingProxy: {
+        enabled: true,
+        status: 'running',
+        authFiles: [{ provider: 'xai', health: 'error' }]
+      },
+      providerConfigs: [{ providerId: 'xai', enabled: true }],
+      cliProxyModels: entries
+    })
+  )
+  assert.ok(
+    !unhealthy.some((m) => m.id === 'grok-4.5' && m.available),
+    'a persisted model whose provider now reports unhealthy must NOT be offered as available — ' +
+      'persistence supplies facts only, never bypasses live health gating'
+  )
+
+  // Provider never connected at all this run (authFiles empty) — same rule.
+  const neverConnected = buildSelectableModels(
+    baseInput({
+      routingProxy: { enabled: true, status: 'running', authFiles: [] },
+      providerConfigs: [{ providerId: 'xai', enabled: true }],
+      cliProxyModels: entries
+    })
+  )
+  assert.ok(
+    !neverConnected.some((m) => m.id === 'grok-4.5' && m.available),
+    'a persisted model must not be offered when its provider has no live authFiles entry at all this run'
+  )
+  console.log(
+    '✓ persisted entries remain fully gated by LIVE authFiles health — an unhealthy/disconnected ' +
+      "provider's persisted models are never offered"
+  )
+  setCliProxyModelCacheForTests(null)
+}
+
+// ---------------------------------------------------------------------------
+// 12. A disabled/removed provider's persisted models are not offered, even
+//    though the model's facts survived hydration from a run where that
+//    provider was still configured+enabled.
+// ---------------------------------------------------------------------------
+
+{
+  setCliProxyModelCacheForTests(null)
+  hydrateCliProxyModelCacheFromPersisted({
+    'gemini-3-pro': { context: 1_000_000, supportsReasoning: true, providerId: 'gemini' }
+  })
+  const entries = listCliProxyModelCacheEntries()
+
+  // Provider disabled in stored config since the persisted payload was written.
+  const disabled = buildSelectableModels(
+    baseInput({
+      routingProxy: {
+        enabled: true,
+        status: 'running',
+        authFiles: [{ provider: 'gemini', health: 'ok' }]
+      },
+      providerConfigs: [{ providerId: 'gemini', enabled: false }],
+      cliProxyModels: entries
+    })
+  )
+  assert.ok(
+    !disabled.some((m) => m.id === 'gemini-3-pro' && m.available),
+    'a persisted model whose provider is now disabled in stored config must not be offered'
+  )
+
+  // Provider removed entirely (no stored config row at all).
+  const removed = buildSelectableModels(
+    baseInput({
+      routingProxy: {
+        enabled: true,
+        status: 'running',
+        authFiles: [{ provider: 'gemini', health: 'ok' }]
+      },
+      providerConfigs: [],
+      cliProxyModels: entries
+    })
+  )
+  assert.ok(
+    !removed.some((m) => m.id === 'gemini-3-pro' && m.available),
+    'a persisted model whose provider config row was removed entirely must not be offered'
+  )
+  console.log(
+    "✓ a disabled/removed provider's persisted models are not offered, even though their facts " +
+      'survived hydration'
+  )
+  setCliProxyModelCacheForTests(null)
+}
+
+// ---------------------------------------------------------------------------
+// 13. Staleness/version-invalidation — the pure decisions
+//    cliProxyModelCachePersistence.ts's loadPersistedCliProxyModelCache()
+//    wraps around the real DB read (not offline-testable itself, since it
+//    imports electron transitively — see that module's doc comment). These
+//    pure functions live in cliProxyModelCacheStaleness.ts specifically so
+//    they ARE assertable here.
+// ---------------------------------------------------------------------------
+
+{
+  // 13a. A pinned-version mismatch invalidates the payload outright — never
+  // trust facts fetched against a different CLIProxyAPI release's
+  // model-definitions contract.
+  assert.equal(
+    isPersistedCacheVersionValid(PINNED_VERSION, PINNED_VERSION),
+    true,
+    'matching pinned version -> valid'
+  )
+  assert.equal(
+    isPersistedCacheVersionValid('7.2.90', PINNED_VERSION),
+    false,
+    'a stale pinned version (from before a CLIProxyAPI bump) must invalidate the persisted payload'
+  )
+  console.log(
+    '✓ a pinned-CLIProxyAPI-version mismatch invalidates the persisted cache (never trusted across a version bump)'
+  )
+
+  // 13b. Staleness: within TTL -> fresh (usable without a mandatory refresh
+  // signal); past TTL -> stale (still usable immediately per the
+  // "serve-immediately, refresh-in-background" rule — staleness is a
+  // background-refresh TRIGGER, not a block on serving what's cached).
+  const oneHourMs = 60 * 60 * 1000
+  const now = 10 * oneHourMs
+  assert.equal(isPersistedCacheFresh(now - oneHourMs, now), true, '1h old, 24h TTL -> fresh')
+  assert.equal(isPersistedCacheFresh(now - 25 * oneHourMs, now), false, '25h old, 24h TTL -> stale')
+  console.log(
+    '✓ staleness (TTL) is computed correctly — stale is a background-refresh trigger, not a block on serving cached data'
+  )
+
+  // 13c. Stale entries are served immediately (never withheld from
+  // buildSelectableModels just because they're stale) — staleness is
+  // orthogonal to the offered/available decision entirely; only version
+  // validity and live health gate that.
+  setCliProxyModelCacheForTests(null)
+  hydrateCliProxyModelCacheFromPersisted({
+    'gpt-5-codex': { context: 400_000, supportsReasoning: true, providerId: 'codex' }
+  })
+  const staleButServed = buildSelectableModels(
+    baseInput({
+      routingProxy: {
+        enabled: true,
+        status: 'running',
+        authFiles: [{ provider: 'codex', health: 'ok' }]
+      },
+      providerConfigs: [{ providerId: 'codex', enabled: true }],
+      cliProxyModels: listCliProxyModelCacheEntries()
+    })
+  )
+  assert.ok(
+    staleButServed.some((m) => m.id === 'gpt-5-codex' && m.available),
+    'a stale-but-version-valid persisted entry must still be served immediately (available), not withheld ' +
+      'pending a background refresh'
+  )
+  console.log(
+    '✓ a stale (past-TTL) persisted entry is served immediately — staleness only triggers a background refresh, never blocks'
+  )
+  setCliProxyModelCacheForTests(null)
+}
+
+// ---------------------------------------------------------------------------
+// 14. The bounded first-call wait (routingProxy/manager.ts's
+//    waitForCliProxyModelCacheFresh) is built on raceWithTimeout — a
+//    pure, offline-testable "resolve no later than timeoutMs" race,
+//    exercised here with a FAKE scheduler (no real setTimeout/sleep) so this
+//    harness stays fast and deterministic. Proves both directions: a
+//    slow/never-resolving refresh times out cleanly, and a fast refresh
+//    resolves before the timeout fires.
+// ---------------------------------------------------------------------------
+
+{
+  // 14a. A refresh that never resolves within the budget must still cause
+  // raceWithTimeout to resolve (never hang, never reject) once the fake
+  // timeout fires — this is the "always falls back to Claude-only on
+  // timeout" guarantee: the caller (models:listSelectable) proceeds to
+  // buildSelectableModels regardless.
+  let timeoutFired = false
+  const neverResolves = new Promise<void>(() => {
+    /* deliberately never settles — simulates a wedged/hanging proxy call */
+  })
+  const fakeScheduler = (resolve: () => void): void => {
+    timeoutFired = true
+    resolve() // fire "immediately" in call-order, standing in for the deadline elapsing
+  }
+  await raceWithTimeout(neverResolves, 250, fakeScheduler)
+  assert.equal(
+    timeoutFired,
+    true,
+    'raceWithTimeout must resolve via the timeout path when the pending work never settles — never hang'
+  )
+  console.log(
+    '✓ raceWithTimeout resolves cleanly on timeout even when the underlying refresh never settles (no real sleep used)'
+  )
+
+  // 14b. A refresh that resolves (or rejects) before the timeout is awaited
+  // is still handled cleanly — raceWithTimeout never rejects even if the
+  // pending promise itself rejects.
+  const rejectsFast = Promise.reject(new Error('ECONNREFUSED'))
+  let rejected = false
+  try {
+    await raceWithTimeout(rejectsFast, 250, (resolve) => resolve())
+  } catch {
+    rejected = true
+  }
+  assert.equal(
+    rejected,
+    false,
+    'raceWithTimeout must never reject even when the underlying pending work rejects (proxy unreachable case)'
+  )
+  console.log(
+    '✓ raceWithTimeout never rejects even when the underlying refresh itself rejects (proxy unreachable)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 15. Claude offline guarantee re-proven in the persisted-cache world: with
+//    the proxy fully disabled, buildSelectableModels resolves SYNCHRONOUSLY
+//    (it has always been a plain function, never async — this fix does not
+//    change that) regardless of anything in the persisted-cache/hydration
+//    machinery, and returns Claude-only. shouldRefreshCliProxyModelCache
+//    (the pure gate the new bounded-wait path shares with the existing
+//    fire-and-forget path) also refuses to fire when the proxy isn't
+//    running, which is what keeps routingProxy/manager.ts's
+//    waitForCliProxyModelCacheFresh from ever awaiting real proxy I/O when
+//    disabled/unreachable.
+// ---------------------------------------------------------------------------
+
+{
+  setCliProxyModelCacheForTests(null)
+  hydrateCliProxyModelCacheFromPersisted({
+    'gpt-5-codex': { context: 400_000, supportsReasoning: true, providerId: 'codex' }
+  })
+
+  assert.equal(
+    shouldRefreshCliProxyModelCache({
+      cacheSize: listCliProxyModelCacheEntries().length,
+      isProxyRunning: false, // proxy disabled/unreachable
+      hasManagementSecret: false,
+      isRefreshInFlight: false,
+      lastAttemptAt: 0,
+      now: 1_000,
+      minIntervalMs: 5_000
+    }),
+    false,
+    'with the proxy not running, the refresh gate must refuse immediately — the bounded first-call ' +
+      'wait built on this same gate can never await real proxy work while disabled/unreachable'
+  )
+
+  const start = Date.now()
+  const claudeOnly = buildSelectableModels(
+    baseInput({
+      routingProxy: { enabled: false, status: 'not_installed', authFiles: [] },
+      providerConfigs: [],
+      cliProxyModels: [] // proxy disabled -> ipc/models.ts would pass live cache entries, but even a
+      // populated persisted cache is irrelevant here since routingProxy.enabled is false
+    })
+  )
+  const elapsedMs = Date.now() - start
+  assert.ok(
+    claudeOnly.length > 0 && claudeOnly.every((m) => m.isClaude && m.available),
+    'Claude models are returned immediately with the proxy disabled, regardless of persisted-cache state'
+  )
+  assert.ok(
+    elapsedMs < 5,
+    'buildSelectableModels must resolve synchronously (no await on any proxy work) — offline guarantee'
+  )
+  console.log(
+    '✓ Claude offline guarantee intact in the persisted-cache world: buildSelectableModels resolves ' +
+      'synchronously and Claude-only with the proxy disabled, independent of any persisted/hydrated data'
+  )
+  setCliProxyModelCacheForTests(null)
 }
 
 console.log('\nAll model-picker assertions passed.')

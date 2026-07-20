@@ -197,6 +197,34 @@ export function setCliProxyModelCacheForTests(entries: Record<string, CachedEntr
   cache = next
 }
 
+/** Snapshot the current cache as a plain object, keyed by model id — the
+ *  shape routingProxy/manager.ts persists to disk after a successful
+ *  refresh (see models/cliProxyModelCachePersistence.ts). Kept separate from
+ *  listCliProxyModelCacheEntries (which returns an array shape tailored to
+ *  buildSelectableModels' input) so the persistence wire shape can evolve
+ *  independently of that consumer. */
+export function snapshotCliProxyModelCache(): Record<string, CachedEntry> {
+  return Object.fromEntries(cache.entries())
+}
+
+/**
+ * Hydrate the in-memory cache from a persisted payload (boot-time only —
+ * see routingProxy/manager.ts's hydrateSnapshotAtBoot). Only fills in
+ * entries; never called once a real network refresh has happened this run,
+ * so there's no merge/precedence question — it's a one-shot cold-start seed.
+ * A no-op on empty/undefined input.
+ */
+export function hydrateCliProxyModelCacheFromPersisted(
+  entries: Record<string, CachedEntry> | null | undefined
+): void {
+  if (!entries) return
+  const next = new Map<string, CachedEntry>()
+  for (const [id, entry] of Object.entries(entries)) {
+    next.set(id, entry)
+  }
+  if (next.size > 0) cache = next
+}
+
 function labelFromId(id: string): string {
   // Same one canonical rule as modelsDevSource.labelFromId — kept in sync
   // deliberately (both sources produce ids drawn from the same "third-party

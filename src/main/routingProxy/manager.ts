@@ -43,8 +43,15 @@ import { cleanStoppedStatus, disableTransitionPatch } from './state'
 import {
   refreshCliProxyModelCache,
   listCliProxyModelCacheEntries,
-  shouldRefreshCliProxyModelCache
+  shouldRefreshCliProxyModelCache,
+  snapshotCliProxyModelCache,
+  hydrateCliProxyModelCacheFromPersisted
 } from '../models/sources/cliproxy'
+import {
+  loadPersistedCliProxyModelCache,
+  persistCliProxyModelCache
+} from '../models/cliProxyModelCachePersistence'
+import { raceWithTimeout } from '../models/cliProxyModelCacheStaleness'
 import { listProviderConfigs } from './providers/storage'
 import {
   startProviderLogin,
@@ -183,8 +190,13 @@ async function refreshAuthFiles(): Promise<void> {
   // comment) and populates the model registry's cliProxyModelSource cache so
   // routed-provider models pick up real context/thinking facts once the
   // proxy is reachable. Piggybacks on the same 30s interval as auth-files
-  // rather than a separate timer.
-  void refreshCliProxyModelCache(getRoutingProxyUrl(), secret)
+  // rather than a separate timer. Persist afterward so the on-disk copy
+  // (models/cliProxyModelCachePersistence.ts) never falls far behind the
+  // in-memory one — this is what lets the NEXT app launch's first
+  // models:listSelectable call see routed models immediately (see
+  // hydrateSnapshotAtBoot below).
+  await refreshCliProxyModelCache(getRoutingProxyUrl(), secret)
+  persistCliProxyModelCache(snapshotCliProxyModelCache())
 }
 
 /** IPC-facing manual refresh — returns the updated snapshot. */
@@ -194,29 +206,64 @@ export async function refreshAuthFilesNow(): Promise<RoutingProxySnapshot> {
 }
 
 // ---------------------------------------------------------------------------
-// On-demand model-cache refresh (issue-2 fix) — refreshCliProxyModelCache was
-// previously invoked from exactly one place: refreshAuthFiles' 30s interval,
-// itself only armed once start() completes. That leaves a window — proxy
-// enabled+running but this run's first 30s tick hasn't fired yet, or the
-// picker is opened before the interval catches up — where the routed-model
-// cache is empty even though the proxy is healthy, so buildSelectableModels
-// (models/selectable.ts) offers Claude-only despite Codex/etc. being
-// reachable. models:listSelectable (ipc/models.ts) calls this BEFORE reading
-// the cache whenever it's empty; ensureCliProxyModelCacheFresh only fires the
-// network call if the cache is actually empty AND at least
-// MODEL_CACHE_MIN_REFRESH_INTERVAL_MS has passed since the last attempt (so a
-// picker opened repeatedly against a genuinely-down proxy doesn't hammer it).
-// Always best-effort: refreshCliProxyModelCache never throws, and this
-// function does not await network I/O on the caller's behalf in the sense
-// that matters — models:listSelectable fires it and does NOT block its own
-// response on the result, preserving the "offline guarantee" (Claude must
-// render immediately even if this refresh is mid-flight or the proxy is
-// unreachable).
+// On-demand model-cache refresh (issue-2 fix, extended by the persisted-cache
+// fix below) — refreshCliProxyModelCache was previously invoked from exactly
+// one place: refreshAuthFiles' 30s interval, itself only armed once start()
+// completes. That leaves a window — proxy enabled+running but this run's
+// first 30s tick hasn't fired yet, or the picker is opened before the
+// interval catches up — where the routed-model cache is empty even though
+// the proxy is healthy, so buildSelectableModels (models/selectable.ts)
+// offers Claude-only despite Codex/etc. being reachable.
+// ensureCliProxyModelCacheFresh only fires the network call if the cache is
+// actually empty AND at least MODEL_CACHE_MIN_REFRESH_INTERVAL_MS has passed
+// since the last attempt (so a picker opened repeatedly against a
+// genuinely-down proxy doesn't hammer it). Always best-effort:
+// refreshCliProxyModelCache never throws.
+//
+// ipc/models.ts now uses this in TWO ways:
+//   - Fire-and-forget (unchanged): most calls just invoke
+//     ensureCliProxyModelCacheFresh() and ignore its return, exactly as
+//     before this fix.
+//   - Bounded-await (new, cold-boot only): waitForCliProxyModelCacheFresh()
+//     lets the FIRST models:listSelectable call after boot await the SAME
+//     in-flight refresh for a short, hard-capped window when the persisted
+//     cache didn't already cover it, so that very first call can include
+//     routed models instead of always seeing Claude-only. It still never
+//     blocks when the proxy isn't running/enabled (shouldRefresh is false
+//     immediately) and always resolves — timeout or success — never rejects.
 // ---------------------------------------------------------------------------
 
 const MODEL_CACHE_MIN_REFRESH_INTERVAL_MS = 5_000
 let lastModelCacheRefreshAttempt = 0
 let modelCacheRefreshInFlight: Promise<void> | null = null
+
+function startModelCacheRefresh(secret: string): Promise<void> {
+  const inFlight = refreshCliProxyModelCache(getRoutingProxyUrl(), secret)
+    .then(() => {
+      // The renderer's selectableModelsStore only refetches on a
+      // routingProxy:onSnapshot push (see that module's doc comment) — it
+      // does not poll. Re-broadcasting the (otherwise unchanged) snapshot
+      // here is what turns a newly-populated cache into a picker update
+      // without requiring the user to close/reopen the dropdown. Only worth
+      // doing if the refresh actually found something — an empty result
+      // means the proxy is still unreachable, so nothing changed for the
+      // renderer to pick up.
+      const entries = listCliProxyModelCacheEntries()
+      if (entries.length > 0) {
+        persistCliProxyModelCache(snapshotCliProxyModelCache())
+        setSnapshot({})
+      }
+    })
+    .catch(() => {
+      // refreshCliProxyModelCache itself never throws — this catch is a
+      // defensive backstop only, mirroring the rest of this module's style.
+    })
+    .finally(() => {
+      modelCacheRefreshInFlight = null
+    })
+  modelCacheRefreshInFlight = inFlight
+  return inFlight
+}
 
 /**
  * Best-effort, non-blocking: kicks off a cliproxy model-cache refresh if the
@@ -239,25 +286,43 @@ export function ensureCliProxyModelCacheFresh(): void {
   })
   if (!shouldRefresh || !secret) return
   lastModelCacheRefreshAttempt = now
-  modelCacheRefreshInFlight = refreshCliProxyModelCache(getRoutingProxyUrl(), secret)
-    .then(() => {
-      // The renderer's selectableModelsStore only refetches on a
-      // routingProxy:onSnapshot push (see that module's doc comment) — it
-      // does not poll. Re-broadcasting the (otherwise unchanged) snapshot
-      // here is what turns a newly-populated cache into a picker update
-      // without requiring the user to close/reopen the dropdown. Only worth
-      // doing if the refresh actually found something — an empty result
-      // means the proxy is still unreachable, so nothing changed for the
-      // renderer to pick up.
-      if (listCliProxyModelCacheEntries().length > 0) setSnapshot({})
-    })
-    .catch(() => {
-      // refreshCliProxyModelCache itself never throws — this catch is a
-      // defensive backstop only, mirroring the rest of this module's style.
-    })
-    .finally(() => {
-      modelCacheRefreshInFlight = null
-    })
+  void startModelCacheRefresh(secret)
+}
+
+/**
+ * Bounded-await variant for the cold-first-call case: if a refresh is
+ * warranted (same gate as ensureCliProxyModelCacheFresh — empty cache,
+ * proxy running, secret present, not already in flight, throttle elapsed)
+ * AND the cache is currently empty, wait up to `timeoutMs` for it to
+ * complete before returning. Resolves (never rejects) either way — on
+ * timeout the in-flight refresh keeps running in the background exactly as
+ * ensureCliProxyModelCacheFresh's fire-and-forget path already does, it's
+ * just that this caller stopped waiting on it. When no refresh is warranted
+ * (proxy disabled/unreachable, cache already populated, etc.) this resolves
+ * immediately — the Claude offline guarantee never waits on this call.
+ */
+export async function waitForCliProxyModelCacheFresh(timeoutMs: number): Promise<void> {
+  const secret = getManagementSecret()
+  const now = Date.now()
+  const shouldRefresh = shouldRefreshCliProxyModelCache({
+    cacheSize: listCliProxyModelCacheEntries().length,
+    isProxyRunning: isRunning(),
+    hasManagementSecret: secret !== null,
+    isRefreshInFlight: modelCacheRefreshInFlight !== null,
+    lastAttemptAt: lastModelCacheRefreshAttempt,
+    now,
+    minIntervalMs: MODEL_CACHE_MIN_REFRESH_INTERVAL_MS
+  })
+  // Nothing to wait for: either a refresh isn't warranted right now (proxy
+  // down/disabled, throttled, cache already has data) or one is already
+  // in-flight from a previous caller — in the latter case, still bound the
+  // wait on that existing promise rather than starting a second refresh.
+  const pending =
+    shouldRefresh && secret ? startModelCacheRefresh(secret) : modelCacheRefreshInFlight
+  if (!pending) return
+  if (shouldRefresh && secret) lastModelCacheRefreshAttempt = now
+
+  await raceWithTimeout(pending, timeoutMs)
 }
 
 export async function start(): Promise<void> {
@@ -439,6 +504,21 @@ export function hydrateSnapshotAtBoot(): Promise<void> {
     enabled,
     status: cleanStoppedStatus(installedVersion)
   })
+  // Seed the in-memory cliproxy model cache from the last successful
+  // refresh (previous app run), synchronously with the rest of boot
+  // hydration — no network I/O, just a SQLite read. This is what lets the
+  // FIRST models:listSelectable call of this run include routed models
+  // instead of guaranteed Claude-only: previously the in-memory cache
+  // (models/sources/cliproxy.ts) started empty every launch and only filled
+  // in later via the 30s auth-files tick or an on-demand refresh. Version-
+  // gated (see cliProxyModelCachePersistence.ts's isPersistedCacheVersionValid)
+  // so a CLIProxyAPI version bump can never hydrate from a payload shaped for
+  // a different release. Availability is still fully re-decided live by
+  // buildSelectableModels against the current routing-proxy snapshot/authFiles
+  // once they populate — hydrating here only seeds model FACTS (context,
+  // effort levels), never bypasses health gating.
+  const persisted = loadPersistedCliProxyModelCache()
+  if (persisted) hydrateCliProxyModelCacheFromPersisted(persisted.entries)
   return Promise.resolve()
 }
 

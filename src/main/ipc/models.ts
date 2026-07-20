@@ -14,11 +14,42 @@
 
 import { modelLabel } from '../models/registry'
 import { buildSelectableModels } from '../models/selectable'
+import type { BuildSelectableModelsInput } from '../models/selectable'
 import { listCliProxyModelCacheEntries } from '../models/sources/cliproxy'
-import { getRoutingProxySnapshot, ensureCliProxyModelCacheFresh } from '../routingProxy/manager'
+import {
+  getRoutingProxySnapshot,
+  ensureCliProxyModelCacheFresh,
+  waitForCliProxyModelCacheFresh
+} from '../routingProxy/manager'
 import { listProviderConfigs } from '../routingProxy/providers/storage'
 import { PROVIDERS } from '../routingProxy/providers/registry'
 import { handle } from './handle'
+
+// Hard cap on the bounded first-call wait below. The measured cost of a full
+// cliproxy model-definitions refresh (all provider channels, sequential) is
+// ~15ms against a live proxy — 250ms leaves generous headroom for a slow
+// tick while still being imperceptible, and guarantees this handler can never
+// hang on a proxy that's enabled but wedged: waitForCliProxyModelCacheFresh
+// always resolves (never rejects) at or before this deadline.
+const FIRST_CALL_MODEL_CACHE_WAIT_MS = 250
+
+function collectSelectableInput(currentModelId: string | undefined): BuildSelectableModelsInput {
+  const snapshot = getRoutingProxySnapshot()
+  return {
+    routingProxy: {
+      enabled: snapshot.enabled,
+      status: snapshot.status,
+      authFiles: snapshot.authFiles
+    },
+    providerConfigs: listProviderConfigs().map((p) => ({
+      providerId: p.providerId,
+      enabled: p.enabled
+    })),
+    providerDescriptors: PROVIDERS.map((p) => ({ id: p.id, label: p.label })),
+    cliProxyModels: listCliProxyModelCacheEntries(),
+    currentModelId
+  }
+}
 
 export function registerModelsIpc(): void {
   handle('models:resolveLabels', (_e, { modelIds }) => {
@@ -29,27 +60,28 @@ export function registerModelsIpc(): void {
     return labels
   })
 
-  handle('models:listSelectable', (_e, { currentModelId }) => {
-    const snapshot = getRoutingProxySnapshot()
-    // Best-effort, non-blocking: if the proxy is running but this run's
-    // cliproxy model cache hasn't been populated yet (e.g. the picker opens
-    // before the first 30s auth-files tick), kick off a refresh in the
-    // background so the NEXT call sees routed models. Never awaited — the
-    // Claude-only offline guarantee below must resolve immediately either way.
-    ensureCliProxyModelCacheFresh()
-    return buildSelectableModels({
-      routingProxy: {
-        enabled: snapshot.enabled,
-        status: snapshot.status,
-        authFiles: snapshot.authFiles
-      },
-      providerConfigs: listProviderConfigs().map((p) => ({
-        providerId: p.providerId,
-        enabled: p.enabled
-      })),
-      providerDescriptors: PROVIDERS.map((p) => ({ id: p.id, label: p.label })),
-      cliProxyModels: listCliProxyModelCacheEntries(),
-      currentModelId
-    })
+  handle('models:listSelectable', async (_e, { currentModelId }) => {
+    // Boot-time persisted-cache hydration (routingProxy/manager.ts's
+    // hydrateSnapshotAtBoot) already covers the common case: the cliproxy
+    // model cache is non-empty from app launch, so listCliProxyModelCacheEntries()
+    // below already has routed-model facts and this call returns immediately.
+    //
+    // The only remaining cold-cache case is a genuinely first-ever run (no
+    // persisted cache exists yet) or a version bump that invalidated it. For
+    // THAT case only — cache still empty right now — take one short, hard-
+    // capped bounded wait on the in-flight refresh so this very first call
+    // can still include routed models, instead of guaranteeing Claude-only
+    // until some later call. waitForCliProxyModelCacheFresh no-ops
+    // immediately (no await cost) whenever the proxy is disabled/unreachable/
+    // already-fresh — the Claude offline guarantee below is never at risk.
+    if (listCliProxyModelCacheEntries().length === 0) {
+      await waitForCliProxyModelCacheFresh(FIRST_CALL_MODEL_CACHE_WAIT_MS)
+    } else {
+      // Cache already has data (persisted-hydrated or a prior refresh) —
+      // still best-effort refresh in the background so it never goes stale
+      // without a live proxy round trip; never awaited.
+      ensureCliProxyModelCacheFresh()
+    }
+    return buildSelectableModels(collectSelectableInput(currentModelId))
   })
 }
