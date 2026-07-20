@@ -631,6 +631,11 @@ export type ClaudeLaunch = {
   /** Environment variables to set in the surface process, e.g.
    *  { CLAUDE_CODE_NATIVE_CURSOR: '1' }. Empty object when all at defaults. */
   env: Record<string, string>
+  /** Effective resolved model id (workspace → project → global), the same
+   *  value emitted as the --model flag. Callers (buildMountEnv's routing
+   *  conditional) use this to decide isClaude(model) without re-parsing
+   *  `flags`. Empty string means claude's own default (bare sonnet). */
+  model: string
 }
 
 // Applies a scope's scalar overrides (model, permissionMode, effort) on top
@@ -1238,7 +1243,7 @@ export function composeClaudeLaunch(
 
   const env = composeLaunchEnv(s, global, projectEnvVars, workspaceEnvVars)
 
-  return { flags, settingsJson, env }
+  return { flags, settingsJson, env, model: s.model }
 }
 
 // ---------------------------------------------------------------------------

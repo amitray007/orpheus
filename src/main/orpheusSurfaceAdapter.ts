@@ -17,6 +17,7 @@ import { join } from 'path'
 import { loadGhosttySurface, type GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import { composeClaudeLaunch, type ClaudeLaunch } from './claudeSettings'
 import { getClaudeAuthEnv } from './claudeAuth'
+import { computeRoutingEnv } from './modelRouting'
 import { shimPath } from './orpheusNotify'
 import { getCachedShellPath } from './shellHelpers'
 import { writeGhosttyConfigFile } from './ghosttyConfig'
@@ -150,6 +151,34 @@ export function buildMountEnv(
     ...(cmdServer ? { ORPHEUS_CMD_SOCK: cmdServer.sockPath } : {}),
     ...(cmdServer ? { ORPHEUS_CMD_TOKEN: cmdServer.token } : {})
   }
+
+  // ---------------------------------------------------------------------
+  // Model routing (unit 03) — MUST be applied strictly AFTER the `env`
+  // object above is fully assembled, in particular after the `...authEnv`
+  // spread on line ~131.
+  //
+  // WHY HERE, AFTER authEnv: authEnv (getClaudeAuthEnv()) is merged after
+  // launch.env specifically so a user's configured secrets/base URL always
+  // win over typed launch settings (see the module doc comment above). For
+  // the 'anthropic' cloud provider, authEnv CAN itself set
+  // ANTHROPIC_BASE_URL (from auth_base_url — claudeAuth.ts buildAnthropicEnv).
+  // If the routing overlay were merged BEFORE that spread, a configured
+  // custom Anthropic base URL would silently clobber the proxy URL for a
+  // routed workspace, defeating routing. Applying computeRoutingEnv() here,
+  // strictly after `env` is finalized, makes it win deterministically for
+  // routed workspaces regardless of what authEnv contributed.
+  //
+  // WHY THIS IS A STRICT NO-OP FOR CLAUDE MODELS: computeRoutingEnv returns
+  // `{}` whenever isRoutedModel(launch.model) is false (see
+  // src/main/modelRouting.ts). Spreading an empty object adds/overwrites
+  // nothing, so `env` here is byte-for-byte identical to what it was before
+  // this block for every Claude-model workspace — this is the ToS-critical
+  // invariant: Claude traffic must reach real api.anthropic.com via the
+  // official binary, never through this proxy. `cloud_provider: 'routed'`
+  // is also structurally exclusive with bedrock/vertex/foundry (see
+  // ClaudeCloudProvider in src/shared/types.ts), so a routed model can never
+  // collide with a CLAUDE_CODE_USE_* env var from those providers either.
+  Object.assign(env, computeRoutingEnv(launch.model))
 
   // Resolve the wrapper script path.
   // Packaged: Contents/Resources/orpheus-claude.sh
