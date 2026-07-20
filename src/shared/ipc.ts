@@ -76,6 +76,7 @@ import type {
   ProviderDescriptorSummary,
   ProviderConfigSummary,
   ProviderApiKeyEntrySummary,
+  SelectableModel,
   ActionResult,
   ActionKind,
   ActionAuditEntry,
@@ -246,6 +247,17 @@ export interface InvokeChannelMap {
     // id -> the registry's one canonical label (src/main/models/registry.ts).
     // The renderer must consume this rather than parsing model ids itself.
     res: Record<string, string>
+  }
+  // The single selectable-model list for a workspace/project picker
+  // (model-routing unit 06). `currentModelId` is optional — when provided
+  // and it names a routed model that is no longer available (proxy down /
+  // provider disconnected), that entry is still included in the result,
+  // marked `available: false`, so a workspace's stored setting is never
+  // silently dropped from the picker. See models:listSelectable's own doc
+  // comment in src/main/ipc/models.ts for the full gating rules.
+  'models:listSelectable': {
+    req: [{ currentModelId?: string }]
+    res: SelectableModel[]
   }
   'claudeSettings:get': { req: []; res: ClaudeGlobalSettings }
   'claudeSettings:update': { req: [ClaudeGlobalSettingsPatch]; res: ClaudeGlobalSettings }

@@ -2156,3 +2156,37 @@ export interface ProviderConfigSummary {
   prefix?: string
   connection: RoutingProxyAuthFile | null
 }
+
+// ---------------------------------------------------------------------------
+// Model picker (model-routing unit 06) — the single selectable-model list a
+// workspace/project picker renders from. Assembled server-side by
+// models:listSelectable (src/main/ipc/models.ts) from the registry + the
+// routing-proxy snapshot + provider connection health; the renderer must
+// never compute this list itself (mirrors models:resolveLabels' contract —
+// see that channel's own doc comment).
+// ---------------------------------------------------------------------------
+
+/** One model a workspace may select, already resolved + availability-gated
+ *  server-side. Claude entries are always `available: true` (the offline
+ *  guarantee — see models:listSelectable's doc comment); routed entries are
+ *  `available: false` when the proxy isn't running or the owning provider
+ *  isn't connected/healthy, but are still LISTED if a workspace already has
+ *  them selected — a workspace's setting must never be silently dropped just
+ *  because its backend went offline. */
+export interface SelectableModel {
+  id: string
+  label: string
+  /** 'claude' for the built-in Claude group, otherwise a provider id from
+   *  routingProxy/providers/registry.ts (e.g. 'codex', 'xai'). */
+  providerId: string
+  /** Human-readable group label for the picker, e.g. "Claude" or "Grok (xAI)". */
+  providerLabel: string
+  isClaude: boolean
+  available: boolean
+  /** Native context window in tokens, or null when unknown — never fabricated. */
+  contextWindow: number | null
+  /** Real thinking/effort levels reported by the provider, or null when the
+   *  model has none — the effort control must be disabled/hidden for a model
+   *  with no levels, never fall back to a generic list. */
+  effortLevels: string[] | null
+}

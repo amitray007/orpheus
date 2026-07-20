@@ -41,9 +41,29 @@ type CliProxyModelDefinition = {
   thinking?: { levels?: string[] }
 }
 
+/** Read-only accessor for the current cache, so other main-process modules
+ *  (the model-picker IPC handler, unit 06) can enumerate every routed model
+ *  CLIProxyAPI currently reports, grouped by provider — without duplicating
+ *  the fetch/refresh logic. Returns a shallow copy of entries keyed by
+ *  model id; never mutates the live cache. */
+export function listCliProxyModelCacheEntries(): Array<{ modelId: string } & CachedEntry> {
+  return Array.from(cache.entries()).map(([modelId, entry]) => ({ modelId, ...entry }))
+}
+
 type CachedEntry = {
   context: number | null
   supportsReasoning: boolean
+  /** Which provider channel (registry.ts id, e.g. 'codex'/'xai') this model
+   *  was fetched from — populated by refreshCliProxyModelCache, used by the
+   *  model-picker IPC (unit 06) to group selectable models by provider.
+   *  Optional so existing setCliProxyModelCacheForTests(...) call sites that
+   *  predate this field keep compiling unchanged. */
+  providerId?: string
+  /** Real thinking/effort levels reported by CLIProxyAPI's model-definitions
+   *  endpoint (thinking.levels), e.g. ['low','medium','high']. Null/undefined
+   *  when the model has no thinking levels — the picker must never fabricate
+   *  a generic effort list for a model that doesn't report one. */
+  effortLevels?: string[] | null
 }
 
 // modelId -> entry, flattened across every provider channel queried so far.
@@ -98,9 +118,15 @@ export async function refreshCliProxyModelCache(
       for (const def of definitions) {
         const id = def.name ?? def.id
         if (!id) continue
+        const levels =
+          Array.isArray(def.thinking?.levels) && def.thinking.levels.length > 0
+            ? def.thinking.levels
+            : null
         next.set(id, {
           context: typeof def.context_length === 'number' ? def.context_length : null,
-          supportsReasoning: Array.isArray(def.thinking?.levels) && def.thinking.levels.length > 0
+          supportsReasoning: levels !== null,
+          providerId: provider.id,
+          effortLevels: levels
         })
       }
       anySucceeded = true

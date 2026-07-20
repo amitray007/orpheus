@@ -72,6 +72,7 @@ import type {
   ProviderDescriptorSummary,
   ProviderConfigSummary,
   ProviderApiKeyEntrySummary,
+  SelectableModel,
   ClaudeStatusSnapshot,
   ActionResult,
   ActionAuditEntry,
@@ -385,7 +386,9 @@ const api = {
   },
   models: {
     resolveLabels: (modelIds: string[]): Promise<Record<string, string>> =>
-      invoke('models:resolveLabels', { modelIds })
+      invoke('models:resolveLabels', { modelIds }),
+    listSelectable: (currentModelId?: string): Promise<SelectableModel[]> =>
+      invoke('models:listSelectable', { currentModelId })
   },
   claudeSettings: {
     get: (): Promise<ClaudeGlobalSettings> => invoke('claudeSettings:get'),
