@@ -31,6 +31,7 @@
     "test:db": "node --experimental-strip-types scripts/verify-migration-engine.ts",
     "test:flags": "node --experimental-strip-types scripts/verify-cli-flags.ts",
     "test:workbench": "bun run scripts/verify-workbench-reducer.ts",
+    "test:models": "bun run scripts/verify-model-registry.ts",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "bun run typecheck:node && bun run typecheck:web",
