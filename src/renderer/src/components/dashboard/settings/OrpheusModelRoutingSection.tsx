@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { RoutingProxyAssetInfo, RoutingProxySnapshot } from '@shared/types'
 import { SettingRow, Toggle, SectionTitle, Eyebrow } from './primitives'
+import { ProvidersSection } from './ProvidersSection'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { Warning } from '@phosphor-icons/react'
 
@@ -278,6 +279,9 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
           </div>
         </div>
       </section>
+
+      {/* Providers — declarative, data-driven from providers:descriptors */}
+      <ProvidersSection />
 
       {/* Connected accounts */}
       {isRunning && (
