@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { existsSync } from 'node:fs'
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, shell } from 'electron'
 import { PUSH_CHANNELS } from '../../shared/ipc'
 import type { PushChannel, PushPayload } from '../../shared/ipc'
 import type {
@@ -40,6 +40,16 @@ import { checkRoutingProxyUpdate } from './updateCheck'
 import { cleanStoppedStatus, disableTransitionPatch } from './state'
 import { refreshCliProxyModelCache } from '../models/sources/cliproxy'
 import { listProviderConfigs } from './providers/storage'
+import {
+  startProviderLogin,
+  pollAuthStatus,
+  cancelProviderLogin as cancelProviderLoginImpl,
+  eligibleOAuthProviderIds,
+  OAuthUnauthorizedError,
+  type StartLoginResult,
+  type PollResult
+} from './oauth'
+import { isSafeExternalUrl } from '../ipc/validate'
 
 // ---------------------------------------------------------------------------
 // Snapshot state
@@ -365,6 +375,66 @@ export async function ensureHealthyForRouting(): Promise<void> {
   await ensureHealthyForRoutingImpl(getRoutingProxyUrl(), {
     managementSecret: getManagementSecret()
   })
+}
+
+// ---------------------------------------------------------------------------
+// OAuth "Connect <provider>" flow (model-routing unit 07) — thin passthrough
+// to oauth.ts's pure primitives, supplying the live getRoutingProxyUrl()
+// exactly like every other manager call above. Keeps oauth.ts itself free of
+// any dependency on the manager's module-level snapshot, so its own harness
+// (scripts/verify-oauth.ts) stays fully offline/Electron-free.
+// ---------------------------------------------------------------------------
+
+export { eligibleOAuthProviderIds }
+export type { StartLoginResult }
+
+/** Starts the login (fetches the auth-url) and opens it in the user's
+ *  default browser. isSafeExternalUrl gates openExternal exactly like every
+ *  other call site in this codebase (index.ts's will-navigate handler,
+ *  ipc/shell.ts) — CLIProxyAPI's own auth-url response is trusted content
+ *  from a localhost process we spawned, but the same guard costs nothing and
+ *  keeps this call site consistent with the rest of the app. */
+export async function startOAuthLogin(providerId: string): Promise<StartLoginResult> {
+  const result = await startProviderLogin(providerId, getRoutingProxyUrl())
+  if (isSafeExternalUrl(result.url)) {
+    void shell.openExternal(result.url).catch(() => {})
+  }
+  return result
+}
+
+/**
+ * Single get-auth-status check (NOT the whole bounded wait loop — that pure
+ * timing/retry logic lives in oauth.ts's pollUntilSettled and is exercised
+ * directly by scripts/verify-oauth.ts). The renderer drives its own 2s
+ * client-side interval calling this handler repeatedly, so it can render its
+ * own countdown/cancel UI rather than blocking one IPC call for minutes.
+ *
+ * On 'ok', refreshes auth-files + the cliproxy model cache immediately (not
+ * waiting for the 30s interval) so the newly connected provider's models
+ * become selectable without an app restart, and updates the snapshot so the
+ * Settings UI's connection dot flips without a manual refresh.
+ *
+ * A 401 is never retried at this layer either — it propagates as a thrown
+ * OAuthUnauthorizedError, which the IPC handler surfaces to the renderer as
+ * an 'error' outcome the renderer must NOT poll again for.
+ */
+export async function pollOAuthLogin(state: string): Promise<PollResult> {
+  try {
+    const result = await pollAuthStatus(state, getRoutingProxyUrl())
+    if (result.status === 'ok') {
+      await refreshAuthFiles()
+    }
+    return result
+  } catch (err) {
+    if (err instanceof OAuthUnauthorizedError) {
+      return { status: 'error', error: 'Unauthorized (401) — login attempt refused, not retried' }
+    }
+    throw err
+  }
+}
+
+export async function cancelOAuthLogin(state: string): Promise<void> {
+  await cancelProviderLoginImpl(state, getRoutingProxyUrl())
 }
 
 // Re-export for convenience so scripts / other main modules importing the

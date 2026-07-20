@@ -36,6 +36,7 @@
     "test:proxy": "bun run scripts/verify-routing-proxy.ts",
     "test:providers": "bun run scripts/verify-providers.ts",
     "test:picker": "bun run scripts/verify-model-picker.ts",
+    "test:oauth": "bun run scripts/verify-oauth.ts",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "bun run typecheck:node && bun run typecheck:web",
