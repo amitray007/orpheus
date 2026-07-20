@@ -20,6 +20,13 @@ interface WorkspaceFooterProps {
   workspaceName?: string
   /** Live activity detail for visibleWhen filtering. Provided by WorkspaceView. */
   activityDetail?: WorkspaceActivityDetail
+  /** Restarts the workspace (destroy + remount) — threaded down from
+   *  WorkspaceView's handleRestart, the SAME mechanism the "Restart to
+   *  apply" dirty chip (DetailsCard/WorkspaceDrawer) already uses. Passed to
+   *  DropdownChip so a model switch that requires a new process (any switch
+   *  involving a routed model — see isLiveApplicableModelChange) can trigger
+   *  it directly instead of leaving the user to hunt for the chip. */
+  onRestart?: () => void
 }
 
 // actionIds that render as a DropdownChip (opens a chipDropdown popover)
@@ -64,7 +71,8 @@ export function WorkspaceFooter({
   onSelectWorkspace,
   projectId,
   workspaceName = '',
-  activityDetail
+  activityDetail,
+  onRestart
 }: WorkspaceFooterProps): React.JSX.Element | null {
   const uiState = useUiState()
   const { items, loading } = useFooterActions(workspaceId)
@@ -104,6 +112,8 @@ export function WorkspaceFooter({
                 item={item}
                 workspaceId={workspaceId}
                 enabled={isVisible(item.visibleWhen, activityDetail)}
+                activityDetail={activityDetail}
+                onRestart={onRestart}
               />
             ) : (
               <ActionChip

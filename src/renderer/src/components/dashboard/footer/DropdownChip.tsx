@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
-import type { ChipDropdownItem, ClaudeEffort } from '@shared/types'
+import type { ChipDropdownItem, ClaudeEffort, WorkspaceActivityDetail } from '@shared/types'
 import { IconByName } from './iconMap'
 import {
   showChipDropdown,
@@ -29,7 +29,9 @@ const INJECT_RETRY_DELAY_MS = 200
 // Generalizes the original ModelSelectChip pattern to cover THREE built-in
 // dropdown-style actionIds:
 //
-//   - footer.modelSelect  — persists via workspace:setModel, injects `/model`
+//   - footer.modelSelect  — persists via workspace:setModel; a Claude->Claude
+//     switch injects `/model` live, a switch involving a routed model
+//     auto-restarts the workspace (unless it's mid-task — see onSelect)
 //   - footer.effortSelect — persists via workspace:setEffort, injects `/effort`
 //   - footer.dropdown     — fully custom, author-configured options
 //     (item.params.options), no settings persistence, just injects the
@@ -100,12 +102,26 @@ interface DropdownChipProps {
   item: FooterActionItem
   workspaceId: string
   enabled?: boolean
+  /** Live activity detail — used ONLY by the model-select chip to decide
+   *  whether an auto-restart is safe (see onSelect's routed-model branch
+   *  below). 'working' means the workspace is mid-task; auto-restarting then
+   *  would silently kill in-flight agent work, so that case falls back to
+   *  the existing "Restart to apply" chip instead of restarting immediately. */
+  activityDetail?: WorkspaceActivityDetail
+  /** Restarts the workspace (destroy + remount) — threaded down from
+   *  WorkspaceView's handleRestart, the SAME mechanism the "Restart to
+   *  apply" dirty chip already uses. Used by the model-select chip to make a
+   *  routed-model switch "just work" without the user hunting for a restart
+   *  control, EXCEPT while the workspace is busy (see activityDetail above). */
+  onRestart?: () => void
 }
 
 export function DropdownChip({
   item,
   workspaceId,
-  enabled = true
+  enabled = true,
+  activityDetail,
+  onRestart
 }: DropdownChipProps): React.JSX.Element {
   const chipRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -261,9 +277,27 @@ export function DropdownChip({
       // own CLI misinterpreting a routed model id as one of its own).
       // Persisting the setting above already marks the workspace dirty via
       // the same isLiveApplicableModelChange gate main-side, so the existing
-      // "Restart to apply" chip is what surfaces the change instead.
+      // "Restart to apply" chip (DetailsCard/WorkspaceDrawer, both driven by
+      // the same onRestart/handleRestart) is what surfaces the change if we
+      // don't auto-restart below.
       if (currentModelIsClaude && newModelIsClaude) {
         runInject(`/model ${value}`, true, 'Model set — applies next turn')
+        return
+      }
+      // Any switch involving a routed model (Claude->routed, routed->Claude,
+      // routed->routed) needs a brand-new process — no in-terminal command
+      // can apply it. Auto-restart so the switch "just works" WITHOUT the
+      // user hunting for the restart control, UNLESS the workspace is
+      // currently mid-task ('working' == WorkspaceStatus 'in_progress' — see
+      // activityStore.ts's status->detail mapping): destroying the surface
+      // then would silently kill an in-flight agent turn, which is worse
+      // than a visible manual step. In that case fall back to the existing
+      // "Restart to apply" chip — the setting is already persisted+dirty, so
+      // the user sees the prompt as soon as they're free to act on it.
+      if (onRestart && activityDetail !== 'working') {
+        playSound('success')
+        showTooltip('Model set — restarting workspace…')
+        onRestart()
       } else {
         playSound('success')
         showTooltip('Model set — restart workspace to apply')

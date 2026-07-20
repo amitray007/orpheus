@@ -136,3 +136,35 @@ export function isLiveApplicableModelChange(oldModel: string, newModel: string):
   const newIsClaude = newModel === '' || isClaude(newModel)
   return oldIsClaude && newIsClaude
 }
+
+/**
+ * Issue-3 decision: should selecting a new model trigger an AUTOMATIC
+ * workspace restart (destroy + remount, same mechanism as the existing
+ * "Restart to apply" chip)? Pure predicate mirrored by
+ * src/renderer/src/components/dashboard/footer/DropdownChip.tsx's onSelect
+ * handler for footer.modelSelect (the renderer can't import this
+ * main-process module directly, so this function is the source-of-truth
+ * spec that harness assertions below hold the renderer implementation to).
+ *
+ * Two conditions must BOTH hold:
+ *   1. The switch is NOT live-applicable (isLiveApplicableModelChange is
+ *      false) — a Claude->Claude switch never needs a restart at all, auto
+ *      or otherwise; `/model <value>` already applies it live.
+ *   2. The workspace is NOT currently busy (workspaceStatus !== 'in_progress')
+ *      — destroying the surface mid-task would silently kill an in-flight
+ *      agent turn. Restarting a busy workspace must be a visible, deliberate
+ *      user action (the existing "Restart to apply" chip), never automatic.
+ *
+ * workspaceStatus accepts the raw WorkspaceStatus union (not the renderer's
+ * derived WorkspaceActivityDetail) so this stays usable from any main-process
+ * caller that already has a WorkspaceRecord in hand, without pulling in
+ * renderer-only types.
+ */
+export function shouldAutoRestartForModelChange(
+  oldModel: string,
+  newModel: string,
+  workspaceStatus: string
+): boolean {
+  if (isLiveApplicableModelChange(oldModel, newModel)) return false
+  return workspaceStatus !== 'in_progress'
+}
