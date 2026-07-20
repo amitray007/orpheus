@@ -143,6 +143,49 @@ export async function refreshCliProxyModelCache(
   if (anySucceeded) cache = next
 }
 
+// ---------------------------------------------------------------------------
+// shouldRefreshCliProxyModelCache — pure gating decision for the on-demand
+// refresh (issue-2 fix in routingProxy/manager.ts's ensureCliProxyModelCacheFresh).
+// Factored out as a pure function (no cache/timer state, everything passed
+// in) so it's independently assertable by an offline harness without
+// booting Electron — manager.ts imports `electron` transitively and can't be
+// exercised by scripts/verify-*.ts directly.
+//
+// Refresh only fires when ALL of:
+//   - the cache is currently empty (cacheSize === 0) — a populated cache
+//     never needs an on-demand kick; the existing 30s interval keeps it warm
+//   - the proxy is actually running (isProxyRunning) — nothing to query otherwise
+//   - a management secret exists (hasManagementSecret) — refreshCliProxyModelCache
+//     itself no-ops without one, but checking here avoids even attempting
+//     the network call
+//   - no refresh is already in flight (isRefreshInFlight) — one attempt at a
+//     time is enough
+//   - at least minIntervalMs has elapsed since lastAttemptAt — bounds retry
+//     frequency so a picker opened repeatedly against a genuinely-down proxy
+//     can't hammer it
+// ---------------------------------------------------------------------------
+
+export interface ShouldRefreshCliProxyModelCacheInput {
+  cacheSize: number
+  isProxyRunning: boolean
+  hasManagementSecret: boolean
+  isRefreshInFlight: boolean
+  lastAttemptAt: number
+  now: number
+  minIntervalMs: number
+}
+
+export function shouldRefreshCliProxyModelCache(
+  input: ShouldRefreshCliProxyModelCacheInput
+): boolean {
+  if (input.cacheSize > 0) return false
+  if (!input.isProxyRunning) return false
+  if (!input.hasManagementSecret) return false
+  if (input.isRefreshInFlight) return false
+  if (input.now - input.lastAttemptAt < input.minIntervalMs) return false
+  return true
+}
+
 /** Test-only: replace the cache directly, bypassing the network fetch. */
 export function setCliProxyModelCacheForTests(entries: Record<string, CachedEntry> | null): void {
   const next = new Map<string, CachedEntry>()

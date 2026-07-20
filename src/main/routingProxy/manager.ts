@@ -38,7 +38,11 @@ import {
 import { fetchRoutingProxyAuthFiles } from './authFiles'
 import { checkRoutingProxyUpdate } from './updateCheck'
 import { cleanStoppedStatus, disableTransitionPatch } from './state'
-import { refreshCliProxyModelCache } from '../models/sources/cliproxy'
+import {
+  refreshCliProxyModelCache,
+  listCliProxyModelCacheEntries,
+  shouldRefreshCliProxyModelCache
+} from '../models/sources/cliproxy'
 import { listProviderConfigs } from './providers/storage'
 import {
   startProviderLogin,
@@ -185,6 +189,73 @@ async function refreshAuthFiles(): Promise<void> {
 export async function refreshAuthFilesNow(): Promise<RoutingProxySnapshot> {
   await refreshAuthFiles()
   return snapshot
+}
+
+// ---------------------------------------------------------------------------
+// On-demand model-cache refresh (issue-2 fix) — refreshCliProxyModelCache was
+// previously invoked from exactly one place: refreshAuthFiles' 30s interval,
+// itself only armed once start() completes. That leaves a window — proxy
+// enabled+running but this run's first 30s tick hasn't fired yet, or the
+// picker is opened before the interval catches up — where the routed-model
+// cache is empty even though the proxy is healthy, so buildSelectableModels
+// (models/selectable.ts) offers Claude-only despite Codex/etc. being
+// reachable. models:listSelectable (ipc/models.ts) calls this BEFORE reading
+// the cache whenever it's empty; ensureCliProxyModelCacheFresh only fires the
+// network call if the cache is actually empty AND at least
+// MODEL_CACHE_MIN_REFRESH_INTERVAL_MS has passed since the last attempt (so a
+// picker opened repeatedly against a genuinely-down proxy doesn't hammer it).
+// Always best-effort: refreshCliProxyModelCache never throws, and this
+// function does not await network I/O on the caller's behalf in the sense
+// that matters — models:listSelectable fires it and does NOT block its own
+// response on the result, preserving the "offline guarantee" (Claude must
+// render immediately even if this refresh is mid-flight or the proxy is
+// unreachable).
+// ---------------------------------------------------------------------------
+
+const MODEL_CACHE_MIN_REFRESH_INTERVAL_MS = 5_000
+let lastModelCacheRefreshAttempt = 0
+let modelCacheRefreshInFlight: Promise<void> | null = null
+
+/**
+ * Best-effort, non-blocking: kicks off a cliproxy model-cache refresh if the
+ * cache is empty, the proxy is actually running, and we haven't already
+ * tried within the last MODEL_CACHE_MIN_REFRESH_INTERVAL_MS. Callers must NOT
+ * await this for their own response — it's fire-and-forget by design so a
+ * cold/slow/unreachable proxy can never add latency to the model picker.
+ */
+export function ensureCliProxyModelCacheFresh(): void {
+  const secret = getManagementSecret()
+  const now = Date.now()
+  const shouldRefresh = shouldRefreshCliProxyModelCache({
+    cacheSize: listCliProxyModelCacheEntries().length,
+    isProxyRunning: isRunning(),
+    hasManagementSecret: secret !== null,
+    isRefreshInFlight: modelCacheRefreshInFlight !== null,
+    lastAttemptAt: lastModelCacheRefreshAttempt,
+    now,
+    minIntervalMs: MODEL_CACHE_MIN_REFRESH_INTERVAL_MS
+  })
+  if (!shouldRefresh || !secret) return
+  lastModelCacheRefreshAttempt = now
+  modelCacheRefreshInFlight = refreshCliProxyModelCache(getRoutingProxyUrl(), secret)
+    .then(() => {
+      // The renderer's selectableModelsStore only refetches on a
+      // routingProxy:onSnapshot push (see that module's doc comment) — it
+      // does not poll. Re-broadcasting the (otherwise unchanged) snapshot
+      // here is what turns a newly-populated cache into a picker update
+      // without requiring the user to close/reopen the dropdown. Only worth
+      // doing if the refresh actually found something — an empty result
+      // means the proxy is still unreachable, so nothing changed for the
+      // renderer to pick up.
+      if (listCliProxyModelCacheEntries().length > 0) setSnapshot({})
+    })
+    .catch(() => {
+      // refreshCliProxyModelCache itself never throws — this catch is a
+      // defensive backstop only, mirroring the rest of this module's style.
+    })
+    .finally(() => {
+      modelCacheRefreshInFlight = null
+    })
 }
 
 export async function start(): Promise<void> {

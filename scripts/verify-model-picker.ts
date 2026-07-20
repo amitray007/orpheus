@@ -42,6 +42,13 @@ import type {
   RoutingProxyStatusInput
 } from '../src/main/models/selectable.ts'
 import { computeRoutingEnv, isRoutedModel } from '../src/main/modelRouting.ts'
+import {
+  refreshCliProxyModelCache,
+  setCliProxyModelCacheForTests,
+  listCliProxyModelCacheEntries,
+  shouldRefreshCliProxyModelCache,
+  type CliProxyModelSourceDeps
+} from '../src/main/models/sources/cliproxy.ts'
 import { CLAUDE_MODEL_OPTIONS } from '../src/shared/types.ts'
 import {
   claudeFallbackModels,
@@ -601,6 +608,133 @@ function baseInput(
   console.log(
     '✓ the disabled-path fallback is still returned (non-empty, Claude-only) on first paint with no live data'
   )
+}
+
+// ---------------------------------------------------------------------------
+// 9. Issue 2 — the on-demand cliproxy model-cache refresh.
+//    shouldRefreshCliProxyModelCache (the pure gate factored out of
+//    routingProxy/manager.ts's ensureCliProxyModelCacheFresh, which itself
+//    can't be exercised offline because manager.ts imports `electron`) must
+//    fire ONLY when the cache is empty, the proxy is running, a secret
+//    exists, nothing is already in flight, and the throttle window elapsed —
+//    and refreshCliProxyModelCache (fully offline-testable via its injected
+//    fetchJson dep) must populate the cache from a fake proxy response and
+//    leave it untouched on a failed fetch (never throws).
+// ---------------------------------------------------------------------------
+
+{
+  const baseGateInput = {
+    cacheSize: 0,
+    isProxyRunning: true,
+    hasManagementSecret: true,
+    isRefreshInFlight: false,
+    lastAttemptAt: 0,
+    now: 10_000,
+    minIntervalMs: 5_000
+  }
+
+  assert.equal(
+    shouldRefreshCliProxyModelCache(baseGateInput),
+    true,
+    'empty cache + running proxy + secret + no in-flight + throttle elapsed -> must refresh'
+  )
+  assert.equal(
+    shouldRefreshCliProxyModelCache({ ...baseGateInput, cacheSize: 3 }),
+    false,
+    'a non-empty cache must never trigger an on-demand refresh — the 30s interval is enough'
+  )
+  assert.equal(
+    shouldRefreshCliProxyModelCache({ ...baseGateInput, isProxyRunning: false }),
+    false,
+    'proxy not running -> must not attempt a refresh (nothing to query)'
+  )
+  assert.equal(
+    shouldRefreshCliProxyModelCache({ ...baseGateInput, hasManagementSecret: false }),
+    false,
+    'no management secret -> must not attempt a refresh'
+  )
+  assert.equal(
+    shouldRefreshCliProxyModelCache({ ...baseGateInput, isRefreshInFlight: true }),
+    false,
+    'a refresh already in flight -> must not start a second one'
+  )
+  assert.equal(
+    shouldRefreshCliProxyModelCache({ ...baseGateInput, lastAttemptAt: 8_000, now: 10_000 }),
+    false,
+    'throttle window not yet elapsed (10000 - 8000 = 2000 < 5000) -> must not refresh'
+  )
+  assert.equal(
+    shouldRefreshCliProxyModelCache({ ...baseGateInput, lastAttemptAt: 4_000, now: 10_000 }),
+    true,
+    'throttle window elapsed (10000 - 4000 = 6000 >= 5000) -> must refresh'
+  )
+  console.log(
+    '✓ shouldRefreshCliProxyModelCache gates the on-demand refresh correctly (empty cache, running, secret, not in-flight, throttled)'
+  )
+}
+
+{
+  // refreshCliProxyModelCache itself: a fake fetchJson simulating CLIProxyAPI's
+  // model-definitions endpoint populates the cache; buildSelectableModels then
+  // reflects it — proving the mechanism ensureCliProxyModelCacheFresh wraps
+  // actually makes previously-invisible routed models selectable.
+  setCliProxyModelCacheForTests(null) // start from a clean, empty cache
+  assert.equal(listCliProxyModelCacheEntries().length, 0, 'sanity: cache starts empty')
+
+  const fakeDeps: CliProxyModelSourceDeps = {
+    fetchJson: async (url: string): Promise<unknown> => {
+      if (url.includes('/model-definitions/codex')) {
+        return [
+          { name: 'gpt-5-codex', context_length: 400_000, thinking: { levels: ['low', 'high'] } }
+        ]
+      }
+      return [] // every other provider channel: no models reported
+    }
+  }
+  await refreshCliProxyModelCache('http://127.0.0.1:18765', 'fake-secret', fakeDeps)
+
+  const entries = listCliProxyModelCacheEntries()
+  assert.ok(
+    entries.some((e) => e.modelId === 'gpt-5-codex'),
+    'a successful refresh must populate the cache from the fake proxy response'
+  )
+
+  const afterRefresh = buildSelectableModels(
+    baseInput({
+      routingProxy: {
+        enabled: true,
+        status: 'running',
+        authFiles: [{ provider: 'codex', health: 'ok' }]
+      },
+      providerConfigs: [{ providerId: 'codex', enabled: true }],
+      cliProxyModels: entries
+    })
+  )
+  assert.ok(
+    afterRefresh.some((m) => m.id === 'gpt-5-codex' && m.available),
+    'once the cache is populated by the on-demand refresh, the model becomes selectable — the issue-2 fix'
+  )
+  console.log(
+    '✓ refreshCliProxyModelCache populates the cache from a fake proxy response, making the model selectable'
+  )
+
+  // A failed fetch (every channel throws) must leave the existing cache
+  // intact, never throw, and never wipe known facts.
+  const failingDeps: CliProxyModelSourceDeps = {
+    fetchJson: (): Promise<unknown> => Promise.reject(new Error('ECONNREFUSED'))
+  }
+  await refreshCliProxyModelCache('http://127.0.0.1:18765', 'fake-secret', failingDeps)
+  const afterFailedRefresh = listCliProxyModelCacheEntries()
+  assert.ok(
+    afterFailedRefresh.some((e) => e.modelId === 'gpt-5-codex'),
+    'a fully-failed refresh (proxy unreachable) must leave the previous cache intact, never wipe it'
+  )
+  console.log(
+    '✓ a failed refresh (proxy unreachable) never throws and never wipes the existing cache'
+  )
+
+  // Reset the module-level cache so this harness leaves no cross-test state.
+  setCliProxyModelCacheForTests(null)
 }
 
 console.log('\nAll model-picker assertions passed.')

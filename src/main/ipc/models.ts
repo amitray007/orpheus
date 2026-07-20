@@ -15,7 +15,7 @@
 import { modelLabel } from '../models/registry'
 import { buildSelectableModels } from '../models/selectable'
 import { listCliProxyModelCacheEntries } from '../models/sources/cliproxy'
-import { getRoutingProxySnapshot } from '../routingProxy/manager'
+import { getRoutingProxySnapshot, ensureCliProxyModelCacheFresh } from '../routingProxy/manager'
 import { listProviderConfigs } from '../routingProxy/providers/storage'
 import { PROVIDERS } from '../routingProxy/providers/registry'
 import { handle } from './handle'
@@ -31,6 +31,12 @@ export function registerModelsIpc(): void {
 
   handle('models:listSelectable', (_e, { currentModelId }) => {
     const snapshot = getRoutingProxySnapshot()
+    // Best-effort, non-blocking: if the proxy is running but this run's
+    // cliproxy model cache hasn't been populated yet (e.g. the picker opens
+    // before the first 30s auth-files tick), kick off a refresh in the
+    // background so the NEXT call sees routed models. Never awaited — the
+    // Claude-only offline guarantee below must resolve immediately either way.
+    ensureCliProxyModelCacheFresh()
     return buildSelectableModels({
       routingProxy: {
         enabled: snapshot.enabled,
