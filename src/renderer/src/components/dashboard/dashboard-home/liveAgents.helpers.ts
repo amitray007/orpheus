@@ -74,8 +74,9 @@ export interface LiveAgentRow {
    *  so a brand-new workspace with no session yet still shows something. */
   taskTitle: string
   model: string | null
-  /** Human-prettified model label for display (e.g. "Opus 4.8"), or "—"
-   *  when no model is known yet (see prettifyModelLabel). */
+  /** Registry-resolved model label for display (e.g. "Opus 4.8"), or "—"
+   *  when no model is known yet (see useModelLabels.ts / buildLiveAgentRows's
+   *  getModelLabel parameter). */
   modelLabel: string
   /** Epoch ms of most-recent known activity for this workspace, used both
    *  for the "since" label and as the sort tiebreaker within a state. Falls
@@ -107,36 +108,32 @@ export function resolveTaskTitle(
 }
 
 // ---------------------------------------------------------------------------
-// Model label prettifying — parses the raw model id (e.g. "claude-opus-4-8",
-// "claude-haiku-4-5-20251001") into a short human label ("Opus 4.8",
-// "Haiku 4.5") rather than a hardcoded id->label map, so future model ids
-// (new families/versions) render sensibly without a code change. Shape:
-// "claude-<family>-<major>-<minor>[-<trailing date>]".
+// Model label resolution — moved off client-side parsing to the model
+// registry (src/main/models/registry.ts), consumed here via
+// src/renderer/src/lib/useModelLabels.ts's resolver function. Callers that
+// don't have a resolver handy (e.g. unit tests exercising buildLiveAgentRows
+// in isolation) get the '—' unknown-yet fallback, matching the old parser's
+// behavior for an unresolved id.
 // ---------------------------------------------------------------------------
 
-const MODEL_ID_PATTERN = /^claude-([a-z]+)-(\d+)-(\d+)(?:-\d+)?$/
-
-export function prettifyModelLabel(model: string | null): string {
-  if (!model) return '—'
-  const match = MODEL_ID_PATTERN.exec(model)
-  if (!match) return model
-  const [, family, major, minor] = match
-  const familyLabel = family.charAt(0).toUpperCase() + family.slice(1)
-  return `${familyLabel} ${major}.${minor}`
-}
+const defaultModelLabelResolver = (model: string | null): string => (model ? model : '—')
 
 /**
  * Join workspaces + sessions + the activity snapshot into live-agent rows.
  * `liveActivityTimes` is a lookup of workspaceId -> epoch ms sourced from
  * activityTimeStore (see useLiveAgents.ts) — the "(a) preferred" elapsed
  * source per the unit spec, avoiding a new IPC surface.
+ * `getModelLabel` resolves a raw model id to the registry's canonical label
+ * (see useModelLabels.ts) — defaults to an identity/'—' fallback when the
+ * caller doesn't supply one (e.g. tests).
  */
 export function buildLiveAgentRows(
   workspaces: WorkspaceRecord[],
   projectNameById: ReadonlyMap<string, string>,
   sessionById: ReadonlyMap<string, SessionRecord>,
   activityByWorkspace: ReadonlyMap<string, WorkspaceActivityDetail>,
-  liveActivityTimes: ReadonlyMap<string, number>
+  liveActivityTimes: ReadonlyMap<string, number>,
+  getModelLabel: (model: string | null) => string = defaultModelLabelResolver
 ): LiveAgentRow[] {
   const rows: LiveAgentRow[] = []
 
@@ -164,7 +161,7 @@ export function buildLiveAgentRows(
       doing,
       taskTitle: resolveTaskTitle(session, ws),
       model,
-      modelLabel: prettifyModelLabel(model),
+      modelLabel: getModelLabel(model),
       sinceMs
     })
   }
