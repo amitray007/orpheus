@@ -37,6 +37,7 @@ import {
 } from './lifecycle'
 import { fetchRoutingProxyAuthFiles } from './authFiles'
 import { checkRoutingProxyUpdate } from './updateCheck'
+import { cleanStoppedStatus, disableTransitionPatch } from './state'
 
 // ---------------------------------------------------------------------------
 // Snapshot state
@@ -168,11 +169,30 @@ export async function refreshAuthFilesNow(): Promise<RoutingProxySnapshot> {
 }
 
 export async function start(): Promise<void> {
-  const version = snapshot.installedVersion ?? detectInstalledVersion()
+  let version = snapshot.installedVersion ?? detectInstalledVersion()
+
+  // Auto-install on enable: the toggle's own copy promises "When on,
+  // Orpheus installs (if needed) and runs the proxy" — so enabling while
+  // not installed must trigger the install itself rather than erroring out
+  // and telling the user to do it manually via a control that (before this
+  // fix) didn't even exist in that state. install() already sets its own
+  // 'installing'/'error' snapshot states; a thrown error here (e.g. a
+  // checksum mismatch or offline network) leaves status 'error' with
+  // installedVersion still null, which canInstallOrRetry()/isInstalled()
+  // keep reachable for a manual Retry — never a dead end.
   if (!version) {
-    setSnapshot({ status: 'error', error: 'Not installed yet — install the proxy first.' })
-    return
+    try {
+      await install()
+    } catch {
+      // install() already recorded status: 'error' + a message; nothing
+      // further to do here — just don't fall through to starting a
+      // nonexistent binary.
+      return
+    }
+    version = snapshot.installedVersion
+    if (!version) return
   }
+
   setSnapshot({ status: 'starting', error: null })
 
   // Regenerate config on every start so it always reflects the current
@@ -235,7 +255,11 @@ export async function stop(): Promise<void> {
     authRefreshTimer = null
   }
   await stopRoutingProxy()
-  setSnapshot({ status: 'stopped', authFiles: [], authFilesCheckedAt: null })
+  setSnapshot({
+    ...disableTransitionPatch(snapshot.installedVersion),
+    authFiles: [],
+    authFilesCheckedAt: null
+  })
 }
 
 /**
@@ -248,8 +272,16 @@ export async function reconcileRoutingProxy(): Promise<void> {
   setSnapshot({ enabled })
   if (enabled) {
     if (!isRunning()) await start()
+  } else if (isRunning()) {
+    await stop()
   } else {
-    if (isRunning()) await stop()
+    // The child process was never running (e.g. a prior enable attempt
+    // failed before a binary was ever spawned — not installed, or install
+    // itself failed) — stop()'s own cleanup wouldn't otherwise run in this
+    // branch. Disabling must still be a clean, well-defined transition: a
+    // stale 'error' status/message from that failed enable attempt must not
+    // linger just because there was no process to actually stop.
+    setSnapshot(disableTransitionPatch(snapshot.installedVersion))
   }
 }
 
@@ -278,7 +310,7 @@ export function hydrateSnapshotAtBoot(): Promise<void> {
   setSnapshot({
     installedVersion,
     enabled,
-    status: installedVersion ? 'stopped' : 'not_installed'
+    status: cleanStoppedStatus(installedVersion)
   })
   return Promise.resolve()
 }

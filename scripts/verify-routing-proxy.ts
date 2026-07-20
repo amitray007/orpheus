@@ -20,6 +20,9 @@
 //   - health-check: unhealthy when nothing listens; healthy when a stub responds
 //   - fail-closed: routed mount refused when the proxy is unhealthy
 //   - the management secret is never written to the generated config file
+//   - state.ts's pure status-transition helpers: the enable->disable-while-
+//     not-installed trap state (an 'error' status must never make
+//     install/retry unreachable, and disabling must always land clean)
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert'
@@ -56,6 +59,12 @@ import {
   checkRoutingProxyUpdate,
   type UpdateCheckDeps
 } from '../src/main/routingProxy/updateCheck.ts'
+import {
+  canInstallOrRetry,
+  cleanStoppedStatus,
+  disableTransitionPatch,
+  isInstalled
+} from '../src/main/routingProxy/state.ts'
 
 // ---------------------------------------------------------------------------
 // Test scratch dir — everything this harness writes lives here, never under
@@ -383,6 +392,142 @@ async function cleanup(): Promise<void> {
   assert.equal(failed.available, false)
   assert.ok(failed.error, 'a network failure must surface as a non-throwing error field')
   console.log('✓ checkRoutingProxyUpdate never throws — network failure surfaces as result.error')
+}
+
+// ---------------------------------------------------------------------------
+// 9. Trap-state fix — state.ts's pure status-transition helpers.
+//
+// Reproduces the exact bug the user hit: toggle the "Enable managed routing
+// proxy" switch ON while the proxy is not installed (offline, so the
+// install attempt fails), then toggle it OFF. Before the fix, this left
+// status stuck on 'error' forever with no reachable Install control ('error'
+// !== 'not_installed', so the Install button was never rendered).
+// ---------------------------------------------------------------------------
+
+{
+  // --- isInstalled / canInstallOrRetry basics -------------------------------
+  assert.equal(isInstalled(null), false, 'null installedVersion means not installed')
+  assert.equal(isInstalled('7.2.92'), true, 'a version string means installed')
+
+  assert.equal(
+    canInstallOrRetry(null, 'not_installed'),
+    true,
+    'install must be reachable from not_installed'
+  )
+  assert.equal(
+    canInstallOrRetry(null, 'installing'),
+    false,
+    'install must not be reachable mid-install (avoid double-trigger)'
+  )
+  assert.equal(
+    canInstallOrRetry('7.2.92', 'error'),
+    false,
+    'once truly installed, an unrelated error (e.g. unreachable) must not offer reinstall'
+  )
+  console.log('✓ isInstalled/canInstallOrRetry basics')
+
+  // --- the actual trap-state repro: error status, never installed ----------
+  // This is the state a failed auto-install-on-enable leaves behind:
+  // installedVersion stays null, status flips to 'error'.
+  const trapState = { installedVersion: null as string | null, status: 'error' as const }
+  assert.equal(
+    canInstallOrRetry(trapState.installedVersion, trapState.status),
+    true,
+    "an 'error' status must NEVER make install/retry unreachable while uninstalled " +
+      '(the exact dead-end the user hit)'
+  )
+  console.log("✓ canInstallOrRetry(null, 'error') stays reachable — 'error' is never a dead end")
+
+  // Sweep every declared status: whenever installedVersion is null and
+  // status isn't 'installing', install/retry must be reachable. This is the
+  // "the state machine never reaches a state where installing is impossible
+  // while uninstalled" invariant from the unit spec, checked exhaustively
+  // rather than for one status.
+  const allStatuses: Array<
+    'not_installed' | 'installing' | 'stopped' | 'starting' | 'running' | 'error'
+  > = ['not_installed', 'installing', 'stopped', 'starting', 'running', 'error']
+  for (const status of allStatuses) {
+    const reachable = canInstallOrRetry(null, status)
+    if (status === 'installing') {
+      assert.equal(reachable, false, `installing must gate itself out (status=${status})`)
+    } else {
+      assert.equal(
+        reachable,
+        true,
+        `install/retry must be reachable while uninstalled regardless of status (status=${status})`
+      )
+    }
+  }
+  console.log('✓ canInstallOrRetry(null, status) is reachable for every status except mid-install')
+
+  // --- disable transition lands clean ---------------------------------------
+  // enable -> disable while NOT installed: must clear the error and land on
+  // 'not_installed' (never leave 'error' behind, which is exactly what the
+  // user's screenshot showed: toggle OFF + status still "Error").
+  const afterDisableUninstalled = disableTransitionPatch(null)
+  assert.equal(
+    afterDisableUninstalled.status,
+    'not_installed',
+    'disabling while never installed must land on not_installed, not a stale error'
+  )
+  assert.equal(
+    afterDisableUninstalled.error,
+    null,
+    'disabling must always clear any lingering error message'
+  )
+  console.log(
+    '✓ disableTransitionPatch(null) clears error and lands on not_installed (the trap-state fix)'
+  )
+
+  // enable -> disable while installed (e.g. was running, or install
+  // succeeded but start failed): must land on 'stopped', still with error
+  // cleared — disabling is a clean transition regardless of prior status.
+  const afterDisableInstalled = disableTransitionPatch('7.2.92')
+  assert.equal(
+    afterDisableInstalled.status,
+    'stopped',
+    'disabling while installed must land on stopped'
+  )
+  assert.equal(afterDisableInstalled.error, null, 'disabling while installed also clears error')
+  console.log('✓ disableTransitionPatch("7.2.92") clears error and lands on stopped')
+
+  assert.equal(cleanStoppedStatus(null), 'not_installed')
+  assert.equal(cleanStoppedStatus('7.2.92'), 'stopped')
+  console.log('✓ cleanStoppedStatus reflects installedVersion, not status')
+
+  // --- full repro sequence, exactly as the user hit it ----------------------
+  // Simulate the manager's own state shape across the enable->fail->disable
+  // sequence using only the pure helpers (mirrors what manager.ts's start()/
+  // stop()/reconcileRoutingProxy() now do with these helpers).
+  let sim = {
+    installedVersion: null as string | null,
+    status: 'not_installed' as const,
+    error: null as string | null
+  }
+
+  // 1. User toggles ON. Proxy is not installed and offline, so install()
+  //    fails. installedVersion stays null; status flips to 'error'.
+  sim = { ...sim, status: 'error', error: 'Not installed yet — install the proxy first.' }
+  assert.equal(
+    canInstallOrRetry(sim.installedVersion, sim.status),
+    true,
+    'step 1: after a failed enable, install/retry must still be reachable'
+  )
+
+  // 2. User toggles OFF. reconcileRoutingProxy() takes the "was never
+  //    running" branch and applies disableTransitionPatch().
+  const patch = disableTransitionPatch(sim.installedVersion)
+  sim = { ...sim, ...patch }
+  assert.equal(sim.status, 'not_installed', 'step 2: disable must clear the stuck error status')
+  assert.equal(sim.error, null, 'step 2: disable must clear the stuck error message')
+  assert.equal(
+    canInstallOrRetry(sim.installedVersion, sim.status),
+    true,
+    'step 2: install must remain reachable after disabling too (still uninstalled)'
+  )
+  console.log(
+    '✓ full repro: enable (fails, offline) -> disable leaves a CLEAN state, no lingering error, install still reachable'
+  )
 }
 
 await cleanup()

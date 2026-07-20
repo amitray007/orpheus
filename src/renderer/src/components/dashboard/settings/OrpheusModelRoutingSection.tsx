@@ -166,9 +166,17 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
     )
   }
 
-  const notInstalled = snapshot.status === 'not_installed'
+  // Gate the Install/Retry action on "is it actually installed?" — not on
+  // `status === 'not_installed'`. Status can be 'error' for reasons that
+  // have nothing to do with installation (e.g. the process started but
+  // never became reachable) while a binary is on disk, or (the trap-state
+  // bug) because a failed auto-install left status 'error' with no binary
+  // at all. Either way, whenever the component isn't installed the Install
+  // control must stay reachable — 'error' must never be a dead end.
+  const canInstall = !snapshot.installedVersion && snapshot.status !== 'installing'
   const isInstalling = snapshot.status === 'installing'
   const isRunning = snapshot.status === 'running'
+  const isRetry = snapshot.status === 'error'
 
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
@@ -240,14 +248,18 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
           {snapshot.error && <p className="text-xs text-red-400">{snapshot.error}</p>}
 
           <div className="flex items-center gap-2 flex-wrap pt-1">
-            {notInstalled && (
+            {canInstall && (
               <button
                 type="button"
                 disabled={busy || isInstalling}
                 onClick={() => void handleInstall()}
                 className="px-3 py-1.5 rounded text-xs font-medium bg-accent text-black hover:bg-accent/90 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {assetInfo?.sizeBytes ? `Install (${formatBytes(assetInfo.sizeBytes)})` : 'Install'}
+                {isRetry
+                  ? 'Retry install'
+                  : assetInfo?.sizeBytes
+                    ? `Install (${formatBytes(assetInfo.sizeBytes)})`
+                    : 'Install'}
               </button>
             )}
             <button
