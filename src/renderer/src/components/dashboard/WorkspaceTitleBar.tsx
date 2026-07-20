@@ -9,7 +9,6 @@ import {
   SquaresFour,
   X
 } from '@phosphor-icons/react'
-import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import type { GhPullRequest, WorkspaceRecord, SessionUsage, SessionCost } from '@shared/types'
 import { PrChip } from '../github/PrChip'
 import { useGitStatus } from '@/lib/gitStore'
@@ -30,37 +29,6 @@ import { useWorkbenchApi, type WorkbenchApi } from '../workbench/workbenchReduce
 import { WorkbenchTabStrip } from '../workbench/WorkbenchTabStrip'
 import { DEFAULT_WORKBENCH_WIDTH } from '../../lib/workbenchStore'
 import { WorkspaceSettingsPopover } from './WorkspaceSettingsPopover'
-
-// ---------------------------------------------------------------------------
-// Model label helper — derives a short human-readable label from a model ID.
-// ---------------------------------------------------------------------------
-function modelLabel(modelId: string): string {
-  // 1. Exact match in known options
-  const known = CLAUDE_MODEL_OPTIONS.find((o) => o.value === modelId)
-  if (known) return known.label
-
-  // 2. Prefix match — handles date-stamped variants like "claude-opus-4-7-20260416"
-  //    by finding the longest known option whose value is a prefix of the incoming ID.
-  const prefixMatch = CLAUDE_MODEL_OPTIONS.filter((o) => modelId.startsWith(o.value)).reduce<
-    (typeof CLAUDE_MODEL_OPTIONS)[number] | undefined
-  >((best, o) => (best === undefined || o.value.length > best.value.length ? o : best), undefined)
-  if (prefixMatch) return prefixMatch.label
-
-  // 3. Structural parse: "claude-<family>-<v1>-<v2>..." → "<Family> <v1>.<v2>"
-  //    Strips the leading "claude-" then splits on "-".
-  //    family = first segment (capitalized), version = subsequent numeric segments joined by ".".
-  const parts = modelId.replace(/^claude-/, '').split('-')
-  if (parts.length >= 1) {
-    const family = parts[0].charAt(0).toUpperCase() + parts[0].slice(1)
-    const versionParts = parts.slice(1).filter((p) => /^\d/.test(p))
-    if (versionParts.length > 0) {
-      return `${family} ${versionParts.join('.')}`
-    }
-    return family
-  }
-
-  return modelId
-}
 
 // ---------------------------------------------------------------------------
 // Short token helper — same as contextLabel but without the " ctx" suffix.
@@ -338,7 +306,7 @@ export function WorkspaceTitleBar({
     const cached = contextBudgetCache.get(cacheKey)
     if (cached) {
       updateDetails({
-        model: modelLabel(cached.modelId),
+        model: cached.modelLabel,
         contextLoading: false
       })
     }
@@ -363,7 +331,7 @@ export function WorkspaceTitleBar({
                 : null
             const ctxText = formatContextText(usage, result.contextBudget)
             updateDetails({
-              model: modelLabel(result.modelId),
+              model: result.modelLabel,
               contextText: ctxText,
               contextLoading: false
             })

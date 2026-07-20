@@ -5,8 +5,14 @@
 
 // contextBudget is null when the model's pricing/context window is unknown —
 // consumers must render an explicit "unknown" state (em-dash), never a
-// fabricated number. See ContextBudgetResult in src/main/sessions.ts.
-export type ContextBudgetInfo = { contextBudget: number | null; modelId: string }
+// fabricated number. modelLabel is the registry's one canonical label
+// (src/main/models/registry.ts) — resolved in main, never re-derived here.
+// See ContextBudgetResult in src/main/sessions.ts.
+export type ContextBudgetInfo = {
+  contextBudget: number | null
+  modelId: string
+  modelLabel: string
+}
 
 // Keyed by `${workspaceId}:${claudeSessionId}` so the cache is automatically
 // invalidated when the session changes (new conversation in same workspace).
