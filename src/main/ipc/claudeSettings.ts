@@ -25,6 +25,7 @@ import {
   composeClaudeLaunch
 } from '../claudeSettings'
 import { getClaudeAuthEnv } from '../claudeAuth'
+import { isLiveApplicableModelChange } from '../modelRouting'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from '../claudeProjectSettings'
 import {
   getClaudeWorkspaceSettings,
@@ -210,17 +211,32 @@ function setWorkspaceSettingAndSuppressDirty(
       // Recompose fresh — this reflects the NEW value (already persisted
       // above) plus whatever ELSE currently differs from the snapshot.
       const fresh = composeClaudeLaunch(ws.projectId, workspaceId)
-      const patchedFlags = reconcileFlagsExceptTarget(snap.flags, fresh.flags, flagName)
 
-      // Only `flags` changes; settingsJson/env stay from the OLD snapshot.
-      setLaunchSnapshot(workspaceId, { ...snap, flags: patchedFlags })
+      // Model changes are only suppressible when the switch stays on the
+      // same backend (Claude -> Claude). A Claude<->routed (or
+      // routed<->different-routed) switch needs a new process with
+      // different env, so it must fall through to a genuine dirty flag
+      // ("Restart to apply") rather than being silently marked clean.
+      const suppressible =
+        flagName !== 'model' ||
+        isLiveApplicableModelChange(findFlagValue(snap.flags, '--model') ?? '', fresh.model)
+
+      if (suppressible) {
+        const patchedFlags = reconcileFlagsExceptTarget(snap.flags, fresh.flags, flagName)
+        // Only `flags` changes; settingsJson/env stay from the OLD snapshot.
+        setLaunchSnapshot(workspaceId, { ...snap, flags: patchedFlags })
+      }
+      // else: leave the snapshot untouched — recomputeDirty() below will
+      // then see the new model in `fresh` diverge from the stale snapshot
+      // and correctly mark the workspace dirty.
     }
   }
 
   // Recompute dirty for ALL workspaces (cheap, existing behavior) — now that
-  // the target flag's dimension of this workspace's snapshot matches fresh,
-  // only a GENUINE pre-existing divergence (unrelated to flagName) would
-  // still flag dirty.
+  // the target flag's dimension of this workspace's snapshot matches fresh
+  // (when suppressible), only a GENUINE pre-existing divergence (unrelated
+  // to flagName) would still flag dirty. When NOT suppressible, the model
+  // divergence itself is what (correctly) flags dirty here.
   recomputeDirty()
 
   return result
