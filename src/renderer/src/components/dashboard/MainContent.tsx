@@ -206,7 +206,7 @@ interface MainContentProps {
   workspacesForProject: WorkspaceRecord[] | null
   onRequestRemoveProject: (project: ProjectRecord) => void
   onSelectWorkspace: (workspaceId: string, projectId: string) => void
-  onAddWorkspace: (projectId: string) => void | Promise<void>
+  onAddWorkspace: (projectId: string, modelId?: string) => void | Promise<void>
   onRenameWorkspace: (
     workspaceId: string,
     projectId: string,

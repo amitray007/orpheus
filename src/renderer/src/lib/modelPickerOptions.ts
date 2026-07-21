@@ -36,7 +36,10 @@ function groupByProvider(models: SelectableModel[]): Map<string, SelectableModel
   return groups
 }
 
-function labelFor(m: SelectableModel): string {
+/** Exported so the creation popover (NewWorkspaceMenu.tsx) can render the
+ *  same "(unavailable)" suffix convention for its model rows without
+ *  duplicating this formatting rule. */
+export function labelFor(m: SelectableModel): string {
   return m.available ? m.label : `${m.label} (unavailable)`
 }
 

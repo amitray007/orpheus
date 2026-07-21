@@ -1,11 +1,22 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
-import { GitBranch, Plus, SpinnerGap } from '@phosphor-icons/react'
+import { CaretRight, GitBranch, House, SpinnerGap } from '@phosphor-icons/react'
 import type { WorkspaceRecord } from '@shared/types'
 import { Overlay } from '../ui/Overlay'
+import { ProviderIcon } from '../ProviderIcon'
 import { useFocusOnMount } from '@/lib/useFocusOnMount'
 import { playSound } from '@/lib/sound'
 import { useSidebarBounds } from './SidebarBoundsContext'
+import { useSelectableModels } from '@/lib/useSelectableModels'
+import { labelFor } from '@/lib/modelPickerOptions'
+import {
+  groupModelsForCreation,
+  initialCreationProviderId,
+  lastUsedModelForProvider,
+  type CreationProviderGroup
+} from '@/lib/creationProviderMenu'
+import { recordCreationLastUsed, useCreationLastUsedState } from '@/lib/creationLastUsedStore'
+import { setWorkspaceModel } from '@/lib/workspaceModelStore'
 
 // ---------------------------------------------------------------------------
 // Renderer-side slug helper (mirrors main/worktrees.ts worktreeSlug without
@@ -30,6 +41,14 @@ function worktreeSlugRenderer(name: string): string {
 interface BranchFieldProps {
   projectId: string
   defaultBranch: string
+  /** The model chosen in the provider/model view before switching to
+   *  Worktree — undefined means "use the global/project default" (unchanged
+   *  pre-existing behavior). Persisted to the SAME storage the footer Model
+   *  chip writes (workspace:setModel) before onCreated fires, so the very
+   *  first terminal:mount for this worktree workspace launches routed with
+   *  no restart. */
+  selectedModelId: string | undefined
+  selectedProviderId: string | undefined
   onCreated: (record: WorkspaceRecord) => void
   onCancel: () => void
 }
@@ -71,6 +90,8 @@ function BranchInput({
 function BranchField({
   projectId,
   defaultBranch,
+  selectedModelId,
+  selectedProviderId,
   onCreated,
   onCancel
 }: BranchFieldProps): React.JSX.Element {
@@ -149,6 +170,19 @@ function BranchField({
         name,
         branch: trimmed
       })
+      // Creation-time model routing (unit 10) — same persistence path the
+      // Local button uses (see handleAddWorkspace in Dashboard.tsx): write
+      // to workspace:setModel (the SAME storage the footer chip writes)
+      // BEFORE onCreated fires navigation, so the first terminal:mount for
+      // this worktree workspace composes routed with no restart needed.
+      if (selectedModelId) {
+        try {
+          await window.api.workspaces.setModel(record.id, selectedModelId)
+          setWorkspaceModel(record.id, selectedModelId)
+        } catch (err) {
+          console.error('[NewWorkspaceMenu] failed to set creation-time model', err)
+        }
+      }
       playSound('pop')
       onCreated(record)
     } catch (err) {
@@ -161,8 +195,24 @@ function BranchField({
   const hint =
     exists === true ? 'branch exists — will check it out' : exists === false ? 'new branch' : null
 
+  // Read-only echo of the model chosen in the provider/model view — the
+  // creation popover's top line stays visible in spirit even after swapping
+  // to the branch panel, so the user isn't left wondering what Worktree will
+  // actually create with. enabled=true reuses the SAME shared cache the
+  // provider/model view already populated (no extra fetch in the common case).
+  const { models: modelsForLabel } = useSelectableModels(selectedModelId, true)
+  const selectedModelLabel = selectedModelId
+    ? (modelsForLabel.find((m) => m.id === selectedModelId)?.label ?? selectedModelId)
+    : null
+
   return (
     <div className="flex flex-col gap-1.5 p-2">
+      {selectedModelId && selectedProviderId && (
+        <div className="flex items-center gap-1.5 pb-1 border-b border-border-default/60">
+          <ProviderIcon providerId={selectedProviderId} size={12} />
+          <span className="text-xs text-text-secondary truncate">{selectedModelLabel}</span>
+        </div>
+      )}
       <div className="flex items-center gap-1.5">
         <GitBranch size={12} className="text-text-muted flex-shrink-0" />
         <span className="text-xs text-text-muted">Branch</span>
@@ -230,12 +280,45 @@ function BranchField({
 const modesCache = new Map<string, { local: boolean; worktree: boolean }>()
 
 // ---------------------------------------------------------------------------
+// Provider row — top-level "providers" view. Selecting NEVER creates (rule 1
+// of the approved design) — it swaps to that provider's model list.
+// ---------------------------------------------------------------------------
+
+function ProviderRow({
+  group,
+  onPick
+}: {
+  group: CreationProviderGroup
+  onPick: (providerId: string) => void
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={(e) => {
+        e.stopPropagation()
+        onPick(group.providerId)
+      }}
+      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-text-primary transition-colors duration-100 hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised cursor-pointer"
+    >
+      <ProviderIcon providerId={group.providerId} size={13} />
+      <span className="flex-1 truncate">{group.label}</span>
+      <span className="text-xs text-text-muted flex-shrink-0">{group.models.length}</span>
+      <CaretRight size={11} className="text-text-muted flex-shrink-0" />
+    </button>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // NewWorkspaceMenu
 //
 // Props:
 //   projectId     — the project this workspace will belong to
 //   defaultName   — auto-generated workspace name (used to seed the branch slug)
-//   onCreateLocal — callback to perform the plain-create (Local) path
+//   onCreateLocal — callback to perform the plain-create (Local) path; now
+//                   receives the model id chosen in this popover (undefined
+//                   = use the global/project default, unchanged pre-existing
+//                   behavior)
 //   onCreated     — callback fired after a worktree workspace is created
 //   children      — the trigger element (the "+" button or similar)
 //   className     — forwarded to the wrapper div
@@ -245,8 +328,9 @@ export interface NewWorkspaceMenuProps {
   projectId: string
   /** Auto-generated workspace name for the current project (e.g. "Workspace 2"). */
   defaultName: string
-  /** Called to create a local workspace via the existing plain-create path. */
-  onCreateLocal: () => void
+  /** Called to create a local workspace via the existing plain-create path.
+   *  `modelId` is the model chosen in this popover (undefined = default). */
+  onCreateLocal: (modelId?: string) => void
   /** Called after a worktree workspace has been created. */
   onCreated: (record: WorkspaceRecord) => void
   /** The trigger element — the "+" button or text link. */
@@ -255,7 +339,12 @@ export interface NewWorkspaceMenuProps {
   className?: string
 }
 
-type MenuView = 'closed' | 'picker' | 'branch'
+// Two-level, in-place swap (rule of the approved design): 'providers' (top
+// level) and 'models' (a specific provider's models) render in the SAME
+// Overlay instance, swapping content in place on selection — never a nested
+// popover triggered off a new anchor. 'branch' is its own Overlay, exactly
+// mirroring the pre-existing picker->branch swap this design generalizes.
+type MenuView = 'closed' | 'providers' | 'models' | 'branch'
 
 // Anchor position captured on click so the overlay can use `position: fixed`
 // without reading `ref.current` during render.
@@ -276,64 +365,72 @@ export function NewWorkspaceMenu({
   const [modes, setModes] = useState<{ local: boolean; worktree: boolean } | null>(
     () => modesCache.get(projectId) ?? null
   )
+  // The provider whose model list is showing in the 'models' view — null
+  // while on the 'providers' view.
+  const [activeProviderId, setActiveProviderId] = useState<string | null>(null)
+  // The currently-selected model — updates live as the user picks a
+  // provider (pre-selects that provider's own last-used) or a specific
+  // model row. This is what Local/Worktree create with, and what the
+  // display-only top line shows.
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null)
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null)
   const [anchorPos, setAnchorPos] = useState<AnchorPos | null>(null)
   const [clampedPos, setClampedPos] = useState<ClampedPos | null>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const sidebarBoundsRef = useSidebarBounds()
 
-  // Fetch offered modes (async IPC call), populating the cache.
-  // Single-fire auto-create: if only one mode is available, collapse immediately
-  // in the .then() resolve handler — never in a reactive effect — so the local-only
-  // path runs exactly once per fetch regardless of onCreateLocal identity changes.
+  // The full selectable-model list (Claude always present; routed groups
+  // gated on proxy/provider health — see selectable.ts). Shared/cached with
+  // every other picker in the app (footer chip, drawers) — this popover
+  // computes NO model facts of its own, only groups/orders what main sent.
+  const { models: selectableModels } = useSelectableModels(undefined, view !== 'closed')
+  const groups = useMemo(() => groupModelsForCreation(selectableModels), [selectableModels])
+  const lastUsed = useCreationLastUsedState()
+
+  // Seeding is NOT done at click time — at the moment handleTriggerClick
+  // runs, useSelectableModels is still disabled (view is about to flip from
+  // 'closed', not yet 'providers'), so `groups` could still be the
+  // Claude-only fallback even when the real last-used was a routed provider.
+  // Instead, re-seed via effect whenever the popover is on the provider view
+  // AND the user hasn't made an explicit pick yet this session — this
+  // self-corrects once the real (possibly routed) group list arrives,
+  // without ever clobbering a selection the user already made.
+  const hasPickedRef = useRef(false)
+  useEffect(() => {
+    if (view !== 'providers' || hasPickedRef.current) return
+    const initialProviderId = initialCreationProviderId(lastUsed, groups)
+    const initialGroup = groups.find((g) => g.providerId === initialProviderId)
+    const initialModels = initialGroup?.models ?? []
+    const modelId = lastUsedModelForProvider(lastUsed, initialProviderId, initialModels)
+    setSelectedProviderId(initialProviderId)
+    setSelectedModelId(modelId)
+  }, [view, groups, lastUsed])
+
+  // Fetch offered modes (async IPC call), populating the cache. No longer
+  // auto-collapses/auto-creates on a single-mode project (unlike the old
+  // 2-item Local/Worktree picker) — the provider/model view is always the
+  // useful first stop now, so a local-only or worktree-only project simply
+  // disables the other button (see the render below) rather than skipping
+  // the popover entirely.
   const fetchModes = useCallback((): void => {
     window.api.app
       .offeredModes(projectId)
       .then((m) => {
         modesCache.set(projectId, m)
         setModes(m)
-        // Collapse immediately in the resolve handler (single-fire, no re-run risk).
-        // Only collapse when the picker is open (view check via functional update pattern
-        // is not available here, but the menu is guaranteed open since fetchModes is only
-        // called from handleTriggerClick when transitioning to 'picker').
-        if (!m.local && !m.worktree) return // both unavailable — leave picker visible
-        if (m.local && m.worktree) return // both offered — keep picker open
-        if (m.worktree) {
-          setView('branch')
-        } else {
-          // local-only: auto-create once, right here in the resolve handler.
-          setView('closed')
-          onCreateLocal()
-        }
       })
       .catch(() => {
         const fallback = { local: true, worktree: false }
         modesCache.set(projectId, fallback)
         setModes(fallback)
-        // On error, fallback is local-only — auto-create once.
-        setView('closed')
-        onCreateLocal()
       })
-  }, [projectId, onCreateLocal])
-
-  // When modes load while the picker is shown, collapse to the appropriate action.
-  // Note: auto-create (local-only path) is handled directly in fetchModes above.
-  // This effect only handles the worktree-only collapse (no double-create risk).
-  useEffect(() => {
-    if (view !== 'picker' || modes === null) return
-    // Both offered → keep picker open; otherwise collapse.
-    if (modes.local && modes.worktree) return
-    if (modes.worktree) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- triggered by async offeredModes resolve, not a cascading sync call
-      setView('branch')
-    }
-    // local-only case is handled in fetchModes .then() — do NOT call onCreateLocal here.
-  }, [modes, view])
+  }, [projectId])
 
   // Clamp the popover inside the sidebar bounds (falling back to the viewport),
   // mirroring ContextMenu's clamping math. Re-runs whenever the anchor changes,
-  // the view switches (picker -> branch resizes the card), or modes finish
-  // loading (loading -> loaded picker can change size).
+  // the view switches (providers <-> models <-> branch resizes the card), or
+  // modes/groups finish loading (loading -> loaded can change size).
   useLayoutEffect(() => {
     if (view === 'closed' || !anchorPos) return
     const el = contentRef.current
@@ -352,7 +449,7 @@ export function NewWorkspaceMenu({
     if (left < bounds.left) left = bounds.left + 4
     if (top < bounds.top) top = bounds.top + 4
     setClampedPos({ top, left })
-  }, [anchorPos, view, modes, sidebarBoundsRef])
+  }, [anchorPos, view, modes, groups, sidebarBoundsRef])
 
   // Reposition on window resize while open (mirrors TopBar's StatusPopover).
   useEffect(() => {
@@ -389,13 +486,16 @@ export function NewWorkspaceMenu({
 
     // Always re-fetch on open to pick up config changes (clears the cache entry).
     modesCache.delete(projectId)
-    // Kick off async fetch; state update arrives via setModes in fetchModes.
     fetchModes()
 
-    // Open immediately and stay open through the async fetch — the picker
-    // renders a stable loading state (see showLoading below) instead of
-    // vanishing while modes === null, so there's no flicker.
-    setView('picker')
+    setActiveProviderId(null)
+    setSelectedProviderId(null)
+    setSelectedModelId(null)
+    // Allow the seeding effect above to (re-)run for this fresh open — it
+    // self-corrects as `groups` arrives/changes until the user makes an
+    // explicit pick.
+    hasPickedRef.current = false
+    setView('providers')
   }
 
   // Genuine-dismiss only: outside-click, Escape (both handled by Overlay), or an
@@ -408,14 +508,53 @@ export function NewWorkspaceMenu({
     setClampedPos(null)
   }
 
-  function handlePickLocal(e: React.MouseEvent): void {
-    e.stopPropagation()
-    setView('closed')
-    onCreateLocal()
+  // Rule 1 of the approved design: clicking a provider row SELECTS, it never
+  // creates — swaps the SAME overlay's content to that provider's model
+  // list, pre-selecting the provider's own last-used model (marked `●`).
+  function handlePickProvider(providerId: string): void {
+    hasPickedRef.current = true
+    setActiveProviderId(providerId)
+    const group = groups.find((g) => g.providerId === providerId)
+    const modelId = lastUsedModelForProvider(lastUsed, providerId, group?.models ?? [])
+    setSelectedProviderId(providerId)
+    setSelectedModelId(modelId)
+    setView('models')
   }
 
+  // Back arrow in the models view — returns to the provider list, keeping
+  // the current selection (top line stays whatever was last picked).
+  function handleBackToProviders(): void {
+    setActiveProviderId(null)
+    setView('providers')
+  }
+
+  // Rule 1 again: picking a model row SELECTS (updates the live top line +
+  // pre-select for next time), never creates.
+  function handlePickModel(providerId: string, modelId: string): void {
+    hasPickedRef.current = true
+    setSelectedProviderId(providerId)
+    setSelectedModelId(modelId)
+  }
+
+  // Rule 3: Local creates immediately with the currently-selected model.
+  // Claude's default entry (nothing explicitly picked yet, or Claude with no
+  // sub-selection) passes undefined so the existing global/project-default
+  // resolution path is unchanged byte-for-byte.
+  function handleCreateLocal(e: React.MouseEvent): void {
+    e.stopPropagation()
+    const modelId = selectedModelId ?? undefined
+    if (modelId && selectedProviderId) recordCreationLastUsed(selectedProviderId, modelId)
+    setView('closed')
+    onCreateLocal(modelId)
+  }
+
+  // Rule 3: Worktree swaps to the existing branch panel, which creates with
+  // the currently-selected model (see BranchField's selectedModelId prop).
   function handlePickWorktree(e: React.MouseEvent): void {
     e.stopPropagation()
+    if (selectedModelId && selectedProviderId) {
+      recordCreationLastUsed(selectedProviderId, selectedModelId)
+    }
     setView('branch')
   }
 
@@ -426,15 +565,26 @@ export function NewWorkspaceMenu({
 
   const defaultBranch = `worktree-${worktreeSlugRenderer(defaultName)}`
 
-  // The picker stays mounted for the entire 'picker' view — including while
-  // fetchModes() is in flight — so the menu never visually vanishes-then-
-  // reappears. While modes === null we render a stable disabled/loading state
-  // instead of nothing; once modes resolve to "both offered" we render the
-  // real Local/Worktree items (single-mode cases collapse away via the effect
-  // above / fetchModes' resolve handler, never rendered here).
-  const showPicker = view === 'picker'
+  const showProviders = view === 'providers'
+  const showModels = view === 'models'
+  const showPicker = showProviders || showModels
   const showBranch = view === 'branch'
+  // Only offeredModes (Local/Worktree availability) is a genuine loading gate
+  // — selectableModels never needs one: useSelectableModels' synchronous
+  // Claude-only fallback (see selectableModelsStore.ts) means `groups` always
+  // has at least the Claude entry immediately, even before models:
+  // listSelectable resolves, so the provider list itself never needs to wait.
   const pickerLoading = modes === null
+
+  const activeGroup = groups.find((g) => g.providerId === activeProviderId) ?? null
+  const activeGroupLastUsedId = activeProviderId
+    ? lastUsedModelForProvider(lastUsed, activeProviderId, activeGroup?.models ?? [])
+    : null
+
+  const topLineProviderId = selectedProviderId ?? 'claude'
+  const topLineGroup = groups.find((g) => g.providerId === topLineProviderId)
+  const topLineModel = topLineGroup?.models.find((m) => m.id === selectedModelId)
+  const topLineLabel = topLineModel ? labelFor(topLineModel) : (selectedModelId ?? '')
 
   const overlayStyle: React.CSSProperties | undefined = clampedPos ?? anchorPos ?? undefined
 
@@ -455,49 +605,110 @@ export function NewWorkspaceMenu({
         {children}
       </div>
 
-      {/* Picker dropdown: Local | Worktree. Stays mounted (view='picker') through
-          the async fetchModes() load — shows a disabled/loading state rather
-          than unmounting, so the menu never flickers or vanishes mid-load. */}
+      {/* Provider/model picker — ONE Overlay instance whose content swaps
+          in place between the provider list and a specific provider's model
+          list (rule: two-level in-place swap, never a nested popover). */}
       <Overlay
         open={showPicker}
         interactive
         onDismiss={handleClose}
         portal
-        className="fixed z-50 min-w-[140px] rounded-md border border-border-default bg-surface-overlay shadow-lg py-1"
+        className="fixed z-50 w-64 rounded-md border border-border-default bg-surface-overlay shadow-lg py-1"
         style={overlayStyle}
       >
-        <div ref={contentRef} role="menu">
+        <div ref={contentRef}>
           {pickerLoading ? (
             <div className="flex items-center gap-2 px-3 py-2 text-sm text-text-muted">
               <SpinnerGap size={12} className="animate-spin flex-shrink-0" />
               Loading…
             </div>
-          ) : modes && modes.local && modes.worktree ? (
-            <>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={handlePickLocal}
-                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-text-primary transition-colors duration-100 hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised cursor-pointer"
-              >
-                <Plus size={12} weight="bold" className="text-text-muted flex-shrink-0" />
-                Local
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={handlePickWorktree}
-                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-text-primary transition-colors duration-100 hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised cursor-pointer"
-              >
-                <GitBranch size={12} className="text-text-muted flex-shrink-0" />
-                Worktree
-              </button>
-            </>
           ) : (
-            // Both modes unavailable (rare/error edge case) — nothing sensible
-            // to offer; render an empty measured node so clamping still works
-            // and the menu doesn't look broken open with no content semantics.
-            <div className="px-3 py-2 text-sm text-text-muted">No workspace types available</div>
+            <>
+              {/* Top line — DISPLAY ONLY, not clickable. Shows the currently
+                  selected Provider · Model, updates live as the user picks. */}
+              <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-border-default/60">
+                <ProviderIcon providerId={topLineProviderId} size={12} />
+                <span className="text-xs text-text-secondary truncate">
+                  {topLineGroup?.label ?? 'Claude'}
+                  {topLineLabel ? ` · ${topLineLabel}` : ''}
+                </span>
+              </div>
+
+              {showProviders && (
+                <div role="menu">
+                  {groups.map((group) => (
+                    <ProviderRow key={group.providerId} group={group} onPick={handlePickProvider} />
+                  ))}
+                </div>
+              )}
+
+              {showModels && activeGroup && (
+                <div role="menu">
+                  <button
+                    type="button"
+                    onClick={handleBackToProviders}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-text-secondary transition-colors duration-100 hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised cursor-pointer"
+                  >
+                    <ProviderIcon providerId={activeGroup.providerId} size={12} />
+                    <span className="flex-1 truncate">{activeGroup.label}</span>
+                  </button>
+                  {activeGroup.models.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      role="menuitem"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handlePickModel(activeGroup.providerId, m.id)
+                      }}
+                      className="w-full flex items-center gap-2 pl-8 pr-3 py-1.5 text-sm text-left text-text-primary transition-colors duration-100 hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised cursor-pointer"
+                    >
+                      <span className="w-3 flex-shrink-0 text-accent">
+                        {m.id === (selectedModelId ?? activeGroupLastUsedId) ? '●' : ''}
+                      </span>
+                      <span className="flex-1 truncate">{labelFor(m)}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Local / Worktree — the ONLY create actions. Visible in BOTH
+                  views. Models/providers above SELECT; only these two CREATE. */}
+              <div className="flex items-center gap-1.5 px-2 pt-1.5 mt-1 border-t border-border-default/60">
+                <button
+                  type="button"
+                  onClick={handleCreateLocal}
+                  disabled={modes ? !modes.local : false}
+                  className={[
+                    'flex-1 flex items-center justify-center gap-1.5 text-xs px-2 py-1.5 rounded-md border font-medium',
+                    'transition-colors duration-100',
+                    'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+                    modes && !modes.local
+                      ? 'opacity-40 cursor-not-allowed border-border-default text-text-muted'
+                      : 'bg-accent/15 border-accent/30 text-text-primary hover:bg-accent/25 cursor-pointer'
+                  ].join(' ')}
+                >
+                  <House size={12} weight="bold" />
+                  Local
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePickWorktree}
+                  disabled={modes ? !modes.worktree : false}
+                  className={[
+                    'flex-1 flex items-center justify-center gap-1.5 text-xs px-2 py-1.5 rounded-md border font-medium',
+                    'transition-colors duration-100',
+                    'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+                    modes && !modes.worktree
+                      ? 'opacity-40 cursor-not-allowed border-border-default text-text-muted'
+                      : 'border-border-default text-text-primary hover:bg-surface-raised cursor-pointer'
+                  ].join(' ')}
+                >
+                  <GitBranch size={12} />
+                  Worktree
+                </button>
+              </div>
+            </>
           )}
         </div>
       </Overlay>
@@ -515,6 +726,8 @@ export function NewWorkspaceMenu({
           <BranchField
             projectId={projectId}
             defaultBranch={defaultBranch}
+            selectedModelId={selectedModelId ?? undefined}
+            selectedProviderId={selectedProviderId ?? undefined}
             onCreated={handleCreated}
             onCancel={handleClose}
           />

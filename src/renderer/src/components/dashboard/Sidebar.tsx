@@ -44,6 +44,7 @@ import { formatRelativeTime, EMPTY_TITLE_MAP, EMPTY_MTIME_MAP } from './sidebar.
 import { SectionHeader } from './SidebarNavItems'
 import { CollapsedProjectList } from './CollapsedProjectList'
 import { NewWorkspaceMenu } from './NewWorkspaceMenu'
+import { WorkspaceProviderIcon } from './WorkspaceProviderIcon'
 import { nextWorkspaceName } from './dashboard.helpers'
 import { RenameInput } from './settings/primitives'
 
@@ -407,8 +408,14 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
           ].join(' ')}
           aria-label={workspace.name}
         >
-          {/* Line 1: status icon · title · fork badge · time/archive */}
+          {/* Line 1: provider icon · status icon · title · fork badge · time/archive */}
           <span className="flex items-center gap-1.5 min-w-0">
+            {/* Provider icon slot — renders nothing until the workspace's
+                effective model resolves to a known provider (see
+                WorkspaceProviderIcon's own doc comment). Sits BEFORE the
+                status dot, per the approved design. */}
+            <WorkspaceProviderIcon workspaceId={workspace.id} />
+
             {/* Status icon slot */}
             <span
               className="flex items-center justify-center w-3 h-3 flex-shrink-0"
@@ -630,7 +637,7 @@ interface ProjectRowProps {
   onFinishRename: (newName: string) => void
   onCancelRename: () => void
   onRequestRemove: () => void
-  onAddWorkspace: () => void
+  onAddWorkspace: (modelId?: string) => void
   renamingWorkspaceId: string | null
   onBeginRenameWorkspace: (workspaceId: string) => void
   onFinishRenameWorkspace: (workspaceId: string, newName: string) => void
@@ -858,7 +865,7 @@ const ProjectRow = memo(function ProjectRow({
               <NewWorkspaceMenu
                 projectId={project.id}
                 defaultName={nextWorkspaceName(workspaces)}
-                onCreateLocal={() => onAddWorkspace()}
+                onCreateLocal={(modelId) => onAddWorkspace(modelId)}
                 onCreated={(ws) => onSelectWorkspace(ws.id)}
               >
                 <button
@@ -903,7 +910,7 @@ const ProjectRow = memo(function ProjectRow({
         <NewWorkspaceMenu
           projectId={project.id}
           defaultName={nextWorkspaceName(workspaces)}
-          onCreateLocal={() => onAddWorkspace()}
+          onCreateLocal={(modelId) => onAddWorkspace(modelId)}
           onCreated={(ws) => onSelectWorkspace(ws.id)}
           className="w-full mt-0.5"
         >
@@ -1034,7 +1041,7 @@ interface ProjectsSectionProps {
   onFinishRename: (id: string, newName: string) => void
   onCancelRename: () => void
   onRequestRemoveProject: (project: ProjectRecord) => void
-  onAddWorkspace: (projectId: string) => void | Promise<void>
+  onAddWorkspace: (projectId: string, modelId?: string) => void | Promise<void>
   renamingWorkspaceId: string | null
   onBeginRenameWorkspace: (id: string) => void
   onFinishRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void
@@ -1195,7 +1202,7 @@ function ProjectsSection({
                       onFinishRename={(name) => onFinishRename(p.id, name)}
                       onCancelRename={onCancelRename}
                       onRequestRemove={() => onRequestRemoveProject(p)}
-                      onAddWorkspace={() => onAddWorkspace(p.id)}
+                      onAddWorkspace={(modelId) => onAddWorkspace(p.id, modelId)}
                       renamingWorkspaceId={renamingWorkspaceId}
                       onBeginRenameWorkspace={onBeginRenameWorkspace}
                       onFinishRenameWorkspace={(wsId, name) =>
@@ -1272,7 +1279,7 @@ interface SidebarProps {
   onSelectWorkspace: (workspaceId: string, projectId: string) => void
   onRenameProject: (id: string, newName: string) => void | Promise<void>
   onRequestRemoveProject: (project: ProjectRecord) => void
-  onAddWorkspace: (projectId: string) => void | Promise<void>
+  onAddWorkspace: (projectId: string, modelId?: string) => void | Promise<void>
   onRenameWorkspace: (
     workspaceId: string,
     projectId: string,
