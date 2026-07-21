@@ -4,7 +4,7 @@
 // Assertion harness for unit 10-creation's follow-up: provider icons in
 // model-selection surfaces (sidebar row + footer Model chip + its dropdown).
 //
-// MUST PASS FULLY OFFLINE. Covers two pure, no-React pieces:
+// MUST PASS FULLY OFFLINE. Covers:
 //
 //   1. src/renderer/src/lib/modelPickerOptions.ts's buildModelDropdownItems —
 //      the DropdownChip-flavored item builder now carries `providerId`
@@ -17,10 +17,25 @@
 //      -> providerId) ?? null) — verified here as a standalone lookup so the
 //      "unknown model id -> no provider, never throws" contract is asserted
 //      without needing React/useSyncExternalStore.
+//   3. buildModelDropdownGroups (the footer Model chip's provider -> model
+//      FLYOUT redesign's grouping helper, ChipGroupedDropdown.tsx's data
+//      source) — groups EVERY provider the server returned (unlike
+//      creationProviderMenu.ts's groupModelsForCreation, which curates a
+//      fixed subset for the creation-time menu only), in first-seen/server
+//      order, with labels taken verbatim from providerLabel rather than a
+//      second hardcoded short-label table. This module takes providerId/
+//      providerLabel as opaque strings off the server-provided
+//      SelectableModel — it does not know or care about registry.ts's
+//      PROVIDERS list, so the synthetic 'acme' provider id used below is
+//      just a stand-in for "some routed provider", not a claim that ollama
+//      (removed from PROVIDERS in unit 10-creation) is still supported.
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert'
-import { buildModelDropdownItems } from '../src/renderer/src/lib/modelPickerOptions.ts'
+import {
+  buildModelDropdownItems,
+  buildModelDropdownGroups
+} from '../src/renderer/src/lib/modelPickerOptions.ts'
 import type { SelectableModel } from '../src/shared/types.ts'
 
 function model(partial: Partial<SelectableModel> & { id: string }): SelectableModel {
@@ -132,6 +147,69 @@ function resolveProviderId(modelId: string | null, models: SelectableModel[]): s
   console.log(
     '✓ provider-for-model resolution: known ids resolve correctly, unknown/null ids resolve to null without throwing (never a fabricated guess)'
   )
+}
+
+// ---------------------------------------------------------------------------
+// 4. buildModelDropdownGroups — groups EVERY provider the server returns
+//    (including one this module has never heard of, e.g. a future provider
+//    or a still-live routed model from a provider Settings no longer lists),
+//    first-seen order, labels from providerLabel verbatim. Uses a synthetic
+//    'acme' provider id to prove this grouping is generic over whatever
+//    providerId/providerLabel the server sends — not a hardcoded id list.
+// ---------------------------------------------------------------------------
+
+{
+  const models: SelectableModel[] = [
+    model({ id: 'claude-sonnet-4-5', providerId: 'claude', providerLabel: 'Claude' }),
+    model({
+      id: 'gpt-5-codex',
+      providerId: 'codex',
+      providerLabel: 'Codex (OpenAI)',
+      isClaude: false
+    }),
+    model({
+      id: 'gpt-5-codex-mini',
+      providerId: 'codex',
+      providerLabel: 'Codex (OpenAI)',
+      isClaude: false
+    }),
+    model({
+      id: 'grok-4.5',
+      providerId: 'xai',
+      providerLabel: 'Grok (xAI)',
+      isClaude: false
+    }),
+    model({
+      id: 'acme-model-1',
+      providerId: 'acme',
+      providerLabel: 'Acme',
+      isClaude: false
+    })
+  ]
+
+  const groups = buildModelDropdownGroups(models)
+  assert.deepEqual(
+    groups.map((g) => g.providerId),
+    ['claude', 'codex', 'xai', 'acme'],
+    'every provider must be grouped, in first-seen/server order — this module does not filter by a known-id list'
+  )
+  assert.equal(groups[1].models.length, 2, 'codex group must contain both its models')
+  assert.equal(
+    groups[1].label,
+    'Codex (OpenAI)',
+    'group label comes verbatim from providerLabel, never a second hardcoded short-label table'
+  )
+  assert.equal(groups[1].models[0].value, 'gpt-5-codex')
+  assert.equal(groups[1].models[0].providerId, 'codex', 'group rows still carry providerId')
+  console.log(
+    '✓ buildModelDropdownGroups groups EVERY provider the server returns in first-seen order, with labels taken verbatim from providerLabel'
+  )
+}
+
+{
+  // Empty input never throws and yields an empty group list.
+  assert.deepEqual(buildModelDropdownGroups([]), [])
+  console.log('✓ buildModelDropdownGroups on an empty model list returns [] without throwing')
 }
 
 console.log('\nAll model-picker-icon assertions passed.')

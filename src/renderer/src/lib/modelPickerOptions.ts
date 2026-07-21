@@ -14,7 +14,7 @@
 // 'Custom…' escape hatch (unit 01) shared by every picker.
 // ---------------------------------------------------------------------------
 
-import type { ChipDropdownItem, SelectableModel } from '@shared/types'
+import type { ChipDropdownGroup, ChipDropdownItem, SelectableModel } from '@shared/types'
 
 export const MODEL_SEP_PREFIX = '__sep_'
 export const MODEL_CUSTOM_VALUE = 'custom'
@@ -80,4 +80,41 @@ export function buildModelDropdownItems(models: SelectableModel[]): ChipDropdown
     sublabel: m.providerLabel,
     providerId: m.providerId
   }))
+}
+
+/**
+ * Build the footer Model chip's provider -> model FLYOUT groups (the
+ * ChipGroupedDropdown overlay kind's data source). Unlike
+ * creationProviderMenu.ts's groupModelsForCreation, this groups EVERY
+ * provider the server returned — the footer chip is the general-purpose
+ * model switcher for an already-running workspace and must keep offering
+ * whatever a workspace could already be routed to, not the curated
+ * creation-time subset. Group order is first-seen order from
+ * `models` (server's own ordering, Claude first by construction of
+ * buildSelectableModels); labels come straight from providerLabel, never a
+ * second hardcoded short-label table like the creation menu's
+ * SHORT_PROVIDER_LABEL — this surface reuses the SAME canonical label the
+ * flat dropdown's sublabel already showed, so switching to the grouped view
+ * doesn't rename any provider the user already recognizes.
+ */
+export function buildModelDropdownGroups(models: SelectableModel[]): ChipDropdownGroup[] {
+  const order: string[] = []
+  const byProvider = new Map<string, SelectableModel[]>()
+  for (const m of models) {
+    let list = byProvider.get(m.providerId)
+    if (!list) {
+      list = []
+      byProvider.set(m.providerId, list)
+      order.push(m.providerId)
+    }
+    list.push(m)
+  }
+  return order.map((providerId) => {
+    const group = byProvider.get(providerId)!
+    return {
+      providerId,
+      label: group[0]?.providerLabel ?? providerId,
+      models: buildModelDropdownItems(group)
+    }
+  })
 }

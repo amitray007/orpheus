@@ -6,16 +6,30 @@ import {
   showChipDropdown,
   hideChipDropdown,
   chipDropdownId,
+  showChipGroupedDropdown,
+  hideChipGroupedDropdown,
+  chipGroupedDropdownId,
   showChipTooltip,
   hideOverlayCard,
   chipTooltipId
 } from '@/lib/overlayClient'
+import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { playSound } from '../../../lib/sound'
 import { useSelectableModels } from '@/lib/useSelectableModels'
 import { setWorkspaceModel } from '@/lib/workspaceModelStore'
-import { buildModelDropdownItems } from '@/lib/modelPickerOptions'
+import { buildModelDropdownItems, buildModelDropdownGroups } from '@/lib/modelPickerOptions'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import type { FooterActionItem } from './useFooterActions'
+
+// Diagonal-traversal close-delay for the model chip's provider -> model
+// flyout submenu (ChipGroupedDropdown) — same 120/200ms timing
+// NewWorkspaceMenu.tsx's own submenu uses (see that file's own doc comment
+// for why: 120ms open matches every other hover-driven overlay in this app;
+// 200ms close gives room to cross the row-to-submenu gap before it vanishes).
+// Only the model chip opens a chipGroupedDropdown; effort/custom dropdowns
+// stay on the flat, non-flyout ChipDropdown and never touch this timer.
+const MODEL_SUBMENU_OPEN_DELAY_MS = 120
+const MODEL_SUBMENU_CLOSE_DELAY_MS = 200
 
 // Bounded retry policy for FIX B (bug 2): the overlay hide + focus-restore
 // chain (runFocusRestoreChain in overlayLayer.ts) is still in flight when
@@ -128,6 +142,15 @@ export function DropdownChip({
   const chipRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const openRef = useRef(false)
+
+  // Diagonal-traversal close-delay timer for the model chip's flyout submenu
+  // — see this file's own MODEL_SUBMENU_*_DELAY_MS comment. Unused (never
+  // armed/cleared) for footer.effortSelect/footer.dropdown, which never call
+  // showChipGroupedDropdown at all.
+  const submenuHoverCard = useOverlayHoverCard({
+    openDelay: MODEL_SUBMENU_OPEN_DELAY_MS,
+    closeDelay: MODEL_SUBMENU_CLOSE_DELAY_MS
+  })
 
   // ---------------------------------------------------------------------
   // Notice tooltip — mirrors ActionChip's showTooltip useCallback exactly
@@ -257,6 +280,11 @@ export function DropdownChip({
   let onSelect: (value: string) => void = () => {}
 
   if (item.actionId === 'footer.modelSelect') {
+    // dropdownItems is unused for footer.modelSelect (it opens the grouped
+    // flyout, buildModelDropdownGroups, below) — still computed for parity
+    // with the other two branches so `dropdownItems` never needs a
+    // conditional read at the call site; buildModelDropdownItems' O(models)
+    // cost is negligible compared to the IPC round-trip already gating it.
     dropdownItems = buildModelDropdownItems(selectableModels)
     selectedValue = modelValue
     faceLabel = labelForModel(modelValue, selectableModels)
@@ -338,7 +366,62 @@ export function DropdownChip({
     }
   }
 
-  const dropdownOverlayId = chipDropdownId(`${item.actionId}:${item.id}:${workspaceId}`)
+  // The model chip opens the GROUPED (provider -> model flyout) popover;
+  // every other DropdownChip caller (footer.effortSelect, footer.dropdown)
+  // keeps opening the flat ChipDropdown, completely untouched by this
+  // addition — see this file's own header comment and
+  // ChipGroupedDropdown.tsx's for why this is a separate overlay kind rather
+  // than a mode flag on the existing one.
+  const dropdownGroups = isModelSelect ? buildModelDropdownGroups(selectableModels) : []
+  const dropdownOverlayId = isModelSelect
+    ? chipGroupedDropdownId(`${item.actionId}:${item.id}:${workspaceId}`)
+    : chipDropdownId(`${item.actionId}:${item.id}:${workspaceId}`)
+
+  const handleOpenGroupedDropdown = useCallback(
+    (rect: { x: number; y: number; w: number; h: number }): void => {
+      showChipGroupedDropdown(
+        dropdownOverlayId,
+        rect,
+        { groups: dropdownGroups, selectedValue, title: item.label },
+        {
+          // Purely navigational — the kind already tracks activeProviderId
+          // itself for rendering; this event exists only so the call site
+          // COULD react (e.g. analytics), mirroring
+          // NewWorkspaceMenuHandlers.onHoverProvider's contract. No
+          // behavior needed here today.
+          onHoverProvider: () => {},
+          onEnterSubmenu: () => submenuHoverCard.clearTimer(),
+          onLeaveSubmenu: () =>
+            submenuHoverCard.armClose(() => {
+              // Diagonal-traversal close timer expired with the pointer
+              // outside both the provider list and the submenu — this
+              // mirrors NewWorkspaceMenu's onLeaveSubmenu, but this popover
+              // has no separate "close the submenu, stay open" state (there's
+              // no top-line create-step to preserve here): letting the timer
+              // run its course is a no-op unless the user has ALSO moved the
+              // pointer off the whole card, in which case blur (below) or an
+              // outside click already closes it. This handler exists mainly
+              // to cancel the open-side of the SAME timer via clearTimer
+              // above during genuine traversal.
+            })
+        },
+        workspaceId
+      )
+        .then((res) => {
+          openRef.current = false
+          setOpen(false)
+          if (!res) return
+          onSelect(res.value)
+        })
+        .catch((e) => {
+          openRef.current = false
+          setOpen(false)
+          console.error('[DropdownChip] grouped dropdown failed', e)
+        })
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dropdownGroups/selectedValue/onSelect/submenuHoverCard are recomputed/recreated fresh every render from item/workspaceId/local state; including them would churn the callback identity without changing behavior.
+    [dropdownOverlayId, workspaceId, item.label]
+  )
 
   const handleClick = useCallback((): void => {
     if (!chipRef.current) return
@@ -347,15 +430,39 @@ export function DropdownChip({
       // follow-up click is treated as "closed" (will open), not another close.
       openRef.current = false
       setOpen(false)
-      hideChipDropdown(dropdownOverlayId)
+      if (isModelSelect) hideChipGroupedDropdown(dropdownOverlayId)
+      else hideChipDropdown(dropdownOverlayId)
       return
     }
     openRef.current = true
     setOpen(true)
     const r = chipRef.current.getBoundingClientRect()
+    const rect = { x: r.left, y: r.top, w: r.width, h: r.height }
+
+    // Blur the chip button so its native `title` tooltip (chipTitle, e.g.
+    // "Model: Opus 4.8") is dismissed the instant the popover opens — a
+    // native title tooltip is tracked by Chromium off this MAIN window's own
+    // hover/focus state, which the overlay popover (a separate BrowserWindow
+    // painted on top) does not revoke by opening; left focused, the stale
+    // tooltip can still be visible underneath the popover for a beat. Both
+    // dropdown paths (flat ChipDropdown and the grouped flyout) share this
+    // one blur call so neither is more prone to the stray-tooltip artifact
+    // than the other.
+    if (
+      document.activeElement instanceof HTMLElement &&
+      chipRef.current.contains(document.activeElement)
+    ) {
+      document.activeElement.blur()
+    }
+
+    if (isModelSelect) {
+      handleOpenGroupedDropdown(rect)
+      return
+    }
+
     showChipDropdown(
       dropdownOverlayId,
-      { x: r.left, y: r.top, w: r.width, h: r.height },
+      rect,
       { items: dropdownItems, selectedValue, title: item.label },
       workspaceId
     )
@@ -373,7 +480,7 @@ export function DropdownChip({
         console.error('[DropdownChip] dropdown failed', e)
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dropdownItems/selectedValue/onSelect are recomputed fresh every render from item/workspaceId/local state; including them would churn the callback identity without changing behavior. `open` is intentionally NOT a dep — the open/close decision now uses openRef (synchronous), not the lagging open state.
-  }, [dropdownOverlayId, workspaceId, item.label])
+  }, [dropdownOverlayId, workspaceId, item.label, isModelSelect, handleOpenGroupedDropdown])
 
   // Outside-click dismissal while the dropdown is open — mirrors ActionChip's
   // prompt-popover pattern: the popover lives in a separate child
@@ -399,11 +506,12 @@ export function DropdownChip({
         return
       }
       openRef.current = false // sync flip so a subsequent chip click opens cleanly
-      hideChipDropdown(dropdownOverlayId)
+      if (isModelSelect) hideChipGroupedDropdown(dropdownOverlayId)
+      else hideChipDropdown(dropdownOverlayId)
     }
     document.addEventListener('pointerdown', onPointerDown)
     return () => document.removeEventListener('pointerdown', onPointerDown)
-  }, [open, dropdownOverlayId])
+  }, [open, dropdownOverlayId, isModelSelect])
 
   const isDisabled = enabled === false
 

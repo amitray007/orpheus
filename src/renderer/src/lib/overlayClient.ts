@@ -26,8 +26,13 @@ import type {
   ChipDropdownProps,
   ChipDropdownItem,
   ChipDropdownResult,
+  ChipDropdownGroup,
+  ChipGroupedDropdownProps,
+  ChipGroupedDropdownResult,
   WorkspaceSettingsCardProps,
-  WorkspaceSettingsCardPatch
+  WorkspaceSettingsCardPatch,
+  NewWorkspaceMenuProps,
+  NewWorkspaceMenuPatch
 } from '@shared/types'
 
 export type {
@@ -42,8 +47,13 @@ export type {
   ChipDropdownProps,
   ChipDropdownItem,
   ChipDropdownResult,
+  ChipDropdownGroup,
+  ChipGroupedDropdownProps,
+  ChipGroupedDropdownResult,
   WorkspaceSettingsCardProps,
-  WorkspaceSettingsCardPatch
+  WorkspaceSettingsCardPatch,
+  NewWorkspaceMenuProps,
+  NewWorkspaceMenuPatch
 }
 
 // ── Activity state mapping ───────────────────────────────────────────────
@@ -152,6 +162,26 @@ interface ChipDropdownHandlers {
 
 const chipDropdownSettlers = new Map<string, ChipDropdownHandlers>()
 
+// Per-id chipGroupedDropdown event handlers — same PROMISE-SETTLED shape as
+// chipDropdownSettlers above (select/cancel end the popover once), plus the
+// purely-navigational/hover-bridge events the provider -> model flyout needs
+// while it's open ('hoverProvider' switches which provider's model list the
+// submenu shows; onEnterSubmenu/onLeaveSubmenu drive the diagonal-traversal
+// close-delay timer at the call site, mirroring NewWorkspaceMenuHandlers'
+// own onEnterSubmenu/onLeaveSubmenu). None of these three settle the promise
+// — only 'select'/'cancel' do. A given overlay id is never in more than one
+// of handlersById/confirmSettlers/chipPromptSettlers/chipDropdownSettlers/
+// chipGroupedDropdownSettlers.
+interface ChipGroupedDropdownHandlers {
+  onSelect: (value: string) => void
+  onCancel: () => void
+  onHoverProvider: (providerId: string) => void
+  onEnterSubmenu: () => void
+  onLeaveSubmenu: () => void
+}
+
+const chipGroupedDropdownSettlers = new Map<string, ChipGroupedDropdownHandlers>()
+
 // Per-id workspaceSettingsCard event handlers — LONG-LIVED (like
 // handlersById), not promise-settled (like the confirm/chipPrompt/
 // chipDropdown settlers above): the card stays open across many edits, so
@@ -171,6 +201,35 @@ export interface WorkspaceSettingsCardHandlers {
 
 const workspaceSettingsCardHandlers = new Map<string, WorkspaceSettingsCardHandlers>()
 
+// Per-id newWorkspaceMenu event handlers — LONG-LIVED (like
+// workspaceSettingsCardHandlers above): the popover stays open across many
+// selection/hover/isolation changes, not settled once like the chip
+// dropdown/prompt promises. A given overlay id is never in more than one of
+// these six maps.
+export interface NewWorkspaceMenuHandlers {
+  onHoverProvider: (providerId: string) => void
+  onPickProvider: (providerId: string) => void
+  onBackToProviders: () => void
+  onPickModel: (providerId: string, modelId: string) => void
+  onPickIsolation: (isolation: 'local' | 'worktree') => void
+  onChangeBranch: (value: string) => void
+  onCreate: () => void
+  /** Escape, or focus leaving the popover entirely (blur to outside) —
+   *  OverlayRoot emits 'cancel' globally for any takesFocus descriptor; the
+   *  kind's own onBlur also emits it directly (see NewWorkspaceMenu.tsx). */
+  onCancel: () => void
+  /** The pointer reached the model flyout submenu — cancels any pending
+   *  close scheduled by leaving the provider row (the diagonal-traversal
+   *  fix for the provider -> model submenu, distinct from the generic
+   *  onCardPointer bridge below which covers the WHOLE card's boundary). */
+  onEnterSubmenu: () => void
+  /** The pointer left the model flyout submenu — arms the same close-delay
+   *  timer leaving the provider row would arm. */
+  onLeaveSubmenu: () => void
+}
+
+const newWorkspaceMenuHandlers = new Map<string, NewWorkspaceMenuHandlers>()
+
 let routerInitialized = false
 
 // Extracted from ensureRouter's onEvent callback for the same reason as
@@ -186,6 +245,39 @@ function dispatchChipDropdownEvent(e: OverlayEvent): boolean {
       if (payload) handlers.onSelect(payload.value)
       break
     }
+    case 'cancel':
+      handlers.onCancel()
+      break
+    default:
+      break
+  }
+  return true
+}
+
+// Extracted for the same reason as dispatchChipDropdownEvent above — the
+// grouped variant's dispatch (select/cancel/hoverProvider) is a separate
+// self-contained block so ensureRouter's own cognitive complexity doesn't
+// grow with every new overlay kind's event vocabulary.
+function dispatchChipGroupedDropdownEvent(e: OverlayEvent): boolean {
+  const handlers = chipGroupedDropdownSettlers.get(e.overlayId)
+  if (!handlers) return false
+  switch (e.type) {
+    case 'select': {
+      const payload = e.payload as { value: string } | undefined
+      if (payload) handlers.onSelect(payload.value)
+      break
+    }
+    case 'hoverProvider': {
+      const payload = e.payload as { providerId: string } | undefined
+      if (payload) handlers.onHoverProvider(payload.providerId)
+      break
+    }
+    case 'enterSubmenu':
+      handlers.onEnterSubmenu()
+      break
+    case 'leaveSubmenu':
+      handlers.onLeaveSubmenu()
+      break
     case 'cancel':
       handlers.onCancel()
       break
@@ -228,6 +320,64 @@ function dispatchWorkspaceSettingsCardEvent(e: OverlayEvent): boolean {
       break
     case 'exited':
       workspaceSettingsCardHandlers.delete(e.overlayId)
+      break
+    default:
+      break
+  }
+  return true
+}
+
+// Extracted from ensureRouter's onEvent callback for the same reason as
+// dispatchWorkspaceSettingsCardEvent above — keeps that function's own
+// cognitive complexity under the repo's ceiling. Returns true if `e` was
+// handled (an id in newWorkspaceMenuHandlers matched).
+function dispatchNewWorkspaceMenuEvent(e: OverlayEvent): boolean {
+  const menuHandlers = newWorkspaceMenuHandlers.get(e.overlayId)
+  if (!menuHandlers) return false
+
+  switch (e.type) {
+    case 'hoverProvider': {
+      const payload = e.payload as { providerId: string } | undefined
+      if (payload) menuHandlers.onHoverProvider(payload.providerId)
+      break
+    }
+    case 'pickProvider': {
+      const payload = e.payload as { providerId: string } | undefined
+      if (payload) menuHandlers.onPickProvider(payload.providerId)
+      break
+    }
+    case 'backToProviders':
+      menuHandlers.onBackToProviders()
+      break
+    case 'pickModel': {
+      const payload = e.payload as { providerId: string; modelId: string } | undefined
+      if (payload) menuHandlers.onPickModel(payload.providerId, payload.modelId)
+      break
+    }
+    case 'pickIsolation': {
+      const payload = e.payload as { isolation: 'local' | 'worktree' } | undefined
+      if (payload) menuHandlers.onPickIsolation(payload.isolation)
+      break
+    }
+    case 'changeBranch': {
+      const payload = e.payload as { value: string } | undefined
+      if (payload) menuHandlers.onChangeBranch(payload.value)
+      break
+    }
+    case 'create':
+      menuHandlers.onCreate()
+      break
+    case 'cancel':
+      menuHandlers.onCancel()
+      break
+    case 'enterSubmenu':
+      menuHandlers.onEnterSubmenu()
+      break
+    case 'leaveSubmenu':
+      menuHandlers.onLeaveSubmenu()
+      break
+    case 'exited':
+      newWorkspaceMenuHandlers.delete(e.overlayId)
       break
     default:
       break
@@ -282,7 +432,19 @@ function ensureRouter(): void {
 
     if (dispatchChipDropdownEvent(e)) return
 
+    if (dispatchChipGroupedDropdownEvent(e)) return
+
     if (dispatchWorkspaceSettingsCardEvent(e)) return
+
+    // newWorkspaceMenu owns its OWN 'cancel'/'create'/... vocabulary above,
+    // but deliberately does NOT claim 'mouseenter'/'mouseleave' — those stay
+    // routed through the generic handlersById hover-bridge below (via
+    // onCardPointer), the SAME mechanism every other hover-driven overlay
+    // (HoverCard, DetailsCard) already uses, so the popover's hover-intent
+    // fix doesn't need a bespoke pointer channel.
+    if (e.type !== 'mouseenter' && e.type !== 'mouseleave' && dispatchNewWorkspaceMenuEvent(e)) {
+      return
+    }
 
     const handlers = handlersById.get(e.overlayId)
     if (!handlers) return
@@ -749,6 +911,102 @@ export function hideChipDropdown(id: string): void {
   }
 }
 
+// ── Grouped chip dropdown (footer Model chip's provider -> model flyout) ───
+//
+// Same transient promise-settle contract as showChipDropdown/hideChipDropdown
+// above (this popover is NOT long-lived like workspaceSettingsCard/
+// newWorkspaceMenu — it opens, the user picks or dismisses, it closes) — only
+// the DATA shape (grouped, not flat) and the extra purely-navigational
+// 'hoverProvider' event (which switches the open flyout without settling the
+// promise) differ from showChipDropdown.
+
+export function chipGroupedDropdownId(x: string): string {
+  return `chipGroupedDropdown:${x}`
+}
+
+const chipGroupedDropdownForceCancel = new Map<string, () => void>()
+
+/**
+ * Shows the footer Model chip's provider -> model flyout popover and
+ * resolves once the user picks a model or cancels. Mirrors showChipDropdown's
+ * settle contract exactly: NEVER rejects — Cancel/Escape (global takesFocus
+ * handler), outside-click/blur (via hideChipGroupedDropdown), or an
+ * overlay:show IPC failure all resolve `null`. A model row click/Enter
+ * resolves `{ kind: 'select', value }`.
+ */
+export interface ChipGroupedDropdownHoverHandlers {
+  /** Purely navigational — switches which provider's model list the flyout
+   *  submenu shows without settling the popover's promise. */
+  onHoverProvider: (providerId: string) => void
+  /** The pointer reached the flyout submenu (or the provider row list) —
+   *  cancels any pending close scheduled by leaving the other side (the
+   *  diagonal-traversal fix, mirrors NewWorkspaceMenuHandlers.onEnterSubmenu). */
+  onEnterSubmenu: () => void
+  /** The pointer left the flyout submenu (or the provider row list) — arms
+   *  the same close-delay timer leaving the other side would arm. */
+  onLeaveSubmenu: () => void
+}
+
+export function showChipGroupedDropdown(
+  id: string,
+  anchorRect: { x: number; y: number; w: number; h: number },
+  props: ChipGroupedDropdownProps,
+  hoverHandlers: ChipGroupedDropdownHoverHandlers,
+  ownerWorkspaceId?: string,
+  preferredSide: 'top' | 'bottom' | 'left' | 'right' = 'top'
+): Promise<ChipGroupedDropdownResult> {
+  ensureRouter()
+
+  return new Promise<ChipGroupedDropdownResult>((resolve) => {
+    let settled = false
+    const settle = (result: ChipGroupedDropdownResult): void => {
+      if (settled) return
+      settled = true
+      chipGroupedDropdownSettlers.delete(id)
+      chipGroupedDropdownForceCancel.delete(id)
+      void window.api.overlay.hide(id).catch(() => {})
+      resolve(result)
+    }
+
+    chipGroupedDropdownSettlers.set(id, {
+      onSelect: (value) => settle({ kind: 'select', value }),
+      onCancel: () => settle(null),
+      onHoverProvider: hoverHandlers.onHoverProvider,
+      onEnterSubmenu: hoverHandlers.onEnterSubmenu,
+      onLeaveSubmenu: hoverHandlers.onLeaveSubmenu
+    })
+    chipGroupedDropdownForceCancel.set(id, () => settle(null))
+
+    const descriptor: OverlayDescriptor = {
+      id,
+      kind: 'chipGroupedDropdown',
+      placement: { mode: 'anchored', anchorRect, preferredSide },
+      props: props as unknown as Record<string, unknown>,
+      acceptsClicks: true,
+      takesFocus: true,
+      ownerWorkspaceId
+    }
+
+    void window.api.overlay.show(descriptor).catch(() => {
+      settle(null)
+    })
+  })
+}
+
+/**
+ * Actively dismiss a still-pending grouped chip dropdown (outside-click /
+ * blur at the call site) and settle its promise as `null`. No-op if already
+ * settled. Mirrors hideChipDropdown.
+ */
+export function hideChipGroupedDropdown(id: string): void {
+  const forceCancel = chipGroupedDropdownForceCancel.get(id)
+  if (forceCancel) {
+    forceCancel()
+  } else {
+    void window.api.overlay.hide(id).catch(() => {})
+  }
+}
+
 // ── Workspace settings card (title bar Settings gear, U-overlay-migration) ─
 //
 // Long-lived + focusable + continuously-mutating — combines detailsCard's
@@ -816,5 +1074,71 @@ export function updateWorkspaceSettingsCard(id: string, patch: WorkspaceSettings
 }
 
 export function hideWorkspaceSettingsCard(id: string): void {
+  void window.api.overlay.hide(id).catch(() => {})
+}
+
+// ── New workspace menu (the "+ new workspace" popover, model-routing unit
+//    10-creation) ───────────────────────────────────────────────────────────
+//
+// Ported off the in-page `Overlay` component so it paints OVER the terminal
+// instead of being clipped inside the sidebar. Long-lived + focusable +
+// continuously-mutating, same shape as workspaceSettingsCard above: the call
+// site (NewWorkspaceMenu.tsx) keeps every window.api.* call (offeredModes,
+// worktrees.branchExists, workspaces.createWorktree/setModel) and all data
+// hooks; this module only shows/updates the popover and routes its emitted
+// events back to whatever handlers the call site registered via
+// onNewWorkspaceMenuEvent. Hover-intent's pointer-enter/leave signal reuses
+// the SAME generic onCardPointer bridge every other hover-driven overlay
+// uses (see the router wiring above) — no separate mechanism needed.
+
+export function newWorkspaceMenuId(projectId: string): string {
+  return `newWorkspaceMenu:${projectId}`
+}
+
+/**
+ * Registers the long-lived event handlers for an open newWorkspaceMenu —
+ * mirrors onWorkspaceSettingsCardEvent's register/unregister contract. Call
+ * once when the popover is shown; unregister on hide/unmount.
+ */
+export function onNewWorkspaceMenuEvent(
+  id: string,
+  handlers: NewWorkspaceMenuHandlers
+): () => void {
+  ensureRouter()
+  newWorkspaceMenuHandlers.set(id, handlers)
+  return () => {
+    const current = newWorkspaceMenuHandlers.get(id)
+    if (current === handlers) newWorkspaceMenuHandlers.delete(id)
+  }
+}
+
+export function showNewWorkspaceMenu(
+  id: string,
+  anchorEl: Element,
+  props: NewWorkspaceMenuProps
+): void {
+  ensureRouter()
+  const descriptor: OverlayDescriptor = {
+    id,
+    kind: 'newWorkspaceMenu',
+    // The "+" trigger sits in the sidebar and opens downward, same direction
+    // the retired in-page Overlay used (rect.bottom + 4).
+    placement: {
+      mode: 'anchored',
+      anchorRect: anchorRectFromEl(anchorEl),
+      preferredSide: 'bottom'
+    },
+    props: props as unknown as Record<string, unknown>,
+    acceptsClicks: true,
+    takesFocus: true
+  }
+  void window.api.overlay.show(descriptor).catch(() => {})
+}
+
+export function updateNewWorkspaceMenu(id: string, patch: NewWorkspaceMenuPatch): void {
+  void window.api.overlay.update(id, patch as unknown as Record<string, unknown>).catch(() => {})
+}
+
+export function hideNewWorkspaceMenu(id: string): void {
   void window.api.overlay.hide(id).catch(() => {})
 }
