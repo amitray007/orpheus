@@ -6,6 +6,7 @@ import {
   type ClaudeEffort,
   type WorkspaceActivityDetail
 } from '@shared/types'
+import { capitalize, effortOptionsFor, shouldRenderEffortChip } from '@/lib/effortPickerOptions'
 import { IconByName } from './iconMap'
 import {
   showChipDropdown,
@@ -21,7 +22,8 @@ import {
 import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { playSound } from '../../../lib/sound'
 import { useSelectableModels } from '@/lib/useSelectableModels'
-import { setWorkspaceModel } from '@/lib/workspaceModelStore'
+import { setWorkspaceModel, useWorkspaceModel } from '@/lib/workspaceModelStore'
+import { setWorkspaceEffort, useWorkspaceEffort } from '@/lib/workspaceEffortStore'
 import { buildModelDropdownItems, buildModelDropdownGroups } from '@/lib/modelPickerOptions'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import type { FooterActionItem } from './useFooterActions'
@@ -70,34 +72,9 @@ function labelForModel(value: string, models: { id: string; label: string }[]): 
   return known ? known.label : value
 }
 
-function capitalize(v: string): string {
-  return v.charAt(0).toUpperCase() + v.slice(1)
-}
-
 function labelForEffort(value: string): string {
   const v = value || 'auto'
   return capitalize(v)
-}
-
-/**
- * Build the effort chip's option list from the CURRENT model's real
- * `effortLevels` (model-routing unit 11) — never the old hardcoded
- * ['auto','low','medium','high','xhigh','max'] offered unconditionally for
- * every model. Options are rendered in ladder order (EFFORT_LADDER_ORDER),
- * with 'none' first when the model reports it (an off-ladder mode, sorted
- * ahead of the ladder itself) and 'auto' always leading — 'auto' is a
- * CLI-level "reset to model default", never a wire value, so it's offered
- * regardless of what the provider's levels array contains (mirrors today's
- * behavior for Claude).
- */
-function effortOptionsFor(effortLevels: string[]): { value: string; label: string }[] {
-  const hasNone = effortLevels.includes('none')
-  const onLadder = EFFORT_LADDER_ORDER.filter((level) => effortLevels.includes(level))
-  const ordered = hasNone ? ['none', ...onLadder] : onLadder
-  return [
-    { value: 'auto', label: 'Auto' },
-    ...ordered.map((v) => ({ value: v, label: capitalize(v) }))
-  ]
 }
 
 /**
@@ -234,18 +211,32 @@ export function DropdownChip({
   )
 
   // ---------------------------------------------------------------------
-  // Case 1 — footer.modelSelect: local state = effective model value.
-  // Also fetched for footer.effortSelect (below), which needs to know the
-  // CURRENT model's real effortLevels to build its own options.
-  // ---------------------------------------------------------------------
+  // Case 1 — footer.modelSelect: effective model value, read from the
+  // SHARED per-workspace store (workspaceModelStore) rather than a local
+  // useState. Bugfix (model-routing unit 11): the model chip and effort
+  // chip are TWO SEPARATE DropdownChip component instances (see
+  // WorkspaceFooter.tsx) — with a local useState each, switching the model
+  // via ONE chip never updated the OTHER's view of `modelValue`, so the
+  // effort chip kept rendering the PREVIOUS model's effort options until it
+  // happened to remount. Reading from the shared store fixes this: both
+  // instances re-render from the SAME store entry, which the main process
+  // keeps fresh via the workspace:effectiveSettingsChanged push (wired once
+  // in Dashboard.tsx) covering every path that can change a workspace's
+  // model (footer chip, creation menu, settings drawers, CLI).
+  //
+  // The one-shot fetch below seeds the SHARED store (not local state) so a
+  // page load with no push yet still gets the real value on first paint;
+  // `enabled` gates it to modelSelect/effortSelect only (BUG B fix,
+  // unchanged from before this rewrite).
   const isModelSelect = item.actionId === 'footer.modelSelect'
   const isEffortSelect = item.actionId === 'footer.effortSelect'
-  const [modelValue, setModelValue] = useState<string>('')
+  const storeModelValue = useWorkspaceModel(workspaceId)
+  const modelValue = storeModelValue ?? ''
   const refetchEffectiveModel = useCallback((): void => {
     if (!isModelSelect && !isEffortSelect) return
     window.api.workspaces
       .getEffectiveModel(workspaceId)
-      .then((r) => setModelValue(r.model))
+      .then((r) => setWorkspaceModel(workspaceId, r.model))
       .catch(() => {})
   }, [workspaceId, isModelSelect, isEffortSelect])
   useEffect(() => {
@@ -302,15 +293,22 @@ export function DropdownChip({
   }, [selectableModels, modelValue])
 
   // ---------------------------------------------------------------------
-  // Case 2 — footer.effortSelect: local state = effective effort value
-  // ('' from the IPC means unset/auto — normalized to 'auto' below).
-  // ---------------------------------------------------------------------
-  const [effortValue, setEffortValue] = useState<string>('')
+  // Case 2 — footer.effortSelect: effective effort value, read from the
+  // SHARED per-workspace store (workspaceEffortStore) — same rationale as
+  // modelValue above. '' means unset/auto — normalized to 'auto' below.
+  // Bugfix (model-routing unit 11): this is what makes the main process's
+  // reconciliation (clampEffortToSupportedLevel, applied when a DIFFERENT
+  // chip/surface changes the model) visible here too — the reconciled
+  // value arrives via the SAME workspace:effectiveSettingsChanged push that
+  // updates modelValue, so this chip's displayed selection reflects the
+  // persisted value rather than a stale local one.
+  const storeEffortValue = useWorkspaceEffort(workspaceId)
+  const effortValue = storeEffortValue ?? ''
   const refetchEffectiveEffort = useCallback((): void => {
     if (!isEffortSelect) return
     window.api.workspaces
       .getEffectiveEffort(workspaceId)
-      .then((r) => setEffortValue(r.effort))
+      .then((r) => setWorkspaceEffort(workspaceId, r.effort))
       .catch(() => {})
   }, [workspaceId, isEffortSelect])
   useEffect(() => {
@@ -342,11 +340,12 @@ export function DropdownChip({
     chipTitle = `${item.label}: ${faceLabel}`
     onSelect = (value: string): void => {
       const newModelIsClaude = selectableModels.find((m) => m.id === value)?.isClaude ?? false
-      setModelValue(value)
-      // Keep the sidebar's provider-icon prefix (WorkspaceProviderIcon) in
-      // sync immediately — same cache the row's fetch-on-mount populates, so
-      // switching models here never leaves the sidebar icon stale until a
-      // remount.
+      const previousModel = modelValue
+      // Optimistic write into the SHARED per-workspace store (not local
+      // state — see modelValue's own doc comment above) so BOTH this Model
+      // chip AND the separate Effort chip instance (and the sidebar's
+      // provider-icon prefix, WorkspaceProviderIcon) update immediately,
+      // never leaving either stale until a remount.
       setWorkspaceModel(workspaceId, value)
       // Persist first (also suppresses the dirty flag when the switch is
       // live-applicable — see setWorkspaceSettingAndSuppressDirty's own
@@ -356,21 +355,29 @@ export function DropdownChip({
       // 4) happens main-process-side, inside this SAME workspace:setModel
       // call (see registerClaudeSettingsIpc's handler) — the single choke
       // point every model-persisting path shares, so it isn't re-derived
-      // here. The response reflects the (possibly reconciled) stored effort;
-      // sync local state from it so the effort chip's face label never shows
-      // a stale value while waiting for its own next refetch.
+      // here. The response reflects the (possibly reconciled) stored
+      // effort; sync the SHARED effort store from it too — the main
+      // process ALSO pushes workspace:effectiveSettingsChanged right after
+      // this resolves (see registerClaudeSettingsIpc), so this optimistic
+      // write is redundant-but-harmless with that push arriving a beat
+      // later; it just removes the visible flicker while waiting for it.
       window.api.workspaces
         .setModel(workspaceId, value)
         .then((settings) => {
-          if (settings.overrides.effort !== undefined) setEffortValue(settings.overrides.effort)
+          if (settings.overrides.effort !== undefined) {
+            setWorkspaceEffort(workspaceId, settings.overrides.effort)
+          }
         })
         .catch((e) => {
           // Never swallow silently — a rejected model+effort write here
           // means the UI (modelValue/effortValue, already optimistically
           // updated above) has desynced from the DB, and the running
           // process is about to get an in-terminal `/model`/restart based
-          // on a value that was never actually persisted.
+          // on a value that was never actually persisted. Revert the
+          // optimistic store write so the chip goes back to showing the
+          // value that's actually stored.
           console.error('[DropdownChip] setModel failed', e)
+          setWorkspaceModel(workspaceId, previousModel)
           playSound('error')
           showTooltip('Model not saved — try again')
         })
@@ -423,7 +430,9 @@ export function DropdownChip({
     chipTitle = `${item.label}: ${faceLabel}`
     onSelect = (value: string): void => {
       const previousEffort = effortValue
-      setEffortValue(value)
+      // Optimistic write into the SHARED per-workspace store (not local
+      // state — see effortValue's own doc comment above).
+      setWorkspaceEffort(workspaceId, value)
       window.api.workspaces
         .setEffort(workspaceId, value as ClaudeEffort)
         .then(() => {
@@ -435,13 +444,13 @@ export function DropdownChip({
           runInject(`/effort ${value}`, true, 'Effort set — applies next turn')
         })
         .catch((e) => {
-          // Revert the optimistic local state and surface the failure —
+          // Revert the optimistic store write and surface the failure —
           // never swallow a rejected persistence write silently (a bare
           // `.catch(() => {})` here would show the user a new effort value
           // while the DB kept the old one, then emit the STALE value as
           // --effort on the next launch).
           console.error('[DropdownChip] setEffort failed', e)
-          setEffortValue(previousEffort)
+          setWorkspaceEffort(workspaceId, previousEffort)
           playSound('error')
           showTooltip('Effort not saved — try again')
         })
@@ -616,7 +625,9 @@ export function DropdownChip({
   // disabled, since a disabled control implies the capability exists. This
   // runs after every hook above has already been called unconditionally
   // (Rules of Hooks), so it's safe as a plain early return here.
-  if (isEffortSelect && currentModelEffortLevels === null) return <></>
+  // shouldRenderEffortChip is the same pure selector scripts/verify-effort-
+  // levels.ts asserts directly (see effortPickerOptions.ts).
+  if (isEffortSelect && !shouldRenderEffortChip(currentModelEffortLevels)) return <></>
 
   return (
     <div ref={chipRef} className="relative flex-shrink-0">

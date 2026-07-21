@@ -18,6 +18,7 @@
 // deps bag needed for this domain.
 // ---------------------------------------------------------------------------
 
+import type { BrowserWindow } from 'electron'
 import { getWorkspace } from '../workspaces'
 import {
   getClaudeGlobalSettings,
@@ -31,10 +32,8 @@ import {
   getClaudeWorkspaceSettings,
   updateClaudeWorkspaceSettings
 } from '../claudeWorkspaceSettings'
-import { clampEffortToSupportedLevel } from '../../shared/types'
 import type { ClaudeWorkspaceSettings, ClaudeEffort } from '../../shared/types'
-import { resolveEffortLevelsForModelId } from '../models/selectable'
-import { listCliProxyModelCacheEntries } from '../models/sources/cliproxy'
+import { withReconciledEffort } from '../effortReconciliation'
 import {
   getLaunchSnapshot,
   setLaunchSnapshot,
@@ -45,82 +44,13 @@ import {
 } from '../workspaceResources'
 import type { LaunchSnapshot } from '../workspaceResources'
 import { handle } from './handle'
+import { PUSH_CHANNELS } from '../../shared/ipc'
 import {
   FLAG_DELIMITER,
   groupTokensByFlag,
   splitFlagString,
   findFlagValue
 } from '../../shared/cliFlags'
-
-// ---------------------------------------------------------------------------
-// Cross-model effort reconciliation (model-routing unit 11, work item 4).
-//
-// Effort is emitted as `--effort <value>` by composeFlagTokens, which becomes
-// output_config.effort on the wire for a routed model — so a stale value
-// silently rides along when the user switches models (e.g. `xhigh` on Opus
-// stays stored after switching to a [low,medium,high] model, and the PROXY
-// silently clamps it, with nothing telling the user). This is the single
-// choke point every model-persisting path (workspace:setModel — footer chip
-// AND creation menu, which both write through it; claudeWorkspaceSettings:
-// update — WorkspaceDrawer; claudeProjectSettings:update — SettingsDrawer;
-// claudeSettings:update — global ClaudeGeneralSection) calls BEFORE
-// persisting a model change, so the logic lives exactly once regardless of
-// which surface triggered the change.
-//
-// `readEffectiveModel`/`readEffectiveEffort` are the SAME composeClaudeLaunch
-// primitive every other effective-value reader in this file already uses
-// (see workspace:getEffectiveModel/getEffectiveEffort above) — this reads
-// the value as it stands BEFORE the caller's patch is applied, so the
-// resolution is always against the CURRENT (about-to-be-stale) effort.
-//
-// Returns the resolved effort, or undefined when no reconciliation is
-// needed (current effort is already supported / 'auto' / unresolvable model)
-// — callers merge this into their patch ONLY when the caller isn't already
-// explicitly setting `effort` itself (never overriding explicit user intent
-// with an automatic reconciliation).
-function reconcileEffortForModelChange(
-  newModelId: string,
-  currentEffort: string
-): ClaudeEffort | undefined {
-  const newLevels = resolveEffortLevelsForModelId(newModelId, listCliProxyModelCacheEntries())
-  const resolved = clampEffortToSupportedLevel(currentEffort || 'auto', newLevels)
-  if (resolved === (currentEffort || 'auto')) return undefined
-  return resolved as ClaudeEffort
-}
-
-// Reads the effective effort a scope would currently launch with, exactly
-// like workspace:getEffectiveEffort — reused here (and by the reconciliation
-// call sites below) so "what's the effort right now" is computed identically
-// everywhere rather than re-derived per call site.
-function readEffectiveEffort(
-  projectId: string | undefined,
-  workspaceId: string | undefined
-): string {
-  const launch = composeClaudeLaunch(projectId, workspaceId)
-  return findFlagValue(launch.flags, '--effort') ?? ''
-}
-
-// Shared "reconcile effort into this patch" step used identically by all
-// THREE generic settings-update handlers below (global/project/workspace) —
-// factored out here so the reconciliation logic lives exactly once rather
-// than being re-derived per scope (per the unit-11 requirement). Only fires
-// when the patch sets `model` to a NEW value AND doesn't already explicitly
-// set `effort` itself (an explicit user-provided effort in the same patch is
-// never overridden by an automatic reconciliation). Mutates nothing — returns
-// a patch with `effort` added when reconciliation is needed, or the original
-// patch object unchanged (same reference) otherwise, so a no-reconciliation
-// call is a no-op allocation-wise too.
-function withReconciledEffort<T extends { model?: string; effort?: ClaudeEffort }>(
-  patch: T,
-  projectId: string | undefined,
-  workspaceId: string | undefined
-): T {
-  if (patch.model === undefined || patch.effort !== undefined) return patch
-  const currentEffort = readEffectiveEffort(projectId, workspaceId)
-  const reconciledEffort = reconcileEffortForModelChange(patch.model, currentEffort)
-  if (reconciledEffort === undefined) return patch
-  return { ...patch, effort: reconciledEffort }
-}
 
 // Compares two env-like records by key/value (order-independent). Shared by
 // launchEquals for both the settings `env` layer and the `authEnv` layer.
@@ -191,6 +121,41 @@ function parseFlagTokens(flags: string): ReturnType<typeof groupTokensByFlag> {
 const FOOTER_CHIP_FLAG_NAME: Record<'model' | 'effort', string> = {
   model: '--model',
   effort: '--effort'
+}
+
+/**
+ * Broadcasts workspace:effectiveSettingsChanged for every currently-mounted
+ * workspace (bugfix, model-routing unit 11) — pushed after EVERY model/
+ * effort-persisting handler below, since a global or project-scope change
+ * can affect many workspaces at once (not just the one the caller named),
+ * exactly mirroring recomputeDirty()'s own "iterate every tracked launch
+ * snapshot" scope. A workspace-scoped change (workspace:setModel) only
+ * actually affects itself, but broadcasting for every mounted workspace here
+ * too is harmless (the renderer store just re-applies the same value) and
+ * keeps this ONE code path for all four call sites rather than a narrower
+ * single-workspace variant plus a broader multi-workspace one.
+ *
+ * getMainWindow may be null (no window yet, e.g. very early boot) — the
+ * push is simply skipped then, same as every other push-channel call site
+ * in this codebase (see uiState:update's identical guard).
+ */
+function broadcastEffectiveSettingsForMountedWorkspaces(
+  getMainWindow: () => BrowserWindow | null
+): void {
+  if (launchSnapshotCount() === 0) return
+  const win = getMainWindow()
+  if (!win || win.isDestroyed()) return
+  const globalSettings = getClaudeGlobalSettings()
+  for (const [workspaceId] of launchSnapshotEntries()) {
+    const ws = getWorkspace(workspaceId)
+    if (!ws) continue // evicted by recomputeDirty's own pass; nothing to push
+    const fresh = composeClaudeLaunch(ws.projectId, workspaceId, globalSettings)
+    win.webContents.send(PUSH_CHANNELS.workspaceEffectiveSettingsChanged, {
+      workspaceId,
+      model: fresh.model,
+      effort: findFlagValue(fresh.flags, '--effort') ?? ''
+    })
+  }
 }
 
 // Persists a model/effort change made via a footer dropdown chip (Model or
@@ -273,7 +238,8 @@ function reconcileFlagsExceptTarget(
 function setWorkspaceSettingAndSuppressDirty(
   workspaceId: string,
   patch: Partial<{ model: string; effort: ClaudeEffort }>,
-  flagName: 'model' | 'effort'
+  flagName: 'model' | 'effort',
+  getMainWindow: () => BrowserWindow | null
 ): ClaudeWorkspaceSettings {
   const result = updateClaudeWorkspaceSettings(workspaceId, patch)
 
@@ -311,11 +277,21 @@ function setWorkspaceSettingAndSuppressDirty(
   // to flagName) would still flag dirty. When NOT suppressible, the model
   // divergence itself is what (correctly) flags dirty here.
   recomputeDirty()
+  // Bugfix (model-routing unit 11): push the fresh effective {model,effort}
+  // for every mounted workspace so the footer's model AND effort chips (two
+  // separate DropdownChip instances) react live, without waiting for a
+  // remount — see broadcastEffectiveSettingsForMountedWorkspaces' own doc
+  // comment.
+  broadcastEffectiveSettingsForMountedWorkspaces(getMainWindow)
 
   return result
 }
 
-export function registerClaudeSettingsIpc(): void {
+export interface ClaudeSettingsIpcDeps {
+  getMainWindow: () => BrowserWindow | null
+}
+
+export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
   // ---------------------------------------------------------------------------
   // Claude Settings IPC (global)
   // ---------------------------------------------------------------------------
@@ -326,11 +302,15 @@ export function registerClaudeSettingsIpc(): void {
   // item 4) — see withReconciledEffort's own doc comment. Global scope has
   // no workspaceId/projectId; composeClaudeLaunch(undefined, undefined)
   // reads the global row directly, which is exactly "effective effort at
-  // global scope" (nothing above it to inherit from).
+  // global scope" (nothing above it to inherit from). A global-scope change
+  // can affect every mounted workspace with no override of its own, so the
+  // broadcast below iterates all of them (see its own doc comment) rather
+  // than a single workspaceId.
   handle('claudeSettings:update', (_e, patch) => {
     const reconciledPatch = withReconciledEffort(patch, undefined, undefined)
     const result = updateClaudeGlobalSettings(reconciledPatch)
     recomputeDirty()
+    broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
     return result
   })
 
@@ -349,6 +329,7 @@ export function registerClaudeSettingsIpc(): void {
     const reconciledPatch = withReconciledEffort(args.patch, args.projectId, undefined)
     const result = updateClaudeProjectSettings(args.projectId, reconciledPatch)
     recomputeDirty()
+    broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
     return result
   })
 
@@ -368,6 +349,7 @@ export function registerClaudeSettingsIpc(): void {
     const reconciledPatch = withReconciledEffort(args.patch, ws?.projectId, args.workspaceId)
     const result = updateClaudeWorkspaceSettings(args.workspaceId, reconciledPatch)
     recomputeDirty()
+    broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
     return result
   })
 
@@ -393,7 +375,12 @@ export function registerClaudeSettingsIpc(): void {
       ws?.projectId,
       args.workspaceId
     )
-    return setWorkspaceSettingAndSuppressDirty(args.workspaceId, reconciledPatch, 'model')
+    return setWorkspaceSettingAndSuppressDirty(
+      args.workspaceId,
+      reconciledPatch,
+      'model',
+      deps.getMainWindow
+    )
   })
 
   // Footer Model chip: read the TRUE effective model a workspace would launch
@@ -414,7 +401,12 @@ export function registerClaudeSettingsIpc(): void {
   // right after this resolves, so the running process already matches — see
   // setWorkspaceSettingAndSuppressDirty above).
   handle('workspace:setEffort', (_e, args) => {
-    return setWorkspaceSettingAndSuppressDirty(args.workspaceId, { effort: args.effort }, 'effort')
+    return setWorkspaceSettingAndSuppressDirty(
+      args.workspaceId,
+      { effort: args.effort },
+      'effort',
+      deps.getMainWindow
+    )
   })
 
   // Footer Effort chip: read the TRUE effective effort a workspace would launch

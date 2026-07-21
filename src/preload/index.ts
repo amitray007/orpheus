@@ -380,7 +380,18 @@ const api = {
     // Footer Effort chip: reads the effective effort a workspace would launch
     // with right now, via composeClaudeLaunch — the single source of truth.
     getEffectiveEffort: (workspaceId: string): Promise<{ effort: string }> =>
-      invoke('workspace:getEffectiveEffort', { workspaceId })
+      invoke('workspace:getEffectiveEffort', { workspaceId }),
+    // Model-routing unit 11 (bugfix): pushed by every model-persisting main-
+    // process handler (workspace:setModel, claudeWorkspaceSettings:update,
+    // claudeProjectSettings:update, claudeSettings:update — all four funnel
+    // through withReconciledEffort) right after a change lands, carrying the
+    // FRESH effective {model, effort}. workspaceModelStore/
+    // workspaceEffortStore subscribe to this so the footer's model AND
+    // effort chips (two separate DropdownChip instances) both react live to
+    // a model change made by either one, without waiting for a remount.
+    onEffectiveSettingsChanged: (
+      cb: (e: { workspaceId: string; model: string; effort: string }) => void
+    ): (() => void) => subscribe(PUSH_CHANNELS.workspaceEffectiveSettingsChanged, cb)
   },
   worktrees: {
     branchExists: (projectId: string, branch: string): Promise<boolean> =>

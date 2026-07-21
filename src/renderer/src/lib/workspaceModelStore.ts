@@ -3,18 +3,17 @@
 //
 // Per-workspace external store for "which model id is this workspace
 // currently launching with" — backs the sidebar's provider-icon prefix slot
-// (Sidebar.tsx's WorkspaceStatusIcon area). Mirrors titleStore.ts's shape
-// exactly (a createPerKeyStore<string>, set/useKey), except the value here
-// is fetched lazily (pull, via workspace:getEffectiveModel — the SAME IPC
-// call/source of truth the footer Model chip already reads from) rather than
-// pushed from main, since there is no dedicated push channel for model
-// changes.
+// (Sidebar.tsx's WorkspaceStatusIcon area) AND, since the model-routing
+// unit 11 bugfix, the footer's Effort chip's live-reactivity. Mirrors
+// titleStore.ts's shape exactly (a createPerKeyStore<string>, set/useKey) —
+// a pure data store with no IPC/push wiring of its own; that wiring lives in
+// Dashboard.tsx, exactly like titleStore.ts/activityStore.ts/gitStore.ts's
+// own onXxxChanged subscriptions.
 //
-// Three write paths keep this in sync with reality, all funneling through
-// the ONE setWorkspaceModel() below:
-//   1. useWorkspaceProviderIcon (below) fetches once per workspace id on
-//      first render (mirrors Dashboard.tsx's per-visible-row git-status
-//      fetch pattern) and caches the result here.
+// Write paths, all funneling through setWorkspaceModel():
+//   1. useWorkspaceProviderIcon.ts fetches once per workspace id on first
+//      render (mirrors Dashboard.tsx's per-visible-row git-status fetch
+//      pattern) and caches the result here.
 //   2. NewWorkspaceMenu, right after creating a workspace with a non-default
 //      model, writes the just-chosen model optimistically (no round trip
 //      needed — the caller already knows what it just persisted).
@@ -22,6 +21,17 @@
 //      workspace:setModel call, writes the newly-selected model here too —
 //      so switching models later keeps the sidebar icon in sync without a
 //      second poll.
+//   4. THE BUGFIX: Dashboard.tsx's window.api.workspaces.onEffectiveSettings
+//      Changed subscription (see that file — same useEffect also writes
+//      into workspaceEffortStore.ts from the SAME push event). Pushed by
+//      every main-process handler that can change a workspace's effective
+//      model/effort (footer chip, creation menu, settings drawers, CLI —
+//      see registerClaudeSettingsIpc's four handlers, all of which now call
+//      this push after persisting). Updating BOTH stores from one push is
+//      what makes the footer's Effort chip (a SEPARATE DropdownChip
+//      component instance from the Model chip — see WorkspaceFooter.tsx)
+//      react live to a model change made by the OTHER chip instance,
+//      instead of only updating on its own next mount.
 // ---------------------------------------------------------------------------
 
 import { createPerKeyStore } from './createPerKeyStore'

@@ -949,6 +949,23 @@ export interface RendererPushMap {
   // idempotent for the renderer store to apply, so no ordering/dedup logic
   // is needed on either side. See paneLiveLayoutsStore.ts.
   'panes:liveLayoutsChanged': { layoutIds: string[] }
+  // Model-routing unit 11 (bugfix): pushed by registerClaudeSettingsIpc's
+  // withReconciledEffort call sites (workspace:setModel, claudeWorkspace
+  // Settings:update, claudeProjectSettings:update, claudeSettings:update)
+  // right after a model/effort change persists — every path that can change
+  // a workspace's effective model (footer chip, creation menu, settings
+  // drawers, and the CLI/command-server path, which persists through the
+  // SAME updateClaudeWorkspaceSettings this push wraps) funnels through one
+  // of those four handlers, so this single push covers all of them. Carries
+  // the FRESH effective {model, effort} for the affected workspace — the
+  // effort chip subscribes to this (via workspaceModelStore/
+  // workspaceEffortStore) instead of owning its own local useState, so it
+  // reacts live to a model change made by a DIFFERENT DropdownChip instance
+  // (the model chip and effort chip are separate component instances —
+  // see WorkspaceFooter.tsx) without waiting for a remount. `effort` is the
+  // value AFTER any main-process reconciliation (clampEffortToSupported
+  // Level) — never the pre-reconciliation value a caller submitted.
+  'workspace:effectiveSettingsChanged': { workspaceId: string; model: string; effort: string }
 }
 
 export type PushChannel = keyof RendererPushMap
@@ -992,7 +1009,8 @@ export const PUSH_CHANNELS = {
   diagStream: 'diag:stream',
   keepAwakeState: 'keepAwake:state',
   overlayEvent: 'overlay:event',
-  panesLiveLayoutsChanged: 'panes:liveLayoutsChanged'
+  panesLiveLayoutsChanged: 'panes:liveLayoutsChanged',
+  workspaceEffectiveSettingsChanged: 'workspace:effectiveSettingsChanged'
 } satisfies Record<string, PushChannel>
 
 // Exhaustiveness check: every PushChannel must appear as a value above (the

@@ -14,6 +14,7 @@ import { bumpActivityTime, deleteActivityTime } from '@/lib/activityTimeStore'
 import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setWorkspaceModel, deleteWorkspaceModel } from '@/lib/workspaceModelStore'
+import { setWorkspaceEffort, deleteWorkspaceEffort } from '@/lib/workspaceEffortStore'
 import { setPr, deletePr } from '@/lib/prStore'
 import { removeWorkbenchEntry } from '@/lib/workbenchStore'
 import { removeWorkbenchTerminalsEntry } from '@/lib/workbenchTerminalsStore'
@@ -208,6 +209,23 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
+  // Bugfix, model-routing unit 11: single hoisted subscription writing into
+  // BOTH workspaceModelStore and workspaceEffortStore from the SAME push —
+  // pushed by every main-process handler that can change a workspace's
+  // effective model/effort (footer chip, creation menu, settings drawers,
+  // CLI — see registerClaudeSettingsIpc's four handlers in
+  // src/main/ipc/claudeSettings.ts). Before this, the footer's Model chip
+  // and Effort chip were two separate DropdownChip component instances each
+  // owning local useState with no way to learn the OTHER chip just changed
+  // something — switching the model never updated the Effort chip's
+  // displayed options/value until the whole component remounted.
+  useEffect(() => {
+    return window.api.workspaces.onEffectiveSettingsChanged(({ workspaceId, model, effort }) => {
+      setWorkspaceModel(workspaceId, model)
+      setWorkspaceEffort(workspaceId, effort)
+    })
+  }, [])
+
   useEffect(() => {
     return window.api.workspaces.onActiveWorkspaceChanged(({ workspaceId }) => {
       setAuthoritativeActiveWorkspace(workspaceId)
@@ -348,6 +366,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deleteWorkspaceModel(workspaceId)
+      deleteWorkspaceEffort(workspaceId)
       deletePr(workspaceId)
       removeWorkbenchEntry(workspaceId)
       removeWorkbenchTerminalsEntry(workspaceId)
@@ -1229,6 +1248,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deleteWorkspaceModel(workspaceId)
+      deleteWorkspaceEffort(workspaceId)
       deletePr(workspaceId)
       removeWorkbenchEntry(workspaceId)
       removeWorkbenchTerminalsEntry(workspaceId)
@@ -1272,6 +1292,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deleteWorkspaceModel(workspaceId)
+      deleteWorkspaceEffort(workspaceId)
       deletePr(workspaceId)
       removeWorkbenchEntry(workspaceId)
       removeWorkbenchTerminalsEntry(workspaceId)
@@ -1397,6 +1418,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         deleteTitle(ws.id)
         deleteGitStatus(ws.id)
         deleteWorkspaceModel(ws.id)
+        deleteWorkspaceEffort(ws.id)
         deletePr(ws.id)
         removeWorkbenchEntry(ws.id)
         removeWorkbenchTerminalsEntry(ws.id)

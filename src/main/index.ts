@@ -977,7 +977,7 @@ registerModelsIpc()
 // Model/Effort chips) — extracted to ipc/claudeSettings.ts.
 // ---------------------------------------------------------------------------
 
-registerClaudeSettingsIpc()
+registerClaudeSettingsIpc({ getMainWindow })
 
 // ---------------------------------------------------------------------------
 // Ghostty Settings IPC
