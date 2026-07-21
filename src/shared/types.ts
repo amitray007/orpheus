@@ -358,6 +358,10 @@ export type AppUiState = {
   // src/main/index.ts) starts/stops the managed CLIProxyAPI child process
   // when this flips. See src/main/routingProxy/.
   routingProxyEnabled: boolean
+  // Model-name aliasing (model-routing unit 08) — opt-in, off by default.
+  // Master switch for whether any stored routing_proxy_model_aliases row is
+  // folded into the generated config.yaml. See src/main/routingProxy/aliases.ts.
+  modelAliasesEnabled: boolean
   updatedAt: number
 }
 
@@ -2222,4 +2226,44 @@ export interface SelectableModel {
    *  model has none — the effort control must be disabled/hidden for a model
    *  with no levels, never fall back to a generic list. */
   effortLevels: string[] | null
+}
+
+// ---------------------------------------------------------------------------
+// Model-name aliasing (model-routing unit 08) — see
+// src/main/routingProxy/aliases.ts. Lets a Claude-facing model name (e.g.
+// 'sonnet', pinned by a subagent's frontmatter) resolve on the ROUTING PROXY
+// to a routed model instead of failing with "unknown provider for model X"
+// on a routed workspace. This is proxy-side model-name resolution only — it
+// never changes which model a workspace itself uses (see selectable.ts,
+// which never reads this table) and never proxies Claude credentials.
+// ---------------------------------------------------------------------------
+
+/** One stored alias row, as sent to/from the renderer. `targetProviderId`/
+ *  `targetModelId` are null when the row exists but hasn't been pointed at a
+ *  model yet (e.g. freshly added from the picker before a target is chosen). */
+export interface ModelAliasSummary {
+  claudeName: string
+  enabled: boolean
+  targetProviderId: string | null
+  targetModelId: string | null
+}
+
+/** One candidate target a Claude name can be aliased to — a model the live
+ *  cliproxy cache currently reports for an enabled, connected provider.
+ *  aliases:listTargets returns only THESE (never Claude models, never a
+ *  provider that isn't actually usable) so the dropdown can't offer a
+ *  mapping that would immediately be skipped at config-generation time. */
+export interface ModelAliasTargetOption {
+  providerId: string
+  providerLabel: string
+  modelId: string
+}
+
+/** Full aliasing state for the Settings UI: the master on/off switch plus
+ *  every stored alias row (one per name in CLAUDE_MODEL_OPTIONS the user has
+ *  touched — see aliases:list's doc comment for how the candidate name list
+ *  itself is derived). */
+export interface ModelAliasesState {
+  enabled: boolean
+  aliases: ModelAliasSummary[]
 }

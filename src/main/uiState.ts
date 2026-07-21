@@ -133,6 +133,8 @@ type AppUiStateRow = {
   github_username: string | null
   // Managed routing proxy (v70)
   routing_proxy_enabled: number | null
+  // Model-name aliasing (model-routing unit 08)
+  model_aliases_enabled: number | null
   updated_at: number
 }
 
@@ -261,6 +263,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     githubUsername: row.github_username ?? null,
     // Managed routing proxy (v70) — default false (off)
     routingProxyEnabled: (row.routing_proxy_enabled ?? 0) === 1,
+    // Model-name aliasing (model-routing unit 08) — default false (off)
+    modelAliasesEnabled: (row.model_aliases_enabled ?? 0) === 1,
     updatedAt: row.updated_at
   }
 }
@@ -371,7 +375,8 @@ const BOOLEAN_FIELDS: { key: keyof AppUiStatePatch; label: string }[] = [
   { key: 'hunkActionsEnabled', label: 'hunkActionsEnabled' },
   { key: 'showPanesView', label: 'showPanesView' },
   { key: 'showWorkspacesView', label: 'showWorkspacesView' },
-  { key: 'routingProxyEnabled', label: 'routingProxyEnabled' }
+  { key: 'routingProxyEnabled', label: 'routingProxyEnabled' },
+  { key: 'modelAliasesEnabled', label: 'modelAliasesEnabled' }
 ]
 
 // Numeric-membership keys: "<label> must be one of <list>", requires
@@ -613,7 +618,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // GitHub username greeting (D4)
     githubUsername: 'github_username',
     // Managed routing proxy (v70)
-    routingProxyEnabled: 'routing_proxy_enabled'
+    routingProxyEnabled: 'routing_proxy_enabled',
+    // Model-name aliasing (model-routing unit 08)
+    modelAliasesEnabled: 'model_aliases_enabled'
   }
 
   const setClauses: string[] = []

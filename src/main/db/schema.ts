@@ -544,6 +544,14 @@ export const schema: SchemaDef = {
       // + running the managed CLIProxyAPI child process. Mirrors
       // hooks_integration_enabled exactly.
       routing_proxy_enabled: { type: 'INTEGER', notNull: true, default: '0' },
+      // Model-name aliasing on the routing proxy (model-routing unit 08) —
+      // default 0 (off), same "explicit opt-in" shape as routing_proxy_enabled.
+      // Gates whether ANY stored routing_proxy_model_aliases row is folded
+      // into the generated config.yaml — see renderProvidersYaml's caller in
+      // config.ts. Kept separate from the individual alias rows' own enabled
+      // flags so there's one master switch a user can flip off without losing
+      // their per-alias mappings.
+      model_aliases_enabled: { type: 'INTEGER', notNull: true, default: '0' },
       // ALTER-only columns folded into desired state (drift vs the fresh-install
       // constant per _db-surface.md's "Columns added ONLY via later ALTER" list)
       notify_attention: { type: 'BOOLEAN', notNull: true, default: '1' },
@@ -1050,6 +1058,37 @@ export const schema: SchemaDef = {
     ],
     indexes: {
       idx_routing_proxy_provider_api_keys_provider: ['provider_id']
+    }
+  },
+
+  // ---------------------------------------------------------------------
+  // routing_proxy_model_aliases — model-routing unit 08. One row per
+  // Claude-facing model name (e.g. 'sonnet', 'claude-opus-4-8') a user has
+  // pointed at a routed model. Read by config.ts's renderProvidersYaml,
+  // which folds each ENABLED row into a `models: [{name, alias}]` entry on
+  // the OWNING provider's block (matched by target_provider_id) — see that
+  // module's doc comment for why this must never leak into
+  // buildSelectableModels (models/selectable.ts only ever reads the cliproxy
+  // model cache, never this table).
+  //
+  // claude_name is free-text, NOT a CHECK against CLAUDE_MODEL_OPTIONS —
+  // deliberately: a subagent's frontmatter can pin an arbitrary string
+  // ('sonnet', 'claude-sonnet-5', a future model name Orpheus doesn't know
+  // about yet), and the whole point of this feature is resolving whatever
+  // name CLIProxyAPI actually receives, not a closed enum Orpheus controls.
+  // target_provider_id/target_model_id identify which provider's block and
+  // which upstream model this alias should route to; both are re-validated
+  // against the live provider config + cliproxy model cache at config-
+  // generation time (a stale row naming a model no longer in the cache is
+  // skipped, not emitted broken — see config.ts).
+  // ---------------------------------------------------------------------
+  routing_proxy_model_aliases: {
+    columns: {
+      claude_name: TEXT_PK,
+      enabled: bool('enabled', '1'),
+      target_provider_id: 'TEXT',
+      target_model_id: 'TEXT',
+      updated_at: INTEGER_NOT_NULL
     }
   }
 }

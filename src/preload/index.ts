@@ -72,6 +72,8 @@ import type {
   ProviderDescriptorSummary,
   ProviderConfigSummary,
   ProviderApiKeyEntrySummary,
+  ModelAliasesState,
+  ModelAliasTargetOption,
   OAuthStartResult,
   OAuthPollResult,
   SelectableModel,
@@ -842,6 +844,19 @@ const api = {
     ): Promise<ProviderConfigSummary[]> => invoke('providers:setApiKeys', { providerId, apiKeys }),
     setBaseUrl: (providerId: string, baseUrl: string | null): Promise<ProviderConfigSummary[]> =>
       invoke('providers:setBaseUrl', { providerId, baseUrl })
+  },
+  aliases: {
+    list: (): Promise<ModelAliasesState> => invoke('aliases:list'),
+    listTargets: (): Promise<ModelAliasTargetOption[]> => invoke('aliases:listTargets'),
+    setEnabled: (enabled: boolean): Promise<ModelAliasesState> =>
+      invoke('aliases:setEnabled', { enabled }),
+    setAlias: (
+      claudeName: string,
+      targetProviderId: string | null,
+      targetModelId: string | null
+    ): Promise<ModelAliasesState> =>
+      invoke('aliases:setAlias', { claudeName, targetProviderId, targetModelId }),
+    useDefaults: (): Promise<ModelAliasesState> => invoke('aliases:useDefaults')
   },
   oauth: {
     start: (providerId: string): Promise<OAuthStartResult> => invoke('oauth:start', { providerId }),

@@ -3,6 +3,7 @@ import type React from 'react'
 import type { RoutingProxyAssetInfo, RoutingProxySnapshot } from '@shared/types'
 import { SettingRow, Toggle, SectionTitle, Eyebrow } from './primitives'
 import { ProvidersSection } from './ProvidersSection'
+import { AliasesSection } from './AliasesSection'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { Warning } from '@phosphor-icons/react'
 
@@ -282,6 +283,9 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
 
       {/* Providers — declarative, data-driven from providers:descriptors */}
       <ProvidersSection />
+
+      {/* Model-name aliasing — declarative, data-driven from CLAUDE_MODEL_OPTIONS + aliases:listTargets */}
+      <AliasesSection />
 
       {/* Connected accounts */}
       {isRunning && (

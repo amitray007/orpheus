@@ -133,6 +133,7 @@ import { registerSystemIpc } from './ipc/system'
 import { registerUpdatesIpc } from './ipc/updates'
 import { registerRoutingProxyIpc } from './ipc/routingProxy'
 import { registerProvidersIpc } from './ipc/providers'
+import { registerAliasesIpc } from './ipc/aliases'
 import { registerOAuthIpc } from './ipc/oauth'
 import {
   hydrateSnapshotAtBoot,
@@ -1058,6 +1059,8 @@ registerUpdatesIpc()
 registerRoutingProxyIpc()
 
 registerProvidersIpc()
+
+registerAliasesIpc()
 
 registerOAuthIpc()
 

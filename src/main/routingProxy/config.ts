@@ -39,6 +39,10 @@ export interface RoutingProxyConfigOptions {
    *  providers wired yet — existing callers (manager.ts's install()/start())
    *  keep working unchanged. */
   providers?: ProviderConfig[]
+  /** Model-name aliases (unit 08), already resolved+validated and grouped by
+   *  target provider id — see aliasResolve.ts's aliasesToProviderModels.
+   *  Omit/empty for no aliases (existing callers unaffected). */
+  aliasModelsByProvider?: Record<string, ProviderModelEntry[]>
 }
 
 // ---------------------------------------------------------------------------
@@ -63,23 +67,29 @@ function toCliProxyModelEntry(m: ProviderModelEntry): Record<string, unknown> {
   return entry
 }
 
-function toCliProxyApiKeyEntry(k: ProviderApiKeyEntry): Record<string, unknown> {
+function toCliProxyApiKeyEntry(
+  k: ProviderApiKeyEntry,
+  extraModels: ProviderModelEntry[] = []
+): Record<string, unknown> {
   const entry: Record<string, unknown> = { 'api-key': k.apiKey }
   if (k.prefix !== undefined) entry.prefix = k.prefix
   if (k.baseUrl !== undefined) entry['base-url'] = k.baseUrl
   if (k.proxyUrl !== undefined) entry['proxy-url'] = k.proxyUrl
   if (k.disableCooling !== undefined) entry['disable-cooling'] = k.disableCooling
-  if (k.models && k.models.length > 0) entry.models = k.models.map(toCliProxyModelEntry)
+  const allModels = [...(k.models ?? []), ...extraModels]
+  if (allModels.length > 0) entry.models = allModels.map(toCliProxyModelEntry)
   if (k.excludedModels && k.excludedModels.length > 0) entry['excluded-models'] = k.excludedModels
   return entry
 }
 
 function toCliProxyOpenAiCompatEntry(
   cfg: ProviderConfig,
-  descriptor: NonNullable<ReturnType<typeof getProviderDescriptor>>
+  descriptor: NonNullable<ReturnType<typeof getProviderDescriptor>>,
+  aliasModels: ProviderModelEntry[]
 ): Record<string, unknown> {
   const baseUrl = cfg.baseUrl ?? descriptor.openaiCompatible?.defaultBaseUrl
-  const hasModels = cfg.apiKeys.some((k) => k.models && k.models.length > 0)
+  const ownModels = cfg.apiKeys.flatMap((k) => k.models ?? [])
+  const allModels = [...ownModels, ...aliasModels]
 
   return {
     name: cfg.displayName ?? descriptor.id,
@@ -91,9 +101,7 @@ function toCliProxyOpenAiCompatEntry(
       if (k.proxyUrl !== undefined) e['proxy-url'] = k.proxyUrl
       return e
     }),
-    ...(hasModels
-      ? { models: cfg.apiKeys.flatMap((k) => k.models ?? []).map(toCliProxyModelEntry) }
-      : {})
+    ...(allModels.length > 0 ? { models: allModels.map(toCliProxyModelEntry) } : {})
   }
 }
 
@@ -111,8 +119,25 @@ function toCliProxyOpenAiCompatEntry(
  * emitting a block CLIProxyAPI can't map back to anything), disabled, or with
  * zero api key entries (an enabled-but-empty apiKey/openaiCompatible provider
  * has nothing to emit).
+ *
+ * `aliasModelsByProvider` (model-routing unit 08, optional) folds extra
+ * `{name, alias}` model entries onto the OWNING provider's block — callers
+ * (config.ts's own writeRoutingProxyConfig) are responsible for having
+ * already validated each alias's target model actually exists in the live
+ * cliproxy model cache before including it here (see aliasResolve.ts's
+ * aliasesToProviderModels); this function itself does no such validation, it
+ * just attaches whatever it's given to the right provider. For an apiKey
+ * provider (dedicated `<provider>-api-key:` block), alias models attach to
+ * the FIRST api-key entry — CLIProxyAPI's `models:` list is per-key-entry,
+ * and aliasing is a provider-level (not per-key) concept in this UI, so the
+ * first entry is as good a home as any (matches how a provider's own
+ * apiKeys[0].models would already be authored by hand in config.example.yaml
+ * for a single-key provider, the overwhelmingly common case).
  */
-export function renderProvidersYaml(providers: ProviderConfig[]): Record<string, unknown> {
+export function renderProvidersYaml(
+  providers: ProviderConfig[],
+  aliasModelsByProvider: Record<string, ProviderModelEntry[]> = {}
+): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   const openaiCompatEntries: Record<string, unknown>[] = []
 
@@ -122,13 +147,17 @@ export function renderProvidersYaml(providers: ProviderConfig[]): Record<string,
     if (!descriptor) continue
     if (cfg.apiKeys.length === 0) continue
 
+    const aliasModels = aliasModelsByProvider[cfg.providerId] ?? []
+
     if (cfg.authMethod === 'apiKey' && descriptor.apiKeyConfigKey) {
-      out[descriptor.apiKeyConfigKey] = cfg.apiKeys.map(toCliProxyApiKeyEntry)
+      out[descriptor.apiKeyConfigKey] = cfg.apiKeys.map((k, idx) =>
+        toCliProxyApiKeyEntry(k, idx === 0 ? aliasModels : [])
+      )
       continue
     }
 
     if (cfg.authMethod === 'openaiCompatible') {
-      openaiCompatEntries.push(toCliProxyOpenAiCompatEntry(cfg, descriptor))
+      openaiCompatEntries.push(toCliProxyOpenAiCompatEntry(cfg, descriptor, aliasModels))
     }
     // 'oauth' providers have nothing to write into config.yaml — auth lives
     // in CLIProxyAPI's own auth-dir (see paths.ts's authDir()), populated by
@@ -159,7 +188,10 @@ export function renderRoutingProxyConfig(options: RoutingProxyConfigOptions): st
   ]
   let text = lines.join('\n')
 
-  const providerYaml = renderProvidersYaml(options.providers ?? [])
+  const providerYaml = renderProvidersYaml(
+    options.providers ?? [],
+    options.aliasModelsByProvider ?? {}
+  )
   if (Object.keys(providerYaml).length > 0) {
     text += stringify(providerYaml)
   }
@@ -175,6 +207,7 @@ export interface WriteConfigOptions {
   authDir: string
   debug?: boolean
   providers?: ProviderConfig[]
+  aliasModelsByProvider?: Record<string, ProviderModelEntry[]>
 }
 
 /**
@@ -200,7 +233,8 @@ export async function writeRoutingProxyConfig(
     port: options.port,
     authDir: options.authDir,
     debug: options.debug ?? false,
-    providers: options.providers
+    providers: options.providers,
+    aliasModelsByProvider: options.aliasModelsByProvider
   })
   await fs.writeFile(configFilePath, text, { encoding: 'utf8', mode: 0o600 })
   // writeFile's `mode` only applies to a freshly-created file; an existing

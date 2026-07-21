@@ -53,6 +53,9 @@ import {
 } from '../models/cliProxyModelCachePersistence'
 import { raceWithTimeout } from '../models/cliProxyModelCacheStaleness'
 import { listProviderConfigs } from './providers/storage'
+import { listModelAliases } from './aliases'
+import { aliasesToProviderModels } from './aliasResolve'
+import type { ProviderModelEntry } from './providers/types'
 import {
   startProviderLogin,
   pollAuthStatus,
@@ -101,6 +104,24 @@ function proxyPort(): number {
 
 function proxyHost(): string {
   return new URL(getRoutingProxyUrl()).hostname
+}
+
+/**
+ * Resolve stored model aliases (unit 08) against the master switch
+ * (AppUiState.modelAliasesEnabled) and the live cliproxy model cache, ready
+ * to hand straight to writeRoutingProxyConfig's aliasModelsByProvider. Every
+ * writeRoutingProxyConfig call site in this module goes through this helper
+ * so aliases stay in sync with providers on every config regeneration
+ * (install/start/regenerateConfigNow) without duplicating the gating logic
+ * three times. See aliases.ts's aliasesToProviderModels doc comment for the
+ * full skip-if-stale contract.
+ */
+function resolveAliasModelsByProvider(): Record<string, ProviderModelEntry[]> {
+  return aliasesToProviderModels(
+    listModelAliases(),
+    getAppUiState().modelAliasesEnabled,
+    listCliProxyModelCacheEntries()
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +181,8 @@ export async function install(deps: InstallDeps = defaultInstallDeps()): Promise
       host: proxyHost(),
       port: proxyPort(),
       authDir: authDir(),
-      providers: listProviderConfigs()
+      providers: listProviderConfigs(),
+      aliasModelsByProvider: resolveAliasModelsByProvider()
     })
     setSnapshot({
       status: 'stopped',
@@ -360,7 +382,8 @@ export async function start(): Promise<void> {
     host: proxyHost(),
     port: proxyPort(),
     authDir: authDir(),
-    providers: listProviderConfigs()
+    providers: listProviderConfigs(),
+    aliasModelsByProvider: resolveAliasModelsByProvider()
   })
 
   startRoutingProxy({
@@ -545,7 +568,8 @@ export async function regenerateConfigNow(): Promise<void> {
     host: proxyHost(),
     port: proxyPort(),
     authDir: authDir(),
-    providers: listProviderConfigs()
+    providers: listProviderConfigs(),
+    aliasModelsByProvider: resolveAliasModelsByProvider()
   })
 }
 

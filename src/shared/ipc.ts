@@ -77,6 +77,8 @@ import type {
   ProviderConfigSummary,
   ProviderApiKeyEntrySummary,
   SelectableModel,
+  ModelAliasesState,
+  ModelAliasTargetOption,
   ActionResult,
   ActionKind,
   ActionAuditEntry,
@@ -655,6 +657,24 @@ export interface InvokeChannelMap {
     req: [{ providerId: string; baseUrl: string | null }]
     res: ProviderConfigSummary[]
   }
+
+  // Model-name aliasing (model-routing unit 08) — see
+  // src/main/routingProxy/aliases.ts. 'aliases:list' returns the master
+  // switch + every stored row; 'aliases:listTargets' returns only the
+  // currently-usable routed models an alias may point to (live cliproxy
+  // cache, cross-referenced against enabled+healthy providers — never
+  // Claude, see ModelAliasTargetOption's doc comment). Every mutating
+  // handler regenerates config.yaml immediately (mirrors providers:* —
+  // CLIProxyAPI watches config.yaml via fsnotify and reloads it itself, no
+  // proxy restart required) and returns the fresh state.
+  'aliases:list': { req: []; res: ModelAliasesState }
+  'aliases:listTargets': { req: []; res: ModelAliasTargetOption[] }
+  'aliases:setEnabled': { req: [{ enabled: boolean }]; res: ModelAliasesState }
+  'aliases:setAlias': {
+    req: [{ claudeName: string; targetProviderId: string | null; targetModelId: string | null }]
+    res: ModelAliasesState
+  }
+  'aliases:useDefaults': { req: []; res: ModelAliasesState }
 
   // OAuth "Connect <provider>" flow (model-routing unit 07) — see
   // src/main/routingProxy/oauth.ts. 'oauth:start' opens the provider's
