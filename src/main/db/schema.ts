@@ -16,7 +16,11 @@ const KEEP_AWAKE_MODE = ['off', 'auto', 'on'] as const
 const PANE_PANEL_KIND = ['general', 'project'] as const
 
 const PERMISSION_MODE = ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const
-const EFFORT = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+// model-routing unit 11: widened to include 'none' (off-ladder disable) and
+// 'minimal' (lowest on-ladder rung) — real values some routed providers
+// report via CLIProxyAPI's thinking.levels. Mirrors ClaudeEffort in
+// src/shared/types.ts exactly; keep both in sync.
+const EFFORT = ['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 const OUTPUT_STYLE = ['default', 'explanatory', 'proactive', 'learning'] as const
 const TUI_MODE = ['default', 'fullscreen'] as const
 const EDITOR_MODE = ['normal', 'vim'] as const

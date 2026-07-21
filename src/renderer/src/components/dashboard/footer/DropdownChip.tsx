@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import {
   EFFORT_LADDER_ORDER,
-  clampEffortToSupportedLevel,
   type ChipDropdownItem,
   type ClaudeEffort,
   type WorkspaceActivityDetail
@@ -342,8 +341,7 @@ export function DropdownChip({
     faceProviderId = selectableModels.find((m) => m.id === modelValue)?.providerId
     chipTitle = `${item.label}: ${faceLabel}`
     onSelect = (value: string): void => {
-      const newModel = selectableModels.find((m) => m.id === value)
-      const newModelIsClaude = newModel?.isClaude ?? false
+      const newModelIsClaude = selectableModels.find((m) => m.id === value)?.isClaude ?? false
       setModelValue(value)
       // Keep the sidebar's provider-icon prefix (WorkspaceProviderIcon) in
       // sync immediately — same cache the row's fetch-on-mount populates, so
@@ -353,25 +351,20 @@ export function DropdownChip({
       // Persist first (also suppresses the dirty flag when the switch is
       // live-applicable — see setWorkspaceSettingAndSuppressDirty's own
       // isLiveApplicableModelChange gate) so a genuinely busy workspace
-      // still saves the setting even if injection never lands.
-      window.api.workspaces.setModel(workspaceId, value).catch(() => {})
-      // Stale-selection guard (model-routing unit 11, work item 4): the
-      // workspace's currently-stored effort must never silently ride along
-      // onto a model that doesn't support it and get invisibly clamped
-      // upstream by the proxy — resolve it to the nearest supported level
-      // HERE, at selection time, and persist that instead. clampEffortTo
-      // SupportedLevel already no-ops (returns the same value) when the
-      // current effort is 'auto' or already supported by the new model, so
-      // this is a silent no-op for the overwhelmingly common case (switching
-      // among models that all support the current effort).
-      const resolvedEffort = clampEffortToSupportedLevel(
-        effortValue || 'auto',
-        newModel?.effortLevels ?? null
-      )
-      if (resolvedEffort !== (effortValue || 'auto')) {
-        setEffortValue(resolvedEffort)
-        window.api.workspaces.setEffort(workspaceId, resolvedEffort as ClaudeEffort).catch(() => {})
-      }
+      // still saves the setting even if injection never lands. The
+      // cross-model effort reconciliation (model-routing unit 11, work item
+      // 4) happens main-process-side, inside this SAME workspace:setModel
+      // call (see registerClaudeSettingsIpc's handler) — the single choke
+      // point every model-persisting path shares, so it isn't re-derived
+      // here. The response reflects the (possibly reconciled) stored effort;
+      // sync local state from it so the effort chip's face label never shows
+      // a stale value while waiting for its own next refetch.
+      window.api.workspaces
+        .setModel(workspaceId, value)
+        .then((settings) => {
+          if (settings.overrides.effort !== undefined) setEffortValue(settings.overrides.effort)
+        })
+        .catch(() => {})
       // `/model <value>` is a Claude CLI slash command — it is only
       // meaningful for a Claude -> Claude switch (same backend, same running
       // process, just a different --model argument). A switch involving a

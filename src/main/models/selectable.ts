@@ -38,6 +38,7 @@
 
 import { CLAUDE_MODEL_OPTIONS, CLAUDE_BUILTIN_EFFORT_LEVELS } from '../../shared/types'
 import type { SelectableModel } from '../../shared/types'
+import { bareClaudeIdFor } from './sources/builtin'
 
 const CLAUDE_PROVIDER_ID = 'claude'
 const CLAUDE_PROVIDER_LABEL = 'Claude'
@@ -71,6 +72,45 @@ export interface CliProxyCacheEntryInput {
   providerId?: string
   context: number | null
   effortLevels?: string[] | null
+}
+
+/**
+ * Resolve a model id's real effortLevels (or null when it has none) —
+ * INDEPENDENT of proxy/provider health (unlike buildSelectableModels' output,
+ * which is gated on live availability). This exists for the cross-model
+ * effort reconciliation (model-routing unit 11, work item 4): reconciling a
+ * workspace's stored effort against its NEW model needs to know that model's
+ * ladder even if the model itself isn't currently "available" (e.g. the user
+ * just switched to it and the proxy hasn't confirmed health yet) — facts,
+ * not availability, are what the reconciliation needs.
+ *
+ * Claude ids (including date-stamped/aliased variants — see
+ * bareClaudeIdFor's own doc comment) resolve via the hand-maintained
+ * CLAUDE_BUILTIN_EFFORT_LEVELS table; every other id is looked up in the
+ * cliproxy model cache. An id known to neither source returns null — never
+ * fabricated.
+ */
+export function resolveEffortLevelsForModelId(
+  modelId: string,
+  cliProxyModels: CliProxyCacheEntryInput[]
+): string[] | null {
+  // Direct table hit covers BOTH explicit versioned ids (claude-opus-4-8)
+  // AND always-latest aliases (opus/sonnet/haiku/fable) — bareClaudeIdFor
+  // deliberately excludes aliases from its own resolution (see its doc
+  // comment), so it must not be consulted first or an alias-pinned
+  // workspace would wrongly resolve to "no effort control".
+  const directHit =
+    CLAUDE_BUILTIN_EFFORT_LEVELS[modelId as keyof typeof CLAUDE_BUILTIN_EFFORT_LEVELS]
+  if (directHit) return directHit
+  // Date-stamped variant (e.g. "claude-opus-4-7-20260416") -> its bare id.
+  const bareClaudeId = bareClaudeIdFor(modelId)
+  if (bareClaudeId) {
+    return (
+      CLAUDE_BUILTIN_EFFORT_LEVELS[bareClaudeId as keyof typeof CLAUDE_BUILTIN_EFFORT_LEVELS] ??
+      null
+    )
+  }
+  return cliProxyModels.find((m) => m.modelId === modelId)?.effortLevels ?? null
 }
 
 export interface BuildSelectableModelsInput {

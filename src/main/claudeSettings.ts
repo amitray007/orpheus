@@ -329,7 +329,18 @@ const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
   'plan',
   'bypassPermissions'
 ]
-const VALID_EFFORTS: ClaudeEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
+// Mirrors ClaudeEffort/schema.ts's EFFORT exactly (model-routing unit 11) —
+// keep all three in sync.
+const VALID_EFFORTS: ClaudeEffort[] = [
+  'auto',
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+]
 const VALID_OUTPUT_STYLES: ClaudeOutputStyle[] = ['default', 'explanatory', 'proactive', 'learning']
 const VALID_TUI_MODES: ClaudeTuiMode[] = ['default', 'fullscreen']
 const VALID_EDITOR_MODES: ClaudeEditorMode[] = ['normal', 'vim']

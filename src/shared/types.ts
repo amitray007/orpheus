@@ -2427,48 +2427,73 @@ export interface SelectableModel {
 }
 
 /**
- * Stale-selection guard (model-routing unit 11, work item 4): given a
- * currently-stored effort value and the NEWLY-selected model's effortLevels,
- * resolve to a level that model actually supports — rather than letting a
- * value like `high` silently ride along onto a model whose ladder is
- * `[minimal, low]` and get invisibly clamped upstream by the proxy (the exact
- * bug this unit fixes; see effort-spec.md's clampLevel notes). Mirrors the
- * proxy's own clamp rule (nearest by index distance on EFFORT_LADDER_ORDER)
- * so the UI's resolved value always matches what the wire will actually
- * apply — never a silent divergence between what the chip shows and what
- * gets sent.
+ * Cross-model effort reconciliation / stale-selection guard (model-routing
+ * unit 11, work item 4): given a currently-stored effort value and the
+ * NEWLY-selected model's effortLevels, resolve to a level that model actually
+ * supports — rather than letting a value like `xhigh` silently ride along
+ * onto a model whose ladder is `[low, medium, high]` and get invisibly
+ * clamped upstream by the proxy (the exact bug this unit fixes; see
+ * effort-spec.md's clampLevel notes). Called both at UI selection time
+ * (DropdownChip's model-switch handler) and from the main-process choke
+ * point where every model-persisting path (footer chip, creation menu,
+ * workspace/project settings) converges, so the reconciliation happens
+ * exactly once per model change regardless of which surface triggered it.
  *
- * - `effortLevels === null` (no reasoning control at all) -> 'auto': there is
- *   no effort concept for this model, so the guard resets to the one value
- *   that's never sent as a wire effort at all (see composeClaudeLaunch's
- *   skip-on-auto handling).
- * - current value already in `effortLevels` (or is 'auto') -> returned
- *   unchanged; nothing to resolve.
- * - `current` is off-ladder ('none') and the model doesn't support it -> the
- *   nearest ON-ladder level is chosen the same way an on-ladder value would
- *   be (index distance against EFFORT_LADDER_ORDER, 'none' treated as
- *   "below minimal" i.e. index -1) — an off-ladder mode has no meaningful
- *   "distance" of its own otherwise.
- * - otherwise -> nearest supported level by ladder-index distance, ties
- *   broken by whichever appears first in `effortLevels` (mirrors the proxy's
- *   own dead tie-break code path — see effort-spec.md; we must not invent a
- *   "ties go lower" rule that doesn't exist upstream).
+ * Resolution order:
+ *   1. `effortLevels === null` (no reasoning control at all, e.g. an image
+ *      model) -> 'auto': there is no effort concept for this model, so the
+ *      guard resets to the one value that's never sent as a wire effort at
+ *      all (see composeClaudeLaunch's skip-on-auto handling).
+ *   2. `current === 'auto'` -> ALWAYS stays 'auto', unconditionally. 'auto'
+ *      means "model default" — it must never be resolved to a concrete rung
+ *      just because the new model happens to support some rung.
+ *   3. `current` already in `effortLevels` -> returned unchanged, byte-
+ *      identical (no needless rewrite even if `effortLevels` also contains
+ *      other equally-valid values).
+ *   4. `current === 'none'` and the model doesn't support 'none' -> falls
+ *      back to the LOWEST supported level (by EFFORT_LADDER_ORDER position),
+ *      NOT a distance computation — 'none' is an off-ladder disable mode
+ *      with no meaningful index of its own, so "nearest by distance" isn't a
+ *      coherent question for it the way it is for an on-ladder value.
+ *   5. otherwise -> the nearest ON-LADDER supported level by index distance
+ *      in EFFORT_LADDER_ORDER. On a genuine tie (two supported levels
+ *      equidistant from `current`), the LOWER one wins — this is OUR
+ *      deliberate, explicit choice, not a port of CLIProxyAPI's own
+ *      tie-break: that upstream code path is dead (bestIdx inits to -1, so
+ *      `idx < bestIdx` never fires), so mirroring it would just be copying
+ *      an accident. Choosing lower is the conservative direction (never
+ *      silently escalates reasoning effort/cost beyond what was stored).
  */
 export function clampEffortToSupportedLevel(
   current: string,
   effortLevels: string[] | null
 ): string {
   if (effortLevels === null || effortLevels.length === 0) return 'auto'
-  if (current === 'auto' || effortLevels.includes(current)) return current
+  if (current === 'auto') return 'auto'
+  if (effortLevels.includes(current)) return current
+
+  if (current === 'none') {
+    // No meaningful "distance" for an off-ladder value — fall back to
+    // whichever supported level sits lowest on the ladder.
+    const onLadder = EFFORT_LADDER_ORDER.filter((level) => effortLevels.includes(level))
+    return onLadder[0] ?? effortLevels[0]
+  }
 
   const currentIdx = EFFORT_LADDER_ORDER.indexOf(current as (typeof EFFORT_LADDER_ORDER)[number])
   let best: string | undefined
+  let bestIdx = -1
   let bestDist = Infinity
   for (const level of effortLevels) {
     const idx = EFFORT_LADDER_ORDER.indexOf(level as (typeof EFFORT_LADDER_ORDER)[number])
+    if (idx === -1) continue // an off-ladder level (e.g. 'none') never wins a distance comparison
     const dist = Math.abs(idx - currentIdx)
-    if (dist < bestDist) {
+    // Strict '<' plus this explicit tie-break: on dist === bestDist, keep
+    // the LOWER-indexed (lower-rung) candidate — our deliberate choice (see
+    // this function's own doc comment), evaluated regardless of iteration
+    // order over `effortLevels`.
+    if (dist < bestDist || (dist === bestDist && idx < bestIdx)) {
       bestDist = dist
+      bestIdx = idx
       best = level
     }
   }
