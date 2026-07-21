@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Check } from '@phosphor-icons/react'
 import type { ChipDropdownProps } from '@shared/types'
 import type { OverlayKindProps } from '../registry'
+import { ProviderIcon } from '../../components/ProviderIcon'
 
 // ---------------------------------------------------------------------------
 // ChipDropdown — interactive dropdown/list popover, cloned from ChipPrompt.tsx.
@@ -133,11 +134,18 @@ export function ChipDropdown({ props, emit }: OverlayKindProps): React.JSX.Eleme
               rowHighlightClass
             ].join(' ')}
           >
-            <span className="flex flex-col min-w-0">
-              <span className="truncate">{item.label}</span>
-              {item.sublabel && (
-                <span className="text-[10px] text-text-muted truncate">{item.sublabel}</span>
+            <span className="flex items-center gap-1.5 min-w-0">
+              {item.providerId && (
+                <span className="flex items-center justify-center w-3 h-3 flex-shrink-0">
+                  <ProviderIcon providerId={item.providerId} size={12} />
+                </span>
               )}
+              <span className="flex flex-col min-w-0">
+                <span className="truncate">{item.label}</span>
+                {item.sublabel && (
+                  <span className="text-[10px] text-text-muted truncate">{item.sublabel}</span>
+                )}
+              </span>
             </span>
             {/* Destructive rows never carry a selected-value concept (menus
                 like the ⋯ layout-options menu don't pass selectedValue at

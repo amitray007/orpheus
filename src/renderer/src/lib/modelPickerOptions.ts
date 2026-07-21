@@ -77,6 +77,7 @@ export function buildModelDropdownItems(models: SelectableModel[]): ChipDropdown
   return models.map((m) => ({
     value: m.id,
     label: labelFor(m),
-    sublabel: m.providerLabel
+    sublabel: m.providerLabel,
+    providerId: m.providerId
   }))
 }

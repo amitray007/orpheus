@@ -1744,6 +1744,12 @@ export type ChipDropdownItem = {
   label: string
   sublabel?: string
   destructive?: boolean
+  /** SelectableModel.providerId ('claude' | 'codex' | 'xai' | 'antigravity'),
+   *  set only by model-picker callers (buildModelDropdownItems) so
+   *  ChipDropdown can render a ProviderIcon prefix per row. Absent for every
+   *  non-model dropdown (e.g. PanesView's layout-options menu) — those rows
+   *  render with no icon, identical to before this field existed. */
+  providerId?: string
 }
 
 /** Interactive dropdown/list popover — opens upward from its anchor chip. */

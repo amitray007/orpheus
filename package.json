@@ -40,6 +40,7 @@
     "test:oauth": "bun run scripts/verify-oauth.ts",
     "test:overlay": "bun run scripts/verify-loading-overlay.ts",
     "test:creation": "bun run scripts/verify-creation-provider-menu.ts",
+    "test:picker-icons": "bun run scripts/verify-model-picker-icons.ts",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "bun run typecheck:node && bun run typecheck:web",

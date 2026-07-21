@@ -14,6 +14,7 @@ import { playSound } from '../../../lib/sound'
 import { useSelectableModels } from '@/lib/useSelectableModels'
 import { setWorkspaceModel } from '@/lib/workspaceModelStore'
 import { buildModelDropdownItems } from '@/lib/modelPickerOptions'
+import { ProviderIcon } from '@/components/ProviderIcon'
 import type { FooterActionItem } from './useFooterActions'
 
 // Bounded retry policy for FIX B (bug 2): the overlay hide + focus-restore
@@ -251,6 +252,7 @@ export function DropdownChip({
   let dropdownItems: ChipDropdownItem[] = []
   let selectedValue: string | undefined
   let faceLabel = item.label
+  let faceProviderId: string | undefined
   let chipTitle = item.label
   let onSelect: (value: string) => void = () => {}
 
@@ -258,6 +260,7 @@ export function DropdownChip({
     dropdownItems = buildModelDropdownItems(selectableModels)
     selectedValue = modelValue
     faceLabel = labelForModel(modelValue, selectableModels)
+    faceProviderId = selectableModels.find((m) => m.id === modelValue)?.providerId
     chipTitle = `${item.label}: ${faceLabel}`
     onSelect = (value: string): void => {
       const newModelIsClaude = selectableModels.find((m) => m.id === value)?.isClaude ?? false
@@ -430,7 +433,11 @@ export function DropdownChip({
           .join(' ')}
       >
         <span className="flex-shrink-0 flex items-center" style={{ width: 12, height: 12 }}>
-          {item.icon ? <IconByName name={item.icon} size={12} /> : null}
+          {faceProviderId ? (
+            <ProviderIcon providerId={faceProviderId} size={12} />
+          ) : item.icon ? (
+            <IconByName name={item.icon} size={12} />
+          ) : null}
         </span>
         <span className="truncate max-w-[100px]">{faceLabel}</span>
         <IconByName name="CaretUp" size={9} className="flex-shrink-0 opacity-60" />
