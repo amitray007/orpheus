@@ -15,12 +15,37 @@
 // Copilot is deliberately absent per the unit spec (documented permanent-ban
 // risk from OpenAI/GitHub ToS around third-party proxying) — do not add it
 // here without an explicit decision to accept that risk.
+//
+// (model-routing unit 09-polish) Trimmed to exactly four supported
+// providers — gemini/kimi/openrouter/openai-compatible were REMOVED (data
+// deletion only, no code change elsewhere — see this file's own header
+// paragraph on why removing a provider is data-only, same as adding one).
+// All four keepers are genuinely supported by the pinned CLIProxyAPI
+// v7.2.92: codex/xai/antigravity each have a real `-auth-url` management
+// route (verified antigravity-auth-url is registered, so it's a routable
+// provider, not just a separate harness concept), and ollama works through
+// the generic openai-compatibility config block exactly like the removed
+// openrouter/openai-compatible entries did.
+//
+// A user's EXISTING stored data for a removed provider (routing_proxy_
+// providers/routing_proxy_provider_api_keys rows, aliases whose
+// target_provider_id names it, persisted cliproxy-model-cache entries
+// tagged with it) is deliberately left untouched in the DB — this change
+// does not delete rows, it only removes the descriptor those rows would
+// have matched against. getProviderDescriptor(id) now returns null for a
+// removed id, and every consumer that already gates on that null (config.ts's
+// renderProvidersYaml's `if (!descriptor) continue`, providers:descriptors'
+// filter(d => d !== null), aliasResolve.ts's knownOnProvider guard via the
+// live cliproxy cache never reporting a dead channel) already treats the
+// stale row as inert rather than crashing — see verify-providers.ts's
+// "unregistered provider id emits no YAML" assertion, extended by this unit
+// to cover exactly this scenario explicitly.
 // ---------------------------------------------------------------------------
 
 import type { ProviderDescriptor } from './types'
 
 // Hoisted so the literal exists exactly once (sonarjs/no-duplicate-string —
-// 6+ descriptors below link to CLIProxyAPI's own repo as their docs URL).
+// multiple descriptors below link to CLIProxyAPI's own repo as their docs URL).
 const CLIPROXYAPI_DOCS_URL = 'https://github.com/router-for-me/CLIProxyAPI'
 
 export const PROVIDERS: ProviderDescriptor[] = [
@@ -41,27 +66,6 @@ export const PROVIDERS: ProviderDescriptor[] = [
     docsUrl: CLIPROXYAPI_DOCS_URL
   },
   {
-    // Gemini has NO `/v0/management/gemini-auth-url` route in CLIProxyAPI
-    // v7.2.92 (verified against internal/api/server.go) — the OAuth
-    // providers are exactly codex/anthropic/antigravity/kimi/xai. Gemini
-    // must therefore never claim 'oauth' in authMethods and must never
-    // declare oauthLoginFlag — see oauth.ts's eligibleOAuthDescriptors(),
-    // which derives Connect-button eligibility purely from this field, so a
-    // wrong claim here would silently render a broken Connect button.
-    id: 'gemini',
-    label: 'Gemini (Google)',
-    authMethods: ['apiKey'],
-    apiKeyConfigKey: 'gemini-api-key',
-    docsUrl: CLIPROXYAPI_DOCS_URL
-  },
-  {
-    id: 'kimi',
-    label: 'Kimi (Moonshot)',
-    authMethods: ['oauth'],
-    oauthLoginFlag: '-kimi-login',
-    docsUrl: CLIPROXYAPI_DOCS_URL
-  },
-  {
     id: 'antigravity',
     label: 'Antigravity',
     authMethods: ['oauth'],
@@ -69,24 +73,11 @@ export const PROVIDERS: ProviderDescriptor[] = [
     docsUrl: CLIPROXYAPI_DOCS_URL
   },
   {
-    id: 'openrouter',
-    label: 'OpenRouter',
-    authMethods: ['openaiCompatible'],
-    openaiCompatible: { defaultBaseUrl: 'https://openrouter.ai/api/v1' },
-    docsUrl: 'https://openrouter.ai/docs'
-  },
-  {
     id: 'ollama',
     label: 'Ollama (local)',
     authMethods: ['openaiCompatible'],
     openaiCompatible: { defaultBaseUrl: 'http://127.0.0.1:11434/v1' },
     docsUrl: 'https://github.com/ollama/ollama'
-  },
-  {
-    id: 'openai-compatible',
-    label: 'Custom (OpenAI-compatible)',
-    authMethods: ['openaiCompatible'],
-    docsUrl: CLIPROXYAPI_DOCS_URL
   }
 ]
 

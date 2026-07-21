@@ -21,6 +21,7 @@ import {
   listModelAliases,
   upsertModelAlias,
   replaceModelAliases,
+  deleteModelAlias,
   type ModelAlias
 } from '../routingProxy/aliases'
 import { listCliProxyModelCacheEntries } from '../models/sources/cliproxy'
@@ -113,12 +114,22 @@ function listTargetOptions(): ModelAliasTargetOption[] {
     .sort((a, b) => a.modelId.localeCompare(b.modelId) || a.providerId.localeCompare(b.providerId))
 }
 
+/** Auto-managed names — one per CLAUDE_MODEL_OPTIONS entry. Any stored row
+ *  whose claudeName ISN'T in this set is a user-added custom row (see
+ *  ModelAliasSummary.isCustom's doc comment) — membership, not a stored
+ *  column, is what drives the distinction, so a custom row that happens to
+ *  be named e.g. "claude-opus-4-9" the day that becomes a real
+ *  CLAUDE_MODEL_OPTIONS entry correctly reclassifies as auto without a
+ *  migration. */
+const AUTO_CLAUDE_NAMES = new Set(candidateClaudeNames())
+
 function toSummary(a: ModelAlias): ModelAliasSummary {
   return {
     claudeName: a.claudeName,
     enabled: a.enabled,
     targetProviderId: a.targetProviderId,
-    targetModelId: a.targetModelId
+    targetModelId: a.targetModelId,
+    isCustom: !AUTO_CLAUDE_NAMES.has(a.claudeName)
   }
 }
 
@@ -188,6 +199,69 @@ export function registerAliasesIpc(): void {
     })
 
     replaceModelAliases(next)
+    await regenerateConfigNow()
+    return buildState()
+  })
+
+  // -------------------------------------------------------------------
+  // Custom alias rows (model-routing unit 09-polish) — an arbitrary
+  // free-text name a user adds by hand, distinct from the auto-managed
+  // CLAUDE_MODEL_OPTIONS rows above. Deliberately NOT restricted to a
+  // "claude-*" shape (unlike candidateClaudeNames) — a user may need to
+  // alias a non-Claude name some other tool requests, or manually cover a
+  // date-stamped id the stamped-variant auto-detection
+  // (routingProxy/manager.ts's buildStampedVariantsByBareId) hasn't
+  // observed yet. This is that escape hatch.
+  //
+  // Validation happens here (IPC layer), not in storage.ts/aliasResolve.ts
+  // — those stay permissive (free-text PK, no CHECK — see schema.ts's own
+  // doc comment on routing_proxy_model_aliases.claude_name) because a
+  // stored row's name is trusted-by-construction once it passes THIS gate;
+  // re-validating on every read would be redundant. A rejected call throws,
+  // which the renderer surfaces as an error rather than a silent no-op —
+  // a typo'd name that silently did nothing would be worse than a visible
+  // rejection.
+  // -------------------------------------------------------------------
+
+  handle('aliases:addCustom', async (_e, { claudeName, targetProviderId, targetModelId }) => {
+    const trimmed = claudeName.trim()
+    if (!trimmed) throw new Error('Name must not be empty')
+
+    const existingNames = new Set(listModelAliases().map((a) => a.claudeName))
+    if (existingNames.has(trimmed)) {
+      throw new Error(
+        AUTO_CLAUDE_NAMES.has(trimmed)
+          ? `"${trimmed}" is already an auto-managed alias row — edit it above instead of adding a duplicate`
+          : `"${trimmed}" is already a custom alias — edit it instead of adding a duplicate`
+      )
+    }
+
+    // Self-referential guard: a name aliasing itself is never meaningful
+    // (CLIProxyAPI's oauth-model-alias would just be renaming an id to its
+    // own value) — reject rather than silently accepting a no-op mapping.
+    if (targetModelId !== null && trimmed === targetModelId) {
+      throw new Error(`"${trimmed}" cannot alias to itself`)
+    }
+
+    upsertModelAlias(trimmed, {
+      enabled: true,
+      targetProviderId,
+      targetModelId
+    })
+    await regenerateConfigNow()
+    return buildState()
+  })
+
+  handle('aliases:removeCustom', async (_e, { claudeName }) => {
+    // Auto-managed rows regenerate from CLAUDE_MODEL_OPTIONS on every "Use
+    // defaults" click and are always displayed — deleting one here would
+    // just have it silently reappear (or worse, leave a gap until the next
+    // useDefaults click), which reads as a broken delete button. Refuse
+    // explicitly instead of a confusing no-op.
+    if (AUTO_CLAUDE_NAMES.has(claudeName)) {
+      throw new Error(`"${claudeName}" is an auto-managed row and cannot be removed`)
+    }
+    deleteModelAlias(claudeName)
     await regenerateConfigNow()
     return buildState()
   })

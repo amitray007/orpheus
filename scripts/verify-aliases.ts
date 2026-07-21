@@ -243,14 +243,16 @@ function alias(
     '✓ renderProvidersYaml folds alias models onto a dedicated apiKey provider block (append, not replace)'
   )
 
+  // 'ollama' (unit 09-polish: 'openai-compatible' was removed from PROVIDERS
+  // — ollama is the remaining real openaiCompatible-only descriptor).
   const openaiCompatConfig: ProviderConfig = {
-    providerId: 'openai-compatible',
+    providerId: 'ollama',
     enabled: true,
     authMethod: 'openaiCompatible',
-    apiKeys: [{ id: 'k1', apiKey: 'sk-oc' }]
+    apiKeys: [{ id: 'k1', apiKey: 'unused-local' }]
   }
   const yaml2 = renderProvidersYaml([openaiCompatConfig], {
-    'openai-compatible': [{ name: 'gpt-5.6-sol', alias: 'opus' }]
+    ollama: [{ name: 'gpt-5.6-sol', alias: 'opus' }]
   })
   const entries = yaml2['openai-compatibility'] as Array<Record<string, unknown>>
   const ocModels = entries[0].models as Array<Record<string, unknown>>
@@ -371,13 +373,13 @@ function alias(
     authDir: '/tmp/fake-auth-dir',
     providers: [
       {
-        providerId: 'openai-compatible',
+        providerId: 'ollama',
         enabled: true,
         authMethod: 'openaiCompatible',
-        apiKeys: [{ id: 'k1', apiKey: 'sk-oc' }]
+        apiKeys: [{ id: 'k1', apiKey: 'unused-local' }]
       }
     ],
-    aliasModelsByProvider: { 'openai-compatible': [{ name: 'gpt-5.6-sol', alias: 'opus' }] },
+    aliasModelsByProvider: { ollama: [{ name: 'gpt-5.6-sol', alias: 'opus' }] },
     oauthAliasModelsByProvider: { codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }] }
   })
   assert.ok(
@@ -430,13 +432,13 @@ function alias(
     const apiKeyYaml = renderProvidersYaml(
       [
         {
-          providerId: 'openai-compatible',
+          providerId: 'ollama',
           enabled: true,
           authMethod: 'openaiCompatible',
-          apiKeys: [{ id: 'k1', apiKey: 'sk-oc' }]
+          apiKeys: [{ id: 'k1', apiKey: 'unused-local' }]
         }
       ],
-      { 'openai-compatible': [{ name: 'gpt-5.6-sol', alias: 'opus' }] }
+      { ollama: [{ name: 'gpt-5.6-sol', alias: 'opus' }] }
     )
     const entries = apiKeyYaml['openai-compatibility'] as Array<Record<string, unknown>>
     const models = entries[0].models as Array<Record<string, unknown>>

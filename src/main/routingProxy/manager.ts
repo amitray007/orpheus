@@ -612,6 +612,62 @@ export async function stop(): Promise<void> {
   })
 }
 
+// ---------------------------------------------------------------------------
+// Explicit restart (model-routing unit 09-polish) — a manual recovery tool
+// for a wedged process/stale in-proxy state/a config key that doesn't
+// hot-reload (most keys DO hot-reload via CLIProxyAPI's own config.yaml
+// fsnotify watch — see resolveAliasModelsByProvider's doc comment — so this
+// is deliberately NOT required for ordinary alias/provider edits, which
+// already take effect live). Reuses stop()/start() exactly — no parallel
+// lifecycle path — so restart inherits every invariant those two already
+// have: stop()'s SIGTERM-then-SIGKILL-after-grace, start()'s auto-install-
+// if-needed + config regeneration + readiness polling + authFiles/model-cache
+// refresh kickoff.
+// ---------------------------------------------------------------------------
+
+let restartInFlight = false
+
+/** True while a restart() call is in progress — the IPC handler (and the
+ *  renderer's disabled-button state) uses this to refuse a re-entrant second
+ *  restart rather than queuing/racing two overlapping stop-then-start
+ *  sequences against the same port. */
+export function isRestarting(): boolean {
+  return restartInFlight
+}
+
+/**
+ * Stop the proxy (if running), reclaim the port defensively in case the OS
+ * hasn't fully released it yet even though stop()'s child-exit promise has
+ * already resolved (mirrors reconcileRoutingProxy's own pre-start reclaim —
+ * see reclaimOrphanIfPresent's doc comment for why adoption is impossible
+ * and kill-and-respawn is the only safe policy for a foreign listener), then
+ * start() again on the SAME configured port (proxyPort()/proxyHost() are
+ * re-read from getRoutingProxyUrl(), never cached from the pre-restart run).
+ * start() itself regenerates config.yaml, rotates MANAGEMENT_PASSWORD +
+ * the client auth token (lifecycle.ts's startRoutingProxy generates both
+ * fresh on every call), waits for readiness, and kicks off the authFiles +
+ * cliproxy-model-cache refresh — so the picker is never left stale after a
+ * restart, exactly as it wouldn't be after a fresh enable.
+ *
+ * Non-re-entrant: a restart already in flight makes a second call a no-op
+ * that just returns the current (in-progress) snapshot rather than starting
+ * a second overlapping stop/start sequence against the same port.
+ */
+export async function restart(): Promise<RoutingProxySnapshot> {
+  if (restartInFlight) return snapshot
+  restartInFlight = true
+  try {
+    if (isRunning()) {
+      await stop()
+    }
+    await reclaimOrphanIfPresent()
+    await start()
+    return snapshot
+  } finally {
+    restartInFlight = false
+  }
+}
+
 /**
  * Detects a routing-proxy process left listening on our fixed loopback port
  * by a PREVIOUS app run (this run's isRunning() is false — lifecycle.ts's

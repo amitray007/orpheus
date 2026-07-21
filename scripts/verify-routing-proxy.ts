@@ -1103,5 +1103,83 @@ async function cleanup(): Promise<void> {
   )
 }
 
+// ---------------------------------------------------------------------------
+// 14. (model-routing unit 09-polish) Explicit restart() — manager.ts's
+//     restart() is NOT importable by this harness (manager.ts pulls in
+//     `electron` via BrowserWindow, which this offline script never boots —
+//     same carve-out as every other manager.ts-touching concern in this
+//     file's header comment). restart() is a thin composition of THREE
+//     already-exhaustively-tested primitives with no new logic of its own:
+//       - stop() (lifecycle.ts's stopRoutingProxy — SIGTERM then SIGKILL
+//         after a grace period, resolves only once the child has actually
+//         exited)
+//       - reclaimOrphanRoutingProxyPort (asserted exhaustively in section 12
+//         above) — reused UNCHANGED as a defensive port-release check
+//         between stop and start, exactly like reconcileRoutingProxy's own
+//         pre-start reclaim (section 13 above)
+//       - start() (already covers config regeneration, readiness polling,
+//         authFiles/model-cache refresh kickoff)
+//     plus a module-level boolean re-entrancy flag
+//     (restartInFlight/isRestarting()) guarding against a second overlapping
+//     stop-then-start sequence against the same port. That flag idiom is
+//     asserted here in isolation (the same shape manager.ts's restart()
+//     uses) since the real restart() can't be imported offline; the full
+//     integration (restart hits the SAME port, rotates MANAGEMENT_PASSWORD,
+//     re-triggers the model-cache/authFiles refresh) is verified against the
+//     real dev-app build as part of this unit's required end-to-end checks
+//     (see this unit's task report for the live grep/curl evidence).
+// ---------------------------------------------------------------------------
+
+{
+  // Same shape as manager.ts's restartInFlight/isRestarting()/restart():
+  // a module-level flag checked-and-set before any async work starts, reset
+  // in a finally so a thrown stop()/start() still releases the guard.
+  let inFlight = false
+  async function guardedRestart(work: () => Promise<string>): Promise<string | 'skipped'> {
+    if (inFlight) return 'skipped'
+    inFlight = true
+    try {
+      return await work()
+    } finally {
+      inFlight = false
+    }
+  }
+
+  let concurrentCallCount = 0
+  const slowWork = async (): Promise<string> => {
+    concurrentCallCount++
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    return 'done'
+  }
+
+  const [first, second] = await Promise.all([guardedRestart(slowWork), guardedRestart(slowWork)])
+  const results = [first, second].sort()
+  assert.deepEqual(
+    results,
+    ['done', 'skipped'],
+    'a restart already in flight must make a concurrent second call a no-op (returns without starting new work), ' +
+      'not a second overlapping stop/start sequence against the same port'
+  )
+  assert.equal(
+    concurrentCallCount,
+    1,
+    'the guarded work must only actually run once for two concurrent restart calls'
+  )
+  console.log(
+    "✓ (unit 09-polish) the re-entrancy-guard idiom manager.ts's restart() uses correctly makes a " +
+      'concurrent second restart call a no-op rather than racing a second stop/start sequence'
+  )
+
+  // After the in-flight call completes, the guard must release and allow a
+  // FRESH restart — non-re-entrant must not mean permanently locked.
+  const third = await guardedRestart(async () => 'done-again')
+  assert.equal(
+    third,
+    'done-again',
+    'the guard must release after completion, allowing a later restart'
+  )
+  console.log('✓ the re-entrancy guard releases after completion, allowing a subsequent restart')
+}
+
 await cleanup()
 console.log('\nAll routing-proxy assertions passed.')

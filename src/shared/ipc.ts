@@ -636,6 +636,14 @@ export interface InvokeChannelMap {
   'routingProxy:getAssetInfo': { req: []; res: RoutingProxyAssetInfo | null }
   'routingProxy:checkForUpdate': { req: []; res: RoutingProxyUpdateCheckResult }
   'routingProxy:refreshAuthFiles': { req: []; res: RoutingProxySnapshot }
+  // (model-routing unit 09-polish) Explicit restart — a recovery tool for a
+  // wedged process/stale state/a config key that doesn't hot-reload. NOT
+  // required for ordinary alias/provider edits (those already hot-reload via
+  // config.yaml's fsnotify watch, see aliases:setAlias's doc comment) — this
+  // is a deliberate manual action. Reuses the same stop()/start() lifecycle
+  // as the enable toggle; guarded against re-entrant double-invocation while
+  // a restart is already in flight (see manager.ts's restart()).
+  'routingProxy:restart': { req: []; res: RoutingProxySnapshot }
 
   // Provider framework (model-routing unit 05) — see
   // src/main/routingProxy/providers/. 'providers:descriptors' returns the
@@ -675,6 +683,18 @@ export interface InvokeChannelMap {
     res: ModelAliasesState
   }
   'aliases:useDefaults': { req: []; res: ModelAliasesState }
+  // (model-routing unit 09-polish) Custom alias rows — an arbitrary
+  // free-text name (not restricted to CLAUDE_MODEL_OPTIONS) a user adds by
+  // hand, e.g. a manual escape hatch for a date-stamped id auto-detection
+  // missed, or a non-Claude name some other tool requests. Validated at the
+  // IPC layer (trim/non-empty/no-duplicate-incl-auto-rows/name!=target) —
+  // see ipc/aliases.ts's addCustom handler. Throws (renderer surfaces the
+  // error) rather than silently no-opping on invalid input.
+  'aliases:addCustom': {
+    req: [{ claudeName: string; targetProviderId: string | null; targetModelId: string | null }]
+    res: ModelAliasesState
+  }
+  'aliases:removeCustom': { req: [{ claudeName: string }]; res: ModelAliasesState }
 
   // OAuth "Connect <provider>" flow (model-routing unit 07) — see
   // src/main/routingProxy/oauth.ts. 'oauth:start' opens the provider's

@@ -830,6 +830,7 @@ const api = {
     checkForUpdate: (): Promise<RoutingProxyUpdateCheckResult> =>
       invoke('routingProxy:checkForUpdate'),
     refreshAuthFiles: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:refreshAuthFiles'),
+    restart: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:restart'),
     onSnapshot: (cb: (snapshot: RoutingProxySnapshot) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.routingProxySnapshot, cb)
   },
@@ -856,7 +857,15 @@ const api = {
       targetModelId: string | null
     ): Promise<ModelAliasesState> =>
       invoke('aliases:setAlias', { claudeName, targetProviderId, targetModelId }),
-    useDefaults: (): Promise<ModelAliasesState> => invoke('aliases:useDefaults')
+    useDefaults: (): Promise<ModelAliasesState> => invoke('aliases:useDefaults'),
+    addCustom: (
+      claudeName: string,
+      targetProviderId: string | null,
+      targetModelId: string | null
+    ): Promise<ModelAliasesState> =>
+      invoke('aliases:addCustom', { claudeName, targetProviderId, targetModelId }),
+    removeCustom: (claudeName: string): Promise<ModelAliasesState> =>
+      invoke('aliases:removeCustom', { claudeName })
   },
   oauth: {
     start: (providerId: string): Promise<OAuthStartResult> => invoke('oauth:start', { providerId }),

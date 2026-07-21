@@ -13,7 +13,8 @@ import {
   install,
   getAssetInfo,
   checkForComponentUpdate,
-  refreshAuthFilesNow
+  refreshAuthFilesNow,
+  restart
 } from '../routingProxy/manager'
 import { handle } from './handle'
 
@@ -32,4 +33,10 @@ export function registerRoutingProxyIpc(): void {
   handle('routingProxy:checkForUpdate', async () => checkForComponentUpdate())
 
   handle('routingProxy:refreshAuthFiles', async () => refreshAuthFilesNow())
+
+  // Explicit manual restart (model-routing unit 09-polish) — see manager.ts's
+  // restart() doc comment. Non-re-entrant at the manager level; the handler
+  // itself adds no extra guard so a rapid double-click just resolves the
+  // second call against the same in-flight restart's eventual snapshot.
+  handle('routingProxy:restart', async () => restart())
 }

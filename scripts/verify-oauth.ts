@@ -55,7 +55,12 @@ function runningDeps(overrides: Partial<OAuthDeps> = {}): OAuthDeps {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Eligibility — derived from descriptors, gemini explicitly excluded.
+// 1. Eligibility — derived from descriptors. (model-routing unit 09-polish:
+//    PROVIDERS was trimmed to exactly codex/xai/antigravity/ollama — gemini
+//    and kimi were REMOVED entirely, not just made oauth-ineligible, so the
+//    old "gemini descriptor still exists but isn't oauth-eligible" case no
+//    longer applies; ollama takes over as the "a real, still-registered,
+//    non-oauth-eligible descriptor" example instead.)
 // ---------------------------------------------------------------------------
 
 {
@@ -63,25 +68,35 @@ function runningDeps(overrides: Partial<OAuthDeps> = {}): OAuthDeps {
   assert.ok(eligible.length > 0, 'at least one provider must be OAuth-eligible')
   assert.ok(
     !eligible.includes('gemini'),
-    'gemini must NEVER be offered a Connect button — no gemini-auth-url route exists'
+    'gemini must never be offered a Connect button (it is not even a registered provider anymore)'
+  )
+  assert.equal(
+    getProviderDescriptor('gemini'),
+    null,
+    '(unit 09-polish) gemini must no longer resolve to a descriptor at all — it was removed from PROVIDERS'
+  )
+  assert.equal(
+    getProviderDescriptor('kimi'),
+    null,
+    '(unit 09-polish) kimi must no longer resolve to a descriptor at all — it was removed from PROVIDERS'
   )
   assert.deepEqual(
     new Set(eligible),
-    new Set(['codex', 'xai', 'kimi', 'antigravity']),
-    'OAuth-eligible providers must be exactly codex/xai/kimi/antigravity (verified v7.2.92 routes)'
+    new Set(['codex', 'xai', 'antigravity']),
+    '(unit 09-polish) OAuth-eligible providers must be exactly codex/xai/antigravity — the trimmed PROVIDERS list'
   )
 
-  const geminiDescriptor = getProviderDescriptor('gemini')
-  assert.ok(geminiDescriptor, 'gemini descriptor must still exist (apiKey-only)')
+  const ollamaDescriptor = getProviderDescriptor('ollama')
+  assert.ok(ollamaDescriptor, 'ollama descriptor must still exist (openaiCompatible-only)')
   assert.equal(
-    isOAuthEligible(geminiDescriptor!),
+    isOAuthEligible(ollamaDescriptor!),
     false,
-    'gemini descriptor must not claim oauth in authMethods'
+    'ollama descriptor must not claim oauth in authMethods'
   )
   assert.equal(
-    geminiDescriptor!.authMethods.includes('oauth'),
+    ollamaDescriptor!.authMethods.includes('oauth'),
     false,
-    'gemini authMethods must not include oauth'
+    'ollama authMethods must not include oauth'
   )
 
   // Every OAuth-eligible descriptor really is present in PROVIDERS and
@@ -93,7 +108,8 @@ function runningDeps(overrides: Partial<OAuthDeps> = {}): OAuthDeps {
   }
 
   console.log(
-    '✓ eligibility is derived purely from descriptors; gemini is excluded; set is exactly codex/xai/kimi/antigravity'
+    '✓ (unit 09-polish) eligibility is derived purely from descriptors; gemini/kimi no longer resolve at ' +
+      'all (removed from PROVIDERS); eligible set is exactly codex/xai/antigravity'
   )
 }
 
@@ -151,7 +167,10 @@ function runningDeps(overrides: Partial<OAuthDeps> = {}): OAuthDeps {
       }
     })
   })
-  const result = await startProviderLogin('kimi', BASE_URL, deps)
+  // Uses 'antigravity' (unit 09-polish: 'kimi' was removed from PROVIDERS,
+  // this only needs any real oauth-eligible provider id to exercise the
+  // device-flow field parsing, which is provider-agnostic).
+  const result = await startProviderLogin('antigravity', BASE_URL, deps)
   assert.equal(result.flow, 'device')
   assert.equal(result.userCode, 'ABCD-1234')
   assert.equal(result.expiresIn, 1800)
@@ -166,9 +185,14 @@ function runningDeps(overrides: Partial<OAuthDeps> = {}): OAuthDeps {
 
 {
   await assert.rejects(
+    () => startProviderLogin('ollama', BASE_URL, runningDeps()),
+    OAuthLoginRefusedError,
+    '(unit 09-polish) ollama (registered, but not oauth-eligible) must be refused'
+  )
+  await assert.rejects(
     () => startProviderLogin('gemini', BASE_URL, runningDeps()),
     OAuthLoginRefusedError,
-    'gemini (not oauth-eligible) must be refused'
+    '(unit 09-polish) gemini (no longer a registered provider at all) must also be refused'
   )
   await assert.rejects(
     () => startProviderLogin('not-a-real-provider', BASE_URL, runningDeps()),
