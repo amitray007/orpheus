@@ -18,12 +18,12 @@
 // ---------------------------------------------------------------------------
 
 import type { ModelInfo, ModelSource } from './types'
-import { builtinClaudeSource, isClaudeModelId } from './sources/builtin'
+import { builtinClaudeSource, isClaudeModelId, bareClaudeIdFor } from './sources/builtin'
 import { modelsDevSource, refreshModelsDevCache } from './sources/modelsDev'
 import { cliProxyModelSource, refreshCliProxyModelCache } from './sources/cliproxy'
 
 export type { ModelInfo, Pricing, ModelSource } from './types'
-export { isClaudeModelId }
+export { isClaudeModelId, bareClaudeIdFor }
 export { refreshModelsDevCache }
 export { refreshCliProxyModelCache }
 

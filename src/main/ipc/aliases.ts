@@ -51,7 +51,25 @@ const DEFAULT_ALIAS_TARGETS: Record<string, string> = {
  *  from CLAUDE_MODEL_OPTIONS (never hand-typed) — both the "always latest"
  *  aliases (sonnet/opus/haiku/fable) and every explicit versioned id
  *  (claude-sonnet-5, claude-opus-4-8, ...), since a subagent can pin either
- *  form. */
+ *  form.
+ *
+ *  Deliberately NOT expanded with date-stamped variants here — this function
+ *  only decides which ROWS the Settings UI's "Use defaults" action creates/
+ *  displays (AliasesSection.tsx renders exactly one row per
+ *  CLAUDE_MODEL_OPTIONS entry; a stamped id has no UI row of its own to
+ *  belong to). Date-stamped-variant expansion for the REPORTED BUG ("502
+ *  unknown provider for model claude-haiku-4-5-20251001") happens once,
+ *  uniformly, at config-emission time instead — routingProxy/manager.ts's
+ *  resolveAliasModelsByProvider expands every stored row (however it was
+ *  created: via useDefaults below OR a manual aliases:setAlias pin) to also
+ *  emit its known stamped variants, mapped to the same target. See that
+ *  module's buildStampedVariantsByBareId doc comment for where variant ids
+ *  are sourced (models.dev cache + this app's own observed session models)
+ *  and the residual-gap writeup (a stamp neither source has seen yet is
+ *  invisible until one catches up, self-healing on the same ~30s cadence as
+ *  the rest of the alias-refresh loop). Expanding at emission time rather
+ *  than here means a stamped variant discovered AFTER a row was created
+ *  (no re-click of "Use defaults" required) still resolves. */
 function candidateClaudeNames(): string[] {
   return CLAUDE_MODEL_OPTIONS.map((o) => o.value)
 }

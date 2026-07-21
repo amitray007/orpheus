@@ -1058,6 +1058,61 @@ function pruneOldSessions(projectId: string, max: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Observed Claude model ids (model-routing unit 09-polish) — the sessions
+// table's `model` column is already populated by extractModel/extractFromHead
+// above for every imported .jsonl transcript across every project, so this is
+// a plain indexed-free SELECT DISTINCT over data we already maintain, NOT a
+// second .jsonl parser. This is what lets routingProxy/manager.ts's
+// stamped-alias expansion (buildStampedVariantsByBareId) see date-stamped ids
+// Claude actually requested on THIS machine (e.g. "claude-haiku-4-5-20251001")
+// even when models.dev's own "anthropic" bucket has no stamped entry for that
+// particular bare id (see that call site's own doc comment for the full
+// models.dev-coverage-gap writeup — models.dev only carries stamps for SOME
+// Claude families, not all). Trustworthy by construction, unlike models.dev's
+// full multi-provider catalog (see modelsDev.ts's listModelsDevCachedIds doc
+// comment for why that source had to be scoped down) — this column is only
+// ever written from a real assistant message's own `message.model` field in
+// a `.jsonl` transcript Claude Code itself wrote, never third-party data.
+//
+// Cached in-memory with a short TTL: this is called from the alias-resolution
+// path (routingProxy/manager.ts's resolveAliasModelsByProvider), which itself
+// runs on every 30s auth-files tick once the proxy is running — a fresh
+// `SELECT DISTINCT` on every tick would be a needless full-table scan when
+// the sessions table changes far less often than that. A newly-imported
+// session's model becomes visible on this list within CACHE_TTL_MS, which is
+// self-healing on the same cadence as the rest of the alias-refresh loop.
+// ---------------------------------------------------------------------------
+
+const OBSERVED_MODEL_CACHE_TTL_MS = 60_000
+let observedModelCache: { ids: string[]; at: number } | null = null
+
+/**
+ * Every distinct value of sessions.model that looks like a Claude id (starts
+ * with "claude-"), across ALL projects, sourced from the already-populated
+ * sessions table (never a fresh filesystem scan). Cheap (single indexed-free
+ * SELECT DISTINCT, cached for OBSERVED_MODEL_CACHE_TTL_MS) — safe to call from
+ * a hot path like the alias-resolution loop. The caller
+ * (routingProxy/manager.ts's buildStampedVariantsByBareId) is responsible for
+ * cross-checking each returned id against the registry's own strict Claude-id
+ * definition (models/registry.ts's bareClaudeIdFor) before treating it as a
+ * real date-stamped variant — this function does no such validation itself,
+ * it just reports what claude actually wrote to disk.
+ */
+export function listObservedClaudeModelIds(): string[] {
+  const now = Date.now()
+  if (observedModelCache && now - observedModelCache.at < OBSERVED_MODEL_CACHE_TTL_MS) {
+    return observedModelCache.ids
+  }
+  const db = getDb()
+  const rows = db
+    .prepare(`SELECT DISTINCT model FROM sessions WHERE model LIKE 'claude-%'`)
+    .all() as { model: string }[]
+  const ids = rows.map((r) => r.model)
+  observedModelCache = { ids, at: now }
+  return ids
+}
+
+// ---------------------------------------------------------------------------
 // Queries
 // ---------------------------------------------------------------------------
 

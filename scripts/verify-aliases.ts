@@ -48,13 +48,15 @@ import assert from 'node:assert'
 import {
   aliasesToProviderModels,
   aliasProviderModelsEqual,
-  aliasSplitEqual
+  aliasSplitEqual,
+  expandAliasesWithStampedVariants
 } from '../src/main/routingProxy/aliasResolve.ts'
 import type { ModelAliasInput as ModelAlias } from '../src/main/routingProxy/aliasResolve.ts'
 import { renderProvidersYaml, renderOauthModelAliasYaml } from '../src/main/routingProxy/config.ts'
 import type { ProviderConfig } from '../src/main/routingProxy/providers/types.ts'
 import { buildSelectableModels } from '../src/main/models/selectable.ts'
 import { computeRoutingEnv } from '../src/main/modelRouting.ts'
+import { bareClaudeIdFor } from '../src/main/models/registry.ts'
 
 function alias(
   claudeName: string,
@@ -872,6 +874,372 @@ function alias(
 
   console.log(
     '✓ aliasSplitEqual requires BOTH buckets to match; a change confined to either bucket alone is detected'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 13. (unit 09-polish) THE REPORTED BUG — "502 unknown provider for model
+//     claude-haiku-4-5-20251001". A stored alias row keyed by the BARE id
+//     ("claude-haiku-4-5") must, after expandAliasesWithStampedVariants, also
+//     produce a row for its date-stamped variant, mapped to the exact SAME
+//     target — and that expanded set must resolve into oauth-model-alias
+//     with fork: true, since CLIProxyAPI needs an EXACT string match against
+//     whatever id the CLI actually requests (see aliasResolve.ts's
+//     expandAliasesWithStampedVariants doc comment for the full mechanism).
+//
+//     This assertion FAILS against commit 47c6cae1 (pre-unit-09-polish):
+//     that commit's alias flow only ever stored/emitted the bare id, so a
+//     stamped request would resolve to NOTHING in the expanded output —
+//     there simply is no code path there that produces a
+//     claude-haiku-4-5-20251001 entry at all.
+// ---------------------------------------------------------------------------
+
+{
+  const stored: ModelAlias[] = [
+    alias('claude-haiku-4-5', { targetProviderId: 'codex', targetModelId: 'gpt-5.6-mini' })
+  ]
+  const stampedVariantsByBareId = { 'claude-haiku-4-5': ['claude-haiku-4-5-20251001'] }
+
+  const expanded = expandAliasesWithStampedVariants(stored, stampedVariantsByBareId)
+  assert.equal(
+    expanded.length,
+    2,
+    'expansion must add exactly one row for the known stamped variant'
+  )
+  assert.ok(
+    expanded.some((a) => a.claudeName === 'claude-haiku-4-5'),
+    'the original bare-id row must survive expansion unchanged'
+  )
+  const stampedRow = expanded.find((a) => a.claudeName === 'claude-haiku-4-5-20251001')
+  assert.ok(
+    stampedRow,
+    'expansion must produce a row for claude-haiku-4-5-20251001 — THE REPORTED BUG'
+  )
+  assert.equal(
+    stampedRow!.targetProviderId,
+    'codex',
+    'the stamped row must target the SAME provider as its bare id'
+  )
+  assert.equal(
+    stampedRow!.targetModelId,
+    'gpt-5.6-mini',
+    'the stamped row must target the SAME upstream model as its bare id'
+  )
+
+  // Full pipeline: expand -> resolve -> emit, exactly as manager.ts's
+  // resolveAliasModelsByProvider does (codex is oauth-configured, matching
+  // the user's real reported scenario).
+  const authMethods = { codex: 'oauth' as const }
+  const cache = [{ modelId: 'gpt-5.6-mini', providerId: 'codex' }]
+  const resolved = aliasesToProviderModels(expanded, true, cache, authMethods)
+  assert.deepEqual(
+    resolved,
+    {
+      apiKeyModels: {},
+      oauthModels: {
+        codex: [
+          { name: 'gpt-5.6-mini', alias: 'claude-haiku-4-5' },
+          { name: 'gpt-5.6-mini', alias: 'claude-haiku-4-5-20251001' }
+        ]
+      }
+    },
+    'the full expand->resolve pipeline must emit BOTH the bare and stamped alias entries, same target'
+  )
+
+  const oauthYaml = renderOauthModelAliasYaml(resolved.oauthModels)
+  const codexEntries = oauthYaml.codex as Array<Record<string, unknown>>
+  const stampedEntry = codexEntries.find((e) => e.alias === 'claude-haiku-4-5-20251001')
+  assert.ok(
+    stampedEntry,
+    'the rendered oauth-model-alias block must contain the stamped alias entry'
+  )
+  assert.equal(
+    stampedEntry!.fork,
+    true,
+    'the stamped alias entry must carry fork: true, exactly like the bare-id entry'
+  )
+  console.log(
+    '✓ (unit 09-polish, THE REPORTED BUG) a bare-id alias row expands to include its date-stamped ' +
+      'variant (claude-haiku-4-5 -> claude-haiku-4-5-20251001), same target, fork: true — reproduces+fixes ' +
+      '"502 unknown provider for model claude-haiku-4-5-20251001"'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 14. (unit 09-polish) Multi-family — the expansion is NOT haiku-specific.
+//     opus and sonnet stamp too (models.dev: claude-opus-4-1-20250805,
+//     claude-opus-4-5-20251101, claude-sonnet-4-5-20250929). A stamped
+//     variant of EITHER family must map to the same target as ITS OWN bare
+//     id, and stamped variants must never cross-contaminate a different
+//     family's row (an opus stamp must never appear under the sonnet row or
+//     vice versa).
+// ---------------------------------------------------------------------------
+
+{
+  const stored: ModelAlias[] = [
+    alias('claude-opus-4-5', { targetProviderId: 'codex', targetModelId: 'gpt-5.6-sol' }),
+    alias('claude-sonnet-4-5', { targetProviderId: 'codex', targetModelId: 'gpt-5.6-terra' })
+  ]
+  const stampedVariantsByBareId = {
+    'claude-opus-4-5': ['claude-opus-4-5-20251101'],
+    'claude-sonnet-4-5': ['claude-sonnet-4-5-20250929']
+  }
+
+  const expanded = expandAliasesWithStampedVariants(stored, stampedVariantsByBareId)
+  assert.equal(expanded.length, 4, 'both bare rows must each gain exactly one stamped row')
+
+  const opusStamped = expanded.find((a) => a.claudeName === 'claude-opus-4-5-20251101')
+  const sonnetStamped = expanded.find((a) => a.claudeName === 'claude-sonnet-4-5-20250929')
+  assert.ok(opusStamped && sonnetStamped, 'both families must produce their own stamped row')
+  assert.equal(
+    opusStamped!.targetModelId,
+    'gpt-5.6-sol',
+    "opus's stamped row must inherit opus's own target"
+  )
+  assert.equal(
+    sonnetStamped!.targetModelId,
+    'gpt-5.6-terra',
+    "sonnet's stamped row must inherit sonnet's own target, not opus's"
+  )
+  assert.notEqual(
+    opusStamped!.targetModelId,
+    sonnetStamped!.targetModelId,
+    'the two families must not cross-contaminate targets'
+  )
+  console.log(
+    '✓ (unit 09-polish) stamped-variant expansion is generic across families — opus and sonnet stamps ' +
+      "each map to their OWN bare id's target, never cross-contaminated"
+  )
+
+  // Cross-check bareClaudeIdFor itself (the registry definition this
+  // expansion is built on, per manager.ts's buildStampedVariantsByBareId)
+  // agrees family-by-family — this is the "reuse the registry's Claude-id
+  // definition, don't write a second matcher" requirement made concrete.
+  assert.equal(bareClaudeIdFor('claude-opus-4-5-20251101'), 'claude-opus-4-5')
+  assert.equal(bareClaudeIdFor('claude-sonnet-4-5-20250929'), 'claude-sonnet-4-5')
+  assert.equal(bareClaudeIdFor('claude-haiku-4-5-20251001'), 'claude-haiku-4-5')
+  assert.equal(
+    bareClaudeIdFor('claude-fable-5'),
+    'claude-fable-5',
+    'a bare id resolves to itself (not null) — it IS its own owner'
+  )
+  assert.equal(
+    bareClaudeIdFor('opus'),
+    null,
+    'the always-latest alias names have no date-stamped form and must not be treated as a stampable bare id'
+  )
+  console.log(
+    '✓ bareClaudeIdFor (models/registry.ts, re-exporting builtin.ts) agrees across families and correctly ' +
+      'excludes the always-latest alias names from stamped-id ownership'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 14b. (unit 09-polish REGRESSION) THIRD-PARTY RESELLER SKU FALSE POSITIVE —
+//      caught live against this repo's own dev-app install: models.dev's
+//      full catalog includes ~300 non-Anthropic provider buckets that resell
+//      Claude models under THEIR OWN vendor-suffixed SKU names sharing a
+//      Claude-shaped prefix (real models.dev entries, verified against the
+//      live https://models.dev/api.json response): "claude-opus-4-7@default"
+//      (google-vertex), "claude-haiku-4-5-20251001-thinking" (nano-gpt),
+//      "claude-opus-4-7-fast" (venice), "claude-haiku-4-5-free"
+//      (llmgateway). NONE of these are date stamps Anthropic actually mints.
+//      bareClaudeIdFor must reject every one of them (return null) — a loose
+//      startsWith match would incorrectly alias e.g. "claude-opus-4-7-fast"
+//      to the same target as "claude-opus-4-7", when it's actually a
+//      different vendor's own product tier with no real Claude ownership.
+// ---------------------------------------------------------------------------
+
+{
+  const vendorSkusThatMustBeRejected = [
+    'claude-opus-4-7@default',
+    'claude-opus-4-7-think',
+    'claude-opus-4-7-fast',
+    'claude-opus-4-8@default',
+    'claude-opus-4-8-think',
+    'claude-opus-4-8-fast',
+    'claude-haiku-4-5@20251001',
+    'claude-haiku-4-5-free',
+    'claude-haiku-4-5-20251001-thinking',
+    'claude-sonnet-4-6@default',
+    'claude-sonnet-4-6-think',
+    'claude-sonnet-4-6-thinking',
+    'claude-sonnet-5@default'
+  ]
+  for (const sku of vendorSkusThatMustBeRejected) {
+    assert.equal(
+      bareClaudeIdFor(sku),
+      null,
+      `bareClaudeIdFor('${sku}') must return null — this is a third-party reseller's own SKU name, ` +
+        'not a date stamp Anthropic mints, and must never be treated as a stampable Claude variant'
+    )
+  }
+  console.log(
+    '✓ (unit 09-polish REGRESSION) bareClaudeIdFor rejects every third-party-reseller SKU shape caught live ' +
+      '(models.dev entries from google-vertex/nano-gpt/venice/llmgateway/aihubmix/302ai sharing a Claude-shaped ' +
+      'prefix) — only a clean 8-digit date-stamp suffix is accepted'
+  )
+
+  // And end to end: feeding those SKU ids through the same pool ->
+  // buildStampedVariantsByBareId shape manager.ts constructs must produce NO
+  // stamped variants for them at all (empty map), proving the rejection
+  // actually prevents the false-positive alias emission this bug caused live.
+  const stampedByBareId = new Map<string, Set<string>>()
+  for (const candidate of [...vendorSkusThatMustBeRejected, 'claude-haiku-4-5-20251001']) {
+    const owner = bareClaudeIdFor(candidate)
+    if (!owner || owner === candidate) continue
+    const set = stampedByBareId.get(owner) ?? new Set<string>()
+    set.add(candidate)
+    stampedByBareId.set(owner, set)
+  }
+  assert.deepEqual(
+    Array.from(stampedByBareId.entries()).map(([k, v]) => [k, Array.from(v)]),
+    [['claude-haiku-4-5', ['claude-haiku-4-5-20251001']]],
+    'only the genuine date-stamped id must survive into the stamped-variants map; every vendor SKU must be excluded'
+  )
+  console.log(
+    '✓ (unit 09-polish REGRESSION) a mixed pool of vendor SKUs + one genuine date stamp yields ONLY the ' +
+      'genuine stamp in the stamped-variants map — the false-positive-emission bug cannot recur'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 15. (unit 09-polish) The knownOnProvider guard stays intact for a STAMPED
+//     entry too — a stamped variant whose target isn't in the live cliproxy
+//     cache must be skipped exactly like a bare-id row would be, never
+//     emitted broken just because it came from the expansion step.
+// ---------------------------------------------------------------------------
+
+{
+  const stored: ModelAlias[] = [
+    alias('claude-haiku-4-5', { targetProviderId: 'codex', targetModelId: 'ghost-model' })
+  ]
+  const expanded = expandAliasesWithStampedVariants(stored, {
+    'claude-haiku-4-5': ['claude-haiku-4-5-20251001']
+  })
+  // Target model absent from the live cache entirely.
+  const resolved = aliasesToProviderModels(expanded, true, [], { codex: 'oauth' as const })
+  assert.deepEqual(
+    resolved,
+    { apiKeyModels: {}, oauthModels: {} },
+    'a stamped entry whose target is absent from the live cache must be skipped, same as a bare-id row'
+  )
+  console.log(
+    '✓ (unit 09-polish) knownOnProvider guard still applies to stamped entries — a stale target is skipped, ' +
+      'not emitted broken, whether the row is bare or stamped'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 16. (unit 09-polish) Determinism/idempotency and the churn-guard equality
+//     check still hold with the larger (bare + stamped) alias set.
+// ---------------------------------------------------------------------------
+
+{
+  const stored: ModelAlias[] = [
+    alias('claude-haiku-4-5', { targetProviderId: 'codex', targetModelId: 'gpt-5.6-mini' }),
+    alias('claude-opus-4-5', { targetProviderId: 'codex', targetModelId: 'gpt-5.6-sol' })
+  ]
+  const stampedVariantsByBareId = {
+    'claude-haiku-4-5': ['claude-haiku-4-5-20251001'],
+    'claude-opus-4-5': ['claude-opus-4-5-20251101']
+  }
+  const cache = [
+    { modelId: 'gpt-5.6-mini', providerId: 'codex' },
+    { modelId: 'gpt-5.6-sol', providerId: 'codex' }
+  ]
+  const authMethods = { codex: 'oauth' as const }
+
+  const runOnce = (): unknown => {
+    const expanded = expandAliasesWithStampedVariants(stored, stampedVariantsByBareId)
+    return aliasesToProviderModels(expanded, true, cache, authMethods)
+  }
+
+  const first = runOnce()
+  const second = runOnce()
+  assert.deepEqual(
+    first,
+    second,
+    'expand->resolve must be deterministic/idempotent for identical input'
+  )
+  assert.equal(
+    aliasSplitEqual(
+      first as Parameters<typeof aliasSplitEqual>[0],
+      second as Parameters<typeof aliasSplitEqual>[1]
+    ),
+    true,
+    'the churn-guard equality check (aliasSplitEqual) must recognize two identical expanded resolutions as ' +
+      'equal, so a steady-state 30s tick does not spuriously trigger a config.yaml rewrite with the larger set'
+  )
+
+  // A real change (a NEW stamped variant appearing, e.g. a fresh models.dev
+  // refresh or a newly-observed session) must still be detected as a change.
+  const withNewVariant = aliasesToProviderModels(
+    expandAliasesWithStampedVariants(stored, {
+      ...stampedVariantsByBareId,
+      'claude-opus-4-5': ['claude-opus-4-5-20251101', 'claude-opus-4-5-20260601']
+    }),
+    true,
+    [...cache, { modelId: 'gpt-5.6-sol', providerId: 'codex' }],
+    authMethods
+  )
+  assert.equal(
+    aliasSplitEqual(first as Parameters<typeof aliasSplitEqual>[0], withNewVariant),
+    false,
+    'a newly-appeared stamped variant must be detected as a real change, triggering a rewrite'
+  )
+  console.log(
+    '✓ (unit 09-polish) expand->resolve stays deterministic/idempotent, and the churn-guard equality check ' +
+      'correctly holds steady-state equal / detects a newly-appeared stamped variant as a real change'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 17. (unit 09-polish) buildSelectableModels only ever enumerates
+//     CLAUDE_MODEL_OPTIONS (bare ids) for its Claude entries — it has no
+//     stamped-id awareness of its own, and this expansion work never gives
+//     it one (the picker is a display-only surface; stamped ids are purely a
+//     proxy-routing-config concern, never something a user selects from a
+//     dropdown). So a cliproxy cache entry that happens to be named after a
+//     stamped Claude id is NOT a "shadowing an existing Claude entry" case
+//     (no such entry exists here to shadow) — it must simply appear as an
+//     ordinary routed (isClaude: false) entry, exactly like any other
+//     upstream id. This locks that in explicitly so a future change to
+//     buildSelectableModels can't silently start treating a
+//     claude-*-<digits> shaped routed id as Claude by string-matching it.
+// ---------------------------------------------------------------------------
+
+{
+  const withStampedNameCollision = buildSelectableModels({
+    routingProxy: {
+      enabled: true,
+      status: 'running',
+      authFiles: [{ provider: 'openai-compatible', health: 'ok' }]
+    },
+    providerConfigs: [{ providerId: 'openai-compatible', enabled: true }],
+    providerDescriptors: [{ id: 'openai-compatible', label: 'Custom (OpenAI-compatible)' }],
+    cliProxyModels: [
+      { modelId: 'claude-haiku-4-5-20251001', providerId: 'openai-compatible', context: 128_000 }
+    ]
+  })
+  const stampedEntries = withStampedNameCollision.filter(
+    (m) => m.id === 'claude-haiku-4-5-20251001'
+  )
+  assert.equal(
+    stampedEntries.length,
+    1,
+    'a cliproxy cache entry named after a stamped Claude id must appear exactly once'
+  )
+  assert.equal(
+    stampedEntries[0].isClaude,
+    false,
+    'a routed cache entry named after a stamped Claude id must never be marked isClaude — the picker never ' +
+      'string-matches "claude-*" shaped ids as Claude, only CLAUDE_MODEL_OPTIONS entries are'
+  )
+  assert.equal(stampedEntries[0].providerId, 'openai-compatible')
+  console.log(
+    '✓ (unit 09-polish) a routed cache entry named after a stamped Claude id surfaces as an ordinary ' +
+      'routed (isClaude: false) entry — buildSelectableModels never string-matches "claude-*" as Claude'
   )
 }
 

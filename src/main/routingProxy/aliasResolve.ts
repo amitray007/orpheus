@@ -32,6 +32,50 @@ export interface AliasCacheEntryInput {
 }
 
 /**
+ * Expand every stored alias row into itself PLUS one row per known
+ * date-stamped variant of its claudeName, all pointing at the SAME target
+ * (model-routing unit 09-polish — the reported "502 unknown provider for
+ * model claude-haiku-4-5-20251001" bug). Claude Code requests date-stamped
+ * ids (Anthropic appends the release date to the id it actually runs), but
+ * CLIProxyAPI's oauth-model-alias matching is exact string equality (no
+ * prefix/wildcard — see aliases.ts's candidateClaudeNames doc comment for
+ * the full verification writeup) — an alias stored only under the bare id
+ * never matches the stamped request the CLI actually sends.
+ *
+ * `stampedVariantsByBareId` is caller-supplied (keyed by bare claudeName,
+ * e.g. "claude-haiku-4-5" -> ["claude-haiku-4-5-20251001"]) rather than
+ * derived here, keeping this module's electron-free contract (see this
+ * file's header doc) — manager.ts builds that map by combining
+ * models/sources/modelsDev.ts's cache with sessions.ts's observed-model-ids,
+ * both cross-checked against models/registry.ts's own bareClaudeIdFor
+ * (builtin.ts's prefix-matching definition of "is this id a date-stamped
+ * variant of Claude id X") — see that call site for the full sourcing +
+ * residual-gap writeup. This function itself does no Claude-id matching of
+ * its own; it only fans a row out across whatever variant list it's handed.
+ *
+ * A row with no known stamped variants (not in the map, or an empty list)
+ * passes through completely unchanged — this is a pure superset operation,
+ * never a replacement. Disabled/unconfigured rows still expand (the enabled/
+ * target checks happen later in aliasesToProviderModels) so a stamped
+ * variant of a not-yet-configured row is correctly skipped downstream too.
+ */
+export function expandAliasesWithStampedVariants(
+  aliases: ModelAliasInput[],
+  stampedVariantsByBareId: Record<string, string[]>
+): ModelAliasInput[] {
+  const expanded: ModelAliasInput[] = []
+  for (const alias of aliases) {
+    expanded.push(alias)
+    const variants = stampedVariantsByBareId[alias.claudeName]
+    if (!variants || variants.length === 0) continue
+    for (const variant of variants) {
+      expanded.push({ ...alias, claudeName: variant })
+    }
+  }
+  return expanded
+}
+
+/**
  * Split-by-destination result of aliasesToProviderModels. CLIProxyAPI has
  * TWO, mutually exclusive alias mechanisms (verified empirically against the
  * pinned v7.2.92 binary + a real OAuth-backed Codex credential — see this

@@ -66,6 +66,21 @@ type CachedEntry = {
 // is the correct non-fabricating behavior).
 let cache: Map<string, CachedEntry> | null = null
 
+// Ids from ONLY the "anthropic" provider bucket (models.dev's key for
+// Anthropic's own catalog), kept separately from the flattened `cache` above.
+// This is deliberately NOT the full multi-provider `cache` — models.dev
+// carries ~300 OTHER provider buckets (google-vertex, nano-gpt, aihubmix,
+// venice, llmgateway, ...) that resell Claude models under THEIR OWN
+// vendor-suffixed SKU names sharing a Claude-shaped prefix, e.g.
+// "claude-opus-4-7@default", "claude-haiku-4-5-20251001-thinking",
+// "claude-opus-4-7-fast" — none of these are date stamps Anthropic actually
+// mints, and treating the whole flattened cache as a candidate pool for
+// "known Claude ids" (as an earlier version of the unit-09-polish alias-
+// expansion fix did) incorrectly emitted alias entries for them. Only
+// Anthropic's own bucket is a trustworthy source of "ids Anthropic
+// themselves stamp".
+let anthropicModelIds: string[] = []
+
 function toPricing(cost: ModelsDevCost | null | undefined): Pricing | null {
   // A model with no cost object at all, OR an explicit `cost: null`, means
   // "known model, unknown pricing" — a real state, not an error. Return
@@ -107,7 +122,7 @@ export async function refreshModelsDevCache(fetchImpl: typeof fetch = fetch): Pr
     const next = new Map<string, CachedEntry>()
     let count = 0
 
-    for (const provider of Object.values(data)) {
+    for (const [providerSlug, provider] of Object.entries(data)) {
       const models = provider?.models
       if (!models || typeof models !== 'object') continue
 
@@ -126,6 +141,13 @@ export async function refreshModelsDevCache(fetchImpl: typeof fetch = fetch): Pr
         })
         count++
       }
+      // See anthropicModelIds' own doc comment: only Anthropic's own bucket
+      // is a trustworthy source of "date-stamped ids Anthropic actually
+      // mints" — every other provider bucket may resell Claude models under
+      // vendor-suffixed SKU names sharing a Claude-shaped prefix.
+      if (providerSlug === 'anthropic') {
+        anthropicModelIds = Object.keys(models)
+      }
     }
 
     cache = next
@@ -135,9 +157,46 @@ export async function refreshModelsDevCache(fetchImpl: typeof fetch = fetch): Pr
   }
 }
 
-/** Test-only: replace the cache directly, bypassing the network fetch. */
-export function setModelsDevCacheForTests(entries: Record<string, CachedEntry> | null): void {
+/** Test-only: replace the cache directly, bypassing the network fetch.
+ *  `anthropicIds` optionally seeds the ANTHROPIC-ONLY bucket
+ *  (listModelsDevCachedIds) independently of `entries` — defaults to [] so
+ *  existing call sites that predate this parameter keep compiling/behaving
+ *  unchanged (no anthropic ids -> stamped-alias expansion sources nothing
+ *  from this test fixture, matching pre-fixture behavior). */
+export function setModelsDevCacheForTests(
+  entries: Record<string, CachedEntry> | null,
+  anthropicIds: string[] = []
+): void {
   cache = entries ? new Map(Object.entries(entries)) : null
+  anthropicModelIds = anthropicIds
+}
+
+/**
+ * Every model id currently in models.dev's "anthropic" provider bucket ONLY
+ * — used by routingProxy/manager.ts's date-stamped-alias expansion
+ * (model-routing unit 09-polish) to find Claude ids like
+ * "claude-haiku-4-5-20251001" that Anthropic's OWN catalog entry publishes.
+ *
+ * Deliberately NOT the full flattened multi-provider `cache` (unlike this
+ * source's own resolve(), which doesn't discriminate by provider for pricing
+ * lookups) — models.dev carries ~300 OTHER provider buckets that resell
+ * Claude models under their own vendor-suffixed SKU names sharing a
+ * Claude-shaped prefix (e.g. "claude-opus-4-7@default" from google-vertex,
+ * "claude-haiku-4-5-20251001-thinking" from nano-gpt) — an earlier version of
+ * this fix sourced from the full flattened cache and incorrectly emitted
+ * alias entries for those vendor SKUs. Scoping to the anthropic bucket alone
+ * is the semantically correct fix: only Anthropic mints real Claude date
+ * stamps. The caller (manager.ts) additionally cross-checks every id against
+ * the registry's own bareClaudeIdFor (builtin.ts), which independently
+ * requires a clean 8-digit date-stamp suffix — defense in depth, not a
+ * substitute for scoping the source pool correctly here.
+ *
+ * Empty array pre-first-fetch, when the network is unavailable, or when a
+ * refresh's response happened to have no "anthropic" key at all — same
+ * degrade-to-nothing contract as resolve() itself.
+ */
+export function listModelsDevCachedIds(): string[] {
+  return anthropicModelIds
 }
 
 function familyFromId(id: string): string | null {

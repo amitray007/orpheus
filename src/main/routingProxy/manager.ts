@@ -57,8 +57,12 @@ import { listModelAliases } from './aliases'
 import {
   aliasesToProviderModels,
   aliasSplitEqual,
+  expandAliasesWithStampedVariants,
   type SplitAliasProviderModels
 } from './aliasResolve'
+import { bareClaudeIdFor } from '../models/registry'
+import { listModelsDevCachedIds } from '../models/sources/modelsDev'
+import { listObservedClaudeModelIds } from '../sessions'
 import {
   startProviderLogin,
   pollAuthStatus,
@@ -110,6 +114,66 @@ function proxyHost(): string {
 }
 
 /**
+ * Build the bare-claudeName -> [stamped variant, ...] map that
+ * expandAliasesWithStampedVariants (aliasResolve.ts) needs — see that
+ * function's doc comment for the full mechanism. Combines two id pools
+ * (deduped via the Set-per-bareId grouping below), neither sufficient alone:
+ *
+ *   - models.dev's "anthropic" bucket ONLY (listModelsDevCachedIds) — the
+ *     general catalog, currently stamps claude-haiku-4-5/claude-opus-4-1/
+ *     claude-opus-4-5/claude-sonnet-4-5, but NOT claude-opus-4-8/
+ *     claude-sonnet-5/claude-fable-5 (the models this app's own transcripts
+ *     show get the most real traffic) — models.dev alone would leave those
+ *     uncovered. Deliberately scoped to ONLY the anthropic bucket, never
+ *     models.dev's full multi-provider catalog — models.dev carries ~300
+ *     OTHER provider buckets (google-vertex, nano-gpt, aihubmix, venice, ...)
+ *     that resell Claude models under their OWN vendor-suffixed SKU names
+ *     sharing a Claude-shaped prefix (e.g. "claude-opus-4-7@default",
+ *     "claude-haiku-4-5-20251001-thinking" — real models.dev entries, NOT
+ *     date stamps Anthropic mints). An earlier version of this fix sourced
+ *     from the unscoped flattened cache and, verified live against this
+ *     repo's own dev-app install, incorrectly emitted alias entries for
+ *     exactly those vendor SKUs — see modelsDev.ts's listModelsDevCachedIds
+ *     doc comment for the full incident writeup.
+ *   - listObservedClaudeModelIds (sessions.ts) — stamped ids Claude Code has
+ *     ACTUALLY requested on this machine, already recorded in the sessions
+ *     table by the existing transcript-metadata extractor. Catches a stamp
+ *     for a family models.dev doesn't carry, the first time any local
+ *     session hits it. Trustworthy by construction (never third-party SKU
+ *     data) — this column is only ever written from a real assistant
+ *     message's own `message.model` field in a `.jsonl` transcript Claude
+ *     Code itself wrote.
+ *
+ * Both pools are additionally cross-checked against bareClaudeIdFor
+ * (models/registry.ts) — the registry's own STRICT date-stamp-suffix
+ * definition of "is this id a date-stamped variant of Claude bare id X"
+ * (exactly 8 trailing digits, nothing else — see builtin.ts's
+ * DATE_STAMP_SUFFIX) — never a second string-matching definition invented
+ * here. This is defense in depth on top of the anthropic-bucket scoping
+ * above, not a substitute for it.
+ *
+ * RESIDUAL GAP: a stamp that is in neither pool yet (never seen by
+ * models.dev's anthropic bucket nor by any local session) is invisible until
+ * one of the two catches up — see aliases.ts's candidateClaudeNames doc
+ * comment (the sibling of this function, used for the Settings UI's "Use
+ * defaults" row set) for the full write-up; the two functions intentionally
+ * document the same gap once each since they're the two independent call
+ * sites that need to know about it.
+ */
+function buildStampedVariantsByBareId(): Record<string, string[]> {
+  const pool = [...listModelsDevCachedIds(), ...listObservedClaudeModelIds()]
+  const byBareId = new Map<string, Set<string>>()
+  for (const candidate of pool) {
+    const owner = bareClaudeIdFor(candidate)
+    if (!owner || owner === candidate) continue
+    const set = byBareId.get(owner) ?? new Set<string>()
+    set.add(candidate)
+    byBareId.set(owner, set)
+  }
+  return Object.fromEntries(Array.from(byBareId, ([bareId, set]) => [bareId, Array.from(set)]))
+}
+
+/**
  * Resolve stored model aliases (unit 08) against the master switch
  * (AppUiState.modelAliasesEnabled), the live cliproxy model cache, and each
  * target provider's CURRENTLY CONFIGURED authMethod, ready to hand straight
@@ -121,13 +185,25 @@ function proxyHost(): string {
  * SplitAliasProviderModels doc comments for the full skip-if-stale contract
  * and why the oauth/apiKey split exists (an alias for an oauth-configured
  * provider emitted the apiKey way is silently ignored by CLIProxyAPI).
+ *
+ * (model-routing unit 09-polish) Every stored row is expanded to also emit
+ * its known date-stamped variants (expandAliasesWithStampedVariants) BEFORE
+ * being handed to aliasesToProviderModels — this is what fixes "502 unknown
+ * provider for model claude-haiku-4-5-20251001": the user's stored alias row
+ * is keyed by the bare id, but CLIProxyAPI needs an EXACT match against the
+ * stamped id the CLI actually requests. See buildStampedVariantsByBareId's
+ * doc comment for where variant ids come from.
  */
 function resolveAliasModelsByProvider(): SplitAliasProviderModels {
   const providerAuthMethods = Object.fromEntries(
     listProviderConfigs().map((p) => [p.providerId, p.authMethod])
   )
-  return aliasesToProviderModels(
+  const expandedAliases = expandAliasesWithStampedVariants(
     listModelAliases(),
+    buildStampedVariantsByBareId()
+  )
+  return aliasesToProviderModels(
+    expandedAliases,
     getAppUiState().modelAliasesEnabled,
     listCliProxyModelCacheEntries(),
     providerAuthMethods

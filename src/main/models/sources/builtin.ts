@@ -165,6 +165,60 @@ function resolveClaudeModel(modelId: string): ModelInfo | null {
   return null
 }
 
+// Exactly "-" followed by an 8-digit YYYYMMDD date stamp, nothing more —
+// the real shape Anthropic appends to an id (e.g. "-20251001"). Deliberately
+// STRICTER than PREFIX_CANDIDATES' plain startsWith (used by
+// isClaudeModelId/resolveClaudeModel above for resolving genuine Claude API
+// response text, where a merely-prefixed garbage suffix never occurs in
+// practice) — bareClaudeIdFor below feeds untrusted-shaped candidate pools
+// (models.dev's catalog, local session data) where a bare startsWith WOULD
+// wrongly match a third-party reseller's own SKU suffix, e.g.
+// "claude-opus-4-7@default" or "claude-haiku-4-5-20251001-thinking" (both
+// real models.dev entries from non-Anthropic provider buckets like
+// google-vertex/nano-gpt) — see routingProxy/manager.ts's
+// buildStampedVariantsByBareId and modelsDev.ts's listModelsDevCachedIds doc
+// comments for the full incident writeup this guards against.
+const DATE_STAMP_SUFFIX = /^-\d{8}$/
+
+/**
+ * Which known bare/versioned Claude id (a CLAUDE_MODELS entry, e.g.
+ * "claude-haiku-4-5") owns `id` — either because `id` IS that bare id, or
+ * because `id` is a CLEAN date-stamped variant of it (e.g.
+ * "claude-haiku-4-5-20251001" — exactly the bare id plus "-" plus 8 digits,
+ * nothing else trailing). Returns null for anything this source doesn't
+ * recognize, including:
+ *   - the "always-latest" aliases like "opus" (excluded from prefix matching
+ *     entirely — see PREFIX_CANDIDATES' own comment — since they have no
+ *     date-stamped form to begin with)
+ *   - a merely-PREFIXED id that isn't a clean date stamp (e.g.
+ *     "claude-opus-4-7-fast", "claude-haiku-4-5@20251001",
+ *     "claude-haiku-4-5-20251001-thinking") — unlike isClaudeModelId/
+ *     resolveClaudeModel above (which intentionally accept any prefix match
+ *     for resolving genuine Claude API response text), this function is
+ *     deliberately strict because its real callers feed it candidate pools
+ *     that include OTHER VENDORS' OWN PRODUCT SKUs sharing a Claude-shaped
+ *     prefix (see DATE_STAMP_SUFFIX's own comment) — a loose match here
+ *     would alias a Claude name to the wrong upstream model's target by
+ *     conflating "looks like it starts with a Claude id" with "IS a
+ *     date-stamped Claude id Anthropic actually mints".
+ *
+ * This is the ONE place "does stamped id X belong to bare id Y" is decided —
+ * reused by routingProxy/manager.ts's stamped-alias expansion (model-routing
+ * unit 09-polish) so that expansion never re-derives its own notion of "is
+ * this a Claude id" via string matching. Deliberately returns the bare
+ * CLAUDE_MODELS id, never a CLAUDE_ALIASES entry, matching PREFIX_CANDIDATES'
+ * own scope.
+ */
+export function bareClaudeIdFor(id: string): string | null {
+  if (BY_ID.has(id) && CLAUDE_MODELS.some((m) => m.id === id)) return id
+  for (const def of PREFIX_CANDIDATES) {
+    if (id.startsWith(def.id) && DATE_STAMP_SUFFIX.test(id.slice(def.id.length))) {
+      return def.id
+    }
+  }
+  return null
+}
+
 /**
  * The builtin Claude source. Synchronous, offline, and — per registry.ts's
  * precedence order — always tried FIRST. Because resolution here is exact-id
