@@ -54,8 +54,11 @@ import {
 import { raceWithTimeout } from '../models/cliProxyModelCacheStaleness'
 import { listProviderConfigs } from './providers/storage'
 import { listModelAliases } from './aliases'
-import { aliasesToProviderModels, aliasProviderModelsEqual } from './aliasResolve'
-import type { ProviderModelEntry } from './providers/types'
+import {
+  aliasesToProviderModels,
+  aliasSplitEqual,
+  type SplitAliasProviderModels
+} from './aliasResolve'
 import {
   startProviderLogin,
   pollAuthStatus,
@@ -108,19 +111,26 @@ function proxyHost(): string {
 
 /**
  * Resolve stored model aliases (unit 08) against the master switch
- * (AppUiState.modelAliasesEnabled) and the live cliproxy model cache, ready
- * to hand straight to writeRoutingProxyConfig's aliasModelsByProvider. Every
- * writeRoutingProxyConfig call site in this module goes through this helper
- * so aliases stay in sync with providers on every config regeneration
- * (install/start/regenerateConfigNow) without duplicating the gating logic
- * three times. See aliases.ts's aliasesToProviderModels doc comment for the
- * full skip-if-stale contract.
+ * (AppUiState.modelAliasesEnabled), the live cliproxy model cache, and each
+ * target provider's CURRENTLY CONFIGURED authMethod, ready to hand straight
+ * to writeRoutingProxyConfig's aliasModelsByProvider/oauthAliasModelsByProvider
+ * pair. Every writeRoutingProxyConfig call site in this module goes through
+ * this helper so aliases stay in sync with providers on every config
+ * regeneration (install/start/regenerateConfigNow) without duplicating the
+ * gating logic three times. See aliasResolve.ts's aliasesToProviderModels /
+ * SplitAliasProviderModels doc comments for the full skip-if-stale contract
+ * and why the oauth/apiKey split exists (an alias for an oauth-configured
+ * provider emitted the apiKey way is silently ignored by CLIProxyAPI).
  */
-function resolveAliasModelsByProvider(): Record<string, ProviderModelEntry[]> {
+function resolveAliasModelsByProvider(): SplitAliasProviderModels {
+  const providerAuthMethods = Object.fromEntries(
+    listProviderConfigs().map((p) => [p.providerId, p.authMethod])
+  )
   return aliasesToProviderModels(
     listModelAliases(),
     getAppUiState().modelAliasesEnabled,
-    listCliProxyModelCacheEntries()
+    listCliProxyModelCacheEntries(),
+    providerAuthMethods
   )
 }
 
@@ -160,14 +170,17 @@ function resolveAliasModelsByProvider(): Record<string, ProviderModelEntry[]> {
 // resolve + a cheap structural compare, not a rewrite.
 // ---------------------------------------------------------------------------
 
-let lastWrittenAliasModelsByProvider: Record<string, ProviderModelEntry[]> = {}
+let lastWrittenAliasModelsByProvider: SplitAliasProviderModels = {
+  apiKeyModels: {},
+  oauthModels: {}
+}
 
 /** Every writeRoutingProxyConfig call site in this module must call this
- *  immediately after a successful write with the SAME aliasModelsByProvider
- *  value it just wrote, so regenerateConfigIfAliasesChanged has an accurate
+ *  immediately after a successful write with the SAME resolved split value
+ *  it just wrote, so regenerateConfigIfAliasesChanged has an accurate
  *  baseline to diff against. */
-function recordAliasWrite(aliasModelsByProvider: Record<string, ProviderModelEntry[]>): void {
-  lastWrittenAliasModelsByProvider = aliasModelsByProvider
+function recordAliasWrite(resolved: SplitAliasProviderModels): void {
+  lastWrittenAliasModelsByProvider = resolved
 }
 
 /**
@@ -182,7 +195,7 @@ function recordAliasWrite(aliasModelsByProvider: Record<string, ProviderModelEnt
  */
 async function regenerateConfigIfAliasesChanged(): Promise<void> {
   const resolved = resolveAliasModelsByProvider()
-  if (aliasProviderModelsEqual(resolved, lastWrittenAliasModelsByProvider)) return
+  if (aliasSplitEqual(resolved, lastWrittenAliasModelsByProvider)) return
   await regenerateConfigNow()
 }
 
@@ -239,15 +252,16 @@ export async function install(deps: InstallDeps = defaultInstallDeps()): Promise
       },
       deps
     )
-    const aliasModelsByProvider = resolveAliasModelsByProvider()
+    const resolvedAliases = resolveAliasModelsByProvider()
     await writeRoutingProxyConfig(configPath(result.version), {
       host: proxyHost(),
       port: proxyPort(),
       authDir: authDir(),
       providers: listProviderConfigs(),
-      aliasModelsByProvider
+      aliasModelsByProvider: resolvedAliases.apiKeyModels,
+      oauthAliasModelsByProvider: resolvedAliases.oauthModels
     })
-    recordAliasWrite(aliasModelsByProvider)
+    recordAliasWrite(resolvedAliases)
     setSnapshot({
       status: 'stopped',
       installedVersion: result.version,
@@ -455,15 +469,16 @@ export async function start(): Promise<void> {
   // getRoutingProxyUrl() (host/port never drift from a stale prior write)
   // AND the current stored provider configs (a provider added/edited while
   // the proxy was stopped must take effect on the next start).
-  const startAliasModelsByProvider = resolveAliasModelsByProvider()
+  const startResolvedAliases = resolveAliasModelsByProvider()
   await writeRoutingProxyConfig(configPath(version), {
     host: proxyHost(),
     port: proxyPort(),
     authDir: authDir(),
     providers: listProviderConfigs(),
-    aliasModelsByProvider: startAliasModelsByProvider
+    aliasModelsByProvider: startResolvedAliases.apiKeyModels,
+    oauthAliasModelsByProvider: startResolvedAliases.oauthModels
   })
-  recordAliasWrite(startAliasModelsByProvider)
+  recordAliasWrite(startResolvedAliases)
 
   startRoutingProxy({
     binaryPath: binaryPath(version),
@@ -643,15 +658,16 @@ export async function checkForComponentUpdate(): Promise<RoutingProxyUpdateCheck
 export async function regenerateConfigNow(): Promise<void> {
   const version = snapshot.installedVersion
   if (!version) return
-  const aliasModelsByProvider = resolveAliasModelsByProvider()
+  const resolvedAliases = resolveAliasModelsByProvider()
   await writeRoutingProxyConfig(configPath(version), {
     host: proxyHost(),
     port: proxyPort(),
     authDir: authDir(),
     providers: listProviderConfigs(),
-    aliasModelsByProvider
+    aliasModelsByProvider: resolvedAliases.apiKeyModels,
+    oauthAliasModelsByProvider: resolvedAliases.oauthModels
   })
-  recordAliasWrite(aliasModelsByProvider)
+  recordAliasWrite(resolvedAliases)
 }
 
 // ---------------------------------------------------------------------------

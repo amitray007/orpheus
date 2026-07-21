@@ -18,11 +18,21 @@
 // instead, exactly like storage.ts's own carve-out documented in
 // verify-providers.ts.
 //
-// Covers (per the unit 08 task spec):
-//   - an enabled alias emits a correct models: [{name, alias}] entry on the
-//     right provider block
-//   - aliases disabled (master switch off) => zero alias entries in the
-//     generated YAML
+// Covers (per the unit 08 task spec, extended by unit 09's oauth-model-alias
+// fix):
+//   - an enabled alias targeting an apiKey/openaiCompatible-configured
+//     provider emits a correct models: [{name, alias}] entry on that
+//     provider's own block (apiKeyModels bucket)
+//   - an enabled alias targeting an OAUTH-configured provider emits into the
+//     SEPARATE top-level oauth-model-alias: block instead (oauthModels
+//     bucket) — verified empirically against the real v7.2.92 binary + a
+//     real Codex OAuth credential: the per-credential models:/alias shape is
+//     silently ignored by CLIProxyAPI for an oauth-configured provider
+//     ("unknown provider for model X" even though config.yaml "declared" the
+//     alias), while oauth-model-alias resolves and completes correctly. See
+//     aliasResolve.ts's SplitAliasProviderModels doc comment.
+//   - aliases disabled (master switch off) => zero alias entries in either
+//     bucket
 //   - config generation stays deterministic/idempotent with aliases present
 //   - an alias targeting a model NOT in the live cache is skipped, not
 //     emitted broken
@@ -37,10 +47,11 @@
 import assert from 'node:assert'
 import {
   aliasesToProviderModels,
-  aliasProviderModelsEqual
+  aliasProviderModelsEqual,
+  aliasSplitEqual
 } from '../src/main/routingProxy/aliasResolve.ts'
 import type { ModelAliasInput as ModelAlias } from '../src/main/routingProxy/aliasResolve.ts'
-import { renderProvidersYaml } from '../src/main/routingProxy/config.ts'
+import { renderProvidersYaml, renderOauthModelAliasYaml } from '../src/main/routingProxy/config.ts'
 import type { ProviderConfig } from '../src/main/routingProxy/providers/types.ts'
 import { buildSelectableModels } from '../src/main/models/selectable.ts'
 import { computeRoutingEnv } from '../src/main/modelRouting.ts'
@@ -59,8 +70,11 @@ function alias(
 }
 
 // ---------------------------------------------------------------------------
-// 1. An enabled alias, master switch on, target present in the live cache ->
-//    resolves to exactly {name, alias} grouped by provider id.
+// 1. An enabled alias, master switch on, target present in the live cache,
+//    targeting an apiKey-configured provider -> resolves to exactly
+//    {name, alias} grouped by provider id, in the apiKeyModels bucket (the
+//    oauthModels bucket stays empty since no oauth-configured provider is
+//    involved).
 // ---------------------------------------------------------------------------
 
 {
@@ -68,35 +82,78 @@ function alias(
     alias('sonnet', { targetProviderId: 'openai-compatible', targetModelId: 'gpt-5.6-terra' })
   ]
   const cache = [{ modelId: 'gpt-5.6-terra', providerId: 'openai-compatible' }]
+  const authMethods = { 'openai-compatible': 'openaiCompatible' as const }
 
-  const resolved = aliasesToProviderModels(aliases, true, cache)
+  const resolved = aliasesToProviderModels(aliases, true, cache, authMethods)
   assert.deepEqual(
     resolved,
-    { 'openai-compatible': [{ name: 'gpt-5.6-terra', alias: 'sonnet' }] },
-    'an enabled alias with a cache-present target must resolve to exactly one {name, alias} entry'
+    {
+      apiKeyModels: { 'openai-compatible': [{ name: 'gpt-5.6-terra', alias: 'sonnet' }] },
+      oauthModels: {}
+    },
+    'an enabled alias with a cache-present target on an apiKey/openaiCompatible provider must resolve ' +
+      'to exactly one {name, alias} entry in apiKeyModels, nothing in oauthModels'
   )
   console.log(
-    '✓ enabled alias + present target -> correct {name, alias} entry on the right provider'
+    '✓ enabled alias + present target on an apiKey-configured provider -> correct {name, alias} entry in apiKeyModels'
   )
 }
 
 // ---------------------------------------------------------------------------
-// 2. Master switch off -> zero entries, regardless of how many alias rows
-//    are enabled/valid.
+// 1b. THE unit-09 FIX — the SAME alias shape, but targeting a provider
+//     configured with authMethod 'oauth' (e.g. codex, connected via OAuth
+//     rather than a stored API key) must land in the SEPARATE oauthModels
+//     bucket instead, never apiKeyModels. This is what config.ts's
+//     renderOauthModelAliasYaml turns into the top-level
+//     `oauth-model-alias:` block CLIProxyAPI actually consults for an
+//     OAuth-backed channel.
+// ---------------------------------------------------------------------------
+
+{
+  const aliases: ModelAlias[] = [
+    alias('claude-sonnet-5', { targetProviderId: 'codex', targetModelId: 'gpt-5.6-terra' })
+  ]
+  const cache = [{ modelId: 'gpt-5.6-terra', providerId: 'codex' }]
+  const authMethods = { codex: 'oauth' as const }
+
+  const resolved = aliasesToProviderModels(aliases, true, cache, authMethods)
+  assert.deepEqual(
+    resolved,
+    {
+      apiKeyModels: {},
+      oauthModels: { codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }] }
+    },
+    'an alias targeting an oauth-configured provider must resolve into oauthModels, never apiKeyModels — ' +
+      'this is the fix for the reported bug (CLIProxyAPI silently ignores the per-credential models: shape ' +
+      'for an OAuth/file-backed channel)'
+  )
+  console.log(
+    '✓ (unit 09 fix) alias targeting an oauth-configured provider (codex) resolves into oauthModels, not apiKeyModels'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 2. Master switch off -> zero entries in both buckets, regardless of how
+//    many alias rows are enabled/valid or which authMethod their target is.
 // ---------------------------------------------------------------------------
 
 {
   const aliases: ModelAlias[] = [
     alias('sonnet', { targetProviderId: 'openai-compatible', targetModelId: 'gpt-5.6-terra' }),
-    alias('opus', { targetProviderId: 'openai-compatible', targetModelId: 'gpt-5.6-sol' })
+    alias('opus', { targetProviderId: 'codex', targetModelId: 'gpt-5.6-sol' })
   ]
   const cache = [
     { modelId: 'gpt-5.6-terra', providerId: 'openai-compatible' },
-    { modelId: 'gpt-5.6-sol', providerId: 'openai-compatible' }
+    { modelId: 'gpt-5.6-sol', providerId: 'codex' }
   ]
-  const resolved = aliasesToProviderModels(aliases, false, cache)
-  assert.deepEqual(resolved, {}, 'master switch off must produce zero alias entries')
-  console.log('✓ aliases disabled (master switch off) -> zero entries')
+  const authMethods = { 'openai-compatible': 'openaiCompatible' as const, codex: 'oauth' as const }
+  const resolved = aliasesToProviderModels(aliases, false, cache, authMethods)
+  assert.deepEqual(
+    resolved,
+    { apiKeyModels: {}, oauthModels: {} },
+    'master switch off must produce zero alias entries in either bucket'
+  )
+  console.log('✓ aliases disabled (master switch off) -> zero entries in both buckets')
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +172,11 @@ function alias(
   ]
   const cache = [{ modelId: 'gpt-5.6-terra', providerId: 'openai-compatible' }]
   const resolved = aliasesToProviderModels(aliases, true, cache)
-  assert.deepEqual(resolved, {}, 'a disabled row and an unconfigured row must both be skipped')
+  assert.deepEqual(
+    resolved,
+    { apiKeyModels: {}, oauthModels: {} },
+    'a disabled row and an unconfigured row must both be skipped'
+  )
   console.log('✓ per-row disabled / not-yet-configured aliases are skipped, not emitted')
 }
 
@@ -134,7 +195,7 @@ function alias(
   const resolved = aliasesToProviderModels(aliases, true, cache)
   assert.deepEqual(
     resolved,
-    {},
+    { apiKeyModels: {}, oauthModels: {} },
     'a stale/unknown target (including a provider/model mismatch) must be silently skipped'
   )
   console.log(
@@ -207,6 +268,88 @@ function alias(
     'omitting aliasModelsByProvider must not add anything'
   )
   console.log('✓ omitting aliasModelsByProvider entirely leaves provider blocks unchanged')
+}
+
+// ---------------------------------------------------------------------------
+// 5b. (unit 09 fix) renderOauthModelAliasYaml — the SEPARATE top-level
+//     oauth-model-alias: block, keyed by provider/channel id, for aliases
+//     targeting an oauth-configured provider. Distinct code path from
+//     renderProvidersYaml (5, above) — an oauth-configured provider has NO
+//     per-key config.yaml block at all (its credential lives in auth-dir),
+//     so there is nothing for an alias to "append" to; the whole channel's
+//     entry is just its alias list.
+// ---------------------------------------------------------------------------
+
+{
+  const yaml = renderOauthModelAliasYaml({
+    codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }]
+  })
+  assert.deepEqual(
+    yaml,
+    { codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }] },
+    'renderOauthModelAliasYaml must emit exactly {channel: [{name, alias}]} for an oauth-routed alias'
+  )
+  console.log('✓ renderOauthModelAliasYaml emits the correct {channel: [{name, alias}]} shape')
+
+  // Multiple channels, multiple aliases per channel.
+  const multi = renderOauthModelAliasYaml({
+    codex: [
+      { name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' },
+      { name: 'gpt-5.6-sol', alias: 'claude-opus-4-8' }
+    ],
+    xai: [{ name: 'grok-5', alias: 'fable' }]
+  })
+  assert.equal(Object.keys(multi).length, 2, 'must emit one key per channel')
+  assert.equal((multi.codex as unknown[]).length, 2)
+  assert.equal((multi.xai as unknown[]).length, 1)
+  console.log('✓ renderOauthModelAliasYaml handles multiple channels/aliases correctly')
+
+  // Empty/omitted input -> empty object, so renderRoutingProxyConfig's own
+  // Object.keys(...).length > 0 gate correctly omits the whole
+  // oauth-model-alias: key rather than emitting an empty block.
+  assert.deepEqual(renderOauthModelAliasYaml({}), {}, 'empty input must yield an empty object')
+  assert.deepEqual(renderOauthModelAliasYaml(), {}, 'omitted input must yield an empty object')
+  console.log(
+    '✓ renderOauthModelAliasYaml yields {} for empty/omitted input (caller omits the key entirely)'
+  )
+
+  // A full config render round-trip proves the two mechanisms coexist
+  // without interfering: an apiKey-configured provider's alias lands in its
+  // own block, an oauth-configured provider's alias lands in the top-level
+  // oauth-model-alias: block, in the SAME generated document.
+  const { renderRoutingProxyConfig } = await import('../src/main/routingProxy/config.ts')
+  const combined = renderRoutingProxyConfig({
+    host: '127.0.0.1',
+    port: 18765,
+    authDir: '/tmp/fake-auth-dir',
+    providers: [
+      {
+        providerId: 'openai-compatible',
+        enabled: true,
+        authMethod: 'openaiCompatible',
+        apiKeys: [{ id: 'k1', apiKey: 'sk-oc' }]
+      }
+    ],
+    aliasModelsByProvider: { 'openai-compatible': [{ name: 'gpt-5.6-sol', alias: 'opus' }] },
+    oauthAliasModelsByProvider: { codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }] }
+  })
+  assert.ok(
+    combined.includes('openai-compatibility:'),
+    'the apiKey/openaiCompatible bucket must still render its own block'
+  )
+  assert.ok(
+    combined.includes('oauth-model-alias:'),
+    'the oauth bucket must render the separate top-level oauth-model-alias: block'
+  )
+  assert.ok(combined.includes('claude-sonnet-5'), 'the oauth alias name must appear in the output')
+  assert.ok(
+    combined.includes('opus'),
+    'the apiKey-bucket alias name must also appear in the output'
+  )
+  console.log(
+    '✓ renderRoutingProxyConfig emits BOTH the per-provider models: block and the top-level ' +
+      'oauth-model-alias: block in the same document, for aliases targeting different authMethod providers'
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -362,13 +505,20 @@ function alias(
   )
   const resolvedFull = aliasesToProviderModels(defaultAliases, true, fullCache)
   assert.deepEqual(
-    resolvedFull['openai-compatible']?.sort((a, b) => a.alias!.localeCompare(b.alias!)),
+    resolvedFull.apiKeyModels['openai-compatible']?.sort((a, b) =>
+      a.alias!.localeCompare(b.alias!)
+    ),
     [
       { name: 'gpt-5.6-sol', alias: 'fable' },
       { name: 'gpt-5.6-sol', alias: 'opus' },
       { name: 'gpt-5.6-terra', alias: 'sonnet' }
     ],
     'defaults must produce exactly sonnet->gpt-5.6-terra, opus->gpt-5.6-sol, fable->gpt-5.6-sol when all targets exist'
+  )
+  assert.deepEqual(
+    resolvedFull.oauthModels,
+    {},
+    'openai-compatible is never oauth-configured — nothing must land in oauthModels here'
   )
   console.log('✓ defaults resolve to exactly the intended name->model pairs when all targets exist')
 
@@ -378,7 +528,10 @@ function alias(
   const resolvedPartial = aliasesToProviderModels(defaultAliases, true, partialCache)
   assert.deepEqual(
     resolvedPartial,
-    { 'openai-compatible': [{ name: 'gpt-5.6-terra', alias: 'sonnet' }] },
+    {
+      apiKeyModels: { 'openai-compatible': [{ name: 'gpt-5.6-terra', alias: 'sonnet' }] },
+      oauthModels: {}
+    },
     'when only one default target exists in the cache, only that alias must resolve — the rest skipped, not broken'
   )
   console.log(
@@ -416,6 +569,11 @@ function alias(
       targetModelId: 'gpt-5.6-terra'
     })
   ]
+  // codex is oauth-configured in the user's real reported scenario — this is
+  // what makes this section double as the unit-09 regression check: the
+  // fully-resolved alias below must land in oauthModels, not apiKeyModels,
+  // or CLIProxyAPI would silently ignore it exactly as it did for the user.
+  const authMethods = { codex: 'oauth' as const }
 
   // (a) Config-write time: cache is empty (proxy just enabled, cliproxy
   // model cache never populated yet — the exact state the user's live
@@ -423,33 +581,43 @@ function alias(
   // row, routing_proxy_providers has codex enabled, but dashboard_cache's
   // cliproxy_model_cache entry is empty).
   const emptyCache: Array<{ modelId: string; providerId?: string }> = []
-  const resolvedAtWriteTime = aliasesToProviderModels(aliases, true, emptyCache)
+  const resolvedAtWriteTime = aliasesToProviderModels(aliases, true, emptyCache, authMethods)
   assert.deepEqual(
     resolvedAtWriteTime,
-    {},
+    { apiKeyModels: {}, oauthModels: {} },
     'with an empty model cache at config-write time, the alias must be skipped (this IS the reported bug state)'
   )
 
   // (b) The cache populates (refreshCliProxyModelCache succeeds) — a
   // SECOND, later resolution against the SAME aliases input must now
-  // produce the alias entry. This is what regenerateConfigIfAliasesChanged
-  // performs in manager.ts after every cache refresh; a build that never
-  // re-resolves (the pre-fix behavior) would never reach this state for the
-  // lifetime of the session.
+  // produce the alias entry, in oauthModels (codex is oauth-configured) —
+  // this is what regenerateConfigIfAliasesChanged performs in manager.ts
+  // after every cache refresh; a build that never re-resolves (the pre-fix
+  // behavior) would never reach this state for the lifetime of the session.
   const populatedCache = [{ modelId: 'gpt-5.6-terra', providerId: 'codex' }]
-  const resolvedAfterCachePopulates = aliasesToProviderModels(aliases, true, populatedCache)
+  const resolvedAfterCachePopulates = aliasesToProviderModels(
+    aliases,
+    true,
+    populatedCache,
+    authMethods
+  )
   assert.deepEqual(
     resolvedAfterCachePopulates,
-    { codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }] },
-    're-resolving after the cache populates must now emit the alias — this is the fix: config.yaml must be ' +
-      'regenerated at this point, not just once at the original (empty-cache) write time'
+    {
+      apiKeyModels: {},
+      oauthModels: { codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }] }
+    },
+    're-resolving after the cache populates must now emit the alias into oauthModels (codex is ' +
+      'oauth-configured) — this is the fix: config.yaml must be regenerated at this point, not just ' +
+      'once at the original (empty-cache) write time, AND the alias must land in the bucket CLIProxyAPI ' +
+      'actually consults for an OAuth-backed channel'
   )
 
   // And the two resolutions must actually DIFFER — this is exactly the
-  // signal aliasProviderModelsEqual uses to decide whether a rewrite is
-  // warranted at all (see 11 below for the no-rewrite-when-unchanged case).
+  // signal aliasSplitEqual uses to decide whether a rewrite is warranted at
+  // all (see 11 below for the no-rewrite-when-unchanged case).
   assert.equal(
-    aliasProviderModelsEqual(resolvedAtWriteTime, resolvedAfterCachePopulates),
+    aliasSplitEqual(resolvedAtWriteTime, resolvedAfterCachePopulates),
     false,
     'the pre-cache-population and post-cache-population resolutions must be recognized as different, ' +
       'so a rewrite is actually triggered'
@@ -552,6 +720,60 @@ function alias(
 
   console.log(
     '✓ aliasProviderModelsEqual: order-independent equality, real changes (target/entry-count/provider-set) detected'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 12. (unit 09 fix) aliasSplitEqual — the split-shape equality manager.ts's
+//     regenerateConfigIfAliasesChanged actually calls now. Must require BOTH
+//     buckets to match; a change confined to only one bucket (e.g. an oauth
+//     provider's alias changes while the apiKey bucket stays identical, or
+//     vice versa) must still be detected as an overall change.
+// ---------------------------------------------------------------------------
+
+{
+  const base = {
+    apiKeyModels: { 'openai-compatible': [{ name: 'gpt-5.6-sol', alias: 'opus' }] },
+    oauthModels: { codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }] }
+  }
+  const identical = {
+    apiKeyModels: { 'openai-compatible': [{ name: 'gpt-5.6-sol', alias: 'opus' }] },
+    oauthModels: { codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }] }
+  }
+  assert.equal(
+    aliasSplitEqual(base, identical),
+    true,
+    'identical split resolutions across both buckets must compare equal'
+  )
+
+  const oauthChanged = {
+    apiKeyModels: { 'openai-compatible': [{ name: 'gpt-5.6-sol', alias: 'opus' }] },
+    oauthModels: { codex: [{ name: 'gpt-5.6-nova', alias: 'claude-sonnet-5' }] } // target changed
+  }
+  assert.equal(
+    aliasSplitEqual(base, oauthChanged),
+    false,
+    'a change confined to the oauthModels bucket alone must still be detected as an overall change'
+  )
+
+  const apiKeyChanged = {
+    apiKeyModels: { 'openai-compatible': [{ name: 'gpt-5.6-nova', alias: 'opus' }] }, // target changed
+    oauthModels: { codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }] }
+  }
+  assert.equal(
+    aliasSplitEqual(base, apiKeyChanged),
+    false,
+    'a change confined to the apiKeyModels bucket alone must still be detected as an overall change'
+  )
+
+  assert.equal(
+    aliasSplitEqual({ apiKeyModels: {}, oauthModels: {} }, { apiKeyModels: {}, oauthModels: {} }),
+    true,
+    'two fully-empty split resolutions must compare equal (disabled master switch / nothing configured yet)'
+  )
+
+  console.log(
+    '✓ aliasSplitEqual requires BOTH buckets to match; a change confined to either bucket alone is detected'
   )
 }
 

@@ -39,10 +39,21 @@ export interface RoutingProxyConfigOptions {
    *  providers wired yet — existing callers (manager.ts's install()/start())
    *  keep working unchanged. */
   providers?: ProviderConfig[]
-  /** Model-name aliases (unit 08), already resolved+validated and grouped by
-   *  target provider id — see aliasResolve.ts's aliasesToProviderModels.
-   *  Omit/empty for no aliases (existing callers unaffected). */
+  /** Model-name aliases (unit 08) targeting an apiKey/openaiCompatible-
+   *  configured provider, already resolved+validated and grouped by target
+   *  provider id — see aliasResolve.ts's aliasesToProviderModels
+   *  (apiKeyModels bucket). Folded onto that provider's own
+   *  `<provider>-api-key:`/`openai-compatibility:` block. Omit/empty for no
+   *  aliases (existing callers unaffected). */
   aliasModelsByProvider?: Record<string, ProviderModelEntry[]>
+  /** Model-name aliases targeting an oauth-configured provider (same
+   *  aliasesToProviderModels call, oauthModels bucket) — emitted as a
+   *  SEPARATE top-level `oauth-model-alias:` block instead, since
+   *  CLIProxyAPI's OAuth/file-backed auth channels don't consult the
+   *  per-credential `models:` list at all (see renderOauthModelAliasYaml's
+   *  doc comment for the empirical verification). Omit/empty for no
+   *  oauth-routed aliases. */
+  oauthAliasModelsByProvider?: Record<string, ProviderModelEntry[]>
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +183,35 @@ export function renderProvidersYaml(
 }
 
 /**
+ * Render the top-level `oauth-model-alias:` block — CLIProxyAPI's SEPARATE
+ * aliasing mechanism for OAuth/file-backed auth channels (verified against
+ * the pinned v7.2.92 binary with a real Codex OAuth credential: a
+ * per-credential `codex-api-key[].models[].alias` entry is silently ignored
+ * for an oauth-configured provider — `POST /v1/messages` for the alias name
+ * returns "unknown provider for model X" — while the SAME alias emitted here
+ * under `oauth-model-alias.codex` resolves and completes normally). See
+ * aliasResolve.ts's SplitAliasProviderModels doc comment for the full
+ * mechanism writeup.
+ *
+ * Keyed by provider/channel id (codex, xai, kimi, antigravity — CLIProxyAPI's
+ * supported OAuth channels that this registry also models as authMethod
+ * 'oauth'). Only ever called with entries already gated through
+ * aliasesToProviderModels' oauthModels bucket, so every entry here has
+ * already passed the knownOnProvider live-cache guard — this function does
+ * no validation of its own, purely a shape transform.
+ */
+export function renderOauthModelAliasYaml(
+  oauthAliasModelsByProvider: Record<string, ProviderModelEntry[]> = {}
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [providerId, models] of Object.entries(oauthAliasModelsByProvider)) {
+    if (models.length === 0) continue
+    out[providerId] = models.map(toCliProxyModelEntry)
+  }
+  return out
+}
+
+/**
  * Render config.yaml text. Pure/no I/O so it's directly assertable in the
  * offline harness (host/port/auth-dir present, no hardcoded absolute path
  * baked in beyond what the caller explicitly passed via authDir, no secret
@@ -196,6 +236,11 @@ export function renderRoutingProxyConfig(options: RoutingProxyConfigOptions): st
     text += stringify(providerYaml)
   }
 
+  const oauthAliasYaml = renderOauthModelAliasYaml(options.oauthAliasModelsByProvider ?? {})
+  if (Object.keys(oauthAliasYaml).length > 0) {
+    text += stringify({ 'oauth-model-alias': oauthAliasYaml })
+  }
+
   return text
 }
 
@@ -208,6 +253,7 @@ export interface WriteConfigOptions {
   debug?: boolean
   providers?: ProviderConfig[]
   aliasModelsByProvider?: Record<string, ProviderModelEntry[]>
+  oauthAliasModelsByProvider?: Record<string, ProviderModelEntry[]>
 }
 
 /**
@@ -234,7 +280,8 @@ export async function writeRoutingProxyConfig(
     authDir: options.authDir,
     debug: options.debug ?? false,
     providers: options.providers,
-    aliasModelsByProvider: options.aliasModelsByProvider
+    aliasModelsByProvider: options.aliasModelsByProvider,
+    oauthAliasModelsByProvider: options.oauthAliasModelsByProvider
   })
   await fs.writeFile(configFilePath, text, { encoding: 'utf8', mode: 0o600 })
   // writeFile's `mode` only applies to a freshly-created file; an existing

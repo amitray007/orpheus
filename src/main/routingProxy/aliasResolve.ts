@@ -17,7 +17,7 @@
 // real ModelAlias objects straight through since the shapes are compatible.
 // ---------------------------------------------------------------------------
 
-import type { ProviderModelEntry } from './providers/types'
+import type { ProviderAuthMethod, ProviderModelEntry } from './providers/types'
 
 export interface ModelAliasInput {
   claudeName: string
@@ -30,6 +30,33 @@ export interface AliasCacheEntryInput {
   modelId: string
   providerId?: string
 }
+
+/**
+ * Split-by-destination result of aliasesToProviderModels. CLIProxyAPI has
+ * TWO, mutually exclusive alias mechanisms (verified empirically against the
+ * pinned v7.2.92 binary + a real OAuth-backed Codex credential — see this
+ * module's own doc comment on aliasesToProviderModels for the full story):
+ *   - apiKeyModels: per-credential `models: [{name, alias}]` entries folded
+ *     onto a provider's OWN `<provider>-api-key:` / `openai-compatibility:`
+ *     block (config.ts's renderProvidersYaml). Only takes effect for a
+ *     provider actually configured with authMethod 'apiKey'/'openaiCompatible'.
+ *   - oauthModels: top-level `oauth-model-alias: { <channel>: [{name, alias}] }`
+ *     entries (config.ts's renderOauthModelAliasYaml). Required for a
+ *     provider configured with authMethod 'oauth' — CLIProxyAPI's OAuth/
+ *     file-backed auth channels do NOT consult the per-credential `models:`
+ *     list at all (that list lives under a per-key config block; an
+ *     OAuth-backed provider has no such per-key entry in config.yaml, its
+ *     credential lives in auth-dir instead), so an alias emitted the
+ *     apiKeyModels way for an oauth-configured provider is silently ignored
+ *     by CLIProxyAPI's routing table -> "unknown provider for model X" even
+ *     though config.yaml "looks" like it declared the alias.
+ */
+export interface SplitAliasProviderModels {
+  apiKeyModels: Record<string, ProviderModelEntry[]>
+  oauthModels: Record<string, ProviderModelEntry[]>
+}
+
+const EMPTY_SPLIT: SplitAliasProviderModels = { apiKeyModels: {}, oauthModels: {} }
 
 /**
  * THE gate that decides which stored aliases are actually safe to emit into
@@ -49,18 +76,26 @@ export interface AliasCacheEntryInput {
  *     populated this run) is silently dropped rather than handed to
  *     CLIProxyAPI as an alias for a model it doesn't recognize.
  *
- * Grouped by provider id in the return value because that's exactly the
- * shape renderProvidersYaml's aliasModelsByProvider parameter expects — one
- * provider's block gets all of its own aliases attached, nothing more.
+ * `providerAuthMethods` (target provider id -> its CURRENTLY CONFIGURED
+ * authMethod, from providers/storage.ts's listProviderConfigs) decides which
+ * of the two output buckets (see SplitAliasProviderModels) each provider's
+ * aliases land in. A provider id present in the alias's targetProviderId but
+ * ABSENT from providerAuthMethods (stale/removed provider) is treated as
+ * apiKey-shaped by default — matches the pre-existing behavior for that edge
+ * case (the knownOnProvider cache guard above already means this can only
+ * happen for a provider that was live in the cache at some point but whose
+ * ProviderConfig row is now gone, an already-unusual state).
  */
 export function aliasesToProviderModels(
   aliases: ModelAliasInput[],
   aliasesEnabled: boolean,
-  cliProxyModels: AliasCacheEntryInput[]
-): Record<string, ProviderModelEntry[]> {
-  if (!aliasesEnabled) return {}
+  cliProxyModels: AliasCacheEntryInput[],
+  providerAuthMethods: Record<string, ProviderAuthMethod> = {}
+): SplitAliasProviderModels {
+  if (!aliasesEnabled) return EMPTY_SPLIT
 
-  const out: Record<string, ProviderModelEntry[]> = {}
+  const apiKeyModels: Record<string, ProviderModelEntry[]> = {}
+  const oauthModels: Record<string, ProviderModelEntry[]> = {}
 
   for (const alias of aliases) {
     if (!alias.enabled) continue
@@ -71,12 +106,15 @@ export function aliasesToProviderModels(
     )
     if (!knownOnProvider) continue // stale/unknown target — skip, never emit broken
 
-    const list = out[alias.targetProviderId] ?? []
-    list.push({ name: alias.targetModelId, alias: alias.claudeName })
-    out[alias.targetProviderId] = list
+    const entry: ProviderModelEntry = { name: alias.targetModelId, alias: alias.claudeName }
+    const isOauth = providerAuthMethods[alias.targetProviderId] === 'oauth'
+    const bucket = isOauth ? oauthModels : apiKeyModels
+    const list = bucket[alias.targetProviderId] ?? []
+    list.push(entry)
+    bucket[alias.targetProviderId] = list
   }
 
-  return out
+  return { apiKeyModels, oauthModels }
 }
 
 /**
@@ -119,4 +157,19 @@ export function aliasProviderModelsEqual(
   }
 
   return true
+}
+
+/**
+ * Same structural-equality contract as aliasProviderModelsEqual, extended to
+ * the split { apiKeyModels, oauthModels } shape aliasesToProviderModels now
+ * returns — both buckets must match for the two results to be considered
+ * equal. Used by manager.ts's regenerateConfigIfAliasesChanged so a churn
+ * cycle that leaves either bucket unchanged (the common case) skips the
+ * config.yaml rewrite exactly as it did before the oauth/apiKey split.
+ */
+export function aliasSplitEqual(a: SplitAliasProviderModels, b: SplitAliasProviderModels): boolean {
+  return (
+    aliasProviderModelsEqual(a.apiKeyModels, b.apiKeyModels) &&
+    aliasProviderModelsEqual(a.oauthModels, b.oauthModels)
+  )
 }
