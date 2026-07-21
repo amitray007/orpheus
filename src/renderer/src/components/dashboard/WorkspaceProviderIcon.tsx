@@ -20,5 +20,5 @@ export function WorkspaceProviderIcon({
 }): React.JSX.Element | null {
   const providerId = useWorkspaceProviderIcon(workspaceId)
   if (!providerId) return null
-  return <ProviderIcon providerId={providerId} size={11} />
+  return <ProviderIcon providerId={providerId} size={14} />
 }

@@ -402,7 +402,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
           type="button"
           onClick={onSelect}
           className={[
-            'flex items-center pl-8 pr-9 flex-1 text-left min-w-0 h-8',
+            'flex items-center pl-3 pr-9 flex-1 text-left min-w-0 h-8',
             'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md',
             'cursor-pointer'
           ].join(' ')}
@@ -410,11 +410,22 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         >
           {/* Line 1: provider icon · status icon · title · fork badge · time/archive */}
           <span className="flex items-center gap-1.5 min-w-0">
-            {/* Provider icon slot — renders nothing until the workspace's
-                effective model resolves to a known provider (see
-                WorkspaceProviderIcon's own doc comment). Sits BEFORE the
-                status dot, per the approved design. */}
-            <WorkspaceProviderIcon workspaceId={workspace.id} />
+            {/* Provider icon slot — fixed-width (matches ProviderIcon's
+                size={14}) so the row's contents (status dot, title) never
+                shift left/right depending on whether the icon has resolved
+                yet. Formerly this leading space was bare pl-8 padding on the
+                button (32px of dead space before the status dot); the
+                padding above was reduced to pl-3 (12px) so this slot fills
+                the reclaimed space instead of sitting empty — the status dot
+                still lands at the same 32px offset (12px pad + 14px slot +
+                6px gap) as before, preserving the row's nested-under-project
+                indent. WorkspaceProviderIcon itself renders nothing until
+                the workspace's effective model resolves to a known provider
+                (see its own doc comment); this wrapper is what keeps that
+                "nothing" from collapsing the slot's width. */}
+            <span className="flex items-center justify-center w-3.5 h-3.5 flex-shrink-0">
+              <WorkspaceProviderIcon workspaceId={workspace.id} />
+            </span>
 
             {/* Status icon slot */}
             <span
