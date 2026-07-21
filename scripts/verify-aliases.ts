@@ -35,7 +35,10 @@
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert'
-import { aliasesToProviderModels } from '../src/main/routingProxy/aliasResolve.ts'
+import {
+  aliasesToProviderModels,
+  aliasProviderModelsEqual
+} from '../src/main/routingProxy/aliasResolve.ts'
 import type { ModelAliasInput as ModelAlias } from '../src/main/routingProxy/aliasResolve.ts'
 import { renderProvidersYaml } from '../src/main/routingProxy/config.ts'
 import type { ProviderConfig } from '../src/main/routingProxy/providers/types.ts'
@@ -380,6 +383,175 @@ function alias(
   )
   console.log(
     '✓ defaults degrade gracefully — only targets present in the live cache resolve, others skipped'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 10. THE REPORTED BUG (unit 09) — chicken-and-egg ordering between
+//     config-write time and cliproxy model-cache population. Simulates
+//     manager.ts's real sequence: writeRoutingProxyConfig is called with
+//     aliasModelsByProvider resolved against whatever the cache looked like
+//     AT THAT MOMENT — resolveAliasModelsByProvider() is a snapshot, not a
+//     live binding. The fix is regenerateConfigIfAliasesChanged() re-running
+//     that resolution AFTER the cache populates and rewriting if the result
+//     changed. This assertion reproduces both halves:
+//       a) at config-write time with an EMPTY cache, the alias is skipped
+//          (this is the bug as reported — must be true both pre- and
+//          post-fix, since the guard itself is correct)
+//       b) after the cache populates, RE-RESOLVING (what
+//          regenerateConfigIfAliasesChanged does) produces the alias entry
+//          — proving a rewrite at that point would fix the user's symptom.
+//     Without the manager.ts fix (i.e. only ever resolving once, at
+//     config-write time, and never again), the session would be stuck with
+//     (a) forever — this assertion fails against that pre-fix behavior
+//     because it demands (b) succeed on a SECOND, later resolution using the
+//     SAME aliases input, proving the fix must be "resolve again later", not
+//     "resolve differently".
+// ---------------------------------------------------------------------------
+
+{
+  const aliases: ModelAlias[] = [
+    alias('claude-sonnet-5', {
+      targetProviderId: 'codex',
+      targetModelId: 'gpt-5.6-terra'
+    })
+  ]
+
+  // (a) Config-write time: cache is empty (proxy just enabled, cliproxy
+  // model cache never populated yet — the exact state the user's live
+  // machine was diagnosed in: routing_proxy_model_aliases has an enabled
+  // row, routing_proxy_providers has codex enabled, but dashboard_cache's
+  // cliproxy_model_cache entry is empty).
+  const emptyCache: Array<{ modelId: string; providerId?: string }> = []
+  const resolvedAtWriteTime = aliasesToProviderModels(aliases, true, emptyCache)
+  assert.deepEqual(
+    resolvedAtWriteTime,
+    {},
+    'with an empty model cache at config-write time, the alias must be skipped (this IS the reported bug state)'
+  )
+
+  // (b) The cache populates (refreshCliProxyModelCache succeeds) — a
+  // SECOND, later resolution against the SAME aliases input must now
+  // produce the alias entry. This is what regenerateConfigIfAliasesChanged
+  // performs in manager.ts after every cache refresh; a build that never
+  // re-resolves (the pre-fix behavior) would never reach this state for the
+  // lifetime of the session.
+  const populatedCache = [{ modelId: 'gpt-5.6-terra', providerId: 'codex' }]
+  const resolvedAfterCachePopulates = aliasesToProviderModels(aliases, true, populatedCache)
+  assert.deepEqual(
+    resolvedAfterCachePopulates,
+    { codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }] },
+    're-resolving after the cache populates must now emit the alias — this is the fix: config.yaml must be ' +
+      'regenerated at this point, not just once at the original (empty-cache) write time'
+  )
+
+  // And the two resolutions must actually DIFFER — this is exactly the
+  // signal aliasProviderModelsEqual uses to decide whether a rewrite is
+  // warranted at all (see 11 below for the no-rewrite-when-unchanged case).
+  assert.equal(
+    aliasProviderModelsEqual(resolvedAtWriteTime, resolvedAfterCachePopulates),
+    false,
+    'the pre-cache-population and post-cache-population resolutions must be recognized as different, ' +
+      'so a rewrite is actually triggered'
+  )
+
+  console.log(
+    '✓ reported bug reproduced+fixed: empty-cache-at-write-time skips the alias, but re-resolving after ' +
+      'the cache populates now emits it (proves a post-populate rewrite fixes the user symptom)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 11. No-churn guard — aliasProviderModelsEqual must recognize two resolved
+//     maps as equal (so manager.ts's regenerateConfigIfAliasesChanged skips
+//     the rewrite) across: identical input, key order shuffled, and entry
+//     order shuffled within a provider's list. Must recognize them as
+//     DIFFERENT when an entry's target model actually changes, when a
+//     provider gains/loses entries, or when the number of providers differs.
+// ---------------------------------------------------------------------------
+
+{
+  const a = {
+    codex: [
+      { name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' },
+      { name: 'gpt-5.6-sol', alias: 'opus' }
+    ],
+    xai: [{ name: 'grok-5', alias: 'fable' }]
+  }
+
+  // Identical input (fresh object, same content) -> equal, no rewrite.
+  const aAgain = {
+    codex: [
+      { name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' },
+      { name: 'gpt-5.6-sol', alias: 'opus' }
+    ],
+    xai: [{ name: 'grok-5', alias: 'fable' }]
+  }
+  assert.equal(
+    aliasProviderModelsEqual(a, aAgain),
+    true,
+    'identical resolved alias maps must compare equal (steady-state 30s tick must not trigger a rewrite)'
+  )
+
+  // Key order shuffled + entry order shuffled within a provider -> still equal.
+  const shuffled = {
+    xai: [{ name: 'grok-5', alias: 'fable' }],
+    codex: [
+      { name: 'gpt-5.6-sol', alias: 'opus' },
+      { name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }
+    ]
+  }
+  assert.equal(
+    aliasProviderModelsEqual(a, shuffled),
+    true,
+    'provider-key order and within-provider entry order must not affect equality'
+  )
+
+  // A target model actually changing for the same alias name -> different.
+  const changedTarget = {
+    codex: [
+      { name: 'gpt-5.6-nova', alias: 'claude-sonnet-5' }, // target changed
+      { name: 'gpt-5.6-sol', alias: 'opus' }
+    ],
+    xai: [{ name: 'grok-5', alias: 'fable' }]
+  }
+  assert.equal(
+    aliasProviderModelsEqual(a, changedTarget),
+    false,
+    'a changed target model for the same claudeName must be detected as a real change'
+  )
+
+  // A provider losing an entry -> different.
+  const fewerEntries = {
+    codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }],
+    xai: [{ name: 'grok-5', alias: 'fable' }]
+  }
+  assert.equal(
+    aliasProviderModelsEqual(a, fewerEntries),
+    false,
+    'a provider gaining/losing entries must be detected as a real change'
+  )
+
+  // A provider key present/absent entirely -> different.
+  const fewerProviders = {
+    codex: [
+      { name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' },
+      { name: 'gpt-5.6-sol', alias: 'opus' }
+    ]
+  }
+  assert.equal(
+    aliasProviderModelsEqual(a, fewerProviders),
+    false,
+    'a provider key appearing/disappearing entirely must be detected as a real change'
+  )
+
+  // Both empty -> equal (e.g. master switch off both times, or nothing
+  // configured yet — the disabled-toggle-app case must never spuriously
+  // "change" and rewrite).
+  assert.equal(aliasProviderModelsEqual({}, {}), true, 'two empty resolutions must compare equal')
+
+  console.log(
+    '✓ aliasProviderModelsEqual: order-independent equality, real changes (target/entry-count/provider-set) detected'
   )
 }
 

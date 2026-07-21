@@ -78,3 +78,45 @@ export function aliasesToProviderModels(
 
   return out
 }
+
+/**
+ * Structural equality for two aliasesToProviderModels() results — used by
+ * manager.ts to decide whether a freshly-resolved alias map actually differs
+ * from what's currently on disk before paying for a config.yaml rewrite
+ * (see manager.ts's maybeRegenerateConfigForAliasChange doc comment for the
+ * full ordering problem this solves: cache population happens async, on a
+ * timer, potentially every 30s, and must NOT trigger a rewrite when nothing
+ * about the resolved alias set actually changed).
+ *
+ * Order-independent per provider (aliasesToProviderModels always emits
+ * entries in `aliases` input order, which is itself stable — listModelAliases
+ * orders by claudeName — but comparing as a set-of-JSON-strings is cheap and
+ * avoids coupling this equality check to that ordering guarantee holding
+ * forever). Compares the full entry shape (name + alias), not just presence,
+ * so a target model changing for the same claudeName is correctly detected
+ * as a change.
+ */
+export function aliasProviderModelsEqual(
+  a: Record<string, ProviderModelEntry[]>,
+  b: Record<string, ProviderModelEntry[]>
+): boolean {
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  if (aKeys.length !== bKeys.length) return false
+
+  const sortedEntryKey = (entries: ProviderModelEntry[]): string =>
+    entries
+      .map((e) => JSON.stringify(e))
+      .sort()
+      .join('|')
+
+  for (const key of aKeys) {
+    const aEntries = a[key]
+    const bEntries = b[key]
+    if (!bEntries) return false
+    if (aEntries.length !== bEntries.length) return false
+    if (sortedEntryKey(aEntries) !== sortedEntryKey(bEntries)) return false
+  }
+
+  return true
+}

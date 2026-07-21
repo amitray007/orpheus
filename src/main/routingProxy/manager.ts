@@ -54,7 +54,7 @@ import {
 import { raceWithTimeout } from '../models/cliProxyModelCacheStaleness'
 import { listProviderConfigs } from './providers/storage'
 import { listModelAliases } from './aliases'
-import { aliasesToProviderModels } from './aliasResolve'
+import { aliasesToProviderModels, aliasProviderModelsEqual } from './aliasResolve'
 import type { ProviderModelEntry } from './providers/types'
 import {
   startProviderLogin,
@@ -125,6 +125,68 @@ function resolveAliasModelsByProvider(): Record<string, ProviderModelEntry[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Alias/cache ordering fix — the reported "aliasing doesn't work in
+// subagents" bug. resolveAliasModelsByProvider() (above) skips any alias
+// whose target isn't present in the live cliproxy model cache
+// (aliasResolve.ts's knownOnProvider guard — intentionally kept, see that
+// module's doc comment). The cache, though, is only ever populated OUT OF
+// BAND by refreshCliProxyModelCache — which itself only runs from
+// refreshAuthFiles' 30s interval / startModelCacheRefresh's on-demand kick,
+// both of which require the proxy to already be running+authenticated.
+// Every writeRoutingProxyConfig call site in this module (install/start/
+// regenerateConfigNow) fires BEFORE that first cache population can
+// possibly have happened, so on a fresh cache (first-ever run with no
+// persisted snapshot, or any run where the persisted snapshot didn't cover
+// every configured alias target) every alias is silently skipped and NEVER
+// retried — config.yaml is written once at start() and then never touched
+// again for the rest of the session.
+//
+// lastWrittenAliasModelsByProvider tracks exactly what was resolved+written
+// on the most recent writeRoutingProxyConfig call from ANY call site in this
+// module (install/start/regenerateConfigNow all update it — see
+// recordAliasWrite below). regenerateConfigIfAliasesChanged is the ordering
+// fix: called after every cache refresh, it re-resolves aliases against the
+// NOW-populated cache and, only if the result actually differs from what's
+// on disk (aliasProviderModelsEqual — structural, not reference, equality),
+// triggers a real regenerateConfigNow() rewrite. CLIProxyAPI watches
+// config.yaml via fsnotify and hot-reloads on change (verified in unit 08 —
+// see this module's own header/regenerateConfigNow doc), so the rewrite
+// alone is sufficient; no restart is needed.
+//
+// The equality check is the churn-loop guard: refreshAuthFiles' 30s timer
+// calls this on every tick once the proxy is running, and once the cache is
+// warm the resolved map stops changing — comparing against
+// lastWrittenAliasModelsByProvider means those steady-state ticks are a
+// resolve + a cheap structural compare, not a rewrite.
+// ---------------------------------------------------------------------------
+
+let lastWrittenAliasModelsByProvider: Record<string, ProviderModelEntry[]> = {}
+
+/** Every writeRoutingProxyConfig call site in this module must call this
+ *  immediately after a successful write with the SAME aliasModelsByProvider
+ *  value it just wrote, so regenerateConfigIfAliasesChanged has an accurate
+ *  baseline to diff against. */
+function recordAliasWrite(aliasModelsByProvider: Record<string, ProviderModelEntry[]>): void {
+  lastWrittenAliasModelsByProvider = aliasModelsByProvider
+}
+
+/**
+ * Called after a cliproxy model-cache refresh completes (both refreshAuthFiles'
+ * 30s interval and startModelCacheRefresh's on-demand path — see their call
+ * sites below). Re-resolves aliases against the now-current cache; if the
+ * result differs from what's currently on disk, rewrites config.yaml via
+ * regenerateConfigNow() (which itself calls recordAliasWrite with the fresh
+ * resolution). No-ops when nothing is installed yet (regenerateConfigNow's
+ * own guard) or when the resolved set is unchanged — see this section's
+ * header doc for why that equality check matters.
+ */
+async function regenerateConfigIfAliasesChanged(): Promise<void> {
+  const resolved = resolveAliasModelsByProvider()
+  if (aliasProviderModelsEqual(resolved, lastWrittenAliasModelsByProvider)) return
+  await regenerateConfigNow()
+}
+
+// ---------------------------------------------------------------------------
 // Install detection at boot — is the pinned version already on disk?
 // ---------------------------------------------------------------------------
 
@@ -177,13 +239,15 @@ export async function install(deps: InstallDeps = defaultInstallDeps()): Promise
       },
       deps
     )
+    const aliasModelsByProvider = resolveAliasModelsByProvider()
     await writeRoutingProxyConfig(configPath(result.version), {
       host: proxyHost(),
       port: proxyPort(),
       authDir: authDir(),
       providers: listProviderConfigs(),
-      aliasModelsByProvider: resolveAliasModelsByProvider()
+      aliasModelsByProvider
     })
+    recordAliasWrite(aliasModelsByProvider)
     setSnapshot({
       status: 'stopped',
       installedVersion: result.version,
@@ -219,6 +283,12 @@ async function refreshAuthFiles(): Promise<void> {
   // hydrateSnapshotAtBoot below).
   await refreshCliProxyModelCache(getRoutingProxyUrl(), secret)
   persistCliProxyModelCache(snapshotCliProxyModelCache())
+  // The reported-bug fix: once the cache is (re)populated, aliases that
+  // previously resolved to nothing may now resolve — re-check and rewrite
+  // config.yaml if the resolved set actually changed. See
+  // regenerateConfigIfAliasesChanged's doc comment for the full ordering
+  // problem and the churn-loop guard.
+  await regenerateConfigIfAliasesChanged()
 }
 
 /** IPC-facing manual refresh — returns the updated snapshot. */
@@ -261,7 +331,7 @@ let modelCacheRefreshInFlight: Promise<void> | null = null
 
 function startModelCacheRefresh(secret: string): Promise<void> {
   const inFlight = refreshCliProxyModelCache(getRoutingProxyUrl(), secret)
-    .then(() => {
+    .then(async () => {
       // The renderer's selectableModelsStore only refetches on a
       // routingProxy:onSnapshot push (see that module's doc comment) — it
       // does not poll. Re-broadcasting the (otherwise unchanged) snapshot
@@ -274,6 +344,13 @@ function startModelCacheRefresh(secret: string): Promise<void> {
       if (entries.length > 0) {
         persistCliProxyModelCache(snapshotCliProxyModelCache())
         setSnapshot({})
+        // This is the cold-start leg of the reported-bug fix: this on-demand
+        // path only ever runs when the cache was previously EMPTY (see
+        // shouldRefreshCliProxyModelCache's cacheSize gate) — i.e. exactly
+        // the first-ever-run scenario where install()/start() wrote
+        // config.yaml before any cache existed. Now that it's populated,
+        // re-resolve + rewrite if aliases actually changed.
+        await regenerateConfigIfAliasesChanged()
       }
     })
     .catch(() => {
@@ -378,13 +455,15 @@ export async function start(): Promise<void> {
   // getRoutingProxyUrl() (host/port never drift from a stale prior write)
   // AND the current stored provider configs (a provider added/edited while
   // the proxy was stopped must take effect on the next start).
+  const startAliasModelsByProvider = resolveAliasModelsByProvider()
   await writeRoutingProxyConfig(configPath(version), {
     host: proxyHost(),
     port: proxyPort(),
     authDir: authDir(),
     providers: listProviderConfigs(),
-    aliasModelsByProvider: resolveAliasModelsByProvider()
+    aliasModelsByProvider: startAliasModelsByProvider
   })
+  recordAliasWrite(startAliasModelsByProvider)
 
   startRoutingProxy({
     binaryPath: binaryPath(version),
@@ -564,13 +643,15 @@ export async function checkForComponentUpdate(): Promise<RoutingProxyUpdateCheck
 export async function regenerateConfigNow(): Promise<void> {
   const version = snapshot.installedVersion
   if (!version) return
+  const aliasModelsByProvider = resolveAliasModelsByProvider()
   await writeRoutingProxyConfig(configPath(version), {
     host: proxyHost(),
     port: proxyPort(),
     authDir: authDir(),
     providers: listProviderConfigs(),
-    aliasModelsByProvider: resolveAliasModelsByProvider()
+    aliasModelsByProvider
   })
+  recordAliasWrite(aliasModelsByProvider)
 }
 
 // ---------------------------------------------------------------------------
