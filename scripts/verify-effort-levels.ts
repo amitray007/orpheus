@@ -48,11 +48,12 @@
 //   7. every value in the widened EFFORT enum survives a real write+read
 //      through the ACTUAL claude_global_settings table; an out-of-enum
 //      value is still rejected by the CHECK constraint
-//   8. every value clampEffortToSupportedLevel can return, across every real
-//      per-model level set this repo has, is a member of CLAUDE_EFFORT_
-//      VALUES — the single source schema.ts/claudeSettings.ts/overridesStore
-//      .ts's validators are all sourced from. Closes the gap a pure clamp-
-//      function test alone cannot catch: a validator array silently
+//   8. CLAUDE_EFFORT_VALUES (the one array every validator now checks
+//      directly — no remaining independent copies anywhere in the repo)
+//      contains EXACTLY every ClaudeEffort member, and every value
+//      clampEffortToSupportedLevel can return, across every real per-model
+//      level set this repo has, is a member of it. Closes the gap a pure
+//      clamp-function test alone cannot catch: a validator silently
 //      drifting out of sync with what the clamp function can produce.
 // ---------------------------------------------------------------------------
 
@@ -63,7 +64,8 @@ import {
   CLAUDE_BUILTIN_EFFORT_LEVELS,
   CLAUDE_MODEL_OPTIONS,
   CLAUDE_EFFORT_VALUES,
-  clampEffortToSupportedLevel
+  clampEffortToSupportedLevel,
+  type ClaudeEffort
 } from '../src/shared/types.ts'
 import {
   buildSelectableModels,
@@ -501,31 +503,69 @@ function baseInput(
 // 8. THE GAP the team-lead flagged: a pure-function test of
 //    clampEffortToSupportedLevel that never touches the persistence path
 //    cannot catch a validator array silently drifting out of sync with what
-//    the clamp function can actually return. This section closes that gap
-//    directly: exercise clampEffortToSupportedLevel against every REAL
-//    per-model level set this repo actually has (every CLAUDE_BUILTIN_EFFORT
-//    _LEVELS entry, plus the documented live per-model shapes from
-//    effort-spec.md), across every plausible stored `current` value, and
-//    assert every value it can produce is a member of CLAUDE_EFFORT_VALUES
-//    — the SAME canonical array schema.ts's EFFORT, claudeSettings.ts's
-//    VALID_EFFORTS, and overridesStore.ts's VALID_EFFORTS are now literally
-//    sourced from (see each file's own doc comment). claudeSettings.ts/
-//    overridesStore.ts themselves import `./db` -> `electron`, so they
-//    cannot be imported directly into this offline harness (same constraint
-//    every other verify-*.ts script in this repo is under) — but since this
-//    unit's fix made all three validators literal re-exports of
-//    CLAUDE_EFFORT_VALUES rather than independent copies, asserting against
-//    CLAUDE_EFFORT_VALUES / schema.ts's EFFORT (both electron-free) IS
-//    asserting against the exact array those validators use at runtime, not
-//    a decoupled stand-in that could itself drift.
+//    the clamp function can actually return. Fixed at the ROOT (not just
+//    asserted around): CLAUDE_EFFORT_VALUES (src/shared/types.ts) is now the
+//    ONE array every validator checks directly at its call site — schema.ts's
+//    EFFORT is a literal reference to it (asserted below), and
+//    claudeSettings.ts's validatePatch / overridesStore.ts's
+//    validateBasePatch / commandServer.ts's buildWorkspaceSettingsOverride /
+//    packages/orpheus-cli's ws-new.ts help text all call
+//    CLAUDE_EFFORT_VALUES.includes(...) directly — there is no longer a
+//    separate VALID_EFFORTS copy or re-export in any of those files to drift
+//    out of sync (grep confirms zero remaining occurrences of that name).
+//    claudeSettings.ts/overridesStore.ts/commandServer.ts themselves import
+//    `./db` -> `electron` (or `electron` directly), so they cannot be
+//    imported into this offline harness (same constraint every other
+//    verify-*.ts script in this repo is under) — but since there is only ONE
+//    array left, asserting against CLAUDE_EFFORT_VALUES / schema.ts's EFFORT
+//    (both electron-free) IS asserting against the exact values those
+//    validators check at runtime, not a decoupled stand-in that could itself
+//    drift. This section exercises clampEffortToSupportedLevel against every
+//    REAL per-model level set this repo has (every CLAUDE_BUILTIN_EFFORT_
+//    LEVELS entry, plus the documented live per-model shapes from
+//    effort-spec.md), across every storable `current` value, and asserts
+//    every value it can produce is a member of that one canonical array.
 // ---------------------------------------------------------------------------
 
 {
   assert.equal(
     EFFORT,
     CLAUDE_EFFORT_VALUES,
-    'schema.ts’s EFFORT must be the exact same array reference as CLAUDE_EFFORT_VALUES (a literal ' +
-      're-export), not an independent copy that could silently drift'
+    'schema.ts’s EFFORT must be the exact same array reference as CLAUDE_EFFORT_VALUES, not an ' +
+      'independent copy that could silently drift'
+  )
+
+  // Runtime exhaustiveness check (not just relying on TypeScript's own
+  // literal-union inference silently succeeding): every member of the
+  // ClaudeEffort type must be present in CLAUDE_EFFORT_VALUES — no value a
+  // caller could legally type as ClaudeEffort would be rejected by the one
+  // validator array every real check now uses.
+  const EVERY_CLAUDE_EFFORT_MEMBER: ClaudeEffort[] = [
+    'auto',
+    'none',
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max'
+  ]
+  for (const member of EVERY_CLAUDE_EFFORT_MEMBER) {
+    assert.ok(
+      (CLAUDE_EFFORT_VALUES as readonly string[]).includes(member),
+      `ClaudeEffort member '${member}' is missing from CLAUDE_EFFORT_VALUES — a validator would ` +
+        'wrongly reject a value the type system says is legal'
+    )
+  }
+  assert.equal(
+    CLAUDE_EFFORT_VALUES.length,
+    EVERY_CLAUDE_EFFORT_MEMBER.length,
+    'CLAUDE_EFFORT_VALUES must contain EXACTLY the ClaudeEffort members, no more (a fabricated ' +
+      'extra value) and no fewer (a missing one)'
+  )
+  console.log(
+    '✓ CLAUDE_EFFORT_VALUES contains exactly every member of the ClaudeEffort type — no legal ' +
+      'value would be wrongly rejected by any validator, and no extra value was fabricated'
   )
 
   const realLevelSets: (string[] | null)[] = [
@@ -559,8 +599,9 @@ function baseInput(
   console.log(
     `✓ every value clampEffortToSupportedLevel can return across ${realLevelSets.length} real ` +
       `per-model level sets × ${everyStorableValue.length} storable current values (${checked} ` +
-      'combinations) is a member of CLAUDE_EFFORT_VALUES — the exact array every real validator ' +
-      '(schema.ts, claudeSettings.ts, overridesStore.ts) is now sourced from'
+      'combinations) is a member of CLAUDE_EFFORT_VALUES — the ONE array every real validator ' +
+      '(schema.ts, claudeSettings.ts, overridesStore.ts, commandServer.ts, ws-new.ts) checks ' +
+      'directly, with no remaining independent copy anywhere'
   )
 }
 

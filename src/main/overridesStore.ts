@@ -35,17 +35,6 @@ const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
   'plan',
   'bypassPermissions'
 ]
-// Sourced from CLAUDE_EFFORT_VALUES (src/shared/types.ts's single canonical
-// list, model-routing unit 11) rather than a re-declared literal. This is
-// the validator that actually gates claude_workspace_settings/claude_project_
-// settings writes (via BaseOverrides.effort) — a workspace/project-scope
-// effort reconciliation producing 'minimal'/'none' would have been silently
-// rejected here if this array weren't sourced from the same place as every
-// other effort validator. Exported so scripts/verify-effort-levels.ts can
-// assert against this REAL validator array directly (import it aliased,
-// since claudeSettings.ts also exports its own same-named VALID_EFFORTS).
-export const VALID_EFFORTS: readonly ClaudeEffort[] = CLAUDE_EFFORT_VALUES
-
 function validateBasePatch(patch: BaseOverrides): void {
   if (
     patch.permissionMode !== undefined &&
@@ -53,7 +42,12 @@ function validateBasePatch(patch: BaseOverrides): void {
   ) {
     throw new Error(`Invalid permissionMode: ${patch.permissionMode}`)
   }
-  if (patch.effort !== undefined && !VALID_EFFORTS.includes(patch.effort)) {
+  // Sourced from CLAUDE_EFFORT_VALUES (src/shared/types.ts's single
+  // canonical list, model-routing unit 11) — this is the validator that
+  // actually gates claude_workspace_settings/claude_project_settings writes,
+  // so a workspace/project-scope effort reconciliation producing 'minimal'/
+  // 'none' would be silently rejected here if this weren't kept in sync.
+  if (patch.effort !== undefined && !CLAUDE_EFFORT_VALUES.includes(patch.effort)) {
     throw new Error(`Invalid effort: ${patch.effort}`)
   }
   if (patch.model !== undefined && typeof patch.model !== 'string') {

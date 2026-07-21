@@ -381,13 +381,20 @@ export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassP
 export type ClaudeEffort = 'auto' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 // The single canonical value list for ClaudeEffort (model-routing unit 11)
 // — every validator that needs to check "is this a legal effort value"
-// (schema.ts's EFFORT CHECK constraint, claudeSettings.ts's VALID_EFFORTS,
-// overridesStore.ts's VALID_EFFORTS, commandServer.ts's CLI-arg validator)
-// imports THIS array rather than re-declaring its own literal copy. Before
-// this, four independent copies existed and three of them silently drifted
-// out of sync with the widened ClaudeEffort type when 'none'/'minimal' were
-// added — this array is the fix for that class of bug, not just a one-time
-// patch to the copies that had already drifted.
+// (schema.ts's EFFORT CHECK constraint, claudeSettings.ts's validatePatch,
+// overridesStore.ts's validateBasePatch, commandServer.ts's CLI-arg
+// validator, packages/orpheus-cli's ws-new.ts help text) imports THIS array
+// directly rather than re-declaring or re-exporting its own copy. Before
+// this, five independent copies existed and several of them silently
+// drifted out of sync with the widened ClaudeEffort type when 'none'/
+// 'minimal' were added — this array is the fix for that class of bug, not
+// just a one-time patch to the copies that had already drifted.
+// scripts/verify-effort-levels.ts imports this directly too (it's the one
+// electron-free member of the group — schema.ts's EFFORT and this array are
+// literally the same reference, but claudeSettings.ts/overridesStore.ts/
+// commandServer.ts all import electron transitively via ./db, so they can't
+// be imported into that offline harness; asserting against this array IS
+// asserting against the exact runtime values those validators check).
 export const CLAUDE_EFFORT_VALUES: readonly ClaudeEffort[] = [
   'auto',
   'none',

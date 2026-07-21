@@ -330,13 +330,6 @@ const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
   'plan',
   'bypassPermissions'
 ]
-// Sourced from CLAUDE_EFFORT_VALUES (src/shared/types.ts's single canonical
-// list, model-routing unit 11) rather than a re-declared literal — this is
-// the fix for the class of bug where independent copies of this array
-// silently drifted out of sync with ClaudeEffort. Exported so
-// scripts/verify-effort-levels.ts can assert against the REAL validator
-// array directly.
-export const VALID_EFFORTS: readonly ClaudeEffort[] = CLAUDE_EFFORT_VALUES
 const VALID_OUTPUT_STYLES: ClaudeOutputStyle[] = ['default', 'explanatory', 'proactive', 'learning']
 const VALID_TUI_MODES: ClaudeTuiMode[] = ['default', 'fullscreen']
 const VALID_EDITOR_MODES: ClaudeEditorMode[] = ['normal', 'vim']
@@ -570,7 +563,7 @@ function validateBooleanKeys(patch: ClaudeGlobalSettingsPatch): void {
 function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
   validateModelKey(patch)
   validateEnum(patch, 'permissionMode', VALID_PERMISSION_MODES, 'permissionMode')
-  validateEnum(patch, 'effort', VALID_EFFORTS, 'effort')
+  validateEnum(patch, 'effort', CLAUDE_EFFORT_VALUES, 'effort')
   validateEnum(patch, 'outputStyle', VALID_OUTPUT_STYLES, 'outputStyle')
   validateEnum(patch, 'tuiMode', VALID_TUI_MODES, 'tuiMode')
   validateEnum(patch, 'editorMode', VALID_EDITOR_MODES, 'editorMode')
