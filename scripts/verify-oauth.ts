@@ -57,10 +57,12 @@ function runningDeps(overrides: Partial<OAuthDeps> = {}): OAuthDeps {
 // ---------------------------------------------------------------------------
 // 1. Eligibility — derived from descriptors. (model-routing unit 09-polish:
 //    PROVIDERS was trimmed to exactly codex/xai/antigravity/ollama — gemini
-//    and kimi were REMOVED entirely, not just made oauth-ineligible, so the
-//    old "gemini descriptor still exists but isn't oauth-eligible" case no
-//    longer applies; ollama takes over as the "a real, still-registered,
-//    non-oauth-eligible descriptor" example instead.)
+//    and kimi were REMOVED entirely, not just made oauth-ineligible. Unit
+//    10-creation then removed ollama too — data-only, per registry.ts's own
+//    header comment — so PROVIDERS is now exactly codex/xai/antigravity, all
+//    three of which are oauth-eligible; there is no longer a "registered but
+//    not oauth-eligible" descriptor to use as a fixture, so that case is
+//    covered via a removed id instead (same as gemini/kimi below).)
 // ---------------------------------------------------------------------------
 
 {
@@ -86,21 +88,31 @@ function runningDeps(overrides: Partial<OAuthDeps> = {}): OAuthDeps {
     '(unit 09-polish) OAuth-eligible providers must be exactly codex/xai/antigravity — the trimmed PROVIDERS list'
   )
 
-  const ollamaDescriptor = getProviderDescriptor('ollama')
-  assert.ok(ollamaDescriptor, 'ollama descriptor must still exist (openaiCompatible-only)')
+  // (unit 10-creation) ollama was removed from PROVIDERS entirely — a stale
+  // ProviderConfig row for it must resolve to no descriptor at all, exactly
+  // like gemini/kimi above, never crash, never claim oauth eligibility.
   assert.equal(
-    isOAuthEligible(ollamaDescriptor!),
-    false,
-    'ollama descriptor must not claim oauth in authMethods'
+    getProviderDescriptor('ollama'),
+    null,
+    '(unit 10-creation) ollama must no longer resolve to a descriptor at all — it was removed from PROVIDERS'
   )
-  assert.equal(
-    ollamaDescriptor!.authMethods.includes('oauth'),
-    false,
-    'ollama authMethods must not include oauth'
+  assert.ok(
+    !eligible.includes('ollama'),
+    'ollama must never be offered a Connect button (it is not even a registered provider anymore)'
   )
 
   // Every OAuth-eligible descriptor really is present in PROVIDERS and
-  // structurally consistent (mirrors verify-providers.ts's own check).
+  // structurally consistent (mirrors verify-providers.ts's own check), and
+  // isOAuthEligible (the underlying per-descriptor predicate) agrees with
+  // eligibleOAuthProviderIds (the derived list) for every registered
+  // descriptor — proving the two never drift apart.
+  for (const d of PROVIDERS) {
+    assert.equal(
+      isOAuthEligible(d),
+      eligible.includes(d.id),
+      `${d.id}: isOAuthEligible must agree with eligibleOAuthProviderIds`
+    )
+  }
   for (const id of eligible) {
     const d = PROVIDERS.find((p) => p.id === id)
     assert.ok(d, `${id} must resolve to a real descriptor`)
@@ -108,8 +120,8 @@ function runningDeps(overrides: Partial<OAuthDeps> = {}): OAuthDeps {
   }
 
   console.log(
-    '✓ (unit 09-polish) eligibility is derived purely from descriptors; gemini/kimi no longer resolve at ' +
-      'all (removed from PROVIDERS); eligible set is exactly codex/xai/antigravity'
+    '✓ (unit 09-polish/10-creation) eligibility is derived purely from descriptors; gemini/kimi/ollama no ' +
+      'longer resolve at all (removed from PROVIDERS); eligible set is exactly codex/xai/antigravity'
   )
 }
 
@@ -187,7 +199,7 @@ function runningDeps(overrides: Partial<OAuthDeps> = {}): OAuthDeps {
   await assert.rejects(
     () => startProviderLogin('ollama', BASE_URL, runningDeps()),
     OAuthLoginRefusedError,
-    '(unit 09-polish) ollama (registered, but not oauth-eligible) must be refused'
+    '(unit 10-creation) ollama (removed from PROVIDERS entirely) must be refused, not crash'
   )
   await assert.rejects(
     () => startProviderLogin('gemini', BASE_URL, runningDeps()),

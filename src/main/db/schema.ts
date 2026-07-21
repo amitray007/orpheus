@@ -997,8 +997,8 @@ export const schema: SchemaDef = {
 
   // ---------------------------------------------------------------------
   // routing_proxy_providers — model-routing unit 05 (provider framework).
-  // One row per provider a user has configured (codex, xai, gemini,
-  // openrouter, ollama, ...) — provider_id is free-text, NOT an enum CHECK,
+  // One row per provider a user has configured (codex, xai, antigravity,
+  // ...) — provider_id is free-text, NOT an enum CHECK,
   // deliberately: the whole point of the descriptor layer
   // (src/main/routingProxy/providers/registry.ts) is that a new provider is
   // addable as data, and an enum CHECK here would turn "add a provider" back

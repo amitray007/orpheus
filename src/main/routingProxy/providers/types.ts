@@ -3,8 +3,8 @@
 //
 // The provider descriptor shape — the DATA layer this whole unit exists to
 // introduce. Every non-Claude provider CLIProxyAPI can route to (Codex,
-// Grok/xAI, Gemini, Kimi, Antigravity, OpenRouter, Ollama, arbitrary
-// OpenAI-compatible endpoints, ...) is represented as ONE ProviderDescriptor
+// Grok/xAI, Antigravity, arbitrary OpenAI-compatible endpoints, ...) is
+// represented as ONE ProviderDescriptor
 // object in registry.ts's PROVIDERS array. Adding a new provider is adding
 // one object (plus, for a built-in vendor with a dedicated CLIProxyAPI
 // `<name>-api-key:` block, a small config-mapping entry — see
@@ -30,7 +30,7 @@
  *                           top-level `<provider>-api-key:` list in
  *                           config.yaml (e.g. `codex-api-key:`).
  *   - 'openaiCompatible' — a generic OpenAI-compatible endpoint (OpenRouter,
- *                           Ollama, vLLM, any custom base-url), written into
+ *                           vLLM, any custom base-url), written into
  *                           the shared `openai-compatibility:` list. This is
  *                           THE extensibility mechanism: any new
  *                           OpenAI-compatible vendor is just another
@@ -52,7 +52,7 @@ export type ProviderAuthMethod = 'oauth' | 'apiKey' | 'openaiCompatible'
  * note neither branches on `id` — they branch on `authMethods`/config shape.
  */
 export interface ProviderDescriptor {
-  /** Stable id, e.g. 'codex' | 'xai' | 'gemini' | 'openrouter' | 'ollama'.
+  /** Stable id, e.g. 'codex' | 'xai' | 'antigravity'.
    *  Used as the config-storage key and (for apiKey providers) folded into
    *  apiKeyConfigKey when one isn't explicit. */
   id: string

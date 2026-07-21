@@ -243,16 +243,21 @@ function alias(
     '✓ renderProvidersYaml folds alias models onto a dedicated apiKey provider block (append, not replace)'
   )
 
-  // 'ollama' (unit 09-polish: 'openai-compatible' was removed from PROVIDERS
-  // — ollama is the remaining real openaiCompatible-only descriptor).
+  // (unit 10-creation: ollama was removed from PROVIDERS entirely — data-only
+  // removal, see registry.ts's own header comment. There is now no
+  // openaiCompatible-authMethod descriptor left in PROVIDERS at all, so this
+  // fixture reuses the real, still-registered 'xai' descriptor with
+  // authMethod forced to 'openaiCompatible' purely to exercise the generic
+  // code path — renderProvidersYaml branches on the STORED authMethod, never
+  // on `id`, which is exactly the property this assertion is checking.)
   const openaiCompatConfig: ProviderConfig = {
-    providerId: 'ollama',
+    providerId: 'xai',
     enabled: true,
     authMethod: 'openaiCompatible',
     apiKeys: [{ id: 'k1', apiKey: 'unused-local' }]
   }
   const yaml2 = renderProvidersYaml([openaiCompatConfig], {
-    ollama: [{ name: 'gpt-5.6-sol', alias: 'opus' }]
+    xai: [{ name: 'gpt-5.6-sol', alias: 'opus' }]
   })
   const entries = yaml2['openai-compatibility'] as Array<Record<string, unknown>>
   const ocModels = entries[0].models as Array<Record<string, unknown>>
@@ -373,13 +378,17 @@ function alias(
     authDir: '/tmp/fake-auth-dir',
     providers: [
       {
-        providerId: 'ollama',
+        // See the earlier note in this file: ollama (the previous fixture
+        // here) was removed from PROVIDERS in unit 10-creation; 'xai' is a
+        // real, still-registered descriptor reused purely as a fixture to
+        // exercise the openaiCompatible authMethod branch generically.
+        providerId: 'xai',
         enabled: true,
         authMethod: 'openaiCompatible',
         apiKeys: [{ id: 'k1', apiKey: 'unused-local' }]
       }
     ],
-    aliasModelsByProvider: { ollama: [{ name: 'gpt-5.6-sol', alias: 'opus' }] },
+    aliasModelsByProvider: { xai: [{ name: 'gpt-5.6-sol', alias: 'opus' }] },
     oauthAliasModelsByProvider: { codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }] }
   })
   assert.ok(
@@ -432,13 +441,15 @@ function alias(
     const apiKeyYaml = renderProvidersYaml(
       [
         {
-          providerId: 'ollama',
+          // See the earlier note: ollama was removed from PROVIDERS in unit
+          // 10-creation; 'xai' is reused as a resolvable-descriptor fixture.
+          providerId: 'xai',
           enabled: true,
           authMethod: 'openaiCompatible',
           apiKeys: [{ id: 'k1', apiKey: 'unused-local' }]
         }
       ],
-      { ollama: [{ name: 'gpt-5.6-sol', alias: 'opus' }] }
+      { xai: [{ name: 'gpt-5.6-sol', alias: 'opus' }] }
     )
     const entries = apiKeyYaml['openai-compatibility'] as Array<Record<string, unknown>>
     const models = entries[0].models as Array<Record<string, unknown>>

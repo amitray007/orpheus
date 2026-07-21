@@ -10,6 +10,7 @@ import { ProvidersSection } from './ProvidersSection'
 import { AliasesSection } from './AliasesSection'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { Warning, ArrowClockwise } from '@phosphor-icons/react'
+import { ProviderIcon } from '../../ProviderIcon'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -430,6 +431,7 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
                   key={`${f.provider}-${f.label}`}
                   label={f.provider}
                   description={f.label}
+                  icon={<ProviderIcon providerId={f.provider} size={12} />}
                 >
                   <div className="flex items-center gap-1.5">
                     <span className={`w-2 h-2 rounded-full ${healthDotClass(f.health)}`} />

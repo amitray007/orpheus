@@ -3,6 +3,7 @@ import type React from 'react'
 import type { ProviderConfigSummary, ProviderDescriptorSummary } from '@shared/types'
 import { SettingRow, Toggle, Eyebrow } from './primitives'
 import { Plus, Trash, Link, Spinner, X, CheckCircle, WarningCircle } from '@phosphor-icons/react'
+import { ProviderIcon } from '../../ProviderIcon'
 
 // ---------------------------------------------------------------------------
 // ProvidersSection (model-routing unit 05, part E + unit 07 Connect flow)
@@ -349,7 +350,10 @@ export function ProvidersSection(): React.JSX.Element | null {
 
           return (
             <div key={descriptor.id} className="py-3">
-              <SettingRow label={descriptor.label}>
+              <SettingRow
+                label={descriptor.label}
+                icon={<ProviderIcon providerId={descriptor.id} size={12} />}
+              >
                 <div className="flex items-center gap-3">
                   {summary?.connection && (
                     <span

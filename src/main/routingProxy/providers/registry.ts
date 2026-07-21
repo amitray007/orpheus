@@ -20,12 +20,20 @@
 // providers — gemini/kimi/openrouter/openai-compatible were REMOVED (data
 // deletion only, no code change elsewhere — see this file's own header
 // paragraph on why removing a provider is data-only, same as adding one).
-// All four keepers are genuinely supported by the pinned CLIProxyAPI
+// All three keepers are genuinely supported by the pinned CLIProxyAPI
 // v7.2.92: codex/xai/antigravity each have a real `-auth-url` management
 // route (verified antigravity-auth-url is registered, so it's a routable
-// provider, not just a separate harness concept), and ollama works through
-// the generic openai-compatibility config block exactly like the removed
-// openrouter/openai-compatible entries did.
+// provider, not just a separate harness concept).
+//
+// (model-routing unit 10-creation) Ollama was REMOVED as a supported
+// provider (product decision — data-only, same shape as the gemini/kimi/
+// openrouter/openai-compatible removals above): the descriptor object below
+// was deleted and nothing else changed. A user's EXISTING stored data for a
+// removed provider (routing_proxy_providers/routing_proxy_provider_api_keys
+// rows, aliases whose target_provider_id names it, persisted
+// cliproxy-model-cache entries tagged with it) is deliberately left
+// untouched in the DB — this change does not delete rows, it only removes
+// the descriptor those rows would have matched against.
 //
 // A user's EXISTING stored data for a removed provider (routing_proxy_
 // providers/routing_proxy_provider_api_keys rows, aliases whose
@@ -71,13 +79,6 @@ export const PROVIDERS: ProviderDescriptor[] = [
     authMethods: ['oauth'],
     oauthLoginFlag: '-antigravity-login',
     docsUrl: CLIPROXYAPI_DOCS_URL
-  },
-  {
-    id: 'ollama',
-    label: 'Ollama (local)',
-    authMethods: ['openaiCompatible'],
-    openaiCompatible: { defaultBaseUrl: 'http://127.0.0.1:11434/v1' },
-    docsUrl: 'https://github.com/ollama/ollama'
   }
 ]
 

@@ -87,17 +87,18 @@ async function cleanup(): Promise<void> {
   const ids = PROVIDERS.map((p) => p.id)
   assert.equal(new Set(ids).size, ids.length, 'provider ids must be unique')
 
-  // (model-routing unit 09-polish) PROVIDERS was trimmed to exactly these
-  // four ids, in this stable order — gemini/kimi/openrouter/openai-compatible
-  // were removed as descriptors (their stored data, if any, is left in the
-  // DB untouched — see registry.ts's own header comment on why removal is
+  // (model-routing unit 09-polish, then 10-creation) PROVIDERS was trimmed to
+  // exactly these three ids, in this stable order — gemini/kimi/openrouter/
+  // openai-compatible were removed in unit 09-polish, and ollama was removed
+  // in unit 10-creation (their stored data, if any, is left in the DB
+  // untouched — see registry.ts's own header comment on why removal is
   // data-only and safe).
   assert.deepEqual(
     ids,
-    ['codex', 'xai', 'antigravity', 'ollama'],
-    'PROVIDERS must contain exactly codex/xai/antigravity/ollama, in this order'
+    ['codex', 'xai', 'antigravity'],
+    'PROVIDERS must contain exactly codex/xai/antigravity, in this order'
   )
-  for (const removedId of ['gemini', 'kimi', 'openrouter', 'openai-compatible']) {
+  for (const removedId of ['gemini', 'kimi', 'openrouter', 'openai-compatible', 'ollama']) {
     assert.equal(
       getProviderDescriptor(removedId),
       null,
@@ -112,7 +113,7 @@ async function cleanup(): Promise<void> {
 
   console.log(
     '✓ descriptor registry: Claude absent, Copilot absent, ids unique, fields consistent, ' +
-      'trimmed to exactly codex/xai/antigravity/ollama'
+      'trimmed to exactly codex/xai/antigravity'
   )
 }
 
@@ -205,20 +206,32 @@ async function cleanup(): Promise<void> {
 
 // ---------------------------------------------------------------------------
 // 4. Generic provider -> correct `openai-compatibility:` entry, including
-//    models/alias/thinking levels. Uses the REAL 'ollama' descriptor
-//    (model-routing unit 09-polish: PROVIDERS was trimmed to exactly
-//    codex/xai/antigravity/ollama — this test previously used the now-
-//    removed 'openrouter' descriptor; ollama is the remaining
-//    openaiCompatible-only provider and exercises the identical code path).
+//    models/alias/thinking levels.
+//
+//    (unit 10-creation) ollama — the previous fixture for this assertion —
+//    was removed from PROVIDERS entirely (product decision: data-only
+//    removal, see registry.ts's own header comment). PROVIDERS now has NO
+//    remaining openaiCompatible-authMethod descriptor at all (codex/xai are
+//    apiKey+oauth, antigravity is oauth-only). renderProvidersYaml's
+//    openaiCompatible branch (config.ts) is selected purely by the STORED
+//    ProviderConfig.authMethod field, never by the descriptor's own
+//    authMethods array or by `id` (that's the whole "adding/removing a
+//    provider is data-only" guarantee this file exists to lock in — see
+//    assertion 2's synthetic-id case for the apiKey side of the same
+//    property). So this assertion reuses the real, still-registered 'codex'
+//    descriptor with authMethod overridden to 'openaiCompatible' purely as a
+//    fixture to exercise that code path generically — it is NOT asserting
+//    that codex is ever configured this way for real (it isn't; Settings
+//    only ever stores authMethod: 'apiKey' for codex).
 // ---------------------------------------------------------------------------
 
 {
-  const ollamaTestConfig: ProviderConfig = {
-    providerId: 'ollama',
+  const genericTestConfig: ProviderConfig = {
+    providerId: 'codex',
     enabled: true,
     authMethod: 'openaiCompatible',
     prefix: 'test',
-    displayName: 'ollama',
+    displayName: 'generic-test-endpoint',
     apiKeys: [
       {
         id: 'k1',
@@ -239,19 +252,14 @@ async function cleanup(): Promise<void> {
     ]
   }
 
-  const yaml = renderProvidersYaml([ollamaTestConfig])
+  const yaml = renderProvidersYaml([genericTestConfig])
   assert.ok('openai-compatibility' in yaml, 'must emit the shared openai-compatibility: key')
   const entries = yaml['openai-compatibility'] as Array<Record<string, unknown>>
   assert.equal(entries.length, 1)
   const entry = entries[0]
-  assert.equal(entry.name, 'ollama')
+  assert.equal(entry.name, 'generic-test-endpoint')
   assert.equal(entry.disabled, false)
   assert.equal(entry.prefix, 'test')
-  assert.equal(
-    entry['base-url'],
-    'http://127.0.0.1:11434/v1',
-    'must fall back to descriptor default base-url'
-  )
   const keyEntries = entry['api-key-entries'] as Array<Record<string, unknown>>
   assert.equal(keyEntries[0]['api-key'], 'unused-local')
   assert.equal(keyEntries[0]['proxy-url'], 'socks5://127.0.0.1:1080')
@@ -264,52 +272,56 @@ async function cleanup(): Promise<void> {
   assert.deepEqual(models[0]['output-modalities'], ['text'])
   assert.deepEqual(models[0].thinking, { levels: ['low', 'medium', 'high'] })
   console.log(
-    '✓ generic provider (ollama) renders a correct openai-compatibility: entry, incl. models/alias/thinking levels'
+    '✓ generic (openaiCompatible authMethod) config renders a correct openai-compatibility: entry, ' +
+      'incl. models/alias/thinking levels — selected purely by stored authMethod, not by provider id'
   )
 
-  // Explicit baseUrl override wins over the descriptor default.
+  // Explicit baseUrl override is used verbatim (codex's descriptor has no
+  // openaiCompatible.defaultBaseUrl to fall back to, since it's genuinely an
+  // apiKey/oauth provider — this fixture only needed a resolvable descriptor).
   const overridden = renderProvidersYaml([
-    { ...ollamaTestConfig, baseUrl: 'http://127.0.0.1:9/v1' }
+    { ...genericTestConfig, baseUrl: 'http://127.0.0.1:9/v1' }
   ])
   const overriddenEntries = overridden['openai-compatibility'] as Array<Record<string, unknown>>
   assert.equal(overriddenEntries[0]['base-url'], 'http://127.0.0.1:9/v1')
-  console.log('✓ stored baseUrl overrides the descriptor default-base-url')
+  console.log('✓ stored baseUrl is emitted verbatim when set')
 
-  // A ProviderConfig for a REMOVED provider id (openrouter — trimmed from
-  // PROVIDERS by unit 09-polish) must be silently skipped exactly like any
-  // other unregistered id — proving stale stored data for a removed
-  // provider is inert, not a crash. This is the same code path as
-  // assertion 2's synthetic-id case, exercised here with a REAL formerly-
-  // registered id to lock in the removal's safety explicitly.
+  // A ProviderConfig for a REMOVED provider id (ollama — trimmed from
+  // PROVIDERS by unit 10-creation) must be silently skipped exactly like any
+  // other unregistered id — proving a user's stale stored ollama row (an
+  // existing routing_proxy_providers/routing_proxy_provider_api_keys row
+  // left untouched in the DB by the removal) is inert everywhere config
+  // generation touches it, not a crash. Same code path as assertion 2's
+  // synthetic-id case, exercised here with the REAL formerly-registered
+  // 'ollama' id to lock in this specific removal's safety explicitly.
   const removedProviderConfig: ProviderConfig = {
-    providerId: 'openrouter',
+    providerId: 'ollama',
     enabled: true,
     authMethod: 'openaiCompatible',
-    apiKeys: [{ id: 'kx', apiKey: 'sk-stale-openrouter-key' }]
+    apiKeys: [{ id: 'kx', apiKey: 'sk-stale-ollama-key' }]
   }
-  const both = renderProvidersYaml([ollamaTestConfig, removedProviderConfig])
+  const both = renderProvidersYaml([genericTestConfig, removedProviderConfig])
   const bothEntries = both['openai-compatibility'] as Array<Record<string, unknown>>
   assert.equal(
     bothEntries.length,
     1,
-    'a stored config row for a REMOVED provider (openrouter) must be skipped entirely, never emitted'
+    'a stored config row for a REMOVED provider (ollama) must be skipped entirely, never emitted'
   )
   assert.ok(
-    !bothEntries.some((e) => e.name === 'openrouter' || e.name === undefined),
+    !bothEntries.some((e) => e.name === 'ollama' || e.name === undefined),
     'the removed-provider row must not appear in the openai-compatibility: list at all'
   )
   console.log(
-    '✓ (unit 09-polish) a stale stored config row for a REMOVED provider (openrouter) is silently skipped, ' +
+    '✓ (unit 10-creation) a stale stored config row for a REMOVED provider (ollama) is silently skipped, ' +
       'never emitted and never throws'
   )
 
-  // Two still-registered openaiCompatible providers would aggregate into
-  // ONE shared list — ollama is currently the only openaiCompatible
-  // descriptor left in PROVIDERS, so this is asserted structurally via the
-  // renderer's own aggregation logic (already proven above: ollama's entry
-  // lands in the shared openai-compatibility: array, same mechanism a
-  // second registered provider would use) rather than re-adding a second
-  // now-removed provider id just to prove aggregation still works.
+  // Two enabled openaiCompatible-authMethod rows would aggregate into ONE
+  // shared list — already proven above (genericTestConfig's entry lands in
+  // the shared openai-compatibility: array); the removed-provider row in the
+  // same call above additionally proves a mix of a live + a stale row
+  // aggregates correctly (stale one dropped, live one kept), same mechanism
+  // a second genuinely-registered openaiCompatible provider would use.
 }
 
 // ---------------------------------------------------------------------------
@@ -318,6 +330,12 @@ async function cleanup(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 {
+  // (unit 10-creation) The second row uses 'xai' — a genuinely registered
+  // descriptor — with authMethod forced to 'openaiCompatible' purely as a
+  // fixture, same rationale as assertion 4 above (ollama, the previous
+  // fixture, was removed from PROVIDERS entirely; renderProvidersYaml
+  // branches on the STORED authMethod, never on `id`, so any resolvable
+  // descriptor exercises the identical code path).
   const cfg: ProviderConfig[] = [
     {
       providerId: 'codex',
@@ -329,7 +347,7 @@ async function cleanup(): Promise<void> {
       ]
     },
     {
-      providerId: 'ollama',
+      providerId: 'xai',
       enabled: true,
       authMethod: 'openaiCompatible',
       apiKeys: [{ id: 'k3', apiKey: 'unused-local' }]

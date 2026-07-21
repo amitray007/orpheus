@@ -1764,6 +1764,51 @@ export type ChipDropdownProps = {
 export type ChipDropdownResult = { kind: 'select'; value: string } | null
 
 // ---------------------------------------------------------------------------
+// Overlay kind: chipGroupedDropdown — the footer Model chip's provider ->
+// model FLYOUT variant of chipDropdown (model-routing unit 10-creation,
+// footer follow-up). Deliberately a SEPARATE overlay kind rather than a mode
+// flag on chipDropdown/ChipDropdownProps: chipDropdown is shared by
+// footer.effortSelect and footer.dropdown (author-configured custom options),
+// neither of which has a provider concept at all, and its flat single-panel
+// contract (ChipDropdownProps/ChipDropdownResult above) stays completely
+// untouched by this addition. The flyout mechanics (single-hovered-row,
+// genuine-hover gate, left/right flip, diagonal-traversal close-delay) are
+// NOT reimplemented here — the kind (ChipGroupedDropdown.tsx) imports the
+// SAME pure reducers newWorkspaceMenuLogic.ts already exports
+// (computeSubmenuSide/reduceHoverGate/isGenuineHover/reduceRowHover), proven
+// by scripts/verify-new-workspace-menu.ts, rather than re-deriving them.
+// ---------------------------------------------------------------------------
+
+/** One provider group in the grouped dropdown's provider list — a thin,
+ *  serializable projection the call site computes (DropdownChip.tsx via
+ *  buildModelDropdownGroups); the kind never groups/filters models itself. */
+export type ChipDropdownGroup = {
+  providerId: string
+  label: string
+  models: ChipDropdownItem[]
+}
+
+/** Interactive provider -> model flyout popover — opens upward from its
+ *  anchor chip (same anchoring contract as ChipDropdownProps), but the
+ *  top-level list is providers; picking one opens a submenu of that
+ *  provider's models beside it (mirrors NewWorkspaceMenuProps' groups/view
+ *  shape, minus the creation-only isolation/branch fields this chip has no
+ *  use for). */
+export type ChipGroupedDropdownProps = {
+  groups: ChipDropdownGroup[]
+  /** Currently-selected model value — drives both the provider row's
+   *  submenu-open state (whichever group contains it) and the `●`/checkmark
+   *  inside that group's model list. */
+  selectedValue?: string
+  title?: string
+}
+
+/** Resolves on a model row click/Enter; caller resolves `null` on
+ *  Cancel/Escape/outside-click/IPC failure — same settle contract as
+ *  ChipDropdownResult. */
+export type ChipGroupedDropdownResult = { kind: 'select'; value: string } | null
+
+// ---------------------------------------------------------------------------
 // Overlay kind: workspaceSettingsCard — the workspace title bar's Settings
 // gear popover (WorkspaceSettingsPopover.tsx), migrated off the in-page
 // `Overlay` component because it opens downward off a title-bar anchor,
@@ -1802,6 +1847,81 @@ export type WorkspaceSettingsCardProps = {
 /** Partial props pushed via `overlay:update` as async loads/edits resolve —
  *  same shallow-merge contract DetailsCardProps' patches use. */
 export type WorkspaceSettingsCardPatch = Partial<WorkspaceSettingsCardProps>
+
+// ---------------------------------------------------------------------------
+// Overlay kind: newWorkspaceMenu — the "+ new workspace" popover
+// (NewWorkspaceMenu.tsx), migrated off the in-page `Overlay` component
+// (model-routing unit 10-creation) so it can paint OVER the terminal instead
+// of being clipped inside the sidebar. Long-lived + focusable + hover- AND
+// keyboard-driven, closest in shape to workspaceSettingsCard: props down,
+// events up. The call site keeps every window.api.* call (offeredModes,
+// worktrees.branchExists, workspaces.createWorktree/setModel) and all
+// selectable-model/last-used data hooks; this props bag is a pure
+// serializable snapshot, and the kind emits intent events the call site turns
+// back into state changes + a follow-up updateNewWorkspaceMenu push.
+//
+// Inverted create-flow (per the approved redesign): the top line (provider
+// icon + selected model name + an Enter-key affordance) is now the SOLE
+// create action — click or Enter creates immediately with the
+// currently-selected model + currently-selected isolation mode. Local/
+// Worktree became a two-way isolation TOGGLE (never creates by itself);
+// selecting Worktree reveals the branch input in the SAME card (no separate
+// overlay swap), and creating from the top line while Worktree is selected
+// creates the worktree workspace using whatever branch text is currently in
+// that field.
+// ---------------------------------------------------------------------------
+
+/** One provider group in the creation menu's provider list — a thin,
+ *  serializable projection of CreationProviderGroup (creationProviderMenu.ts)
+ *  that the call site computes; the kind never groups/filters models itself. */
+export type NewWorkspaceMenuGroup = {
+  providerId: string
+  label: string
+  models: SelectableModel[]
+}
+
+export type NewWorkspaceMenuView = 'providers' | 'models'
+
+export type NewWorkspaceMenuIsolation = 'local' | 'worktree'
+
+export type NewWorkspaceMenuProps = {
+  /** True while offeredModes (Local/Worktree availability) is still loading —
+   *  selectableModels never gates the picker (see NewWorkspaceMenu.tsx's own
+   *  doc comment: the Claude-only fallback is synchronous). */
+  loading: boolean
+  /** Every provider group the popover can show — Claude always present. */
+  groups: NewWorkspaceMenuGroup[]
+  /** 'providers' (top-level list) or 'models' (a specific provider's models,
+   *  shown when the user hovers/clicks a provider row). */
+  view: NewWorkspaceMenuView
+  /** The provider whose model list is showing in the 'models' view — undefined
+   *  while on the 'providers' view. */
+  activeProviderId?: string
+  /** The currently-selected provider/model — drives the top line AND what
+   *  Local/Worktree create with. Undefined selectedModelId means "use the
+   *  global/project default" (Claude's unchanged pre-existing behavior). */
+  selectedProviderId?: string
+  selectedModelId?: string
+  /** Which isolation mode is currently toggled — drives whether the branch
+   *  panel is shown. Defaults to 'local' when the popover first opens. */
+  isolation: NewWorkspaceMenuIsolation
+  /** Local/Worktree availability for this project (see app:offeredModes) —
+   *  undefined while `loading` is true. */
+  modes?: { local: boolean; worktree: boolean }
+  /** Per-provider "last used" marker (session-scoped) so the model list can
+   *  show a `●` next to the right row without the kind computing it itself. */
+  lastUsedModelIdByProvider: Record<string, string>
+  // --- Worktree/branch-panel fields (only rendered when isolation === 'worktree') ---
+  branchValue: string
+  /** null = not checked yet/empty input, true/false = debounced check result. */
+  branchExists: boolean | null
+  branchCreating: boolean
+  branchError?: string
+}
+
+/** Partial props pushed via `overlay:update` — same shallow-merge contract
+ *  WorkspaceSettingsCardPatch/DetailsCardProps patches use. */
+export type NewWorkspaceMenuPatch = Partial<NewWorkspaceMenuProps>
 
 // ---------------------------------------------------------------------------
 // Workbench Files tab — file tree + viewer data sources (Stage A backend).
