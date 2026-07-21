@@ -52,6 +52,10 @@ import {
   persistCliProxyModelCache
 } from '../models/cliProxyModelCachePersistence'
 import { raceWithTimeout } from '../models/cliProxyModelCacheStaleness'
+import {
+  loadPersistedHealthyProviderIds,
+  persistHealthyProviderIds
+} from './providerConnectionPersistence'
 import { listProviderConfigs } from './providers/storage'
 import { listModelAliases } from './aliases'
 import {
@@ -362,6 +366,13 @@ async function refreshAuthFiles(): Promise<void> {
   if (!secret || !isRunning()) return
   const files = await fetchRoutingProxyAuthFiles(getRoutingProxyUrl(), secret)
   setSnapshot({ authFiles: files, authFilesCheckedAt: Date.now() })
+  // (model-routing unit 09-polish) Persist the live-healthy provider id set
+  // after every successful fetch — this is the write side of the startup-
+  // window fix (see providerConnectionPersistence.ts's own doc comment and
+  // models/selectable.ts's persistedAvailabilityFor for the read/consuming
+  // side). Fire-and-forget, same as persistCliProxyModelCache below — never
+  // blocks, never throws.
+  persistHealthyProviderIds(files.filter((f) => f.health === 'ok').map((f) => f.provider))
   // Best-effort — refreshCliProxyModelCache never throws (see its own doc
   // comment) and populates the model registry's cliProxyModelSource cache so
   // routed-provider models pick up real context/thinking facts once the
@@ -742,6 +753,28 @@ export function shutdownRoutingProxySync(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Persisted-healthy-provider-ids in-memory holder (model-routing
+// unit 09-polish) — hydrated once at boot (below), read by
+// getPersistedHealthyProviderIds() (ipc/models.ts's collectSelectableInput).
+// Deliberately never mutated after boot hydration by anything other than a
+// fresh hydrateSnapshotAtBoot() call — the LIVE authFiles data in `snapshot`
+// is what actually drives availability after boot (see
+// models/selectable.ts's persistedAvailabilityFor); this module-level value
+// only ever answers "what did we know as of process start".
+// ---------------------------------------------------------------------------
+
+let persistedHealthyProviderIdsAtBoot: Set<string> = new Set()
+
+/** Read-only accessor for ipc/models.ts — the startup-window fallback set
+ *  hydrated once at boot. Never empty-checked specially by callers; an
+ *  empty set behaves identically to "no persisted fallback available",
+ *  which is also this variable's default before hydrateSnapshotAtBoot runs
+ *  (or when nothing was ever persisted). */
+export function getPersistedHealthyProviderIds(): Set<string> {
+  return persistedHealthyProviderIdsAtBoot
+}
+
+// ---------------------------------------------------------------------------
 // Boot-time snapshot hydration — call once at startup before reconcile.
 // ---------------------------------------------------------------------------
 
@@ -768,6 +801,17 @@ export function hydrateSnapshotAtBoot(): Promise<void> {
   // effort levels), never bypasses health gating.
   const persisted = loadPersistedCliProxyModelCache()
   if (persisted) hydrateCliProxyModelCacheFromPersisted(persisted.entries)
+  // (model-routing unit 09-polish) Seed the persisted-healthy-provider-ids
+  // fallback the SAME way, synchronously, no network I/O — this is the
+  // startup-window fix: the FIRST models:listSelectable call of this run can
+  // now offer a provider's routed models even while the proxy is still
+  // 'starting' and live authFiles is still empty, provided that provider was
+  // healthy last session (see models/selectable.ts's persistedAvailabilityFor
+  // for the full precedence rule — live data always wins the instant it
+  // arrives). loadPersistedHealthyProviderIds returns null (not just an
+  // empty set) on version-mismatch/TTL-expiry/never-written, all of which
+  // correctly collapse to "no fallback" here.
+  persistedHealthyProviderIdsAtBoot = loadPersistedHealthyProviderIds() ?? new Set()
   return Promise.resolve()
 }
 

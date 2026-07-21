@@ -59,7 +59,8 @@ export function claudeFallbackModels(currentModelId?: string): SelectableModel[]
     isClaude: true,
     available: true,
     contextWindow: null,
-    effortLevels: null
+    effortLevels: null,
+    provisional: false
   }))
   if (currentModelId && !CLAUDE_MODEL_OPTIONS.some((o) => o.value === currentModelId)) {
     claude.push({
@@ -70,7 +71,8 @@ export function claudeFallbackModels(currentModelId?: string): SelectableModel[]
       isClaude: false,
       available: false,
       contextWindow: null,
-      effortLevels: null
+      effortLevels: null,
+      provisional: false
     })
   }
   return claude

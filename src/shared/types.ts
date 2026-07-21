@@ -2226,6 +2226,17 @@ export interface SelectableModel {
    *  model has none — the effort control must be disabled/hidden for a model
    *  with no levels, never fall back to a generic list. */
   effortLevels: string[] | null
+  /** True when this entry's `available: true` is a startup-window
+   *  optimisation (persisted-last-session connection state), not a
+   *  LIVE-confirmed health signal yet — see selectable.ts's
+   *  persistedAvailability doc comment (model-routing unit 09-polish). Always
+   *  false for Claude and for any routed entry backed by real live authFiles
+   *  data. The picker MAY show a subtle "connecting…" affordance for a
+   *  provisional entry; it must never be treated as less real for selection
+   *  purposes — the actual safety backstop is ensureHealthyForRouting's
+   *  fail-closed gate at mount time, which still runs regardless of this
+   *  flag. */
+  provisional: boolean
 }
 
 // ---------------------------------------------------------------------------

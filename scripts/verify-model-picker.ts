@@ -1286,4 +1286,255 @@ function baseInput(
   setCliProxyModelCacheForTests(null)
 }
 
+// ---------------------------------------------------------------------------
+// 16. (model-routing unit 09-polish) THE STARTUP-RACE BUG — user's exact
+//     report: app opens directly on a workspace, the proxy is still
+//     'starting', authFiles is still empty, so the footer picker showed
+//     Claude-only even though a provider (e.g. Codex) was connected and
+//     healthy last session. This assertion FAILS against pre-fix
+//     buildSelectableModels (no persistedHealthyProviderIds param existed at
+//     all, so a 'starting' proxy with empty authFiles always omitted every
+//     routed model, full stop).
+// ---------------------------------------------------------------------------
+
+{
+  const providerConfigs: ProviderConfigInput[] = [{ providerId: 'codex', enabled: true }]
+  const cliProxyModels = [{ modelId: 'gpt-5.6-terra', providerId: 'codex', context: 200_000 }]
+
+  const duringStartup = buildSelectableModels(
+    baseInput({
+      routingProxy: { enabled: true, status: 'starting', authFiles: [] },
+      providerConfigs,
+      cliProxyModels,
+      persistedHealthyProviderIds: new Set(['codex'])
+    })
+  )
+  const codexEntry = duringStartup.find((m) => m.id === 'gpt-5.6-terra')
+  assert.ok(
+    codexEntry,
+    'THE REPORTED BUG: a provider known-healthy last session must be offered during the proxy startup ' +
+      'window (status starting, authFiles still empty) — not held back until the first live authFiles tick'
+  )
+  assert.equal(
+    codexEntry!.available,
+    true,
+    'the startup-window fallback entry must be available: true'
+  )
+  assert.equal(
+    codexEntry!.provisional,
+    true,
+    'a startup-window fallback entry must be marked provisional — it is a pre-live-data optimisation, ' +
+      'not a live-confirmed health signal'
+  )
+  console.log(
+    '✓ (unit 09-polish) THE REPORTED BUG: a provider known-healthy last session is offered during the ' +
+      "proxy's startup window (status 'starting', authFiles still empty), marked provisional"
+  )
+
+  // Without the persisted fallback (e.g. first-ever run, or nothing was
+  // ever recorded), the SAME startup-window state must still correctly
+  // withhold the model — this is not a blanket "offer everything while
+  // starting" softening, it's strictly gated on persisted history.
+  const duringStartupNoHistory = buildSelectableModels(
+    baseInput({
+      routingProxy: { enabled: true, status: 'starting', authFiles: [] },
+      providerConfigs,
+      cliProxyModels
+      // persistedHealthyProviderIds omitted entirely
+    })
+  )
+  assert.ok(
+    !duringStartupNoHistory.some((m) => m.id === 'gpt-5.6-terra'),
+    'without any persisted history, a provider must NOT be offered during the startup window — this is a ' +
+      'fallback for known-previously-healthy providers only, never a blanket startup softening'
+  )
+  console.log(
+    '✓ (unit 09-polish) without persisted history, the startup window offers nothing extra — the fallback ' +
+      'is strictly gated on prior-session data, not a blanket softening'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 17. (model-routing unit 09-polish) Live authFiles data ALWAYS overrides a
+//     stale persisted-healthy entry — the instant a live authFiles entry
+//     exists (healthy OR unhealthy), it alone decides, regardless of what
+//     was persisted. This is the "never let staleness win over live truth"
+//     invariant.
+// ---------------------------------------------------------------------------
+
+{
+  const providerConfigs: ProviderConfigInput[] = [{ providerId: 'codex', enabled: true }]
+  const cliProxyModels = [{ modelId: 'gpt-5.6-terra', providerId: 'codex', context: 200_000 }]
+
+  // Proxy is already 'running' (past the startup window in status terms) but
+  // the LIVE authFiles entry for codex reports 'error' — persisted history
+  // said healthy, but live data must win: the model must NOT be offered.
+  const liveUnhealthyOverridesPersisted = buildSelectableModels(
+    baseInput({
+      routingProxy: {
+        enabled: true,
+        status: 'running',
+        authFiles: [{ provider: 'codex', health: 'error' }]
+      },
+      providerConfigs,
+      cliProxyModels,
+      persistedHealthyProviderIds: new Set(['codex'])
+    })
+  )
+  assert.ok(
+    !liveUnhealthyOverridesPersisted.some((m) => m.id === 'gpt-5.6-terra' && m.available),
+    'a LIVE authFiles entry reporting unhealthy must override a stale persisted-healthy record — staleness ' +
+      'must never win over live truth'
+  )
+  console.log(
+    '✓ (unit 09-polish) live authFiles reporting unhealthy OVERRIDES a stale persisted-healthy record'
+  )
+
+  // Same scenario but status still 'starting' with a live (already-arrived)
+  // unhealthy entry — proves the override applies during the startup window
+  // too, not just once status flips to 'running'.
+  const liveUnhealthyDuringStartup = buildSelectableModels(
+    baseInput({
+      routingProxy: {
+        enabled: true,
+        status: 'starting',
+        authFiles: [{ provider: 'codex', health: 'error' }]
+      },
+      providerConfigs,
+      cliProxyModels,
+      persistedHealthyProviderIds: new Set(['codex'])
+    })
+  )
+  assert.ok(
+    !liveUnhealthyDuringStartup.some((m) => m.id === 'gpt-5.6-terra' && m.available),
+    'a live unhealthy entry overrides persisted-healthy even while the proxy is still starting'
+  )
+  console.log(
+    '✓ (unit 09-polish) the live-overrides-persisted rule holds during the startup window too, not just ' +
+      "once status is 'running'"
+  )
+
+  // And the positive case for completeness: once a LIVE healthy entry
+  // arrives, the entry is offered as fully live (NOT provisional), even
+  // though it's also in the persisted set — live data, once present, is
+  // authoritative and the provisional flag must reflect that.
+  const liveHealthy = buildSelectableModels(
+    baseInput({
+      routingProxy: {
+        enabled: true,
+        status: 'running',
+        authFiles: [{ provider: 'codex', health: 'ok' }]
+      },
+      providerConfigs,
+      cliProxyModels,
+      persistedHealthyProviderIds: new Set(['codex'])
+    })
+  )
+  const liveEntry = liveHealthy.find((m) => m.id === 'gpt-5.6-terra')
+  assert.ok(liveEntry?.available, 'a live-healthy entry must be offered')
+  assert.equal(
+    liveEntry!.provisional,
+    false,
+    'once live authFiles data confirms health, the entry must NOT be marked provisional, even though it ' +
+      'also appears in the persisted-healthy set'
+  )
+  console.log(
+    '✓ (unit 09-polish) a live-confirmed-healthy entry is never marked provisional, even when it also ' +
+      'appears in the persisted set'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 18. (model-routing unit 09-polish) Provider disabled/removed since the
+//     persisted payload was recorded -> the persisted entry must NOT be
+//     used, even during the startup window.
+// ---------------------------------------------------------------------------
+
+{
+  const cliProxyModels = [{ modelId: 'gpt-5.6-terra', providerId: 'codex', context: 200_000 }]
+
+  const disabled = buildSelectableModels(
+    baseInput({
+      routingProxy: { enabled: true, status: 'starting', authFiles: [] },
+      providerConfigs: [{ providerId: 'codex', enabled: false }],
+      cliProxyModels,
+      persistedHealthyProviderIds: new Set(['codex'])
+    })
+  )
+  assert.ok(
+    !disabled.some((m) => m.id === 'gpt-5.6-terra'),
+    'a provider disabled in stored config must not be resurrected by persisted startup-window history'
+  )
+
+  const removed = buildSelectableModels(
+    baseInput({
+      routingProxy: { enabled: true, status: 'starting', authFiles: [] },
+      providerConfigs: [], // no stored config row at all
+      cliProxyModels,
+      persistedHealthyProviderIds: new Set(['codex'])
+    })
+  )
+  assert.ok(
+    !removed.some((m) => m.id === 'gpt-5.6-terra'),
+    'a provider with no stored config row at all must not be resurrected by persisted startup-window history'
+  )
+  console.log(
+    '✓ (unit 09-polish) provider disabled/removed from config -> persisted startup-window history is not used'
+  )
+
+  // Master proxy-disabled case too: even with persisted history and a
+  // configured+enabled provider, an explicitly disabled/errored/stopped
+  // proxy must never be softened by the startup-window fallback — that
+  // fallback exists for a BRIEF startup gap, never for an affirmative outage.
+  for (const status of ['error', 'stopped', 'not_installed'] as const) {
+    const outage = buildSelectableModels(
+      baseInput({
+        routingProxy: { enabled: true, status, authFiles: [] },
+        providerConfigs: [{ providerId: 'codex', enabled: true }],
+        cliProxyModels,
+        persistedHealthyProviderIds: new Set(['codex'])
+      })
+    )
+    assert.ok(
+      !outage.some((m) => m.id === 'gpt-5.6-terra'),
+      `status '${status}' must never be softened by the startup-window fallback — it is an affirmative ` +
+        'outage state, not a brief startup gap'
+    )
+  }
+  console.log(
+    '✓ (unit 09-polish) an affirmative outage status (error/stopped/not_installed) is never softened by ' +
+      'the startup-window fallback, even with matching persisted history'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 19. (model-routing unit 09-polish) Claude-only offline guarantee, re-
+//     proven once more with the proxy fully down — must return immediately
+//     and be completely unaffected by ANY persistedHealthyProviderIds value,
+//     including a maximally-populated one.
+// ---------------------------------------------------------------------------
+
+{
+  const start = Date.now()
+  const claudeOnly = buildSelectableModels(
+    baseInput({
+      routingProxy: { enabled: false, status: 'not_installed', authFiles: [] },
+      providerConfigs: [{ providerId: 'codex', enabled: true }],
+      cliProxyModels: [{ modelId: 'gpt-5.6-terra', providerId: 'codex', context: 200_000 }],
+      persistedHealthyProviderIds: new Set(['codex', 'xai', 'antigravity'])
+    })
+  )
+  const elapsedMs = Date.now() - start
+  assert.ok(
+    claudeOnly.length > 0 && claudeOnly.every((m) => m.isClaude && m.available),
+    'Claude-only offline guarantee must hold even with a fully-populated persisted-healthy set, when the ' +
+      'proxy itself is disabled'
+  )
+  assert.ok(elapsedMs < 5, 'buildSelectableModels must still resolve synchronously')
+  console.log(
+    '✓ (unit 09-polish) Claude-only offline guarantee unaffected by persistedHealthyProviderIds when the ' +
+      'proxy is fully disabled — resolves synchronously'
+  )
+}
+
 console.log('\nAll model-picker assertions passed.')

@@ -19,7 +19,8 @@ import { listCliProxyModelCacheEntries } from '../models/sources/cliproxy'
 import {
   getRoutingProxySnapshot,
   ensureCliProxyModelCacheFresh,
-  waitForCliProxyModelCacheFresh
+  waitForCliProxyModelCacheFresh,
+  getPersistedHealthyProviderIds
 } from '../routingProxy/manager'
 import { listProviderConfigs } from '../routingProxy/providers/storage'
 import { PROVIDERS } from '../routingProxy/providers/registry'
@@ -47,7 +48,11 @@ function collectSelectableInput(currentModelId: string | undefined): BuildSelect
     })),
     providerDescriptors: PROVIDERS.map((p) => ({ id: p.id, label: p.label })),
     cliProxyModels: listCliProxyModelCacheEntries(),
-    currentModelId
+    currentModelId,
+    // (model-routing unit 09-polish) Startup-window fallback — see
+    // models/selectable.ts's persistedAvailabilityFor for the precedence
+    // rule that keeps this from ever overriding live authFiles data.
+    persistedHealthyProviderIds: getPersistedHealthyProviderIds()
   }
 }
 
