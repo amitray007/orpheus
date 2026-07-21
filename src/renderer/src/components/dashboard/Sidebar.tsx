@@ -402,29 +402,42 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
           type="button"
           onClick={onSelect}
           className={[
-            'flex items-center pl-3 pr-9 flex-1 text-left min-w-0 h-8',
+            'flex items-center pl-3 pr-[51px] flex-1 text-left min-w-0 h-8',
             'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md',
             'cursor-pointer'
           ].join(' ')}
           aria-label={workspace.name}
         >
-          {/* Line 1: provider icon · status icon · title · fork badge · time/archive */}
+          {/* Line 1: worktree/fork badge · status icon · title — provider icon
+              + time/archive live in the trailing absolute cluster below. */}
           <span className="flex items-center gap-1.5 min-w-0">
-            {/* Provider icon slot — fixed-width (matches ProviderIcon's
-                size={14}) so the row's contents (status dot, title) never
-                shift left/right depending on whether the icon has resolved
-                yet. Formerly this leading space was bare pl-8 padding on the
-                button (32px of dead space before the status dot); the
-                padding above was reduced to pl-3 (12px) so this slot fills
-                the reclaimed space instead of sitting empty — the status dot
-                still lands at the same 32px offset (12px pad + 14px slot +
-                6px gap) as before, preserving the row's nested-under-project
-                indent. WorkspaceProviderIcon itself renders nothing until
-                the workspace's effective model resolves to a known provider
-                (see its own doc comment); this wrapper is what keeps that
-                "nothing" from collapsing the slot's width. */}
+            {/* Leading badge slot — worktree/fork only. Fixed-width (w-3.5,
+                same 14px box the provider icon used to occupy here before it
+                moved to the trailing edge) so the status dot below lands at
+                the SAME 32px offset as before and matches the sibling pl-8
+                rows ("Add workspace"/"Show more") and the parent ProjectRow's
+                indent: 12px pad (pl-3) + 14px slot + 6px gap (gap-1.5) = 32px.
+                These badges are rare — the slot sits empty most of the time,
+                which is intentional (kept at 14px purely to preserve the
+                status-dot offset, not because the icons need that much room).
+                Priority when a workspace is BOTH forked AND worktree-backed:
+                show the worktree badge only. A worktree is the structurally
+                bigger fact (a whole separate checkout on disk) vs. fork being
+                lineage metadata about where the session started, and the slot
+                is sized for exactly one glyph — showing both would require
+                widening the slot for a case that barely occurs. */}
             <span className="flex items-center justify-center w-3.5 h-3.5 flex-shrink-0">
-              <WorkspaceProviderIcon workspaceId={workspace.id} />
+              {!renaming && workspace.worktreeParentCwd && (
+                <WorktreeBadge workspace={workspace} size={12} />
+              )}
+              {!renaming && !workspace.worktreeParentCwd && workspace.forkedFromSessionId && (
+                <GitFork
+                  size={11}
+                  weight="duotone"
+                  className="text-text-muted flex-shrink-0"
+                  aria-label="forked workspace"
+                />
+              )}
             </span>
 
             {/* Status icon slot */}
@@ -435,8 +448,9 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
               <WorkspaceStatusIcon isClosed={isClosed} activity={activity} active={active} />
             </span>
 
-            {/* Title area */}
-            <span className="flex items-center gap-1 min-w-0 flex-1">
+            {/* Title area — gains the width the fork/worktree badges used to
+                occupy here now that they've moved to the leading slot. */}
+            <span className="flex items-center min-w-0 flex-1">
               {renaming ? (
                 <RenameInput
                   ariaLabel="Rename workspace"
@@ -461,40 +475,72 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
                   {dn.text}
                 </span>
               )}
-              {/* Fork badge — after title */}
-              {!renaming && workspace.forkedFromSessionId && (
-                <GitFork
-                  size={10}
-                  weight="duotone"
-                  className="text-text-muted flex-shrink-0"
-                  aria-label="forked workspace"
-                />
-              )}
-              {/* Worktree badge — after fork badge */}
-              {!renaming && <WorktreeBadge workspace={workspace} />}
             </span>
           </span>
         </button>
 
-        {/* Trailing slot: time and archive share the same absolute position at the right edge */}
-        {!renaming && relativeTime && !hovered && (
-          <span className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center h-8 w-8 pointer-events-none">
-            <span className="text-[11px] text-text-muted tabular-nums">{relativeTime}</span>
+        {/* Trailing cluster: provider icon (always visible, even on hover) +
+            time/archive (time swaps to archive on hover). One absolute box
+            at the right edge so the provider icon's position never depends
+            on hover state — only the time<->archive swap happens. Width is
+            provider slot (11px, exact icon size) + gap-1 (4px breathing
+            room so the archive button's hover fill doesn't butt against the
+            provider icon) + time/archive slot (32px) = 47px, inset 2px from
+            the edge (right-0.5) — the button's pr-[51px] (47px + 4px
+            breathing room before the title) reserves enough that the title
+            truncates before colliding with it. The time/archive box stays
+            w-8 (32px, its original size) since it doubles as the archive
+            button's click target and shouldn't shrink. Net effect on title
+            width vs. the prior layout: rows WITH a fork/worktree badge gain
+            room (the badge moved out of the title's flex and into the fixed
+            leading slot, which no longer competes with the title text).
+            Plain rows (no badge — the common case) lose ~13-15px, because
+            this trailing cluster now permanently reserves space for the
+            provider icon plus the inter-slot gap where neither was reserved
+            here before — that space is the unavoidable cost of making the
+            provider icon hover-persistent at the trailing edge without it
+            visually colliding with the archive button's hover fill. */}
+        <span className="absolute right-0.5 top-1/2 -translate-y-1/2 flex items-center gap-1 h-8">
+          <span className="flex items-center justify-center w-[11px] h-8 flex-shrink-0 pointer-events-none">
+            <WorkspaceProviderIcon workspaceId={workspace.id} size={11} />
           </span>
-        )}
-        {!renaming && hovered && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation()
-              onArchive()
-            }}
-            className="absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
-            aria-label="Archive workspace"
-          >
-            <Archive size={13} />
-          </button>
-        )}
+          {/* Time/archive slot — ALWAYS reserves w-8 (32px), even when
+              nothing renders inside it (renaming, or no relativeTime yet,
+              e.g. a workspace mid-creation). The slot's existence must not
+              depend on whether its content exists; only the content swap
+              (time <-> archive on hover) is conditional. This is what keeps
+              the provider icon from jumping into this slot's position when
+              relativeTime is momentarily empty. */}
+          <span className="flex items-center justify-center h-8 w-8 flex-shrink-0">
+            {!renaming && relativeTime && !hovered && (
+              <span className="pointer-events-none text-[11px] text-text-muted tabular-nums">
+                {relativeTime}
+              </span>
+            )}
+            {!renaming && hovered && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onArchive()
+                }}
+                className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
+                aria-label="Archive workspace"
+              >
+                {/* Fill is inset inside the 32px hit target rather than
+                    covering it — a 24px (w-6 h-6) rounded square centered in
+                    the slot — so the hover background reads as a compact
+                    icon-button chip next to the 11px provider icon instead
+                    of a full 32px block. The outer button keeps w-8 h-8 so
+                    the click target does not shrink; only the visible fill
+                    is smaller. */}
+                <span className="flex items-center justify-center w-6 h-6 rounded-md transition-colors duration-150 hover:bg-surface-overlay">
+                  <Archive size={13} />
+                </span>
+              </button>
+            )}
+          </span>
+        </span>
         {menu && (
           <ContextMenu
             x={menu.x}
@@ -871,24 +917,34 @@ const ProjectRow = memo(function ProjectRow({
         {/* Right controls: add workspace + chevron. Each button is 32x32. */}
         {!renaming && (
           <div className="flex items-center gap-0.5 pr-1 flex-shrink-0">
-            {/* Add workspace — visible on hover */}
-            {hovered && (
-              <NewWorkspaceMenu
-                projectId={project.id}
-                defaultName={nextWorkspaceName(workspaces)}
-                onCreateLocal={(modelId) => onAddWorkspace(modelId)}
-                onCreated={(ws) => onSelectWorkspace(ws.id)}
+            {/* Add workspace — CSS-visible-on-hover (opacity), not
+                conditionally MOUNTED on `hovered` — NewWorkspaceMenu now owns
+                a native-overlay popover with its own hover-intent timers
+                (model-routing unit 10-creation); unmounting the trigger the
+                instant the pointer leaves this row (which fires well before
+                the pointer reaches the popover, since the popover is a
+                separate screen-space window, not a DOM descendant of this
+                row) would tear the popover down out from under an in-transit
+                pointer — exactly the reported "popover disappears as I move
+                towards it" bug, just one level up from NewWorkspaceMenu's own
+                fix. Kept mounted always; `group-hover` (from the row's own
+                `group` class above) only toggles visibility/hit-testing. */}
+            <NewWorkspaceMenu
+              projectId={project.id}
+              defaultName={nextWorkspaceName(workspaces)}
+              onCreateLocal={(modelId) => onAddWorkspace(modelId)}
+              onCreated={(ws) => onSelectWorkspace(ws.id)}
+              className={hovered ? '' : 'opacity-0 pointer-events-none'}
+            >
+              <button
+                type="button"
+                className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
+                title="New workspace"
+                aria-label="New workspace"
               >
-                <button
-                  type="button"
-                  className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
-                  title="New workspace"
-                  aria-label="New workspace"
-                >
-                  <Plus size={14} weight="bold" />
-                </button>
-              </NewWorkspaceMenu>
-            )}
+                <Plus size={14} weight="bold" />
+              </button>
+            </NewWorkspaceMenu>
 
             {/* Expand/collapse chevron */}
             <button
@@ -924,6 +980,11 @@ const ProjectRow = memo(function ProjectRow({
           onCreateLocal={(modelId) => onAddWorkspace(modelId)}
           onCreated={(ws) => onSelectWorkspace(ws.id)}
           className="w-full mt-0.5"
+          // This project's "+" trigger above is ALSO always mounted, so both
+          // instances would otherwise derive the identical overlay id from
+          // projectId alone — idSuffix keeps them from aliasing (see
+          // NewWorkspaceMenuProps.idSuffix's doc comment).
+          idSuffix="empty"
         >
           <button
             type="button"
