@@ -13,6 +13,7 @@ import { setAuthoritativeActiveWorkspace, getActiveRemount } from '@/lib/freezeW
 import { bumpActivityTime, deleteActivityTime } from '@/lib/activityTimeStore'
 import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
+import { setWorkspaceModel, deleteWorkspaceModel } from '@/lib/workspaceModelStore'
 import { setPr, deletePr } from '@/lib/prStore'
 import { removeWorkbenchEntry } from '@/lib/workbenchStore'
 import { removeWorkbenchTerminalsEntry } from '@/lib/workbenchTerminalsStore'
@@ -346,6 +347,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteActivityTime(workspaceId)
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
+      deleteWorkspaceModel(workspaceId)
       deletePr(workspaceId)
       removeWorkbenchEntry(workspaceId)
       removeWorkbenchTerminalsEntry(workspaceId)
@@ -1109,7 +1111,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   )
 
   const handleAddWorkspace = useCallback(
-    async (projectId: string): Promise<void> => {
+    async (projectId: string, modelId?: string): Promise<void> => {
       // Read synchronously from refs — setState updaters are not guaranteed to
       // run synchronously in React 18+ createRoot, so reading state via a
       // functional updater callback is unreliable here.
@@ -1128,6 +1130,24 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           cwd: finalPath
         })
         playSound('pop')
+        // Creation-time model routing (unit 10): when the creation popover
+        // chose a non-default model, persist it to the SAME per-workspace
+        // storage the footer Model chip writes (workspace:setModel ->
+        // claude_workspace_settings) BEFORE navigating/mounting — this is the
+        // only restart-free moment to route a brand-new workspace, since
+        // composeClaudeLaunch reads this setting at terminal:mount time.
+        // Awaited (not fire-and-forget) so the setting is durably persisted
+        // before handleSelectWorkspace below triggers WorkspaceView's mount
+        // effect. Also seed the sidebar's provider-icon cache optimistically
+        // — no need to wait for the row's own fetch-on-mount round trip.
+        if (modelId) {
+          try {
+            await window.api.workspaces.setModel(newWs.id, modelId)
+            setWorkspaceModel(newWs.id, modelId)
+          } catch (err) {
+            console.error('[dashboard] failed to set creation-time model', err)
+          }
+        }
         // Append the newly-created workspace directly to local state instead of
         // re-fetching the full list — the create IPC already returned everything
         // we need. Eliminates a redundant DB roundtrip before the user can see
@@ -1208,6 +1228,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteActivityTime(workspaceId)
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
+      deleteWorkspaceModel(workspaceId)
       deletePr(workspaceId)
       removeWorkbenchEntry(workspaceId)
       removeWorkbenchTerminalsEntry(workspaceId)
@@ -1250,6 +1271,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteActivityTime(workspaceId)
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
+      deleteWorkspaceModel(workspaceId)
       deletePr(workspaceId)
       removeWorkbenchEntry(workspaceId)
       removeWorkbenchTerminalsEntry(workspaceId)
@@ -1374,6 +1396,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         deleteActivityTime(ws.id)
         deleteTitle(ws.id)
         deleteGitStatus(ws.id)
+        deleteWorkspaceModel(ws.id)
         deletePr(ws.id)
         removeWorkbenchEntry(ws.id)
         removeWorkbenchTerminalsEntry(ws.id)

@@ -12,6 +12,7 @@ import {
 } from '@/lib/overlayClient'
 import { playSound } from '../../../lib/sound'
 import { useSelectableModels } from '@/lib/useSelectableModels'
+import { setWorkspaceModel } from '@/lib/workspaceModelStore'
 import { buildModelDropdownItems } from '@/lib/modelPickerOptions'
 import type { FooterActionItem } from './useFooterActions'
 
@@ -261,6 +262,11 @@ export function DropdownChip({
     onSelect = (value: string): void => {
       const newModelIsClaude = selectableModels.find((m) => m.id === value)?.isClaude ?? false
       setModelValue(value)
+      // Keep the sidebar's provider-icon prefix (WorkspaceProviderIcon) in
+      // sync immediately — same cache the row's fetch-on-mount populates, so
+      // switching models here never leaves the sidebar icon stale until a
+      // remount.
+      setWorkspaceModel(workspaceId, value)
       // Persist first (also suppresses the dirty flag when the switch is
       // live-applicable — see setWorkspaceSettingAndSuppressDirty's own
       // isLiveApplicableModelChange gate) so a genuinely busy workspace
