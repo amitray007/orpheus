@@ -278,6 +278,18 @@ function alias(
 //     per-key config.yaml block at all (its credential lives in auth-dir),
 //     so there is nothing for an alias to "append" to; the whole channel's
 //     entry is just its alias list.
+//
+//     Every entry must carry `fork: true` — see config.ts's
+//     renderOauthModelAliasYaml doc comment for the full regression writeup.
+//     This assertion (checking the exact {name, alias, fork} shape) FAILS
+//     against commit 3b9bb648, which emitted {name, alias} with no `fork`
+//     key at all — that was the actual regression: CLIProxyAPI's
+//     OAuthModelAlias struct defaults Fork to false/omitted, and a
+//     false/omitted Fork makes the alias REPLACE the upstream model in
+//     listings/routing instead of adding alongside it (verified against
+//     sdk/cliproxy/service.go's applyOAuthModelAliasEntries + the pinned
+//     v7.2.92 test file service_oauth_model_alias_test.go's
+//     TestApplyOAuthModelAlias_Rename vs _ForkAddsAlias).
 // ---------------------------------------------------------------------------
 
 {
@@ -286,12 +298,19 @@ function alias(
   })
   assert.deepEqual(
     yaml,
-    { codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' }] },
-    'renderOauthModelAliasYaml must emit exactly {channel: [{name, alias}]} for an oauth-routed alias'
+    { codex: [{ name: 'gpt-5.6-terra', alias: 'claude-sonnet-5', fork: true }] },
+    'renderOauthModelAliasYaml must emit exactly {channel: [{name, alias, fork: true}]} for an oauth-routed alias — ' +
+      'this is the unit-09-polish regression fix; a missing fork:true here means the alias silently ' +
+      'consumes the upstream model id (the reported "502 unknown provider for model gpt-5.6-sol" bug)'
   )
-  console.log('✓ renderOauthModelAliasYaml emits the correct {channel: [{name, alias}]} shape')
+  console.log(
+    '✓ renderOauthModelAliasYaml emits the correct {channel: [{name, alias, fork: true}]} shape'
+  )
 
-  // Multiple channels, multiple aliases per channel.
+  // Every emitted entry, across every channel, must carry fork: true —
+  // scanned generically rather than re-asserting one shape, so this catches
+  // a regression that only drops fork on a LATER entry (e.g. an accidental
+  // per-index conditional) as well as a blanket omission.
   const multi = renderOauthModelAliasYaml({
     codex: [
       { name: 'gpt-5.6-terra', alias: 'claude-sonnet-5' },
@@ -302,7 +321,33 @@ function alias(
   assert.equal(Object.keys(multi).length, 2, 'must emit one key per channel')
   assert.equal((multi.codex as unknown[]).length, 2)
   assert.equal((multi.xai as unknown[]).length, 1)
-  console.log('✓ renderOauthModelAliasYaml handles multiple channels/aliases correctly')
+  for (const [channel, entries] of Object.entries(multi)) {
+    for (const entry of entries as Array<Record<string, unknown>>) {
+      assert.equal(
+        entry.fork,
+        true,
+        `every emitted oauth-model-alias entry must carry fork: true (channel ${channel}, entry ${JSON.stringify(entry)})`
+      )
+    }
+  }
+  console.log(
+    '✓ renderOauthModelAliasYaml handles multiple channels/aliases correctly, every entry carries fork: true'
+  )
+
+  // Round-trip through yaml.stringify (what actually gets written to disk)
+  // to prove `fork: true` survives serialization in the expected shape, not
+  // just in the in-memory object renderOauthModelAliasYaml returns.
+  const { stringify: yamlStringify, parse: yamlParse } = await import('yaml')
+  const roundTripped = yamlParse(yamlStringify({ 'oauth-model-alias': multi })) as Record<
+    string,
+    Record<string, Array<Record<string, unknown>>>
+  >
+  assert.deepEqual(
+    roundTripped['oauth-model-alias'].codex[0],
+    { name: 'gpt-5.6-terra', alias: 'claude-sonnet-5', fork: true },
+    'the rendered YAML must round-trip to the exact {name, alias, fork} shape CLIProxyAPI expects'
+  )
+  console.log('✓ rendered YAML round-trips to the exact {name, alias, fork} shape')
 
   // Empty/omitted input -> empty object, so renderRoutingProxyConfig's own
   // Object.keys(...).length > 0 gate correctly omits the whole
@@ -346,10 +391,63 @@ function alias(
     combined.includes('opus'),
     'the apiKey-bucket alias name must also appear in the output'
   )
+  assert.ok(
+    combined.includes('fork: true'),
+    'the oauth-model-alias block in a full config render must include fork: true'
+  )
   console.log(
     '✓ renderRoutingProxyConfig emits BOTH the per-provider models: block and the top-level ' +
-      'oauth-model-alias: block in the same document, for aliases targeting different authMethod providers'
+      'oauth-model-alias: block in the same document, for aliases targeting different authMethod providers, ' +
+      'with fork: true present'
   )
+
+  // ---------------------------------------------------------------------
+  // (unit 09-polish investigation) The per-provider `models:` path
+  // (apiKey/openaiCompatible — renderProvidersYaml, toCliProxyModelEntry)
+  // has NO equivalent fork concept AT ALL — verified against the pinned
+  // v7.2.92 Go source: ClaudeModel/CodexModel/XAIModel/GeminiModel/
+  // OpenAICompatibilityModel (internal/config/config.go) declare only
+  // {name, alias, display-name, force-mapping} — there is no `fork` field
+  // to set on this struct, unlike OAuthModelAlias. sdk/cliproxy/service.go's
+  // buildConfiguredModelInfo (the function that turns each configured
+  // `models:` entry into a listed ModelInfo) always sets `ID: alias` with
+  // no separate upstream-id entry emitted — i.e. this path ALREADY replaces
+  // by construction, with no fork opt-out available upstream. The practical
+  // exposure here is smaller than the oauth bug because a real apiKey/
+  // openaiCompatible ProviderConfig normally has its OWN pre-existing
+  // {name, alias: name} entries in apiKeys[].models (hand-authored via
+  // config.example.yaml conventions) that an alias entry is APPENDED to
+  // (see renderProvidersYaml's doc comment) — so the upstream id typically
+  // stays reachable via its own separate entry, not because aliasing here
+  // is fork-safe. Orpheus's `ProviderModelEntry` type (providers/types.ts)
+  // correctly has no `fork` field either, matching upstream. This assertion
+  // just documents/locks that toCliProxyModelEntry never emits a `fork` key
+  // for the apiKeyModels path (it would be meaningless to CLIProxyAPI there).
+  // ---------------------------------------------------------------------
+  {
+    const apiKeyYaml = renderProvidersYaml(
+      [
+        {
+          providerId: 'openai-compatible',
+          enabled: true,
+          authMethod: 'openaiCompatible',
+          apiKeys: [{ id: 'k1', apiKey: 'sk-oc' }]
+        }
+      ],
+      { 'openai-compatible': [{ name: 'gpt-5.6-sol', alias: 'opus' }] }
+    )
+    const entries = apiKeyYaml['openai-compatibility'] as Array<Record<string, unknown>>
+    const models = entries[0].models as Array<Record<string, unknown>>
+    assert.equal(
+      'fork' in models[0],
+      false,
+      "the per-provider models: path (apiKeyModels) must never emit a fork key — CLIProxyAPI's " +
+        'ClaudeModel/CodexModel/XAIModel/GeminiModel/OpenAICompatibilityModel structs have no such field'
+    )
+    console.log(
+      '✓ (documented finding) the apiKey/openaiCompatible models: path never emits fork — no such field exists upstream'
+    )
+  }
 }
 
 // ---------------------------------------------------------------------------

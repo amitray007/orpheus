@@ -199,6 +199,21 @@ export function renderProvidersYaml(
  * aliasesToProviderModels' oauthModels bucket, so every entry here has
  * already passed the knownOnProvider live-cache guard — this function does
  * no validation of its own, purely a shape transform.
+ *
+ * EVERY entry gets `fork: true` unconditionally — this was the root cause of
+ * a regression (unit 09-polish) where the user's MAIN agent broke with
+ * "unknown provider for model gpt-5.6-sol". Per internal/config/config.go's
+ * OAuthModelAlias struct, `fork` defaults false, and a false/omitted `fork`
+ * makes the alias REPLACE the upstream model in listings/routing rather than
+ * adding alongside it — so once aliases existed for a channel's models, the
+ * upstream ids themselves (which the main agent's own routed model actually
+ * needs) stopped resolving. Verified end-to-end on a scratch proxy with the
+ * user's real Codex OAuth credential: WITHOUT fork, `GET /v1/models` no
+ * longer lists the upstream id at all and `POST /v1/messages` for it 502s;
+ * WITH fork:true on every entry, both the upstream id AND every alias
+ * resolve and complete normally in the same listing/session. There is no
+ * case where we want an alias to consume the upstream model, so this is
+ * unconditional — not derived from any alias/provider data.
  */
 export function renderOauthModelAliasYaml(
   oauthAliasModelsByProvider: Record<string, ProviderModelEntry[]> = {}
@@ -206,7 +221,7 @@ export function renderOauthModelAliasYaml(
   const out: Record<string, unknown> = {}
   for (const [providerId, models] of Object.entries(oauthAliasModelsByProvider)) {
     if (models.length === 0) continue
-    out[providerId] = models.map(toCliProxyModelEntry)
+    out[providerId] = models.map((m) => ({ ...toCliProxyModelEntry(m), fork: true }))
   }
   return out
 }
