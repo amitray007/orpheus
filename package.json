@@ -37,6 +37,7 @@
     "test:providers": "bun run scripts/verify-providers.ts",
     "test:aliases": "bun run scripts/verify-aliases.ts",
     "test:picker": "bun run scripts/verify-model-picker.ts",
+    "test:effort": "bun run scripts/verify-effort-levels.ts",
     "test:oauth": "bun run scripts/verify-oauth.ts",
     "test:overlay": "bun run scripts/verify-loading-overlay.ts",
     "test:creation": "bun run scripts/verify-creation-provider-menu.ts",

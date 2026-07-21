@@ -372,7 +372,13 @@ export type AppUiStatePatch = Partial<Omit<AppUiState, 'updatedAt'>>
 // ---------------------------------------------------------------------------
 
 export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
-export type ClaudeEffort = 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+// 'auto' is a CLI-level "reset to model default" — never a wire value sent as
+// output_config.effort to a routed model (see composeClaudeLaunch's own
+// skip-on-auto handling). 'none'/'minimal' are genuine on-ladder-adjacent
+// values some routed providers report (an off-ladder disable and the lowest
+// standard rung respectively) — kept distinct from each other and from
+// 'low', never conflated (model-routing unit 11).
+export type ClaudeEffort = 'auto' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type ClaudeOutputStyle = 'default' | 'explanatory' | 'proactive' | 'learning'
 export type ClaudeTuiMode = 'default' | 'fullscreen'
 export type ClaudeEditorMode = 'normal' | 'vim'
@@ -438,6 +444,45 @@ export type ClaudeModelOption = (typeof CLAUDE_MODEL_OPTIONS)[number]['value']
 export const CLAUDE_MODEL_ALIAS_START_INDEX = CLAUDE_MODEL_OPTIONS.findIndex(
   (o) => o.value === o.family
 )
+
+// ---------------------------------------------------------------------------
+// Effort-level ladder (model-routing unit 11) — the single canonical
+// ordering every effort-driven surface (DropdownChip, the stale-selection
+// guard, the verify harness) sorts/clamps against. 'none' and 'auto' are
+// deliberately OFF this ladder — they're off-ladder modes, not positions on
+// it (see CLIProxyAPI's validate.go standardLevelOrder, which this mirrors
+// exactly for the on-ladder rungs). Never mutate in place; every consumer
+// treats this as read-only ordering data.
+// ---------------------------------------------------------------------------
+export const EFFORT_LADDER_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+
+/** Per-model builtin Claude effort levels (model-routing unit 11) — replaces
+ *  the old blanket `effortLevels: null` for every Claude entry. Sourced from
+ *  the model-routing spec's verified table (Claude is not proxy-sourced, so
+ *  this is hand-maintained here, mirroring how CLAUDE_MODEL_OPTIONS itself is
+ *  hand-maintained rather than fetched). Keyed by CLAUDE_MODEL_OPTIONS value;
+ *  an "always-latest" alias (opus/sonnet/haiku/fable) carries the same levels
+ *  as that family's current latest explicit version — never a separate,
+ *  potentially-drifted list. `null` here means "no reasoning-effort control
+ *  at all" (not currently used by any Claude entry, but kept as a valid
+ *  value so this table has the same shape/meaning as SelectableModel.effortLevels
+ *  everywhere else — never conflate "unknown" with "none").
+ */
+export const CLAUDE_BUILTIN_EFFORT_LEVELS: Readonly<Record<ClaudeModelOption, string[] | null>> = {
+  'claude-opus-4-8': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-opus-4-7': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-sonnet-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-sonnet-4-6': ['low', 'medium', 'high', 'max'],
+  'claude-haiku-4-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-fable-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+  // Always-latest aliases — same levels as each family's current latest
+  // explicit version above (opus -> 4.8, sonnet -> 5, fable -> 5). Haiku has
+  // only one explicit version today, so its alias matches directly.
+  opus: ['low', 'medium', 'high', 'xhigh', 'max'],
+  sonnet: ['low', 'medium', 'high', 'xhigh', 'max'],
+  haiku: ['low', 'medium', 'high', 'xhigh', 'max'],
+  fable: ['low', 'medium', 'high', 'xhigh', 'max']
+}
 
 // ---------------------------------------------------------------------------
 // Ghostty user config (v53)
@@ -2379,6 +2424,55 @@ export interface SelectableModel {
    *  fail-closed gate at mount time, which still runs regardless of this
    *  flag. */
   provisional: boolean
+}
+
+/**
+ * Stale-selection guard (model-routing unit 11, work item 4): given a
+ * currently-stored effort value and the NEWLY-selected model's effortLevels,
+ * resolve to a level that model actually supports — rather than letting a
+ * value like `high` silently ride along onto a model whose ladder is
+ * `[minimal, low]` and get invisibly clamped upstream by the proxy (the exact
+ * bug this unit fixes; see effort-spec.md's clampLevel notes). Mirrors the
+ * proxy's own clamp rule (nearest by index distance on EFFORT_LADDER_ORDER)
+ * so the UI's resolved value always matches what the wire will actually
+ * apply — never a silent divergence between what the chip shows and what
+ * gets sent.
+ *
+ * - `effortLevels === null` (no reasoning control at all) -> 'auto': there is
+ *   no effort concept for this model, so the guard resets to the one value
+ *   that's never sent as a wire effort at all (see composeClaudeLaunch's
+ *   skip-on-auto handling).
+ * - current value already in `effortLevels` (or is 'auto') -> returned
+ *   unchanged; nothing to resolve.
+ * - `current` is off-ladder ('none') and the model doesn't support it -> the
+ *   nearest ON-ladder level is chosen the same way an on-ladder value would
+ *   be (index distance against EFFORT_LADDER_ORDER, 'none' treated as
+ *   "below minimal" i.e. index -1) — an off-ladder mode has no meaningful
+ *   "distance" of its own otherwise.
+ * - otherwise -> nearest supported level by ladder-index distance, ties
+ *   broken by whichever appears first in `effortLevels` (mirrors the proxy's
+ *   own dead tie-break code path — see effort-spec.md; we must not invent a
+ *   "ties go lower" rule that doesn't exist upstream).
+ */
+export function clampEffortToSupportedLevel(
+  current: string,
+  effortLevels: string[] | null
+): string {
+  if (effortLevels === null || effortLevels.length === 0) return 'auto'
+  if (current === 'auto' || effortLevels.includes(current)) return current
+
+  const currentIdx = EFFORT_LADDER_ORDER.indexOf(current as (typeof EFFORT_LADDER_ORDER)[number])
+  let best: string | undefined
+  let bestDist = Infinity
+  for (const level of effortLevels) {
+    const idx = EFFORT_LADDER_ORDER.indexOf(level as (typeof EFFORT_LADDER_ORDER)[number])
+    const dist = Math.abs(idx - currentIdx)
+    if (dist < bestDist) {
+      bestDist = dist
+      best = level
+    }
+  }
+  return best ?? effortLevels[0]
 }
 
 // ---------------------------------------------------------------------------

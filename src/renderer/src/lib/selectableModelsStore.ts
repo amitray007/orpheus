@@ -35,7 +35,11 @@
 // ---------------------------------------------------------------------------
 
 import { useCallback, useSyncExternalStore } from 'react'
-import { CLAUDE_MODEL_OPTIONS, type SelectableModel } from '@shared/types'
+import {
+  CLAUDE_MODEL_OPTIONS,
+  CLAUDE_BUILTIN_EFFORT_LEVELS,
+  type SelectableModel
+} from '@shared/types'
 
 const CLAUDE_PROVIDER_ID = 'claude'
 const CLAUDE_PROVIDER_LABEL = 'Claude'
@@ -59,7 +63,10 @@ export function claudeFallbackModels(currentModelId?: string): SelectableModel[]
     isClaude: true,
     available: true,
     contextWindow: null,
-    effortLevels: null,
+    // Real per-model levels (model-routing unit 11) — mirrors
+    // selectable.ts's claudeEntries() so the zero-IPC fallback never regresses
+    // to offering effort levels a model doesn't actually support.
+    effortLevels: CLAUDE_BUILTIN_EFFORT_LEVELS[o.value] ?? null,
     provisional: false
   }))
   if (currentModelId && !CLAUDE_MODEL_OPTIONS.some((o) => o.value === currentModelId)) {

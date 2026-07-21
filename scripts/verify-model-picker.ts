@@ -395,14 +395,22 @@ function baseInput(
     'a model with no reported thinking.levels must yield effortLevels: null, never a fabricated generic list'
   )
 
-  // Claude entries never carry fabricated effort levels either — the picker
-  // must disable/hide the effort control for them via this same null, not a
-  // hardcoded generic list.
+  // Claude entries carry REAL per-model levels from the hand-maintained
+  // CLAUDE_BUILTIN_EFFORT_LEVELS table (model-routing unit 11) — not a
+  // blanket null and not a fabricated generic list. See
+  // scripts/verify-effort-levels.ts for the full per-model assertions
+  // (ladder order, the stale-selection guard, live per-model data); this
+  // assertion just proves selectable.ts's Claude entries are wired to that
+  // table rather than left at the old hardcoded null.
   const claudeEntry = withLevels.find((m) => m.isClaude)
-  assert.equal(claudeEntry!.effortLevels, null)
+  assert.ok(
+    Array.isArray(claudeEntry!.effortLevels) && claudeEntry!.effortLevels!.length > 0,
+    'Claude entries must carry real per-model effort levels from CLAUDE_BUILTIN_EFFORT_LEVELS, not null'
+  )
 
   console.log(
-    '✓ effort levels come from real cliproxy thinking.levels data; a model with none yields null, never fabricated'
+    '✓ effort levels come from real cliproxy thinking.levels data (routed models) and the builtin ' +
+      'per-model table (Claude models); a model with neither yields null, never fabricated'
   )
 }
 

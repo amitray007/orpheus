@@ -36,7 +36,7 @@
 // here directly.
 // ---------------------------------------------------------------------------
 
-import { CLAUDE_MODEL_OPTIONS } from '../../shared/types'
+import { CLAUDE_MODEL_OPTIONS, CLAUDE_BUILTIN_EFFORT_LEVELS } from '../../shared/types'
 import type { SelectableModel } from '../../shared/types'
 
 const CLAUDE_PROVIDER_ID = 'claude'
@@ -109,7 +109,10 @@ function claudeEntries(): SelectableModel[] {
     isClaude: true,
     available: true,
     contextWindow: null, // resolved on demand via models:resolveLabels/registry, not duplicated here
-    effortLevels: null,
+    // Real per-model levels from the hand-maintained builtin table (model-
+    // routing unit 11) — NOT a blanket null. See that table's own doc
+    // comment for why Claude is hardcoded here rather than proxy-sourced.
+    effortLevels: CLAUDE_BUILTIN_EFFORT_LEVELS[o.value] ?? null,
     provisional: false
   }))
 }

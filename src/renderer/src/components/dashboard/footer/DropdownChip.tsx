@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
-import type { ChipDropdownItem, ClaudeEffort, WorkspaceActivityDetail } from '@shared/types'
+import {
+  EFFORT_LADDER_ORDER,
+  clampEffortToSupportedLevel,
+  type ChipDropdownItem,
+  type ClaudeEffort,
+  type WorkspaceActivityDetail
+} from '@shared/types'
 import { IconByName } from './iconMap'
 import {
   showChipDropdown,
@@ -65,8 +71,6 @@ function labelForModel(value: string, models: { id: string; label: string }[]): 
   return known ? known.label : value
 }
 
-const EFFORT_VALUES = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const
-
 function capitalize(v: string): string {
   return v.charAt(0).toUpperCase() + v.slice(1)
 }
@@ -74,6 +78,27 @@ function capitalize(v: string): string {
 function labelForEffort(value: string): string {
   const v = value || 'auto'
   return capitalize(v)
+}
+
+/**
+ * Build the effort chip's option list from the CURRENT model's real
+ * `effortLevels` (model-routing unit 11) — never the old hardcoded
+ * ['auto','low','medium','high','xhigh','max'] offered unconditionally for
+ * every model. Options are rendered in ladder order (EFFORT_LADDER_ORDER),
+ * with 'none' first when the model reports it (an off-ladder mode, sorted
+ * ahead of the ladder itself) and 'auto' always leading — 'auto' is a
+ * CLI-level "reset to model default", never a wire value, so it's offered
+ * regardless of what the provider's levels array contains (mirrors today's
+ * behavior for Claude).
+ */
+function effortOptionsFor(effortLevels: string[]): { value: string; label: string }[] {
+  const hasNone = effortLevels.includes('none')
+  const onLadder = EFFORT_LADDER_ORDER.filter((level) => effortLevels.includes(level))
+  const ordered = hasNone ? ['none', ...onLadder] : onLadder
+  return [
+    { value: 'auto', label: 'Auto' },
+    ...ordered.map((v) => ({ value: v, label: capitalize(v) }))
+  ]
 }
 
 /**
@@ -211,35 +236,40 @@ export function DropdownChip({
 
   // ---------------------------------------------------------------------
   // Case 1 — footer.modelSelect: local state = effective model value.
+  // Also fetched for footer.effortSelect (below), which needs to know the
+  // CURRENT model's real effortLevels to build its own options.
   // ---------------------------------------------------------------------
+  const isModelSelect = item.actionId === 'footer.modelSelect'
+  const isEffortSelect = item.actionId === 'footer.effortSelect'
   const [modelValue, setModelValue] = useState<string>('')
   const refetchEffectiveModel = useCallback((): void => {
-    if (item.actionId !== 'footer.modelSelect') return
+    if (!isModelSelect && !isEffortSelect) return
     window.api.workspaces
       .getEffectiveModel(workspaceId)
       .then((r) => setModelValue(r.model))
       .catch(() => {})
-  }, [workspaceId, item.actionId])
+  }, [workspaceId, isModelSelect, isEffortSelect])
   useEffect(() => {
     refetchEffectiveModel()
   }, [refetchEffectiveModel])
 
   // Data-driven model list (Claude always present; routed models gated on
   // proxy/provider health server-side) — see useSelectableModels' own doc
-  // comment. `enabled` gates the fetch to ONLY the modelSelect chip (BUG B
-  // fix: DropdownChip also renders for footer.effortSelect/footer.dropdown,
-  // neither of which touches the model list — without this gate every chip
-  // instance fired its own redundant models:listSelectable IPC call per
-  // workspace mount). The hook itself is still called unconditionally on
-  // every render (Rules of Hooks); only its internal subscription/IPC is
-  // skipped when disabled. Passing modelValue keeps an already-selected-but-
-  // now-unavailable routed model represented (never silently dropped from
-  // the dropdown, even though it can no longer be freshly selected as
-  // "available").
-  const isModelSelect = item.actionId === 'footer.modelSelect'
+  // comment. `enabled` gates the fetch to the modelSelect AND effortSelect
+  // chips (BUG B fix: DropdownChip also renders for footer.dropdown, which
+  // never touches the model list — without this gate every chip instance
+  // fired its own redundant models:listSelectable IPC call per workspace
+  // mount). effortSelect needs this list too now (model-routing unit 11) to
+  // read the current model's real effortLevels. The hook itself is still
+  // called unconditionally on every render (Rules of Hooks); only its
+  // internal subscription/IPC is skipped when disabled. Passing modelValue
+  // keeps an already-selected-but-now-unavailable routed model represented
+  // (never silently dropped from the dropdown, even though it can no longer
+  // be freshly selected as "available").
+  const needsModelList = isModelSelect || isEffortSelect
   const { models: selectableModels } = useSelectableModels(
-    isModelSelect ? modelValue : undefined,
-    isModelSelect
+    needsModelList ? modelValue : undefined,
+    needsModelList
   )
   // isClaude lookup for the CURRENT effective model, used below to decide
   // whether a model switch is live-applicable (see onSelect's own comment).
@@ -250,6 +280,27 @@ export function DropdownChip({
     () => selectableModels.find((m) => m.id === modelValue)?.isClaude ?? modelValue === '',
     [selectableModels, modelValue]
   )
+  // The current model's real effort levels (model-routing unit 11) — null
+  // means "no reasoning-effort control at all" for this model, which is the
+  // signal the effortSelect branch below uses to hide its chip entirely
+  // rather than render a disabled control (a disabled control would imply
+  // the capability exists).
+  //
+  // modelValue === '' is NOT "unknown model" — it's the genuine, durable
+  // "no explicit override" state (composeClaudeLaunch skips --model entirely
+  // when s.model is empty, so claude picks its own default), which is only
+  // ever reachable for Claude (a routed workspace always has an explicit
+  // model id — see modelRouting.ts). Falling through to null here would wrongly
+  // hide the effort chip for every workspace that has never had its model
+  // touched. Since claude's own unspecified default is always SOME Claude
+  // model, and every Claude model's levels are a subset of the full ladder
+  // (CLAUDE_BUILTIN_EFFORT_LEVELS), the full ladder is used as the safe,
+  // non-fabricated fallback for this one specific case — it is never applied
+  // to a routed (non-Claude) model, which always resolves to a real entry.
+  const currentModelEffortLevels = useMemo(() => {
+    if (modelValue === '') return [...EFFORT_LADDER_ORDER]
+    return selectableModels.find((m) => m.id === modelValue)?.effortLevels ?? null
+  }, [selectableModels, modelValue])
 
   // ---------------------------------------------------------------------
   // Case 2 — footer.effortSelect: local state = effective effort value
@@ -257,12 +308,12 @@ export function DropdownChip({
   // ---------------------------------------------------------------------
   const [effortValue, setEffortValue] = useState<string>('')
   const refetchEffectiveEffort = useCallback((): void => {
-    if (item.actionId !== 'footer.effortSelect') return
+    if (!isEffortSelect) return
     window.api.workspaces
       .getEffectiveEffort(workspaceId)
       .then((r) => setEffortValue(r.effort))
       .catch(() => {})
-  }, [workspaceId, item.actionId])
+  }, [workspaceId, isEffortSelect])
   useEffect(() => {
     refetchEffectiveEffort()
   }, [refetchEffectiveEffort])
@@ -291,7 +342,8 @@ export function DropdownChip({
     faceProviderId = selectableModels.find((m) => m.id === modelValue)?.providerId
     chipTitle = `${item.label}: ${faceLabel}`
     onSelect = (value: string): void => {
-      const newModelIsClaude = selectableModels.find((m) => m.id === value)?.isClaude ?? false
+      const newModel = selectableModels.find((m) => m.id === value)
+      const newModelIsClaude = newModel?.isClaude ?? false
       setModelValue(value)
       // Keep the sidebar's provider-icon prefix (WorkspaceProviderIcon) in
       // sync immediately — same cache the row's fetch-on-mount populates, so
@@ -303,6 +355,23 @@ export function DropdownChip({
       // isLiveApplicableModelChange gate) so a genuinely busy workspace
       // still saves the setting even if injection never lands.
       window.api.workspaces.setModel(workspaceId, value).catch(() => {})
+      // Stale-selection guard (model-routing unit 11, work item 4): the
+      // workspace's currently-stored effort must never silently ride along
+      // onto a model that doesn't support it and get invisibly clamped
+      // upstream by the proxy — resolve it to the nearest supported level
+      // HERE, at selection time, and persist that instead. clampEffortTo
+      // SupportedLevel already no-ops (returns the same value) when the
+      // current effort is 'auto' or already supported by the new model, so
+      // this is a silent no-op for the overwhelmingly common case (switching
+      // among models that all support the current effort).
+      const resolvedEffort = clampEffortToSupportedLevel(
+        effortValue || 'auto',
+        newModel?.effortLevels ?? null
+      )
+      if (resolvedEffort !== (effortValue || 'auto')) {
+        setEffortValue(resolvedEffort)
+        window.api.workspaces.setEffort(workspaceId, resolvedEffort as ClaudeEffort).catch(() => {})
+      }
       // `/model <value>` is a Claude CLI slash command — it is only
       // meaningful for a Claude -> Claude switch (same backend, same running
       // process, just a different --model argument). A switch involving a
@@ -340,8 +409,13 @@ export function DropdownChip({
         showTooltip('Model set — restart workspace to apply')
       }
     }
-  } else if (item.actionId === 'footer.effortSelect') {
-    dropdownItems = EFFORT_VALUES.map((v) => ({ value: v, label: capitalize(v) }))
+  } else if (isEffortSelect) {
+    // Options come from the CURRENT model's real effortLevels (model-routing
+    // unit 11) — never a hardcoded list offered unconditionally. When
+    // currentModelEffortLevels is null, this model has no reasoning-effort
+    // control at all; the chip renders nothing at all (see the early-return
+    // right before the JSX below) rather than an empty/disabled dropdown.
+    dropdownItems = currentModelEffortLevels ? effortOptionsFor(currentModelEffortLevels) : []
     selectedValue = effortValue || 'auto'
     faceLabel = labelForEffort(effortValue)
     chipTitle = `${item.label}: ${faceLabel}`
@@ -514,6 +588,13 @@ export function DropdownChip({
   }, [open, dropdownOverlayId, isModelSelect])
 
   const isDisabled = enabled === false
+
+  // Hide the effort control entirely for a model with no reasoning-effort
+  // levels at all (model-routing unit 11, work item 3) — NEVER render it
+  // disabled, since a disabled control implies the capability exists. This
+  // runs after every hook above has already been called unconditionally
+  // (Rules of Hooks), so it's safe as a plain early return here.
+  if (isEffortSelect && currentModelEffortLevels === null) return <></>
 
   return (
     <div ref={chipRef} className="relative flex-shrink-0">
