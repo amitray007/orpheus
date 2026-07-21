@@ -15,7 +15,8 @@ import type { PushChannel, PushPayload } from '../../shared/ipc'
 import type {
   RoutingProxyAssetInfo,
   RoutingProxySnapshot,
-  RoutingProxyUpdateCheckResult
+  RoutingProxyUpdateCheckResult,
+  RoutingProxyMaintenanceResult
 } from '../../shared/types'
 import { getAppUiState, updateAppUiState } from '../uiState'
 import { getRoutingProxyUrl } from '../modelRouting'
@@ -525,6 +526,63 @@ export async function waitForCliProxyModelCacheFresh(timeoutMs: number): Promise
   await raceWithTimeout(pending, timeoutMs)
 }
 
+// ---------------------------------------------------------------------------
+// Manual maintenance actions (model-routing unit 09-polish) — explicit
+// "fix it now" escape hatches surfaced in Settings for a user who can't (or
+// shouldn't have to) wait on a background refresh they can't see or
+// trigger. IMPORTANT: these are escape hatches, NOT the primary mechanism —
+// the automatic paths (boot hydration, the 30s refreshAuthFiles tick,
+// post-OAuth-connect refresh, regenerateConfigIfAliasesChanged's cache-
+// population trigger) already keep everything current on their own. A user
+// needing to click one of these routinely is a sign something upstream is
+// broken, not evidence the buttons are working as intended — don't let a
+// later change quietly start relying on the user clicking these.
+// ---------------------------------------------------------------------------
+
+/**
+ * "Refresh models" — force a cliproxy model-cache refresh, bypassing
+ * shouldRefreshCliProxyModelCache's cacheSize/throttle checks (those exist
+ * to protect the AUTOMATIC paths from hammering a down proxy; a
+ * user-initiated click is a deliberate, bounded, one-shot request that
+ * should always actually try, even with a warm cache or mid-throttle-
+ * window). The ONE piece of that gate still respected is isRefreshInFlight —
+ * a concurrent refresh (automatic or a previous manual click) is piggy-
+ * backed on rather than starting a second overlapping fetch, so this
+ * function is non-re-entrant without needing its own separate flag.
+ * Reuses startModelCacheRefresh/refreshCliProxyModelCache directly — no
+ * parallel fetch logic. That helper already persists + re-broadcasts the
+ * snapshot on success, exactly like the automatic on-demand path does.
+ * Refused cleanly (never attempted) when the proxy isn't running or no
+ * management secret exists yet — those are the same preconditions the IPC
+ * handler / renderer use to decide whether to even offer this action
+ * enabled.
+ */
+export async function forceRefreshCliProxyModelCache(): Promise<RoutingProxyMaintenanceResult> {
+  const secret = getManagementSecret()
+  if (!secret || !isRunning()) {
+    return { ok: false, message: "Couldn't reach the proxy — is it running?" }
+  }
+  // Non-re-entrant: if a refresh is already in flight (from the automatic
+  // path OR a previous manual click), piggyback on that SAME promise rather
+  // than starting a second overlapping fetch — this is the one piece of
+  // shouldRefreshCliProxyModelCache's gate this function still respects
+  // (isRefreshInFlight), everything else (cacheSize/throttle) is
+  // deliberately bypassed, see this function's own doc comment.
+  lastModelCacheRefreshAttempt = Date.now()
+  await (modelCacheRefreshInFlight ?? startModelCacheRefresh(secret))
+  const entries = listCliProxyModelCacheEntries()
+  if (entries.length === 0) {
+    return { ok: false, message: 'No models reported — check provider connections.' }
+  }
+  const providerCount = new Set(entries.map((e) => e.providerId).filter(Boolean)).size
+  return {
+    ok: true,
+    message: `Refreshed — ${entries.length} model${entries.length === 1 ? '' : 's'} from ${providerCount} provider${providerCount === 1 ? '' : 's'}`,
+    modelCount: entries.length,
+    providerCount
+  }
+}
+
 export async function start(): Promise<void> {
   let version = snapshot.installedVersion ?? detectInstalledVersion()
 
@@ -844,6 +902,77 @@ export async function regenerateConfigNow(): Promise<void> {
     oauthAliasModelsByProvider: resolvedAliases.oauthModels
   })
   recordAliasWrite(resolvedAliases)
+}
+
+// ---------------------------------------------------------------------------
+// Manual maintenance-result wrappers around two already-existing functions
+// (refreshAuthFilesNow / regenerateConfigNow) — see this file's
+// forceRefreshCliProxyModelCache doc comment for why these buttons exist and
+// the "escape hatch, not the primary mechanism" framing. Both reuse the
+// existing function UNCHANGED; this is purely an honest-outcome wrapper for
+// the Settings UI.
+// ---------------------------------------------------------------------------
+
+let refreshConnectionsInFlight: Promise<RoutingProxyMaintenanceResult> | null = null
+
+/** "Refresh connections" — force refreshAuthFilesNow() and report how many
+ *  providers came back healthy. Refused cleanly (no attempt) when the proxy
+ *  isn't running, mirroring forceRefreshCliProxyModelCache's own guard.
+ *  Non-re-entrant: a concurrent call piggybacks on the same in-flight
+ *  promise rather than firing a second overlapping management-API request. */
+export async function forceRefreshConnections(): Promise<RoutingProxyMaintenanceResult> {
+  if (refreshConnectionsInFlight) return refreshConnectionsInFlight
+  if (!isRunning()) {
+    return { ok: false, message: "Couldn't reach the proxy — is it running?" }
+  }
+  const work = (async (): Promise<RoutingProxyMaintenanceResult> => {
+    const before = snapshot.authFilesCheckedAt
+    await refreshAuthFilesNow()
+    if (snapshot.authFilesCheckedAt === before) {
+      // refreshAuthFiles() itself no-ops without a management secret (see its
+      // own doc comment) — authFilesCheckedAt not moving is the honest signal
+      // that nothing actually happened, distinct from "it ran and found zero
+      // connections" (which WOULD move the timestamp).
+      return { ok: false, message: 'No management secret yet — try again shortly.' }
+    }
+    const healthy = snapshot.authFiles.filter((f) => f.health === 'ok').length
+    return {
+      ok: true,
+      message: `Refreshed — ${healthy} of ${snapshot.authFiles.length} connection${snapshot.authFiles.length === 1 ? '' : 's'} healthy`
+    }
+  })()
+  refreshConnectionsInFlight = work
+  try {
+    return await work
+  } finally {
+    refreshConnectionsInFlight = null
+  }
+}
+
+let regenerateConfigManualInFlight: Promise<RoutingProxyMaintenanceResult> | null = null
+
+/** "Regenerate config" — force regenerateConfigNow(). Useful after an alias/
+ *  provider edit if the config.yaml fsnotify hot-reload ever misbehaves;
+ *  ordinary edits already call this automatically and do NOT need this
+ *  button (see this file's header comment on the alias-edit hot-reload
+ *  path). Refused cleanly when nothing is installed (regenerateConfigNow's
+ *  own no-op condition) rather than reporting a false success. Non-re-
+ *  entrant: a concurrent call piggybacks on the same in-flight promise. */
+export async function forceRegenerateConfig(): Promise<RoutingProxyMaintenanceResult> {
+  if (regenerateConfigManualInFlight) return regenerateConfigManualInFlight
+  if (!snapshot.installedVersion) {
+    return { ok: false, message: 'Nothing installed yet — install the proxy first.' }
+  }
+  const work = (async (): Promise<RoutingProxyMaintenanceResult> => {
+    await regenerateConfigNow()
+    return { ok: true, message: 'Config regenerated.' }
+  })()
+  regenerateConfigManualInFlight = work
+  try {
+    return await work
+  } finally {
+    regenerateConfigManualInFlight = null
+  }
 }
 
 // ---------------------------------------------------------------------------

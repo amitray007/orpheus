@@ -69,6 +69,7 @@ import type {
   RoutingProxySnapshot,
   RoutingProxyAssetInfo,
   RoutingProxyUpdateCheckResult,
+  RoutingProxyMaintenanceResult,
   ProviderDescriptorSummary,
   ProviderConfigSummary,
   ProviderApiKeyEntrySummary,
@@ -831,6 +832,12 @@ const api = {
       invoke('routingProxy:checkForUpdate'),
     refreshAuthFiles: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:refreshAuthFiles'),
     restart: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:restart'),
+    forceRefreshModels: (): Promise<RoutingProxyMaintenanceResult> =>
+      invoke('routingProxy:forceRefreshModels'),
+    forceRefreshConnections: (): Promise<RoutingProxyMaintenanceResult> =>
+      invoke('routingProxy:forceRefreshConnections'),
+    forceRegenerateConfig: (): Promise<RoutingProxyMaintenanceResult> =>
+      invoke('routingProxy:forceRegenerateConfig'),
     onSnapshot: (cb: (snapshot: RoutingProxySnapshot) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.routingProxySnapshot, cb)
   },

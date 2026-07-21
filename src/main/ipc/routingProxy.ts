@@ -14,7 +14,10 @@ import {
   getAssetInfo,
   checkForComponentUpdate,
   refreshAuthFilesNow,
-  restart
+  restart,
+  forceRefreshCliProxyModelCache,
+  forceRefreshConnections,
+  forceRegenerateConfig
 } from '../routingProxy/manager'
 import { handle } from './handle'
 
@@ -39,4 +42,11 @@ export function registerRoutingProxyIpc(): void {
   // itself adds no extra guard so a rapid double-click just resolves the
   // second call against the same in-flight restart's eventual snapshot.
   handle('routingProxy:restart', async () => restart())
+
+  // Manual maintenance actions (model-routing unit 09-polish) — see
+  // manager.ts's forceRefreshCliProxyModelCache/forceRefreshConnections/
+  // forceRegenerateConfig doc comments.
+  handle('routingProxy:forceRefreshModels', async () => forceRefreshCliProxyModelCache())
+  handle('routingProxy:forceRefreshConnections', async () => forceRefreshConnections())
+  handle('routingProxy:forceRegenerateConfig', async () => forceRegenerateConfig())
 }

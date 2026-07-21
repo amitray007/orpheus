@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import type { RoutingProxyAssetInfo, RoutingProxySnapshot } from '@shared/types'
+import type {
+  RoutingProxyAssetInfo,
+  RoutingProxyMaintenanceResult,
+  RoutingProxySnapshot
+} from '@shared/types'
 import { SettingRow, Toggle, SectionTitle, Eyebrow } from './primitives'
 import { ProvidersSection } from './ProvidersSection'
 import { AliasesSection } from './AliasesSection'
 import { SettingsSectionSkeleton } from '../../Skeleton'
-import { Warning } from '@phosphor-icons/react'
+import { Warning, ArrowClockwise } from '@phosphor-icons/react'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -67,6 +71,77 @@ function healthDotClass(health: 'ok' | 'error' | 'unknown'): string {
 }
 
 // ---------------------------------------------------------------------------
+// Maintenance actions (model-routing unit 09-polish) — explicit "fix it now"
+// escape hatches for a user who can't (or shouldn't have to) wait on a
+// background refresh they can't see or trigger. THESE ARE ESCAPE HATCHES,
+// NOT THE PRIMARY MECHANISM: boot hydration, the 30s refreshAuthFiles tick,
+// the post-OAuth-connect refresh, and the alias-cache-population trigger
+// already keep everything current on their own — a user needing to click
+// one of these routinely is a sign something upstream is broken, not
+// evidence the buttons are doing their job. Don't let a later change start
+// relying on the user clicking these as if they were the normal flow.
+// ---------------------------------------------------------------------------
+
+interface MaintenanceActionProps {
+  label: string
+  description: string
+  disabled?: boolean
+  disabledReason?: string
+  run: () => Promise<RoutingProxyMaintenanceResult>
+}
+
+function MaintenanceAction({
+  label,
+  description,
+  disabled,
+  disabledReason,
+  run
+}: MaintenanceActionProps): React.JSX.Element {
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<RoutingProxyMaintenanceResult | null>(null)
+
+  async function handleClick(): Promise<void> {
+    if (busy) return // non-re-entrant: ignore a click while already running
+    setBusy(true)
+    setResult(null)
+    try {
+      const r = await run()
+      setResult(r)
+    } catch (err) {
+      setResult({ ok: false, message: err instanceof Error ? err.message : 'Failed.' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const isDisabled = disabled || busy
+
+  return (
+    <div className="py-3">
+      <SettingRow
+        label={label}
+        description={isDisabled && disabledReason ? disabledReason : description}
+      >
+        <button
+          type="button"
+          disabled={isDisabled}
+          onClick={() => void handleClick()}
+          className="px-3 py-1.5 rounded text-xs font-medium text-text-muted border border-border-default hover:text-text-secondary transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+        >
+          {busy && <ArrowClockwise size={11} weight="bold" className="animate-spin" />}
+          {busy ? 'Working…' : label}
+        </button>
+      </SettingRow>
+      {result && (
+        <p className={`text-xs mt-1.5 ${result.ok ? 'text-text-muted' : 'text-red-400'}`}>
+          {result.message}
+        </p>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // OrpheusModelRoutingSection
 // ---------------------------------------------------------------------------
 
@@ -76,6 +151,7 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [updateLatest, setUpdateLatest] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [restarting, setRestarting] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -151,6 +227,30 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
       setSnapshot(s)
     } catch (err) {
       console.error('[routingProxy] refresh auth files failed', err)
+    }
+  }
+
+  // Restart (model-routing unit 09-polish) — a recovery tool for a wedged
+  // process/stale in-proxy state/a config key that doesn't hot-reload.
+  // Ordinary alias/provider edits do NOT need this — they already hot-reload
+  // via config.yaml's fsnotify watch (see AliasesSection's own notice).
+  // Non-re-entrant: `restarting` disables the control while manager.ts's own
+  // restart() is in flight, and manager.ts's own re-entrancy guard backstops
+  // this even if two clicks somehow race.
+  async function handleRestart(): Promise<void> {
+    if (restarting) return
+    setRestarting(true)
+    try {
+      const s = await window.api.routingProxy.restart()
+      setSnapshot(s)
+    } catch (err) {
+      console.error('[routingProxy] restart failed', err)
+      window.api.routingProxy
+        .getState()
+        .then((s) => setSnapshot(s))
+        .catch(console.error)
+    } finally {
+      setRestarting(false)
     }
   }
 
@@ -272,6 +372,22 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
             >
               {checkingUpdate ? 'Checking…' : 'Check for updates'}
             </button>
+            {snapshot.installedVersion && (
+              <button
+                type="button"
+                disabled={restarting}
+                onClick={() => void handleRestart()}
+                title="Restart the proxy — a recovery tool for a wedged process or stale state. Alias/provider edits already take effect without a restart."
+                className="px-3 py-1.5 rounded text-xs font-medium text-text-muted border border-border-default hover:text-text-secondary transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+              >
+                <ArrowClockwise
+                  size={11}
+                  weight="bold"
+                  className={restarting ? 'animate-spin' : ''}
+                />
+                {restarting ? 'Restarting…' : 'Restart'}
+              </button>
+            )}
             {updateLatest && (
               <span className="text-xs text-accent">
                 v{updateLatest} available (reinstall to pick up unreleased pin bumps)
@@ -330,6 +446,41 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
           )}
         </section>
       )}
+
+      {/* Maintenance (model-routing unit 09-polish) — explicit "fix it now"
+          escape hatches. See MaintenanceAction's own doc comment: these are
+          NOT the primary mechanism, the automatic paths already keep
+          everything current on their own. */}
+      <section className="flex flex-col">
+        <Eyebrow className="mb-3">Maintenance</Eyebrow>
+        <p className="text-xs text-text-muted mb-2">
+          Escape hatches for a stuck state. Everything here also happens automatically — use these
+          only if something looks stale.
+        </p>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5 divide-y divide-border-default/60">
+          <MaintenanceAction
+            label="Refresh models"
+            description="Re-fetch the model list from every connected provider."
+            disabled={!isRunning}
+            disabledReason="Requires the proxy to be running."
+            run={() => window.api.routingProxy.forceRefreshModels()}
+          />
+          <MaintenanceAction
+            label="Refresh connections"
+            description="Re-check which provider accounts are currently connected and healthy."
+            disabled={!isRunning}
+            disabledReason="Requires the proxy to be running."
+            run={() => window.api.routingProxy.forceRefreshConnections()}
+          />
+          <MaintenanceAction
+            label="Regenerate config"
+            description="Rewrite config.yaml from current settings — useful if an edit doesn't seem to have taken effect."
+            disabled={!snapshot.installedVersion}
+            disabledReason="Requires the proxy to be installed."
+            run={() => window.api.routingProxy.forceRegenerateConfig()}
+          />
+        </div>
+      </section>
     </div>
   )
 }

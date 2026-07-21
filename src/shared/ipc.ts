@@ -73,6 +73,7 @@ import type {
   RoutingProxySnapshot,
   RoutingProxyUpdateCheckResult,
   RoutingProxyAssetInfo,
+  RoutingProxyMaintenanceResult,
   ProviderDescriptorSummary,
   ProviderConfigSummary,
   ProviderApiKeyEntrySummary,
@@ -644,6 +645,14 @@ export interface InvokeChannelMap {
   // as the enable toggle; guarded against re-entrant double-invocation while
   // a restart is already in flight (see manager.ts's restart()).
   'routingProxy:restart': { req: []; res: RoutingProxySnapshot }
+  // (model-routing unit 09-polish) Manual maintenance actions — escape
+  // hatches for a stuck/stale state, grouped in Settings' Maintenance area.
+  // See manager.ts's forceRefreshCliProxyModelCache/forceRefreshConnections/
+  // forceRegenerateConfig doc comments — these are NOT the primary
+  // mechanism, the automatic paths already keep everything current.
+  'routingProxy:forceRefreshModels': { req: []; res: RoutingProxyMaintenanceResult }
+  'routingProxy:forceRefreshConnections': { req: []; res: RoutingProxyMaintenanceResult }
+  'routingProxy:forceRegenerateConfig': { req: []; res: RoutingProxyMaintenanceResult }
 
   // Provider framework (model-routing unit 05) — see
   // src/main/routingProxy/providers/. 'providers:descriptors' returns the

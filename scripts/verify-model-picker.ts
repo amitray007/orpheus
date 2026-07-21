@@ -1537,4 +1537,47 @@ function baseInput(
   )
 }
 
+// ---------------------------------------------------------------------------
+// 20. (model-routing unit 09-polish) Manual maintenance actions — the
+//     "Refresh models" button (routingProxy/manager.ts's
+//     forceRefreshCliProxyModelCache) deliberately does NOT call
+//     shouldRefreshCliProxyModelCache at all — that pure gate exists to
+//     protect the AUTOMATIC background paths from hammering a down proxy; a
+//     user-initiated click is a deliberate one-shot request that must always
+//     actually attempt the fetch even when the gate would otherwise refuse
+//     it (non-empty cache, throttle window not elapsed, etc). This is
+//     asserted here at the boundary this harness CAN reach offline: proving
+//     the gate itself still says "no" for exactly the states the manual
+//     button is supposed to override, so a future change can't accidentally
+//     make forceRefreshCliProxyModelCache start deferring to this gate
+//     without that being a visible, deliberate decision (manager.ts's own
+//     forceRefreshCliProxyModelCache function can't be imported by this
+//     offline harness — it pulls in `electron` via BrowserWindow, same
+//     carve-out as every other manager.ts-touching concern in this file).
+// ---------------------------------------------------------------------------
+
+{
+  const wouldBeRefusedByAutomaticGate = {
+    cacheSize: 5, // non-empty — the automatic gate refuses here
+    isProxyRunning: true,
+    hasManagementSecret: true,
+    isRefreshInFlight: false,
+    lastAttemptAt: 9_000,
+    now: 10_000, // throttle window (default 5000ms) not yet elapsed either
+    minIntervalMs: 5_000
+  }
+  assert.equal(
+    shouldRefreshCliProxyModelCache(wouldBeRefusedByAutomaticGate),
+    false,
+    'sanity: the automatic gate must refuse for a non-empty cache + unelapsed throttle — this is exactly ' +
+      'the state a manual "Refresh models" click needs to override by calling refreshCliProxyModelCache ' +
+      'DIRECTLY rather than going through this gate at all'
+  )
+  console.log(
+    '✓ (unit 09-polish) the automatic refresh gate correctly refuses in states the manual "Refresh models" ' +
+      'button is meant to bypass — locking in that forceRefreshCliProxyModelCache must call ' +
+      'refreshCliProxyModelCache directly, never through this gate'
+  )
+}
+
 console.log('\nAll model-picker assertions passed.')

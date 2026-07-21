@@ -2102,6 +2102,22 @@ export interface RoutingProxyUpdateCheckResult {
   error?: string
 }
 
+/** Result of a manual maintenance action (model-routing unit 09-polish's
+ *  "Refresh models" / "Refresh connections" / "Regenerate config" buttons —
+ *  see OrpheusModelRoutingSection.tsx's Maintenance group). Every action
+ *  reports a concrete, honest outcome — never a silent no-op — so the UI can
+ *  show something like "Refreshed — 10 models from 1 provider" or "Couldn't
+ *  reach the proxy" rather than just clearing a spinner. */
+export interface RoutingProxyMaintenanceResult {
+  ok: boolean
+  /** Human-readable summary, e.g. "10 models from 1 provider" or "Couldn't
+   *  reach the proxy — is it running?". Always present, success or failure. */
+  message: string
+  /** Only meaningful for the "Refresh models" action. */
+  modelCount?: number
+  providerCount?: number
+}
+
 /** Download size info surfaced before an install, so the Settings UI can show it. */
 export interface RoutingProxyAssetInfo {
   version: string
