@@ -36,6 +36,7 @@ import {
   computeRoutingEnv,
   isLiveApplicableModelChange,
   shouldAutoRestartForModelChange,
+  shouldEmitFallbackModel,
   getRoutingProxyUrl,
   getRoutingAuthToken,
   DEFAULT_ROUTING_PROXY_URL
@@ -418,6 +419,85 @@ import {
   )
   console.log(
     '✓ the in_progress guard: a routed-involving switch does NOT auto-restart while the workspace is busy'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 7. Bug-09-polish — shouldEmitFallbackModel: --fallback-model must never be
+//    handed to claude on a routed launch (it's a Claude-CLI-native concept
+//    with no meaning against a third-party proxy backend — see the doc
+//    comment on shouldEmitFallbackModel). A Claude launch (including the ''
+//    default) must be completely unaffected — byte-for-byte identical to
+//    the prior unconditional "emit whenever non-empty" behavior.
+// ---------------------------------------------------------------------------
+
+{
+  // Claude launch models -> the flag MAY be emitted (composeFlagTokens's own
+  // non-empty check decides whether it actually is; this predicate must not
+  // itself suppress anything for these).
+  for (const model of ['claude-opus-4-8', 'claude-sonnet-5', 'opus', 'sonnet', 'haiku', 'fable']) {
+    assert.equal(
+      shouldEmitFallbackModel(model),
+      true,
+      `${model}: Claude launch model must NOT suppress --fallback-model`
+    )
+  }
+  // Empty string == claude's own default model, which is always Claude.
+  assert.equal(
+    shouldEmitFallbackModel(''),
+    true,
+    'empty launch model (claude default) must NOT suppress --fallback-model'
+  )
+  console.log('✓ Claude launch models (incl. default) never suppress --fallback-model')
+
+  // Routed launch models -> the flag MUST be suppressed, regardless of the
+  // shape of the configured fallback value (the predicate takes only the
+  // LAUNCH model — composeFlagTokens never even reads s.fallbackModel to
+  // decide this).
+  for (const model of ['gpt-5.1-codex', 'grok-4.5', 'some-vendor-opus-clone']) {
+    assert.equal(
+      shouldEmitFallbackModel(model),
+      false,
+      `${model}: routed launch model must suppress --fallback-model`
+    )
+  }
+  console.log('✓ routed launch models always suppress --fallback-model')
+
+  // Simulate composeFlagTokens's exact gate (non-empty fallback AND not
+  // suppressed) for both directions, proving the combined condition behaves
+  // as the fix intends without needing to boot the DB-backed
+  // composeClaudeLaunch (which pulls in electron transitively).
+  function simulateFallbackFlagEmission(launchModel: string, fallbackModel: string): boolean {
+    return fallbackModel.trim() !== '' && shouldEmitFallbackModel(launchModel)
+  }
+
+  assert.equal(
+    simulateFallbackFlagEmission('claude-opus-4-8', 'claude-haiku-4-5'),
+    true,
+    'Claude workspace with a configured fallback: flag IS emitted (byte-for-byte unchanged)'
+  )
+  assert.equal(
+    simulateFallbackFlagEmission('claude-opus-4-8', ''),
+    false,
+    'Claude workspace with NO configured fallback: flag is not emitted (unchanged — empty check)'
+  )
+  assert.equal(
+    simulateFallbackFlagEmission('gpt-5.1-codex', 'claude-haiku-4-5'),
+    false,
+    'routed workspace with a Claude fallback configured: flag must be suppressed (the reported bug)'
+  )
+  assert.equal(
+    simulateFallbackFlagEmission('gpt-5.1-codex', 'grok-code-fast'),
+    false,
+    'routed workspace with a non-Claude fallback configured: flag must ALSO be suppressed (policy: suppress whenever routed, regardless of fallback provider)'
+  )
+  assert.equal(
+    simulateFallbackFlagEmission('gpt-5.1-codex', ''),
+    false,
+    'routed workspace with no fallback configured: still no flag (trivially — both conditions already false)'
+  )
+  console.log(
+    '✓ composeFlagTokens-equivalent gate: Claude unaffected, routed always suppresses --fallback-model'
   )
 }
 

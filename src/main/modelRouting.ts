@@ -111,6 +111,34 @@ export function computeRoutingEnv(
 }
 
 /**
+ * Bug-09-polish fix: should `--fallback-model <value>` be emitted for this
+ * launch? `--fallback-model` is a Claude-CLI-native concept — it tells the
+ * OFFICIAL Anthropic-path client which Claude model to fall back to when the
+ * primary is overloaded/unavailable. It has no meaning against a routed
+ * (third-party, non-Claude) backend: the routing proxy has no notion of
+ * Claude Code's built-in overload fallback, so handing it a fallback model
+ * either produces `unknown provider for model <x>` (proxy has no Claude
+ * backend configured) or — worse — silently continues the session on
+ * whatever backend the fallback string happens to resolve to, defeating the
+ * user's explicit routing choice mid-session.
+ *
+ * Policy: suppress the flag whenever the LAUNCH model is routed, regardless
+ * of what the configured fallback string is (not just when the fallback
+ * itself resolves to a Claude id). The fallback field is free text ("model
+ * alias or full model ID") describing Claude's own overload behavior; a
+ * routed workspace has already opted out of the Claude backend entirely, so
+ * the setting simply does not apply — same reasoning as computeRoutingEnv
+ * never emitting a CLAUDE_CODE_USE_* var alongside routing. A Claude launch
+ * is completely unaffected: this returns true unconditionally when the
+ * launch model is Claude, so composeFlagTokens's existing non-empty check is
+ * the only other gate (byte-for-byte unchanged behavior for Claude
+ * workspaces).
+ */
+export function shouldEmitFallbackModel(launchModel: string): boolean {
+  return !isRoutedModel(launchModel)
+}
+
+/**
  * Is a model change "live-applicable" — can `/model <value>` typed into an
  * already-running terminal actually make the running claude process reflect
  * it, with no restart? That premise holds ONLY when old and new model are

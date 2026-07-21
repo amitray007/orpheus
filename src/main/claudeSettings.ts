@@ -18,6 +18,7 @@ import { getWorkspace } from './workspaces'
 import { encodePathToClaudeDir } from './claudeProjectDir'
 import { FLAG_DELIMITER, mergeFlagScopes, parseFlagEntry } from '../shared/cliFlags'
 import { validateCustomCliFlagsValue, validateCustomEnvVarsValue } from './overridesStore'
+import { shouldEmitFallbackModel } from './modelRouting'
 
 // One-way-true cache for session JSONL existence checks.
 // Key: `${cwd}:${sessionId}`. Once a JSONL is confirmed to exist (true), it
@@ -778,8 +779,15 @@ function composeFlagTokens(
     flagTokens.push('--debug')
   }
 
-  // --fallback-model: only emit when non-empty
-  if (s.fallbackModel && s.fallbackModel.trim() !== '') {
+  // --fallback-model: only emit when non-empty AND the launch model is not
+  // routed. --fallback-model is a Claude-CLI-native concept (Anthropic
+  // overload fallback) with no meaning against a third-party routed backend
+  // — see shouldEmitFallbackModel's doc comment in modelRouting.ts for the
+  // full rationale (unknown-provider errors, or worse, a silent backend
+  // switch mid-session). Claude launches (s.model unrouted, including the ''
+  // default) are unaffected: shouldEmitFallbackModel returns true for them,
+  // so this is byte-for-byte identical to the prior unconditional check.
+  if (s.fallbackModel && s.fallbackModel.trim() !== '' && shouldEmitFallbackModel(s.model)) {
     flagTokens.push('--fallback-model', s.fallbackModel.trim())
   }
 
