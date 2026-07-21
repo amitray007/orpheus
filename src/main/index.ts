@@ -1281,10 +1281,15 @@ async function traceTerminalMount(
 
 /** Post-mount overlay handling: show the "Starting workspace" overlay only when a
  *  new surface was actually created (re-attach/resize of an already-running
- *  workspace has no boot to mask), and arm the 10s fallback dismissal timer. */
-function handlePostMountOverlay(workspaceId: string, created: boolean): void {
+ *  workspace has no boot to mask), and arm the 10s fallback dismissal timer.
+ *  `routed` (from isRoutedMount(precomposedLaunch), already computed by the
+ *  caller for the health-gate check above) picks the slow-watchdog copy and
+ *  threshold inside loadingOverlay.ts — a routed mount waits on a proxy
+ *  round-trip before claude registers its session file, so the generic
+ *  "hooks/auth" slow copy would be wrong and 3s too aggressive for it. */
+function handlePostMountOverlay(workspaceId: string, created: boolean, routed: boolean): void {
   if (created) {
-    showLoadingOverlay(workspaceId, { title: 'Starting workspace' })
+    showLoadingOverlay(workspaceId, { title: 'Starting workspace' }, routed)
 
     // If the session is already past its starting phase (re-mount of a
     // running workspace), dismiss the overlay immediately.
@@ -1422,7 +1427,7 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     })
   }
 
-  handlePostMountOverlay(workspaceId, result.created)
+  handlePostMountOverlay(workspaceId, result.created, isRoutedMount(precomposedLaunch))
 
   // Snapshot the composed launch (+ auth env layer) so we can detect settings
   // AND auth drift later — see LaunchSnapshot in workspaceResources.ts.
