@@ -1,6 +1,7 @@
 import { getDb } from './db'
 import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
+import { CLAUDE_EFFORT_VALUES } from '../shared/types'
 import type { ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 import { parseFlagEntry } from '../shared/cliFlags'
 import { isValidEnvVarKey } from '../shared/envVars'
@@ -34,25 +35,16 @@ const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
   'plan',
   'bypassPermissions'
 ]
-// Mirrors ClaudeEffort/schema.ts's EFFORT/claudeSettings.ts's VALID_EFFORTS
-// exactly (model-routing unit 11) — keep all four in sync. This is the
-// validator that actually gates claude_workspace_settings/claude_project_
-// settings writes (via BaseOverrides.effort), so a workspace/project-scope
+// Sourced from CLAUDE_EFFORT_VALUES (src/shared/types.ts's single canonical
+// list, model-routing unit 11) rather than a re-declared literal. This is
+// the validator that actually gates claude_workspace_settings/claude_project_
+// settings writes (via BaseOverrides.effort) — a workspace/project-scope
 // effort reconciliation producing 'minimal'/'none' would have been silently
-// rejected here if this array weren't widened too. Exported so
-// scripts/verify-effort-levels.ts can assert against this REAL validator
-// array directly (import it aliased, since claudeSettings.ts also exports
-// its own same-named VALID_EFFORTS).
-export const VALID_EFFORTS: ClaudeEffort[] = [
-  'auto',
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max'
-]
+// rejected here if this array weren't sourced from the same place as every
+// other effort validator. Exported so scripts/verify-effort-levels.ts can
+// assert against this REAL validator array directly (import it aliased,
+// since claudeSettings.ts also exports its own same-named VALID_EFFORTS).
+export const VALID_EFFORTS: readonly ClaudeEffort[] = CLAUDE_EFFORT_VALUES
 
 function validateBasePatch(patch: BaseOverrides): void {
   if (

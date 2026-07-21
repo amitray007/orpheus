@@ -17,6 +17,7 @@ import {
 import { getClaudeGlobalSettings } from './claudeSettings'
 import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getProject } from './projects'
+import { CLAUDE_EFFORT_VALUES } from '../shared/types'
 import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 import { onWorkspaceStatusChange } from './orpheusNotify'
 import { getWorkspaceFileInfo, getWorkspaceFileStatusSync, forceReconcile } from './sessionState'
@@ -314,23 +315,16 @@ function buildWorkspaceSettingsOverride(args: Record<string, unknown>): {
   ) {
     settingsOverride.permissionMode = args.permissionMode as ClaudePermissionMode
   }
-  // Mirrors ClaudeEffort/schema.ts's EFFORT/claudeSettings.ts's VALID_EFFORTS/
-  // overridesStore.ts's VALID_EFFORTS exactly (model-routing unit 11) — keep
-  // all five in sync. Without this widening, a CLI-created workspace passing
-  // effort: 'minimal'/'none' would silently have that field DROPPED here
-  // (fails the includes() check, so it's just omitted from
-  // settingsOverride — no error, no signal to the caller).
-  const VALID_EFFORTS: ClaudeEffort[] = [
-    'auto',
-    'none',
-    'minimal',
-    'low',
-    'medium',
-    'high',
-    'xhigh',
-    'max'
-  ]
-  if (typeof args.effort === 'string' && VALID_EFFORTS.includes(args.effort as ClaudeEffort)) {
+  // Sourced from CLAUDE_EFFORT_VALUES (src/shared/types.ts's single
+  // canonical list, model-routing unit 11) rather than a re-declared
+  // literal — without this, a CLI-created workspace passing effort:
+  // 'minimal'/'none' would silently have that field DROPPED here (fails the
+  // includes() check, so it's just omitted from settingsOverride — no
+  // error, no signal to the caller).
+  if (
+    typeof args.effort === 'string' &&
+    CLAUDE_EFFORT_VALUES.includes(args.effort as ClaudeEffort)
+  ) {
     settingsOverride.effort = args.effort as ClaudeEffort
   }
   return settingsOverride

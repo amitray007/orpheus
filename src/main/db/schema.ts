@@ -1,5 +1,6 @@
 import type { ColumnDef, SchemaDef, TableDef } from './types'
 import { enumCheck, enumClause } from './render'
+import { CLAUDE_EFFORT_VALUES } from '../../shared/types'
 
 // Shared enum arrays — exported for reuse by app code (renderer/main) so the
 // set of valid values lives in exactly one place. Values copied verbatim from
@@ -16,11 +17,13 @@ const KEEP_AWAKE_MODE = ['off', 'auto', 'on'] as const
 const PANE_PANEL_KIND = ['general', 'project'] as const
 
 const PERMISSION_MODE = ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const
-// model-routing unit 11: widened to include 'none' (off-ladder disable) and
-// 'minimal' (lowest on-ladder rung) — real values some routed providers
-// report via CLIProxyAPI's thinking.levels. Mirrors ClaudeEffort in
-// src/shared/types.ts exactly; keep both in sync.
-const EFFORT = ['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+// Sourced from src/shared/types.ts's CLAUDE_EFFORT_VALUES (the single
+// canonical list, model-routing unit 11) rather than a re-declared literal —
+// this is the fix for the class of bug where independent copies of this
+// array silently drifted out of sync with ClaudeEffort when 'none'/'minimal'
+// were added. Kept under the name EFFORT for every existing call site
+// (enumCheck/enumCoerce below, plus scripts/verify-*.ts imports).
+const EFFORT = CLAUDE_EFFORT_VALUES
 const OUTPUT_STYLE = ['default', 'explanatory', 'proactive', 'learning'] as const
 const TUI_MODE = ['default', 'fullscreen'] as const
 const EDITOR_MODE = ['normal', 'vim'] as const

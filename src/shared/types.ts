@@ -379,6 +379,25 @@ export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassP
 // standard rung respectively) — kept distinct from each other and from
 // 'low', never conflated (model-routing unit 11).
 export type ClaudeEffort = 'auto' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+// The single canonical value list for ClaudeEffort (model-routing unit 11)
+// — every validator that needs to check "is this a legal effort value"
+// (schema.ts's EFFORT CHECK constraint, claudeSettings.ts's VALID_EFFORTS,
+// overridesStore.ts's VALID_EFFORTS, commandServer.ts's CLI-arg validator)
+// imports THIS array rather than re-declaring its own literal copy. Before
+// this, four independent copies existed and three of them silently drifted
+// out of sync with the widened ClaudeEffort type when 'none'/'minimal' were
+// added — this array is the fix for that class of bug, not just a one-time
+// patch to the copies that had already drifted.
+export const CLAUDE_EFFORT_VALUES: readonly ClaudeEffort[] = [
+  'auto',
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+]
 export type ClaudeOutputStyle = 'default' | 'explanatory' | 'proactive' | 'learning'
 export type ClaudeTuiMode = 'default' | 'fullscreen'
 export type ClaudeEditorMode = 'normal' | 'vim'

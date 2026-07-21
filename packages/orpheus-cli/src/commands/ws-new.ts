@@ -82,6 +82,7 @@ import { sendCommand } from '../socket-client.js'
 import { printResult, printKeyValue, printError, printUsageError, printLines } from '../output.js'
 import { resolveFocus } from '../focus.js'
 import type { WorkspaceRecord } from '../reads/db.js'
+import { CLAUDE_EFFORT_VALUES } from '@shared/types'
 
 // ---------------------------------------------------------------------------
 // ws new — helpers
@@ -269,10 +270,11 @@ registerCommand('ws new', {
       type: 'string',
       valueHint: '<level>',
       desc: 'Workspace-level effort override.',
-      // Mirrors ClaudeEffort (model-routing unit 11) — documentation only
-      // (see command-help.ts/help-model.ts), not itself enforced; the real
-      // validation is commandServer.ts's buildWorkspaceSettingsOverride.
-      values: ['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+      // Sourced from CLAUDE_EFFORT_VALUES (model-routing unit 11) —
+      // documentation only (see command-help.ts/help-model.ts), not itself
+      // enforced; the real validation is commandServer.ts's
+      // buildWorkspaceSettingsOverride.
+      values: [...CLAUDE_EFFORT_VALUES],
       default: 'inherits the project/global effort setting'
     },
     focus: {

@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import { getDb } from './db'
+import { CLAUDE_EFFORT_VALUES } from '../shared/types'
 import type {
   ClaudeGlobalSettings,
   ClaudeGlobalSettingsPatch,
@@ -329,18 +330,13 @@ const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
   'plan',
   'bypassPermissions'
 ]
-// Mirrors ClaudeEffort/schema.ts's EFFORT exactly (model-routing unit 11) —
-// keep all three in sync.
-const VALID_EFFORTS: ClaudeEffort[] = [
-  'auto',
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max'
-]
+// Sourced from CLAUDE_EFFORT_VALUES (src/shared/types.ts's single canonical
+// list, model-routing unit 11) rather than a re-declared literal — this is
+// the fix for the class of bug where independent copies of this array
+// silently drifted out of sync with ClaudeEffort. Exported so
+// scripts/verify-effort-levels.ts can assert against the REAL validator
+// array directly.
+export const VALID_EFFORTS: readonly ClaudeEffort[] = CLAUDE_EFFORT_VALUES
 const VALID_OUTPUT_STYLES: ClaudeOutputStyle[] = ['default', 'explanatory', 'proactive', 'learning']
 const VALID_TUI_MODES: ClaudeTuiMode[] = ['default', 'fullscreen']
 const VALID_EDITOR_MODES: ClaudeEditorMode[] = ['normal', 'vim']

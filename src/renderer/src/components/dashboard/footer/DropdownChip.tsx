@@ -364,7 +364,16 @@ export function DropdownChip({
         .then((settings) => {
           if (settings.overrides.effort !== undefined) setEffortValue(settings.overrides.effort)
         })
-        .catch(() => {})
+        .catch((e) => {
+          // Never swallow silently — a rejected model+effort write here
+          // means the UI (modelValue/effortValue, already optimistically
+          // updated above) has desynced from the DB, and the running
+          // process is about to get an in-terminal `/model`/restart based
+          // on a value that was never actually persisted.
+          console.error('[DropdownChip] setModel failed', e)
+          playSound('error')
+          showTooltip('Model not saved — try again')
+        })
       // `/model <value>` is a Claude CLI slash command — it is only
       // meaningful for a Claude -> Claude switch (same backend, same running
       // process, just a different --model argument). A switch involving a
@@ -413,9 +422,29 @@ export function DropdownChip({
     faceLabel = labelForEffort(effortValue)
     chipTitle = `${item.label}: ${faceLabel}`
     onSelect = (value: string): void => {
+      const previousEffort = effortValue
       setEffortValue(value)
-      window.api.workspaces.setEffort(workspaceId, value as ClaudeEffort).catch(() => {})
-      runInject(`/effort ${value}`, true, 'Effort set — applies next turn')
+      window.api.workspaces
+        .setEffort(workspaceId, value as ClaudeEffort)
+        .then(() => {
+          // Only inject `/effort <value>` into the terminal AFTER the write
+          // is confirmed persisted — a rejected write (e.g. an out-of-enum
+          // value somehow reaching here) must never leave the running
+          // process told about a value the DB doesn't actually have,
+          // silently desyncing UI state from persisted state.
+          runInject(`/effort ${value}`, true, 'Effort set — applies next turn')
+        })
+        .catch((e) => {
+          // Revert the optimistic local state and surface the failure —
+          // never swallow a rejected persistence write silently (a bare
+          // `.catch(() => {})` here would show the user a new effort value
+          // while the DB kept the old one, then emit the STALE value as
+          // --effort on the next launch).
+          console.error('[DropdownChip] setEffort failed', e)
+          setEffortValue(previousEffort)
+          playSound('error')
+          showTooltip('Effort not saved — try again')
+        })
     }
   } else if (item.actionId === 'footer.dropdown') {
     const options = Array.isArray(item.params.options)
