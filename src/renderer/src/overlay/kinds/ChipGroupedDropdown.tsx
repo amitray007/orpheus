@@ -231,7 +231,7 @@ export function ChipGroupedDropdown({ props, emit }: OverlayKindProps): React.JS
       parentPanelWidth: rect.width,
       submenuWidth: 256, // matches SubmenuPanel's w-64
       screenWidth: window.screen.availWidth,
-      gap: 6
+      gap: 0 // panels now adjoin (gap-0 above) — no gutter to reserve fitment room for
     })
     setSubmenuSide(side)
   }, [activeGroup])
@@ -442,7 +442,19 @@ export function ChipGroupedDropdown({ props, emit }: OverlayKindProps): React.JS
           handleCancel()
         }
       }}
-      className="flex items-stretch gap-1.5 outline-none font-[family-name:var(--font-sans)]"
+      // gap-0 (was gap-1.5): the two panels adjoin with no visible gutter
+      // between them, reading as one continuous surface (user-reported —
+      // "connect them"). Safe to close: the diagonal-traversal tolerance
+      // that keeps the submenu open while the pointer crosses between
+      // panels is TIME-based (the close-delay timers at the call site,
+      // DropdownChip.tsx's MODEL_SUBMENU_CLOSE_DELAY_MS) and the genuine-
+      // hover gate (useGenuineHoverGate), never distance/gap-based — see
+      // computeSubmenuSide's own `gap` param, which only ever affects the
+      // LEFT/RIGHT FITMENT decision (does the submenu fit on screen), not
+      // any hover-bridge tolerance. Closing the gap only shortens the
+      // distance the pointer has to travel, making traversal easier, not
+      // harder.
+      className="flex items-stretch gap-0 outline-none font-[family-name:var(--font-sans)]"
     >
       {/* items-stretch (not items-start): the row's height is set by
           whichever panel is naturally taller (usually the model submenu,

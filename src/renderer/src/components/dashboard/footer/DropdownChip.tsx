@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
+import type { ChipDropdownItem, ClaudeEffort, WorkspaceActivityDetail } from '@shared/types'
 import {
-  EFFORT_LADDER_ORDER,
-  type ChipDropdownItem,
-  type ClaudeEffort,
-  type WorkspaceActivityDetail
-} from '@shared/types'
-import { capitalize, effortOptionsFor, shouldRenderEffortChip } from '@/lib/effortPickerOptions'
+  capitalize,
+  effortOptionsFor,
+  shouldRenderEffortChip,
+  resolveEffortLevelsForScope
+} from '@/lib/effortPickerOptions'
 import { IconByName } from './iconMap'
 import {
   showChipDropdown,
@@ -257,7 +257,7 @@ export function DropdownChip({
   // (never silently dropped from the dropdown, even though it can no longer
   // be freshly selected as "available").
   const needsModelList = isModelSelect || isEffortSelect
-  const { models: selectableModels } = useSelectableModels(
+  const { models: selectableModels, loading: selectableModelsLoading } = useSelectableModels(
     needsModelList ? modelValue : undefined,
     needsModelList
   )
@@ -270,27 +270,26 @@ export function DropdownChip({
     () => selectableModels.find((m) => m.id === modelValue)?.isClaude ?? modelValue === '',
     [selectableModels, modelValue]
   )
-  // The current model's real effort levels (model-routing unit 11) — null
-  // means "no reasoning-effort control at all" for this model, which is the
-  // signal the effortSelect branch below uses to hide its chip entirely
-  // rather than render a disabled control (a disabled control would imply
-  // the capability exists).
-  //
-  // modelValue === '' is NOT "unknown model" — it's the genuine, durable
-  // "no explicit override" state (composeClaudeLaunch skips --model entirely
-  // when s.model is empty, so claude picks its own default), which is only
-  // ever reachable for Claude (a routed workspace always has an explicit
-  // model id — see modelRouting.ts). Falling through to null here would wrongly
-  // hide the effort chip for every workspace that has never had its model
-  // touched. Since claude's own unspecified default is always SOME Claude
-  // model, and every Claude model's levels are a subset of the full ladder
-  // (CLAUDE_BUILTIN_EFFORT_LEVELS), the full ladder is used as the safe,
-  // non-fabricated fallback for this one specific case — it is never applied
-  // to a routed (non-Claude) model, which always resolves to a real entry.
-  const currentModelEffortLevels = useMemo(() => {
-    if (modelValue === '') return [...EFFORT_LADDER_ORDER]
-    return selectableModels.find((m) => m.id === modelValue)?.effortLevels ?? null
-  }, [selectableModels, modelValue])
+  // The current model's real effort levels (model-routing unit 11) — a
+  // TRI-STATE (see resolveEffortLevelsForScope's own doc comment for the
+  // full null/undefined/string[] contract). `modelValue` doubles as "no
+  // single model to resolve" when it's '' (the genuine, durable "no
+  // explicit override" state — composeClaudeLaunch skips --model entirely
+  // then, so claude picks its own default), matching the SAME concept the
+  // settings drawers' 'default'/'Use global' selection represents at their
+  // own scope. `selectableModelsLoading` is what fixes the "empty effort
+  // chip on a cold direct-to-workspace open" bug — see that function's own
+  // doc comment.
+  const currentModelEffortLevels = useMemo(
+    () => resolveEffortLevelsForScope(modelValue, selectableModels, selectableModelsLoading),
+    [selectableModels, selectableModelsLoading, modelValue]
+  )
+  // PENDING (model-routing unit 11 bugfix): the effort chip's levels are the
+  // "unknown yet" tri-state member — render the chip, but non-interactively,
+  // rather than either hiding it (that's `null`'s job) or opening a
+  // dropdown with fabricated options. Only meaningful for the effort chip
+  // itself; false (never pending) for every other actionId.
+  const isEffortPending = isEffortSelect && currentModelEffortLevels === undefined
 
   // ---------------------------------------------------------------------
   // Case 2 — footer.effortSelect: effective effort value, read from the
@@ -424,6 +423,13 @@ export function DropdownChip({
     // currentModelEffortLevels is null, this model has no reasoning-effort
     // control at all; the chip renders nothing at all (see the early-return
     // right before the JSX below) rather than an empty/disabled dropdown.
+    // While undefined (PENDING — levels not resolved yet, see this tri-
+    // state's own doc comment above), dropdownItems is deliberately left
+    // empty too: never fabricate a ladder as if it were authoritative. The
+    // chip itself still renders (isEffortPending below, computed from the
+    // SAME tri-state) with the persisted effortValue as its face label —
+    // available from workspaceEffortStore independent of the model list —
+    // just non-interactive until levels resolve.
     dropdownItems = currentModelEffortLevels ? effortOptionsFor(currentModelEffortLevels) : []
     selectedValue = effortValue || 'auto'
     faceLabel = labelForEffort(effortValue)
@@ -530,6 +536,9 @@ export function DropdownChip({
 
   const handleClick = useCallback((): void => {
     if (!chipRef.current) return
+    // PENDING: levels not resolved yet — never open a dropdown built from
+    // fabricated/empty options (see isEffortPending's own doc comment).
+    if (isEffortPending) return
     if (openRef.current) {
       // Currently open → close. Flip the ref synchronously so an immediate
       // follow-up click is treated as "closed" (will open), not another close.
@@ -585,7 +594,14 @@ export function DropdownChip({
         console.error('[DropdownChip] dropdown failed', e)
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dropdownItems/selectedValue/onSelect are recomputed fresh every render from item/workspaceId/local state; including them would churn the callback identity without changing behavior. `open` is intentionally NOT a dep — the open/close decision now uses openRef (synchronous), not the lagging open state.
-  }, [dropdownOverlayId, workspaceId, item.label, isModelSelect, handleOpenGroupedDropdown])
+  }, [
+    dropdownOverlayId,
+    workspaceId,
+    item.label,
+    isModelSelect,
+    handleOpenGroupedDropdown,
+    isEffortPending
+  ])
 
   // Outside-click dismissal while the dropdown is open — mirrors ActionChip's
   // prompt-popover pattern: the popover lives in a separate child
@@ -618,7 +634,12 @@ export function DropdownChip({
     return () => document.removeEventListener('pointerdown', onPointerDown)
   }, [open, dropdownOverlayId, isModelSelect])
 
-  const isDisabled = enabled === false
+  // isEffortPending shares the SAME muted visual treatment as isDisabled
+  // (enabled === false) — a different underlying concept (levels not
+  // resolved yet, vs. this chip being contextually inapplicable right now),
+  // but the same "not currently interactive" affordance, so it's folded
+  // into the same className branch rather than adding a third visual state.
+  const isDisabled = enabled === false || isEffortPending
 
   // Hide the effort control entirely for a model with no reasoning-effort
   // levels at all (model-routing unit 11, work item 3) — NEVER render it
@@ -626,7 +647,10 @@ export function DropdownChip({
   // runs after every hook above has already been called unconditionally
   // (Rules of Hooks), so it's safe as a plain early return here.
   // shouldRenderEffortChip is the same pure selector scripts/verify-effort-
-  // levels.ts asserts directly (see effortPickerOptions.ts).
+  // levels.ts asserts directly (see effortPickerOptions.ts) — it treats the
+  // PENDING (undefined) tri-state member as "render", so this early return
+  // does NOT fire while pending; isEffortPending above is what keeps a
+  // pending chip non-interactive instead.
   if (isEffortSelect && !shouldRenderEffortChip(currentModelEffortLevels)) return <></>
 
   return (

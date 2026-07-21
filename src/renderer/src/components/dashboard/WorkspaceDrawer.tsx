@@ -11,7 +11,9 @@ import { ActivityIndicator } from './ActivityIndicator'
 import { WorkspaceOverridesSkeleton } from '../Skeleton'
 import { useSelectableModels } from '@/lib/useSelectableModels'
 import { buildModelSelectOptions, MODEL_CUSTOM_VALUE } from '@/lib/modelPickerOptions'
+import { effortOptionsFor, resolveEffortLevelsForScope } from '@/lib/effortPickerOptions'
 import {
+  EFFORT_LADDER_ORDER,
   type WorkspaceRecord,
   type WorkspaceStatus,
   type WorkspaceActivityDetail,
@@ -99,18 +101,15 @@ const PERMISSION_OPTIONS = [
   { value: 'bypassPermissions', label: 'Bypass' }
 ] as const
 
-const EFFORT_OPTIONS = [
-  { value: 'default', label: 'Default' },
-  { value: 'auto', label: 'Auto' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'Extra High' },
-  { value: 'max', label: 'Max' }
-] as const
-
+// Effort options are data-driven (model-routing unit 11) — the workspace's
+// effective model's real effortLevels via resolveEffortLevelsForScope/
+// effortOptionsFor (see the useMemo in OverridesSection below), never a
+// hardcoded ladder. A workspace with no model override has no single
+// resolved model at THIS scope (see resolveEffortLevelsForScope's own doc
+// comment) — 'Default' ("no override, inherit") is a DIFFERENT concept
+// from 'auto' and is prepended as `leading`, never collapsed into it.
 type PermissionOption = (typeof PERMISSION_OPTIONS)[number]['value']
-type EffortOption = (typeof EFFORT_OPTIONS)[number]['value']
+type EffortOption = string
 
 interface OverridesSectionProps {
   workspaceId: string
@@ -140,10 +139,31 @@ function OverridesSection({
   // proxy/provider health server-side) — refetches whenever the currently
   // selected model changes so an unavailable-but-selected routed model is
   // never silently dropped (see useSelectableModels' own doc comment).
-  const { models: selectableModels } = useSelectableModels(localOverrides.model)
+  const { models: selectableModels, loading: selectableModelsLoading } = useSelectableModels(
+    localOverrides.model
+  )
   const modelOptions = useMemo(
     () => buildModelSelectOptions(selectableModels, { value: 'default', label: 'Default' }),
     [selectableModels]
+  )
+  // Effort options: data-driven off this WORKSPACE's own effective model
+  // (model-routing unit 11) — see EFFORT_OPTIONS' own doc comment for why
+  // 'Default' is a distinct `leading` concept from 'auto', and
+  // resolveEffortLevelsForScope's own doc comment for the full null/
+  // undefined/string[] fallback contract.
+  const effortLevels = resolveEffortLevelsForScope(
+    localOverrides.model,
+    selectableModels,
+    selectableModelsLoading
+  )
+  const showEffortField = effortLevels !== null
+  const effortOptions = useMemo(
+    () =>
+      effortOptionsFor(effortLevels ?? [...EFFORT_LADDER_ORDER], {
+        value: 'default',
+        label: 'Default'
+      }),
+    [effortLevels]
   )
 
   useEffect(() => {
@@ -239,7 +259,7 @@ function OverridesSection({
       : 'default'
 
   const effortValue: EffortOption =
-    localOverrides.effort !== undefined ? (localOverrides.effort as EffortOption) : 'default'
+    localOverrides.effort !== undefined ? localOverrides.effort : 'default'
 
   const overrideCount =
     (localOverrides.model !== undefined ? 1 : 0) +
@@ -288,14 +308,16 @@ function OverridesSection({
             isOverridden={localOverrides.permissionMode !== undefined}
             ariaLabel="Workspace permission mode override"
           />
-          <OverrideField
-            label="Effort"
-            options={EFFORT_OPTIONS}
-            value={effortValue}
-            onChange={handleEffort}
-            isOverridden={localOverrides.effort !== undefined}
-            ariaLabel="Workspace effort override"
-          />
+          {showEffortField && (
+            <OverrideField
+              label="Effort"
+              options={effortOptions}
+              value={effortValue}
+              onChange={handleEffort}
+              isOverridden={localOverrides.effort !== undefined}
+              ariaLabel="Workspace effort override"
+            />
+          )}
         </div>
       )}
 

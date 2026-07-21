@@ -551,7 +551,7 @@ export function NewWorkspaceMenu({ props, emit }: OverlayKindProps): React.JSX.E
       parentPanelWidth: rect.width,
       submenuWidth: 256, // matches SubmenuPanel's w-64
       screenWidth: window.screen.availWidth,
-      gap: 6
+      gap: 0 // panels now adjoin (gap-0 below) — no gutter to reserve fitment room for
     })
     setSubmenuSide(side)
   }, [activeGroup])
@@ -825,7 +825,11 @@ export function NewWorkspaceMenu({ props, emit }: OverlayKindProps): React.JSX.E
           emit('cancel')
         }
       }}
-      className="flex items-start gap-1.5 outline-none font-[family-name:var(--font-sans)]"
+      // gap-0 (was gap-1.5) — see ChipGroupedDropdown.tsx's identical change
+      // for the full rationale (user-reported "connect them"; safe to close
+      // since the diagonal-traversal tolerance is time-based, not distance/
+      // gap-based).
+      className="flex items-start gap-0 outline-none font-[family-name:var(--font-sans)]"
     >
       {/* Flex order controls visual side — the submenu is always an IN-FLOW
           sibling (never `position: absolute`) so the overlay window's

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import { ArrowCounterClockwise, X } from '@phosphor-icons/react'
 import {
+  EFFORT_LADDER_ORDER,
   type ClaudeEffort,
   type ClaudeGlobalSettings,
   type ClaudePermissionMode,
@@ -13,6 +14,7 @@ import { Overlay } from '@/components/ui/Overlay'
 import { WorkspaceCreationSettings } from './WorkspaceCreationSettings'
 import { useSelectableModels } from '@/lib/useSelectableModels'
 import { buildModelSelectOptions, MODEL_CUSTOM_VALUE } from '@/lib/modelPickerOptions'
+import { effortOptionsFor, resolveEffortLevelsForScope } from '@/lib/effortPickerOptions'
 
 // ---------------------------------------------------------------------------
 // Per-project settings drawer
@@ -37,18 +39,17 @@ const PERMISSION_OPTIONS = [
   { value: 'bypassPermissions', label: 'Bypass' }
 ] as const
 
-const EFFORT_OPTIONS = [
-  { value: 'default', label: 'Use global' },
-  { value: 'auto', label: 'Auto' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'Extra High' },
-  { value: 'max', label: 'Max' }
-] as const
-
+// Effort options are data-driven (model-routing unit 11) — the project's
+// effective model's real effortLevels via resolveEffortLevelsForScope/
+// effortOptionsFor (see the useMemo below), never a hardcoded ladder. A
+// project has no single resolved model unless localOverrides.model is set
+// (see resolveEffortLevelsForScope's own doc comment for why 'default'/"no
+// override at this scope" resolves to the full ladder, the same fallback
+// the footer chip's modelValue === '' case uses) — 'Use global' is a
+// DIFFERENT concept from 'auto' and is prepended as `leading`, never
+// collapsed into it.
 type PermissionOption = (typeof PERMISSION_OPTIONS)[number]['value']
-type EffortOption = (typeof EFFORT_OPTIONS)[number]['value']
+type EffortOption = string
 
 // Stable fallback identity for the CLI flags editor's value/inheritedFlags
 // props. A fresh `[]` literal allocated inline in JSX (`x ?? []`) gets a new
@@ -139,10 +140,38 @@ export function SettingsDrawer({
   // proxy/provider health server-side) — refetches whenever the currently
   // selected model changes so an unavailable-but-selected routed model is
   // never silently dropped (see useSelectableModels' own doc comment).
-  const { models: selectableModels } = useSelectableModels(localOverrides.model)
+  const { models: selectableModels, loading: selectableModelsLoading } = useSelectableModels(
+    localOverrides.model
+  )
   const modelOptions = useMemo(
     () => buildModelSelectOptions(selectableModels, { value: 'default', label: 'Use global' }),
     [selectableModels]
+  )
+  // Effort options: data-driven off the PROJECT's own effective model (model-
+  // routing unit 11) — resolveEffortLevelsForScope returns the full ladder
+  // when localOverrides.model is unset (no single project-scope model to
+  // resolve; 'Use global' is prepended separately as `leading`, a distinct
+  // concept from 'auto' — see EffortOption's own doc comment) OR while the
+  // model list is still loading (`undefined`, treated the same as
+  // "unresolved -> full ladder" here since this drawer has no separate
+  // pending/non-interactive visual state the way the footer chip does).
+  // `null` (the project's OWN explicit model genuinely has no reasoning
+  // control, e.g. an image model) is the one case NOT folded into the full
+  // ladder — showEffortField below hides the field entirely then, mirroring
+  // the footer chip's own "hide, never fabricate" rule.
+  const effortLevels = resolveEffortLevelsForScope(
+    localOverrides.model,
+    selectableModels,
+    selectableModelsLoading
+  )
+  const showEffortField = effortLevels !== null
+  const effortOptions = useMemo(
+    () =>
+      effortOptionsFor(effortLevels ?? [...EFFORT_LADDER_ORDER], {
+        value: 'default',
+        label: 'Use global'
+      }),
+    [effortLevels]
   )
 
   useEffect(() => {
@@ -281,7 +310,7 @@ export function SettingsDrawer({
       : 'default'
 
   const effortValue: EffortOption =
-    localOverrides.effort !== undefined ? (localOverrides.effort as EffortOption) : 'default'
+    localOverrides.effort !== undefined ? localOverrides.effort : 'default'
 
   const overrideCount =
     (localOverrides.model !== undefined ? 1 : 0) +
@@ -374,15 +403,17 @@ export function SettingsDrawer({
                 ariaLabel="Project permission mode override"
                 description="How Claude handles tool permissions when this project's workspaces launch."
               />
-              <OverrideField
-                label="Effort"
-                options={EFFORT_OPTIONS}
-                value={effortValue}
-                onChange={handleEffort}
-                isOverridden={localOverrides.effort !== undefined}
-                ariaLabel="Project effort override"
-                description="Thinking depth Claude applies by default for this project."
-              />
+              {showEffortField && (
+                <OverrideField
+                  label="Effort"
+                  options={effortOptions}
+                  value={effortValue}
+                  onChange={handleEffort}
+                  isOverridden={localOverrides.effort !== undefined}
+                  ariaLabel="Project effort override"
+                  description="Thinking depth Claude applies by default for this project."
+                />
+              )}
             </div>
 
             {hasAnyOverride && (

@@ -60,6 +60,17 @@
 //      model transition (grok-4.5 -> gemini-3.1-flash-image -> null-levels
 //      -> claude-opus-4-8). The store/push wiring itself is NOT verifiable
 //      offline (no renderer test runner) — see this section's own note.
+//   10. THE "EMPTY EFFORT CHIP ON A COLD DIRECT-TO-WORKSPACE OPEN" bugfix:
+//       shouldRenderEffortChip's tri-state (undefined -> render/pending,
+//       null -> hide, string[] -> render/options) is asserted for all
+//       three members.
+//   11. resolveEffortLevelsForScope — the ONE resolver footer chip AND all
+//       three settings drawers (WorkspaceDrawer/SettingsDrawer/
+//       ClaudeGeneralSection) now share: no-single-model -> full ladder,
+//       loading -> pending, resolved -> real levels, residual miss ->
+//       unknown (never null).
+//   12. effortOptionsFor's `leading` parameter — the drawers' 'Use global'/
+//       'Default' option, prepended before 'auto' without disturbing it.
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert'
@@ -78,7 +89,8 @@ import {
 } from '../src/main/models/selectable.ts'
 import {
   effortOptionsFor,
-  shouldRenderEffortChip
+  shouldRenderEffortChip,
+  resolveEffortLevelsForScope
 } from '../src/renderer/src/lib/effortPickerOptions.ts'
 import type {
   BuildSelectableModelsInput,
@@ -723,6 +735,158 @@ function baseInput(
       'runner in this repo) and remains unverified beyond this pure-function level; the MAIN-' +
       'PROCESS reconciliation this wiring depends on WAS verified live (see this section’s own ' +
       'header comment for the exact repro against a running Orpheus Dev build)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 10. THE "EMPTY EFFORT CHIP ON A COLD DIRECT-TO-WORKSPACE OPEN" BUG (user-
+//    reported): shouldRenderEffortChip's effortLevels argument was
+//    previously a plain null/non-null boolean — `null` meant BOTH "this
+//    model genuinely has no reasoning-effort control" (hide) AND "we don't
+//    know this model's levels yet, the model list is still loading" (which
+//    should NOT hide — it's a transient unknown, not an authoritative
+//    fact). Root cause: modelValue resolves from getEffectiveModel almost
+//    immediately on a cold direct-to-workspace app launch, but
+//    selectableModels can still be loading (models:listSelectable hasn't
+//    resolved, or a routed model's proxy is still starting) — a `.find()`
+//    miss during that window got folded into the SAME null as "no control",
+//    hiding the chip even though the model might have real levels once the
+//    list resolves.
+//
+//    Fixed by widening the tri-state to string[] | null | undefined:
+//    `undefined` = not resolved yet (render, non-interactive/pending, never
+//    hidden, never a fabricated ladder); `null` = genuinely no control
+//    (hide); `string[]` = real options. This section asserts
+//    shouldRenderEffortChip's behavior across all three tri-state members —
+//    the exact assertion requested: unknown -> renders, null -> hidden,
+//    real levels -> renders with options.
+// ---------------------------------------------------------------------------
+
+{
+  assert.equal(
+    shouldRenderEffortChip(undefined),
+    true,
+    'UNKNOWN (levels not resolved yet, e.g. models:listSelectable still loading on a cold ' +
+      'direct-to-workspace open) must render the chip — never hidden, never treated the same as ' +
+      'a model that genuinely has no reasoning-effort control'
+  )
+  assert.equal(
+    shouldRenderEffortChip(null),
+    false,
+    'NULL (this model genuinely has no reasoning-effort control, e.g. an image model) must hide ' +
+      'the chip entirely'
+  )
+  assert.equal(
+    shouldRenderEffortChip(['low', 'medium', 'high']),
+    true,
+    'real, resolved levels must render the chip with real options'
+  )
+  assert.equal(
+    shouldRenderEffortChip([]),
+    true,
+    'an empty (but resolved, non-null) levels array must still render the chip — ' +
+      'effortOptionsFor([]) still yields at least the auto entry'
+  )
+
+  console.log(
+    '✓ shouldRenderEffortChip’s tri-state is handled correctly: undefined (unknown/pending) -> ' +
+      'renders, null (genuinely no control) -> hidden, string[] (real levels, including empty) ' +
+      '-> renders with options. Closes the "effort chip empty on a cold direct-to-workspace open" ' +
+      'bug at the logic layer — the live store/loading-flag wiring that feeds this selector is not ' +
+      'independently verifiable offline (no renderer test runner in this repo; see this file’s ' +
+      'section 9 note for the same honest gap)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 11. resolveEffortLevelsForScope — the ONE "model id -> effort levels"
+//    resolver every effort selector in the app now imports (footer chip,
+//    WorkspaceDrawer, SettingsDrawer, ClaudeGeneralSection) instead of a
+//    fifth hardcoded ladder. Covers the "no single model to resolve" case
+//    (undefined modelId — a project/global scope's 'default'/'Use global'
+//    selection, or the footer chip's genuinely-unset workspace model) and
+//    the loading-flag pending case together, since both are the exact
+//    mechanism this unit's two bugfixes depend on.
+// ---------------------------------------------------------------------------
+
+{
+  const claudeModel = buildSelectableModels(baseInput()).find((m) => m.id === 'claude-opus-4-8')!
+
+  // No single model to resolve (undefined modelId) -> full ladder, the SAME
+  // fallback for both "inherits from a parent scope" (drawers) and "no
+  // explicit workspace override" (footer chip's modelValue === '').
+  assert.deepEqual(
+    resolveEffortLevelsForScope(undefined, [claudeModel], false),
+    [...EFFORT_LADDER_ORDER],
+    'undefined modelId (no single scope model) must resolve to the full ladder'
+  )
+  assert.deepEqual(
+    resolveEffortLevelsForScope('', [claudeModel], false),
+    [...EFFORT_LADDER_ORDER],
+    "'' modelId (the footer chip's genuine no-override state) must resolve to the full ladder too"
+  )
+
+  // Loading -> pending (undefined), even for a concrete modelId that WOULD
+  // resolve once the list loads — this is the "cold direct-to-workspace
+  // open" bug's exact mechanism.
+  assert.equal(
+    resolveEffortLevelsForScope('claude-opus-4-8', [], true),
+    undefined,
+    'a concrete modelId must resolve to undefined (pending) while the model list is still loading'
+  )
+
+  // Loaded + found -> real levels.
+  assert.deepEqual(
+    resolveEffortLevelsForScope('claude-opus-4-8', [claudeModel], false),
+    CLAUDE_BUILTIN_EFFORT_LEVELS['claude-opus-4-8'],
+    'a concrete, resolved modelId must return its real effortLevels'
+  )
+
+  // Loaded + not found (residual truly-unresolvable id) -> undefined
+  // (unknown), NOT null — a miss is not positive evidence of "no control".
+  assert.equal(
+    resolveEffortLevelsForScope('totally-unknown-model-id', [claudeModel], false),
+    undefined,
+    'a modelId not found in an already-loaded list must resolve to undefined (unknown), never null'
+  )
+
+  console.log(
+    '✓ resolveEffortLevelsForScope (the ONE resolver every effort selector now shares) handles ' +
+      "the no-single-model case (undefined and '' both -> full ladder), the loading/pending " +
+      'case (-> undefined even for a concrete modelId), a resolved hit (-> real levels), and a ' +
+      'residual unresolvable id (-> undefined, never null)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 12. effortOptionsFor's `leading` parameter — the settings drawers' 'Use
+//    global'/'Default' ("inherit from parent scope") option, prepended
+//    BEFORE 'auto' as a distinct concept, never collapsed into it.
+// ---------------------------------------------------------------------------
+
+{
+  const withLeading = effortOptionsFor(['low', 'medium', 'high'], {
+    value: 'default',
+    label: 'Use global'
+  })
+  assert.deepEqual(
+    withLeading.map((o) => o.value),
+    ['default', 'auto', 'low', 'medium', 'high'],
+    "'leading' must be prepended BEFORE 'auto', never collapsed into it or reordered after it"
+  )
+
+  const withoutLeading = effortOptionsFor(['low', 'medium', 'high'])
+  assert.deepEqual(
+    withoutLeading.map((o) => o.value),
+    ['auto', 'low', 'medium', 'high'],
+    'omitting leading (the footer chip, which has no "inherit" concept) must behave exactly as ' +
+      'before — no default/leading entry fabricated'
+  )
+
+  console.log(
+    "✓ effortOptionsFor's leading parameter prepends the drawers' 'Use global'/'Default' option " +
+      "before 'auto' without disturbing the rest of the ladder; omitting it (the footer chip) " +
+      'is unchanged from before this parameter existed'
   )
 }
 
