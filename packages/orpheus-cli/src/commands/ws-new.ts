@@ -269,7 +269,10 @@ registerCommand('ws new', {
       type: 'string',
       valueHint: '<level>',
       desc: 'Workspace-level effort override.',
-      values: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'],
+      // Mirrors ClaudeEffort (model-routing unit 11) — documentation only
+      // (see command-help.ts/help-model.ts), not itself enforced; the real
+      // validation is commandServer.ts's buildWorkspaceSettingsOverride.
+      values: ['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
       default: 'inherits the project/global effort setting'
     },
     focus: {

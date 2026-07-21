@@ -314,7 +314,22 @@ function buildWorkspaceSettingsOverride(args: Record<string, unknown>): {
   ) {
     settingsOverride.permissionMode = args.permissionMode as ClaudePermissionMode
   }
-  const VALID_EFFORTS: ClaudeEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
+  // Mirrors ClaudeEffort/schema.ts's EFFORT/claudeSettings.ts's VALID_EFFORTS/
+  // overridesStore.ts's VALID_EFFORTS exactly (model-routing unit 11) — keep
+  // all five in sync. Without this widening, a CLI-created workspace passing
+  // effort: 'minimal'/'none' would silently have that field DROPPED here
+  // (fails the includes() check, so it's just omitted from
+  // settingsOverride — no error, no signal to the caller).
+  const VALID_EFFORTS: ClaudeEffort[] = [
+    'auto',
+    'none',
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max'
+  ]
   if (typeof args.effort === 'string' && VALID_EFFORTS.includes(args.effort as ClaudeEffort)) {
     settingsOverride.effort = args.effort as ClaudeEffort
   }

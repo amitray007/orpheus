@@ -34,7 +34,25 @@ const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
   'plan',
   'bypassPermissions'
 ]
-const VALID_EFFORTS: ClaudeEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
+// Mirrors ClaudeEffort/schema.ts's EFFORT/claudeSettings.ts's VALID_EFFORTS
+// exactly (model-routing unit 11) — keep all four in sync. This is the
+// validator that actually gates claude_workspace_settings/claude_project_
+// settings writes (via BaseOverrides.effort), so a workspace/project-scope
+// effort reconciliation producing 'minimal'/'none' would have been silently
+// rejected here if this array weren't widened too. Exported so
+// scripts/verify-effort-levels.ts can assert against this REAL validator
+// array directly (import it aliased, since claudeSettings.ts also exports
+// its own same-named VALID_EFFORTS).
+export const VALID_EFFORTS: ClaudeEffort[] = [
+  'auto',
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+]
 
 function validateBasePatch(patch: BaseOverrides): void {
   if (
