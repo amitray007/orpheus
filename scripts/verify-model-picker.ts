@@ -62,6 +62,8 @@ import {
 import {
   claudeFallbackModels,
   resolveDisabledSnapshot,
+  shouldStartFetchNow,
+  shouldRefetchAfterSettle,
   type Entry
 } from '../src/renderer/src/lib/selectableModelsStore.ts'
 import {
@@ -1585,6 +1587,180 @@ function baseInput(
     '✓ (unit 09-polish) the automatic refresh gate correctly refuses in states the manual "Refresh models" ' +
       'button is meant to bypass — locking in that forceRefreshCliProxyModelCache must call ' +
       'refreshCliProxyModelCache directly, never through this gate'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 21. THE COLD-BOOT PICKER-STALENESS BUG'S RENDERER-SIDE HALF (user-reported:
+//     opening a workspace quickly on app launch showed Claude-only until
+//     switching away and back). The main-process half was already fixed
+//     (routingProxy/manager.ts's refreshAuthFiles now re-broadcasts once the
+//     cliproxy model catalog actually populates). That alone didn't fix the
+//     live bug: selectableModelsStore.ts's fetchKey used to unconditionally
+//     `if (inFlight.has(key)) return` — dropping ANY request (including the
+//     invalidation the fix's re-broadcast carries) that arrived while a
+//     fetch for the same key was already in flight. On a fast cold boot,
+//     DropdownChip's own mount-time fetch (reading the still-empty cache)
+//     and the catalog-populate push landed close enough together that the
+//     push's invalidation was silently dropped into the in-flight mount
+//     fetch, which then resolved with the STALE empty-cache result and was
+//     treated as final.
+//
+//     Fixed by never dropping a request: shouldStartFetchNow/
+//     shouldRefetchAfterSettle (exported from selectableModelsStore.ts) are
+//     the pure decision fetchKey now makes — a request arriving while one is
+//     in flight is remembered instead of dropped, and re-issued the instant
+//     the in-flight one settles.
+//
+//     This section asserts the two pure decision functions directly, plus
+//     simulates the full state machine fetchKey's real Set-based
+//     inFlight/pendingRefetch bookkeeping implements (mirroring, not
+//     re-testing, since fetchKey itself calls window.api.models.listSelectable
+//     — real browser IPC this offline harness cannot invoke; see the honest-
+//     coverage note at the end of this section).
+// ---------------------------------------------------------------------------
+
+{
+  // The two pure decisions in isolation.
+  assert.equal(
+    shouldStartFetchNow(false),
+    true,
+    'a fetch requested when nothing is in-flight for this key must proceed immediately'
+  )
+  assert.equal(
+    shouldStartFetchNow(true),
+    false,
+    'a fetch requested while one is ALREADY in-flight for this key must NOT start a second one — the ' +
+      'caller must mark the key pending instead of dropping the request'
+  )
+  assert.equal(
+    shouldRefetchAfterSettle(true),
+    true,
+    'when an in-flight fetch settles and the key WAS marked pending, exactly one re-fetch must be issued'
+  )
+  assert.equal(
+    shouldRefetchAfterSettle(false),
+    false,
+    'when an in-flight fetch settles and the key was NOT marked pending (steady state), no re-fetch must ' +
+      'be issued — this is the loop guard'
+  )
+
+  // The full sequence fetchKey's real inFlight/pendingRefetch Sets implement,
+  // simulated here with the SAME pure decisions (not a re-implementation) so
+  // the "never drop, but never double-fetch, and never loop" behavior is
+  // proven end-to-end at the state-machine level, not just per-branch.
+  const inFlightKeys = new Set<string>()
+  const pendingKeys = new Set<string>()
+  const fetchesStarted: string[] = []
+  const key = 'grok-4.5'
+
+  function simulateFetchKey(k: string): void {
+    if (!shouldStartFetchNow(inFlightKeys.has(k))) {
+      pendingKeys.add(k)
+      return
+    }
+    inFlightKeys.add(k)
+    fetchesStarted.push(k)
+  }
+  function simulateSettle(k: string): void {
+    inFlightKeys.delete(k)
+    const wasPending = pendingKeys.delete(k)
+    if (shouldRefetchAfterSettle(wasPending)) {
+      simulateFetchKey(k)
+    }
+  }
+
+  // Mount-time fetch starts (the cold-boot case: cache still empty).
+  simulateFetchKey(key)
+  assert.deepEqual(fetchesStarted, [key], 'the first request for an idle key must start a fetch')
+
+  // The catalog-populate re-broadcast's invalidation arrives WHILE that
+  // mount fetch is still in flight — must be remembered, NOT dropped, and
+  // must NOT start a second concurrent fetch for the same key.
+  simulateFetchKey(key)
+  assert.deepEqual(
+    fetchesStarted,
+    [key],
+    'a request arriving while one is in-flight must NOT start a second concurrent fetch for the same key'
+  )
+  assert.ok(
+    pendingKeys.has(key),
+    'the request that arrived while in-flight must be remembered (pending), not silently dropped — this ' +
+      'is the exact fix for the cold-boot bug: the old code just `return`ed here'
+  )
+
+  // The stale mount fetch settles — because a newer request was pending, one
+  // more fetch must be issued automatically (this is what makes the picker
+  // self-heal to the real, now-populated catalog without the user needing to
+  // navigate away and back).
+  simulateSettle(key)
+  assert.deepEqual(
+    fetchesStarted,
+    [key, key],
+    'settling an in-flight fetch with a pending request queued must immediately start exactly one more ' +
+      'fetch for the same key'
+  )
+  assert.ok(!pendingKeys.has(key), 'the pending flag must be cleared once its re-fetch is issued')
+
+  // That second (fresh) fetch settles with NOTHING newer queued — steady
+  // state must NOT loop into a third fetch.
+  simulateSettle(key)
+  assert.deepEqual(
+    fetchesStarted,
+    [key, key],
+    'settling a fetch with no pending request queued must NOT start another one — the loop guard'
+  )
+
+  console.log(
+    '✓ THE COLD-BOOT PICKER-STALENESS BUG (renderer half): a request arriving while one is in-flight is ' +
+      'remembered and re-issued on settle (never dropped, never double-fetched, never loops) — simulated ' +
+      'end-to-end via the same shouldStartFetchNow/shouldRefetchAfterSettle decisions fetchKey itself uses'
+  )
+
+  console.log(
+    '  HONEST COVERAGE NOTE: this proves the pure coalescing decision + the state machine built from it ' +
+      'in isolation. It does NOT exercise fetchKey/refetchSelectableModels themselves (they call ' +
+      'window.api.models.listSelectable — real browser IPC this offline harness has no `window` to invoke) ' +
+      "or DropdownChip.tsx's new open-time refetch call (React/DOM, no renderer test runner in this repo — " +
+      "see verify-effort-levels.ts's own repeated note on this same gap). Manually confirmed by reading the " +
+      'source: fetchKey (selectableModelsStore.ts) calls shouldStartFetchNow(inFlight.has(key)) and, when ' +
+      'false, does pendingRefetch.add(key) instead of returning bare; its .finally() does ' +
+      'pendingRefetch.delete(key) and calls shouldRefetchAfterSettle on the result, re-invoking fetchKey ' +
+      "when true. DropdownChip.tsx's handleClick calls refetchSelectableModels(modelValueRef.current) " +
+      'immediately after setOpen(true), gated on needsModelList, using a ref (not the closed-over ' +
+      "modelValue) specifically so a stale memoized handleClick closure can't pass a stale model id. The " +
+      'live cold-boot TIMING itself (does a picker opened within the first ~30s of a real launch actually ' +
+      'show every provider) remains unverified beyond this — no UI automation for the native Electron ' +
+      'window exists in this environment, and CLAUDE.md forbids foregrounding the dev build during a ' +
+      'build/test loop (open -g only).'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 22. Effort options derive from the SAME selectable-model list this whole
+//     file exercises — confirmed by reading the source, not re-tested here
+//     (already covered end-to-end by scripts/verify-effort-levels.ts's own
+//     sections 9-11): DropdownChip.tsx's effort chip calls
+//     useSelectableModels(needsModelList ? modelValue : undefined,
+//     needsModelList) — the EXACT SAME hook call (and, since both chip
+//     instances share `modelValue` from the same workspaceModelStore, the
+//     EXACT SAME cache key) as the model chip. resolveEffortLevelsForScope
+//     (effortPickerOptions.ts) derives currentModelEffortLevels straight from
+//     that hook's `models`/`loading` return values — there is no separate
+//     effort-specific cache anywhere in the renderer that could see the
+//     model list refresh (this section's fix, and the open-time refetch)
+//     without also seeing the effort levels update. So both this section's
+//     coalescing fix AND DropdownChip's open-time refetch cover the effort
+//     chip automatically, with zero additional wiring.
+// ---------------------------------------------------------------------------
+
+{
+  console.log(
+    '✓ effort options are confirmed (by reading the source, not re-tested here — see ' +
+      'verify-effort-levels.ts sections 9-11 for the pure options/visibility derivation itself) to derive ' +
+      'from the SAME useSelectableModels(modelValue, needsModelList) call and cache key as the model chip ' +
+      "— no separate cache exists that could miss this section's coalescing fix or DropdownChip's " +
+      'open-time refetch'
   )
 }
 

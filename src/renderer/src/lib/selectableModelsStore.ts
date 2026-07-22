@@ -25,6 +25,23 @@
 //   requests for the SAME currentModelId here so WorkspaceDrawer/
 //   SettingsDrawer/DropdownChip mounted at once still produce one IPC call.
 //
+//   BUG C — the cold-boot picker-staleness bug (user-reported: opening a
+//   workspace quickly on app launch showed Claude-only until switching away
+//   and back). The main-process half was fixed by making
+//   routingProxy/manager.ts's refreshAuthFiles broadcast a SECOND time once
+//   the cliproxy model catalog actually populates. That alone wasn't enough:
+//   fetchKey's coalescing used to `if (inFlight.has(key)) return` —
+//   unconditionally DROPPING a later request (including the invalidation
+//   that push carries) whenever a fetch for the same key was already in
+//   flight. On a fast cold boot, DropdownChip's own mount-time fetch (reading
+//   the still-empty cache) and the catalog-populate push landed close enough
+//   together that the push's invalidation got dropped into the in-flight
+//   mount fetch — which then resolved with the STALE empty-cache result and
+//   was treated as final. Fixed by shouldStartFetchNow/shouldRefetchAfterSettle
+//   below: a request arriving while one is in flight is remembered
+//   (pendingRefetch) and re-issued the instant the in-flight one settles, so
+//   the LAST request always wins instead of being silently swallowed.
+//
 // Cache key is `currentModelId ?? ''` — the server-side gating result only
 // depends on (a) proxy/provider health, which is process-global and doesn't
 // vary per caller, and (b) currentModelId, which is threaded through solely
@@ -98,6 +115,49 @@ const listeners = new Map<string, Set<() => void>>()
 // WorkspaceDrawer + SettingsDrawer all asking for the same currentModelId)
 // coalesce into a single models:listSelectable round-trip.
 const inFlight = new Map<string, Promise<void>>()
+// Keys that got a SECOND fetchKey() call while their first was still in
+// flight — see shouldStartFetchNow/shouldRefetchAfterSettle below for why
+// this exists (the cold-boot picker-staleness bug's renderer-side half).
+const pendingRefetch = new Set<string>()
+
+// ---------------------------------------------------------------------------
+// shouldStartFetchNow / shouldRefetchAfterSettle — the coalescing decision
+// fetchKey makes, pulled out as pure functions so
+// scripts/verify-model-picker.ts can assert it without React/IPC.
+//
+// THE BUG this fixes: fetchKey used to unconditionally `return` when a fetch
+// for the same key was already in flight — dropping ANY later request
+// outright, including one triggered by invalidateAll() (a real
+// routingProxy:onSnapshot push telling the store fresh data exists). On a
+// fast cold boot the mount-time fetch (reading a still-empty cliproxy model
+// cache) and the catalog-populate push can land close enough together that
+// the push's invalidation arrives WHILE the stale mount fetch is still in
+// flight — the old code silently dropped that invalidation, the stale fetch
+// then resolved and was treated as final, and the picker was stuck
+// Claude-only until an unrelated remount forced a fresh read.
+//
+// Fixed by never dropping a request: one requested while another is in
+// flight is remembered (pendingRefetch) instead, and re-issued the instant
+// the in-flight one settles — so the LAST request always wins, while
+// concurrent callers for the same key still coalesce into one round-trip at
+// a time (never two fetches racing in parallel for the same key).
+// ---------------------------------------------------------------------------
+
+/** True when a fetch for this key should start immediately — false when one
+ *  is already in flight (the caller must instead mark the key pending). */
+export function shouldStartFetchNow(isInFlight: boolean): boolean {
+  return !isInFlight
+}
+
+/** True when an in-flight fetch's settlement should immediately trigger one
+ *  more fetch for the same key — exactly when a request arrived while it was
+ *  running (wasPending). Consuming the flag (the caller clears it via
+ *  Set.delete, which doubles as this input) guarantees at most ONE queued
+ *  re-fetch regardless of how many requests arrived in the meantime — a
+ *  flag, not a counter — so steady state can't loop. */
+export function shouldRefetchAfterSettle(wasPending: boolean): boolean {
+  return wasPending
+}
 
 // Memoized disabled-path snapshot per key — useSyncExternalStore requires
 // getSnapshot to return a STABLE reference when nothing changed, or it loops
@@ -180,7 +240,15 @@ function setEntry(key: string, entry: Entry): void {
 }
 
 function fetchKey(key: string, currentModelId?: string): void {
-  if (inFlight.has(key)) return
+  if (!shouldStartFetchNow(inFlight.has(key))) {
+    // A fetch for this key is already in flight and started against
+    // whatever state existed at THAT moment — this newer request knows
+    // something may have changed since, so it can't just be dropped (see
+    // this file's header comment on the bug this fixes). Record it instead;
+    // the .finally() below re-issues it once the in-flight one settles.
+    pendingRefetch.add(key)
+    return
+  }
   const request = window.api.models
     .listSelectable(currentModelId)
     .then((list) => {
@@ -194,8 +262,29 @@ function fetchKey(key: string, currentModelId?: string): void {
     })
     .finally(() => {
       inFlight.delete(key)
+      // Set.delete returns whether the key was present — doubles as
+      // "wasPending" AND clears the flag in one call, so a steady state with
+      // no further requests can't loop.
+      const wasPending = pendingRefetch.delete(key)
+      if (shouldRefetchAfterSettle(wasPending)) {
+        fetchKey(key, currentModelId)
+      }
     })
   inFlight.set(key, request)
+}
+
+/**
+ * Imperative refetch for `currentModelId`'s cache entry — defense-in-depth
+ * for the cold-boot/background-refresh picker-staleness bug: even if a
+ * routingProxy:onSnapshot push is ever missed for some reason, the moment a
+ * caller actually needs fresh data (DropdownChip's open handler) it can ask
+ * directly instead of relying purely on push timing. Reuses fetchKey
+ * verbatim — same coalescing, not a parallel fetch path — so a concurrent
+ * push-triggered invalidation and this call for the same key still produce
+ * at most one round-trip at a time.
+ */
+export function refetchSelectableModels(currentModelId?: string): void {
+  fetchKey(cacheKey(currentModelId), currentModelId)
 }
 
 /** Invalidate every cached entry and refetch the ones with active

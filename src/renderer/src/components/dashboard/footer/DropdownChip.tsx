@@ -21,7 +21,7 @@ import {
 } from '@/lib/overlayClient'
 import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { playSound } from '../../../lib/sound'
-import { useSelectableModels } from '@/lib/useSelectableModels'
+import { useSelectableModels, refetchSelectableModels } from '@/lib/useSelectableModels'
 import { setWorkspaceModel, useWorkspaceModel } from '@/lib/workspaceModelStore'
 import { setWorkspaceEffort, useWorkspaceEffort } from '@/lib/workspaceEffortStore'
 import { buildModelDropdownItems, buildModelDropdownGroups } from '@/lib/modelPickerOptions'
@@ -232,6 +232,14 @@ export function DropdownChip({
   const isEffortSelect = item.actionId === 'footer.effortSelect'
   const storeModelValue = useWorkspaceModel(workspaceId)
   const modelValue = storeModelValue ?? ''
+  // Read via this ref (not the closed-over `modelValue`) inside handleClick
+  // below — that callback is memoized against a deliberately narrow dep list
+  // (see its own eslint-disable comment) and would otherwise stay pinned to
+  // whatever modelValue was current the last time handleClick itself got
+  // recreated, not the actual current one at click time.
+  const modelValueRef = useRef(modelValue)
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation, same pattern as WorkspaceView.tsx's activeRef
+  modelValueRef.current = modelValue
   const refetchEffectiveModel = useCallback((): void => {
     if (!isModelSelect && !isEffortSelect) return
     window.api.workspaces
@@ -550,6 +558,18 @@ export function DropdownChip({
     }
     openRef.current = true
     setOpen(true)
+    // Defense-in-depth for the cold-boot/background-refresh picker-staleness
+    // bug: opening the picker is exactly when fresh data matters most.
+    // Refetch the selectable-model list (via the store's own imperative
+    // refetch — same coalescing fetchKey already uses, not a parallel fetch
+    // path) plus the effective model/effort, so the picker self-heals here
+    // even if a routingProxy:onSnapshot/workspace:effectiveSettingsChanged
+    // push was ever missed. modelValueRef.current (not the closed-over
+    // modelValue) because handleClick's own memoization can otherwise pin
+    // this to a stale value — see modelValueRef's own doc comment.
+    if (needsModelList) refetchSelectableModels(modelValueRef.current)
+    refetchEffectiveModel()
+    refetchEffectiveEffort()
     const r = chipRef.current.getBoundingClientRect()
     const rect = { x: r.left, y: r.top, w: r.width, h: r.height }
 

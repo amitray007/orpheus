@@ -26,7 +26,15 @@
 // ---------------------------------------------------------------------------
 
 import type { SelectableModel } from '@shared/types'
-import { useSelectableModelsStore } from './selectableModelsStore'
+import { useSelectableModelsStore, refetchSelectableModels } from './selectableModelsStore'
+
+// Re-exported so callers (DropdownChip's open handler) go through this
+// module — the one every picker already imports — rather than reaching past
+// it into selectableModelsStore.ts directly. See that function's own doc
+// comment for what it's for (defense-in-depth: a fresh read the moment the
+// picker actually opens, in case a routingProxy:onSnapshot push is ever
+// missed).
+export { refetchSelectableModels }
 
 export interface UseSelectableModelsResult {
   models: SelectableModel[]
