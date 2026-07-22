@@ -4,12 +4,23 @@
 // scripts/verify-refresh-models-button.ts can assert it without React/DOM.
 //
 // The whole state machine, per the approved copy (exact — see the user's
-// ASCII in the model-routing unit 12 spec):
+// ASCII in the model-routing unit 12 spec), plus step-progress (the "1/4"
+// follow-up):
 //   idle       -> "Refresh models" (refresh icon)
-//   refreshing -> "Refreshing…"    (spinner, button disabled) — NO sub-label
+//   refreshing -> "Refreshing…"    (spinner, button disabled) — progress
+//                 count appended at the END once known: "Refreshing… 1/4".
+//                 HIDDEN (no count rendered at all) until the first step
+//                 reports — never a fabricated "0/?" or bare "/4".
 //   updated    -> "Updated"        (check icon), held ~2s, then back to idle
 //
-// idle --click--> refreshing --settled--> updated --timeout--> idle
+// idle --click--> refreshing --progress*--> refreshing --settled--> updated --timeout--> idle
+//
+// `refreshing.progress` is `null` until the first 'progress' action arrives
+// for THIS refresh — RefreshModelsButton.tsx renders no count while it's
+// null, matching the "hidden until known" requirement exactly. A NEW click
+// (the idle->refreshing transition) always resets progress to null, so a
+// second refresh never starts by displaying the PREVIOUS refresh's stale
+// count.
 //
 // A click while already 'refreshing' or 'updated' is IGNORED (returns the
 // same state unchanged) — this is the "disable the button while refreshing
@@ -19,20 +30,37 @@
 // doc comment).
 // ---------------------------------------------------------------------------
 
-export type RefreshButtonState = 'idle' | 'refreshing' | 'updated'
-export type RefreshButtonAction = 'click' | 'settled' | 'timeout'
+export interface RefreshButtonProgress {
+  done: number
+  total: number
+}
+
+export type RefreshButtonState =
+  | { kind: 'idle' }
+  | { kind: 'refreshing'; progress: RefreshButtonProgress | null }
+  | { kind: 'updated' }
+
+export type RefreshButtonAction =
+  | { type: 'click' }
+  | { type: 'progress'; done: number; total: number }
+  | { type: 'settled' }
+  | { type: 'timeout' }
 
 export function reduceRefreshButtonState(
   state: RefreshButtonState,
   action: RefreshButtonAction
 ): RefreshButtonState {
-  switch (action) {
+  switch (action.type) {
     case 'click':
-      return state === 'idle' ? 'refreshing' : state
+      return state.kind === 'idle' ? { kind: 'refreshing', progress: null } : state
+    case 'progress':
+      return state.kind === 'refreshing'
+        ? { kind: 'refreshing', progress: { done: action.done, total: action.total } }
+        : state
     case 'settled':
-      return state === 'refreshing' ? 'updated' : state
+      return state.kind === 'refreshing' ? { kind: 'updated' } : state
     case 'timeout':
-      return state === 'updated' ? 'idle' : state
+      return state.kind === 'updated' ? { kind: 'idle' } : state
     default:
       return state
   }

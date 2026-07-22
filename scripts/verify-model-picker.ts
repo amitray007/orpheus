@@ -50,7 +50,7 @@ import {
   hydrateCliProxyModelCacheFromPersisted,
   type CliProxyModelSourceDeps
 } from '../src/main/models/sources/cliproxy.ts'
-import { CLAUDE_MODEL_OPTIONS } from '../src/shared/types.ts'
+import { CLAUDE_MODEL_OPTIONS, type SelectableModel } from '../src/shared/types.ts'
 import {
   fetchRoutingProxyAuthFiles,
   type AuthFilesDeps
@@ -64,6 +64,8 @@ import {
   resolveDisabledSnapshot,
   shouldStartFetchNow,
   shouldRefetchAfterSettle,
+  selectableModelsSignature,
+  didSelectableModelsChange,
   type Entry
 } from '../src/renderer/src/lib/selectableModelsStore.ts'
 import {
@@ -1761,6 +1763,129 @@ function baseInput(
       'from the SAME useSelectableModels(modelValue, needsModelList) call and cache key as the model chip ' +
       "— no separate cache exists that could miss this section's coalescing fix or DropdownChip's " +
       'open-time refetch'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 23. THE "REFRESH BUTTON KEEPS LOOPING" BUG (user-reported, model-routing
+//    unit 12 follow-up): setEntry's own no-op guard used to compare array
+//    REFERENCES (`prev.models === entry.models`) — but `entry.models` is a
+//    brand-new array from every models:listSelectable IPC resolution, so
+//    that comparison was ALWAYS false and the guard never actually fired.
+//    routingProxy:onSnapshot pushes at least once every 30s regardless of
+//    whether anything changed (authFilesCheckedAt alone always ticks), so
+//    every mounted picker's store entry got unconditionally replaced +
+//    notified on every tick, even when the resolved model list was
+//    byte-for-byte identical — which DropdownChip.tsx's "keep the open
+//    flyout in sync" effect (added alongside the refresh button) turns into
+//    a visible, perpetual overlay:update push, reading as the flyout
+//    "stuck in a loop."
+//
+//    Fixed by comparing CONTENT (selectableModelsSignature/
+//    didSelectableModelsChange), not array identity. This section asserts
+//    the fix directly: identical content (even across TWO DIFFERENT array
+//    instances, exactly the real-world shape) -> no change; a genuine
+//    content difference (a model appearing, a provider health/availability
+//    flip, an effortLevels change) -> change; the loading flag flipping on
+//    its own (content otherwise identical) -> change; and a completely
+//    fresh key (no previous entry) -> always a change (the seed case).
+// ---------------------------------------------------------------------------
+
+{
+  function fixtureModel(overrides: Partial<SelectableModel> = {}): SelectableModel {
+    return {
+      id: 'grok-4.5',
+      label: 'Grok 4.5',
+      providerId: 'xai',
+      providerLabel: 'Grok (xAI)',
+      isClaude: false,
+      available: true,
+      contextWindow: 256_000,
+      effortLevels: ['low', 'medium', 'high'],
+      provisional: false,
+      ...overrides
+    }
+  }
+
+  const modelsA: SelectableModel[] = [fixtureModel()]
+  // A SECOND, DISTINCT array instance with byte-for-byte identical content —
+  // exactly what a fresh models:listSelectable IPC response looks like on a
+  // tick where nothing actually changed server-side.
+  const modelsAIdenticalContent: SelectableModel[] = [fixtureModel()]
+
+  assert.equal(
+    selectableModelsSignature(modelsA),
+    selectableModelsSignature(modelsAIdenticalContent),
+    'two DIFFERENT array instances with identical model content must produce the SAME signature'
+  )
+
+  const prevEntry: Entry = { models: modelsA, loading: false }
+  const nextEntryIdenticalContent: Entry = { models: modelsAIdenticalContent, loading: false }
+  assert.equal(
+    didSelectableModelsChange(prevEntry, nextEntryIdenticalContent),
+    false,
+    'THE BUG: identical content across two different array instances must report NO change — this is ' +
+      'exactly the case the old prev.models === entry.models reference check always failed, causing ' +
+      'setEntry to notify() on every steady-state tick even when nothing changed'
+  )
+
+  // A genuine content difference: the model becomes unavailable.
+  const nextEntryUnavailable: Entry = {
+    models: [fixtureModel({ available: false })],
+    loading: false
+  }
+  assert.equal(
+    didSelectableModelsChange(prevEntry, nextEntryUnavailable),
+    true,
+    'a model flipping available true -> false must report a change'
+  )
+
+  // A genuine content difference: effort levels changed (a provider now
+  // reports a different thinking ladder for the same model id).
+  const nextEntryDifferentEffort: Entry = {
+    models: [fixtureModel({ effortLevels: ['low', 'high'] })],
+    loading: false
+  }
+  assert.equal(
+    didSelectableModelsChange(prevEntry, nextEntryDifferentEffort),
+    true,
+    'a model whose effortLevels changed must report a change'
+  )
+
+  // A genuine content difference: a model appeared/disappeared.
+  const nextEntryExtraModel: Entry = {
+    models: [fixtureModel(), fixtureModel({ id: 'gpt-5.5', providerId: 'codex' })],
+    loading: false
+  }
+  assert.equal(
+    didSelectableModelsChange(prevEntry, nextEntryExtraModel),
+    true,
+    'a model appearing in the list must report a change'
+  )
+
+  // The loading flag flipping, with model content otherwise unchanged, must
+  // still report a change — loading is part of what a picker renders (the
+  // pending/spinner state), not just the model list itself.
+  const nextEntryLoadingFlip: Entry = { models: modelsAIdenticalContent, loading: true }
+  assert.equal(
+    didSelectableModelsChange(prevEntry, nextEntryLoadingFlip),
+    true,
+    'the loading flag flipping (content otherwise identical) must still report a change'
+  )
+
+  // No previous entry at all (the seed case, e.g. the very first fetch for a
+  // key) is always a change — there is nothing to compare against.
+  assert.equal(
+    didSelectableModelsChange(undefined, prevEntry),
+    true,
+    'a key with no previous entry (first-ever fetch) must always report a change'
+  )
+
+  console.log(
+    '✓ THE "REFRESH BUTTON KEEPS LOOPING" BUG: didSelectableModelsChange correctly reports NO change ' +
+      'for identical content across two different array instances (the exact case the old reference ' +
+      'check always missed), and correctly reports a change for a genuine availability/effortLevels/' +
+      'model-set difference, a loading-flag flip, or a fresh key with no prior entry'
   )
 }
 

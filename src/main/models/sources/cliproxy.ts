@@ -99,11 +99,22 @@ function extractDefinitions(data: unknown): CliProxyModelDefinition[] {
  * a failure on one channel (including "proxy not running at all") just
  * leaves that channel's entries stale/absent; the whole call resolves either
  * way. Fire-and-forget, mirrors refreshModelsDevCache's contract exactly.
+ *
+ * `onProviderDone` (model-routing unit 12) is an OPTIONAL step-progress hook
+ * — called once per provider channel, after that channel's attempt settles
+ * (success OR failure; a failed/unreachable channel still counts as "this
+ * step is done", never leaves the caller's progress stuck waiting on a step
+ * that will never report). Only routingProxy/manager.ts's MANUAL refresh
+ * path (refreshAuthFilesNow, behind the pinned "Refresh models" button)
+ * supplies a real callback here; the automatic 30s tick calls this with no
+ * callback at all, so it can never become a second source of progress-push
+ * churn — see that module's own doc comment.
  */
 export async function refreshCliProxyModelCache(
   baseUrl: string,
   managementSecret: string | null,
-  deps: CliProxyModelSourceDeps = defaultCliProxyModelSourceDeps()
+  deps: CliProxyModelSourceDeps = defaultCliProxyModelSourceDeps(),
+  onProviderDone?: () => void
 ): Promise<void> {
   if (!managementSecret) return // no secret yet (proxy never started this run) — nothing to fetch
 
@@ -133,6 +144,8 @@ export async function refreshCliProxyModelCache(
     } catch {
       // This channel is unreachable/unsupported/not configured — skip it.
       // Never throws out of the loop; other channels still get a chance.
+    } finally {
+      onProviderDone?.()
     }
   }
 

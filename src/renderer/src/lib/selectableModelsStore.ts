@@ -42,6 +42,25 @@
 //   (pendingRefetch) and re-issued the instant the in-flight one settles, so
 //   the LAST request always wins instead of being silently swallowed.
 //
+//   BUG D — the "Refresh models" button's flyout looked like it was "stuck
+//   in a loop and keeps going" (user-reported, model-routing unit 12
+//   follow-up). Root cause: setEntry's own no-op guard compared array
+//   REFERENCES (`prev.models === entry.models`) — but `entry.models` is a
+//   brand-new array returned by every models:listSelectable IPC call, so
+//   that comparison was ALWAYS false and the guard never actually fired.
+//   Every routingProxy:onSnapshot push (which fires at least once every 30s
+//   regardless of whether anything changed — authFilesCheckedAt alone always
+//   ticks) triggered invalidateAll -> fetchKey -> setEntry -> an UNCONDITIONAL
+//   notify(), even when the resolved model list was byte-for-byte identical
+//   to what was already showing. That churn was invisible before this unit
+//   (nothing was listening for it), but DropdownChip.tsx's new "keep the
+//   open flyout in sync" effect (added alongside this button) DOES react to
+//   it — pushing a redundant overlay:update into the open popover on every
+//   30s tick, which read as the flyout perpetually "still refreshing."
+//   Fixed by comparing CONTENT (selectableModelsSignature/
+//   didSelectableModelsChange below), not array identity — notify() now only
+//   fires when the model list (or the loading flag) actually changed.
+//
 // Cache key is `currentModelId ?? ''` — the server-side gating result only
 // depends on (a) proxy/provider health, which is process-global and doesn't
 // vary per caller, and (b) currentModelId, which is threaded through solely
@@ -232,9 +251,48 @@ function getEntry(key: string, currentModelId?: string): Entry {
   return seeded
 }
 
+// ---------------------------------------------------------------------------
+// selectableModelsSignature / didSelectableModelsChange — the content-based
+// no-op guard for setEntry, fixing BUG D (this file's own header comment).
+// Order-sensitive (never sorted): the server's own group/model ordering is
+// stable for a given input (buildSelectableModels never shuffles), so two
+// resolutions of an UNCHANGED list always produce lists in the same order —
+// no sort needed, and sorting would hide a genuine reordering as "no
+// change" when the caller's rendered list actually did reorder.
+// ---------------------------------------------------------------------------
+
+/** Cheap, stable digest of everything a picker's render actually depends on
+ *  for a given model — id/providerId/available/contextWindow/effortLevels.
+ *  Deliberately omits `label`/`providerLabel`/`isClaude`/`provisional`: the
+ *  first two are derived 1:1 from id/providerId server-side and never vary
+ *  independently, and provisional/isClaude are structural facts about an id
+ *  that also never change independently of the fields already included —
+ *  including them would only make the signature more expensive to compute
+ *  without ever catching a change these fields alone wouldn't already. */
+export function selectableModelsSignature(models: SelectableModel[]): string {
+  return models
+    .map(
+      (m) =>
+        `${m.id}|${m.providerId}|${m.available}|${m.contextWindow ?? ''}|${(m.effortLevels ?? []).join(',')}`
+    )
+    .join(';')
+}
+
+/** True when `next` represents a real change from `prev` — either the
+ *  loading flag flipped, or the resolved model list's content differs. False
+ *  when nothing meaningful changed, even though `next.models` is (as it
+ *  always is, from a fresh IPC response) a DIFFERENT array reference than
+ *  `prev.models` — see this file's own BUG D writeup for why comparing
+ *  those references directly was the actual defect. */
+export function didSelectableModelsChange(prev: Entry | undefined, next: Entry): boolean {
+  if (!prev) return true
+  if (prev.loading !== next.loading) return true
+  return selectableModelsSignature(prev.models) !== selectableModelsSignature(next.models)
+}
+
 function setEntry(key: string, entry: Entry): void {
   const prev = store.get(key)
-  if (prev && prev.models === entry.models && prev.loading === entry.loading) return
+  if (!didSelectableModelsChange(prev, entry)) return
   store.set(key, entry)
   notify(key)
 }

@@ -71,6 +71,7 @@ import type {
   GitCommit,
   UpdateSnapshot,
   RoutingProxySnapshot,
+  RoutingProxyRefreshProgress,
   RoutingProxyUpdateCheckResult,
   RoutingProxyAssetInfo,
   RoutingProxyMaintenanceResult,
@@ -925,6 +926,7 @@ export interface RendererPushMap {
   // Managed routing proxy — pushed on every status/progress/authFiles change
   // so the Settings panel updates live without polling (mirrors updates:*).
   'routingProxy:snapshot': RoutingProxySnapshot
+  'routingProxy:refreshProgress': RoutingProxyRefreshProgress
   'status:change': ClaudeStatusSnapshot
   // Dashboard "Usage" card background poller (D3) — pushed on each successful
   // poll tick (see src/main/usagePoller.ts) so the renderer can silently
@@ -1002,6 +1004,7 @@ export const PUSH_CHANNELS = {
   updatesDone: 'updates:done',
   updatesCheckResult: 'updates:checkResult',
   routingProxySnapshot: 'routingProxy:snapshot',
+  routingProxyRefreshProgress: 'routingProxy:refreshProgress',
   statusChange: 'status:change',
   claudeUsagePushed: 'claude:usagePushed',
   claudeActivityPushed: 'claude:activityPushed',

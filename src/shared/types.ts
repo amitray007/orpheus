@@ -2311,6 +2311,22 @@ export interface RoutingProxySnapshot {
   authFilesCheckedAt: number | null
 }
 
+/**
+ * Step-progress for a MANUAL refresh — pushed on `routingProxy:refreshProgress`
+ * as each step of a refreshAuthFiles() call completes (model-routing unit 12,
+ * the pinned "Refresh models" button's "1/4" step count). `total` is derived
+ * from the actual step list (the auth-files fetch, plus one step per routed
+ * provider channel — see manager.ts's own doc comment), never hardcoded, so
+ * it stays correct if the provider list changes. ONLY emitted for a manual,
+ * explicitly user-triggered refresh (refreshAuthFilesNow) — the automatic
+ * 30s background tick calls the same underlying refresh logic with no
+ * progress callback and never broadcasts this, so it can't become a second
+ * source of renderer churn every 30 seconds. */
+export interface RoutingProxyRefreshProgress {
+  done: number
+  total: number
+}
+
 /** Result of a "check for updates" call against the GitHub latest-release API. */
 export interface RoutingProxyUpdateCheckResult {
   current: string | null

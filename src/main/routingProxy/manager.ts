@@ -41,6 +41,7 @@ import { reclaimOrphanRoutingProxyPort, defaultOrphanReclaimDeps } from './orpha
 import { defaultHealthCheckDeps } from './health'
 import { checkRoutingProxyUpdate } from './updateCheck'
 import { cleanStoppedStatus, disableTransitionPatch } from './state'
+import { PROVIDERS } from './providers/registry'
 import {
   refreshCliProxyModelCache,
   listCliProxyModelCacheEntries,
@@ -375,11 +376,54 @@ let authRefreshTimer: ReturnType<typeof setInterval> | null = null
 // cache still compares correctly against whatever was last broadcast.
 let lastBroadcastCliProxyModelSignature: string | null = null
 
-async function refreshAuthFiles(): Promise<void> {
+// ---------------------------------------------------------------------------
+// Step-progress + single-flight (model-routing unit 12 — the pinned
+// "Refresh models" button's "1/4" step count, and the fix for the reported
+// "keeps stuck in loop and keeps going").
+//
+// `total` is ALWAYS `PROVIDERS.length + 1` (one step per routed provider
+// channel refreshCliProxyModelCache walks, plus one for the auth-files
+// fetch) — derived from the real step list, never hardcoded, so it can't
+// drift if a provider is added/removed (provider-framework rule: no magic
+// counts). `onProgress` defaults to a no-op: the AUTOMATIC 30s timer and
+// start()'s initial kick call refreshAuthFiles with no argument at all, so
+// they can never become a second source of routingProxy:refreshProgress
+// pushes — only the MANUAL path (refreshAuthFilesNow, below) supplies a
+// real callback that broadcasts.
+//
+// refreshAuthFilesInFlight makes every caller (automatic timer, start()'s
+// kick, pollOAuthLogin's post-connect refresh, and the manual
+// refreshAuthFilesNow IPC path) single-flight: a call arriving while one is
+// already running piggybacks on the SAME in-flight promise instead of
+// starting a second overlapping refresh (two concurrent management-API
+// fetches, or two overlapping regenerateConfigNow config.yaml writes racing
+// each other). A caller that piggybacks does NOT get its own progress
+// reported — it just awaits the shared promise and the button transitions
+// straight from "Refreshing…" (no count) to "Updated" once it settles. This
+// is an accepted, rare-timing degenerate case (exact collision with the 30s
+// tick), never a correctness problem — the underlying refresh still runs to
+// completion exactly once either way.
+// ---------------------------------------------------------------------------
+
+type RefreshProgressCallback = (done: number, total: number) => void
+const noopRefreshProgress: RefreshProgressCallback = () => {}
+
+let refreshAuthFilesInFlight: Promise<void> | null = null
+
+async function doRefreshAuthFiles(onProgress: RefreshProgressCallback): Promise<void> {
   const secret = getManagementSecret()
-  if (!secret || !isRunning()) return
+  const totalSteps = PROVIDERS.length + 1
+  if (!secret || !isRunning()) {
+    // Nothing to do — still report a COMPLETED total so a manual caller's
+    // progress UI doesn't hang waiting for steps that will never arrive
+    // (refreshAuthFiles' own long-standing no-op contract: cleanly returns
+    // when there's nothing to refresh, never treated as an error).
+    onProgress(totalSteps, totalSteps)
+    return
+  }
   const files = await fetchRoutingProxyAuthFiles(getRoutingProxyUrl(), secret)
   setSnapshot({ authFiles: files, authFilesCheckedAt: Date.now() })
+  onProgress(1, totalSteps)
   // (model-routing unit 09-polish) Persist the live-healthy provider id set
   // after every successful fetch — this is the write side of the startup-
   // window fix (see providerConnectionPersistence.ts's own doc comment and
@@ -395,8 +439,14 @@ async function refreshAuthFiles(): Promise<void> {
   // (models/cliProxyModelCachePersistence.ts) never falls far behind the
   // in-memory one — this is what lets the NEXT app launch's first
   // models:listSelectable call see routed models immediately (see
-  // hydrateSnapshotAtBoot below).
-  await refreshCliProxyModelCache(getRoutingProxyUrl(), secret)
+  // hydrateSnapshotAtBoot below). onProviderDone reports one step per
+  // provider channel as refreshCliProxyModelCache walks PROVIDERS — see that
+  // function's own doc comment for why a failed channel still counts.
+  let providersDone = 0
+  await refreshCliProxyModelCache(getRoutingProxyUrl(), secret, undefined, () => {
+    providersDone += 1
+    onProgress(1 + providersDone, totalSteps)
+  })
   persistCliProxyModelCache(snapshotCliProxyModelCache())
   // The cold-boot picker-staleness fix: the setSnapshot above already fired
   // BEFORE this fetch, so a picker mounted in that window saw whatever the
@@ -421,9 +471,25 @@ async function refreshAuthFiles(): Promise<void> {
   await regenerateConfigIfAliasesChanged()
 }
 
-/** IPC-facing manual refresh — returns the updated snapshot. */
+function refreshAuthFiles(
+  onProgress: RefreshProgressCallback = noopRefreshProgress
+): Promise<void> {
+  if (refreshAuthFilesInFlight) return refreshAuthFilesInFlight
+  const work = doRefreshAuthFiles(onProgress).finally(() => {
+    refreshAuthFilesInFlight = null
+  })
+  refreshAuthFilesInFlight = work
+  return work
+}
+
+/** IPC-facing manual refresh (RefreshModelsButton.tsx) — returns the updated
+ *  snapshot AND broadcasts step-progress on routingProxy:refreshProgress as
+ *  each step completes (see this section's own header comment for why this
+ *  is the ONLY caller that supplies a real progress callback). */
 export async function refreshAuthFilesNow(): Promise<RoutingProxySnapshot> {
-  await refreshAuthFiles()
+  await refreshAuthFiles((done, total) => {
+    broadcast(PUSH_CHANNELS.routingProxyRefreshProgress, { done, total })
+  })
   return snapshot
 }
 

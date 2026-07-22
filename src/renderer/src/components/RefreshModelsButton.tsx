@@ -38,6 +38,18 @@ const UPDATED_HOLD_MS = 2000
 //      imperative refetch (selectableModelsStore.ts), immediate so THIS
 //      window's picker updates without waiting on the push from step 1.
 //
+// STEP PROGRESS ("1/4", follow-up to the initial ship): while state is
+// 'refreshing', this component subscribes to routingProxy:refreshProgress
+// (manager.ts's refreshAuthFilesNow — the ONLY caller that broadcasts on
+// that channel; the automatic 30s background tick calls the same underlying
+// refresh with no progress callback and never broadcasts, so it can't leak a
+// count into a button that isn't even mid-refresh). The count is appended at
+// the END of "Refreshing…" and stays HIDDEN (no "0/?" or bare "/4") until
+// the first step actually reports — reduceRefreshButtonState's 'refreshing'
+// member carries `progress: {done,total} | null` for exactly this, and a
+// fresh click always resets it to null so a second refresh never opens by
+// showing the PREVIOUS refresh's stale count.
+//
 // EFFORT COVERAGE: effort ladders derive from the SAME selectable-model list
 // (SelectableModel.effortLevels -> resolveEffortLevelsForScope in
 // effortPickerOptions.ts) that refetchSelectableModels refreshes — so
@@ -45,13 +57,15 @@ const UPDATED_HOLD_MS = 2000
 // with no separate per-chip effort refetch needed from here.
 //
 // DOUBLE-CLICK / UNMOUNT: reduceRefreshButtonState's own 'click' branch is a
-// no-op once state is 'refreshing' or 'updated' (see that module's doc
+// no-op once state.kind is 'refreshing' or 'updated' (see that module's doc
 // comment) — belt-and-suspenders with the DOM `disabled` attribute below,
 // which covers the 'refreshing' case; state genuinely can't stack a second
 // refresh from either angle. `mountedRef` guards every setState after the
 // async work settles (the flyout can close mid-refresh) so no "set state on
 // an unmounted component" warning/leak is possible; the "Updated" hold timer
-// is cleared on unmount for the same reason.
+// is cleared on unmount for the same reason, and the progress subscription
+// (below) is scoped to state.kind === 'refreshing' so it un-subscribes the
+// instant that's no longer true, including on unmount.
 // ---------------------------------------------------------------------------
 
 export interface RefreshModelsButtonProps {
@@ -69,7 +83,7 @@ export function RefreshModelsButton({
   currentModelId,
   className
 }: RefreshModelsButtonProps): React.JSX.Element {
-  const [state, setState] = useState<RefreshButtonState>('idle')
+  const [state, setState] = useState<RefreshButtonState>({ kind: 'idle' })
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mountedRef = useRef(true)
 
@@ -81,14 +95,25 @@ export function RefreshModelsButton({
     []
   )
 
+  // Live step-progress — subscribed ONLY while a refresh THIS button started
+  // is in flight (see this file's header comment on why the automatic 30s
+  // tick can never emit into this at all).
+  useEffect(() => {
+    if (state.kind !== 'refreshing') return
+    return window.api.routingProxy.onRefreshProgress(({ done, total }) => {
+      setState((prev) => reduceRefreshButtonState(prev, { type: 'progress', done, total }))
+    })
+  }, [state.kind])
+
   const handleClick = useCallback(
     (e: React.MouseEvent): void => {
       // Never select a provider/model, never trigger the flyout's own
       // outside-click/hover-dismissal — this button lives INSIDE the same
       // popover those mechanisms guard against dismissing.
       e.stopPropagation()
-      if (reduceRefreshButtonState(state, 'click') === state) return // already refreshing/updated
-      setState('refreshing')
+      const next = reduceRefreshButtonState(state, { type: 'click' })
+      if (next === state) return // already refreshing/updated
+      setState(next)
       void (async () => {
         try {
           await window.api.routingProxy.refreshAuthFiles()
@@ -99,10 +124,10 @@ export function RefreshModelsButton({
         }
         refetchSelectableModels(currentModelId)
         if (!mountedRef.current) return
-        setState((prev) => reduceRefreshButtonState(prev, 'settled'))
+        setState((prev) => reduceRefreshButtonState(prev, { type: 'settled' }))
         timerRef.current = setTimeout(() => {
           if (!mountedRef.current) return
-          setState((prev) => reduceRefreshButtonState(prev, 'timeout'))
+          setState((prev) => reduceRefreshButtonState(prev, { type: 'timeout' }))
         }, UPDATED_HOLD_MS)
       })()
     },
@@ -110,13 +135,21 @@ export function RefreshModelsButton({
   )
 
   const label =
-    state === 'idle' ? 'Refresh models' : state === 'refreshing' ? 'Refreshing…' : 'Updated'
+    state.kind === 'idle'
+      ? 'Refresh models'
+      : state.kind === 'refreshing'
+        ? 'Refreshing…'
+        : 'Updated'
+  const progressText =
+    state.kind === 'refreshing' && state.progress
+      ? `${state.progress.done}/${state.progress.total}`
+      : null
 
   return (
     <button
       type="button"
       onClick={handleClick}
-      disabled={state === 'refreshing'}
+      disabled={state.kind === 'refreshing'}
       className={[
         'w-full flex items-center gap-1.5 px-1.5 py-1.5 rounded-md text-xs text-left transition-colors duration-100',
         'text-text-muted hover:bg-surface-raised hover:text-text-secondary cursor-pointer',
@@ -124,16 +157,23 @@ export function RefreshModelsButton({
         className ?? ''
       ].join(' ')}
     >
-      {state === 'updated' ? (
+      {state.kind === 'updated' ? (
         <Check size={12} weight="bold" className="flex-shrink-0 text-accent" />
       ) : (
         <ArrowClockwise
           size={12}
           weight="bold"
-          className={['flex-shrink-0', state === 'refreshing' ? 'animate-spin' : ''].join(' ')}
+          className={['flex-shrink-0', state.kind === 'refreshing' ? 'animate-spin' : ''].join(' ')}
         />
       )}
-      {label}
+      <span className="flex-1 truncate">{label}</span>
+      {/* Step count — right-aligned at the END of the row, hidden until the
+          first step reports (progressText is null until then). Never a
+          separate sub-label; it's an addition to "Refreshing…", not a
+          replacement. */}
+      {progressText && (
+        <span className="flex-shrink-0 text-[10px] tabular-nums opacity-70">{progressText}</span>
+      )}
     </button>
   )
 }

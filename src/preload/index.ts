@@ -67,6 +67,7 @@ import type {
   UpdateProgress,
   UpdateSnapshot,
   RoutingProxySnapshot,
+  RoutingProxyRefreshProgress,
   RoutingProxyAssetInfo,
   RoutingProxyUpdateCheckResult,
   RoutingProxyMaintenanceResult,
@@ -850,7 +851,9 @@ const api = {
     forceRegenerateConfig: (): Promise<RoutingProxyMaintenanceResult> =>
       invoke('routingProxy:forceRegenerateConfig'),
     onSnapshot: (cb: (snapshot: RoutingProxySnapshot) => void): (() => void) =>
-      subscribe(PUSH_CHANNELS.routingProxySnapshot, cb)
+      subscribe(PUSH_CHANNELS.routingProxySnapshot, cb),
+    onRefreshProgress: (cb: (progress: RoutingProxyRefreshProgress) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.routingProxyRefreshProgress, cb)
   },
   providers: {
     descriptors: (): Promise<ProviderDescriptorSummary[]> => invoke('providers:descriptors'),
