@@ -197,6 +197,58 @@ export function setCliProxyModelCacheForTests(entries: Record<string, CachedEntr
   cache = next
 }
 
+// ---------------------------------------------------------------------------
+// cliProxyModelCacheSignature / didCliProxyModelCacheChange — the cold-boot
+// picker-staleness fix (routingProxy/manager.ts's refreshAuthFiles). That
+// function's automatic 30s-tick path used to broadcast routingProxy:onSnapshot
+// BEFORE refreshCliProxyModelCache populated the cache, and never again once
+// it did — so a picker mounted before the first tick's fetch resolved stayed
+// on the empty-cache (Claude-only) result forever, until an unrelated remount
+// forced a fresh fetch against the now-warm cache. The fix is a SECOND,
+// content-guarded broadcast fired right after the cache populates — guarded
+// so the steady-state 30s tick doesn't re-broadcast (and refetch every
+// mounted picker) when nothing actually changed.
+//
+// cliProxyModelCacheSignature is the pure, stable, order-independent digest
+// of "everything a picker's SelectableModel rendering could depend on" for
+// the current cache contents — modelId, providerId, context, supportsReasoning,
+// effortLevels. didCliProxyModelCacheChange wraps the obvious comparison
+// (previous signature vs. a fresh one) as its own named decision so
+// manager.ts's call site reads as intent, not string-diffing, and so it's
+// independently assertable by scripts/verify-model-refresh.ts without
+// booting Electron (this module has no electron/DB import).
+// ---------------------------------------------------------------------------
+
+/** Order-independent so two refreshes that return the same entries in a
+ *  different iteration order (Map insertion order, unspecified across
+ *  fetches) still produce an identical signature. */
+export function cliProxyModelCacheSignature(
+  entries: ReturnType<typeof listCliProxyModelCacheEntries>
+): string {
+  return entries
+    .map(
+      (e) =>
+        `${e.modelId}|${e.providerId ?? ''}|${e.context ?? ''}|${e.supportsReasoning}|${(e.effortLevels ?? []).join(',')}`
+    )
+    .sort()
+    .join(';')
+}
+
+/** True when `nextEntries`' content differs from `previousSignature` — the
+ *  broadcast-worthy cases: cold-boot empty->populated, a model id appearing
+ *  or disappearing, or an existing id's provider/context/reasoning/effort
+ *  facts changing (a provider becoming healthy, a model's reported levels
+ *  changing between ticks). False when nothing changed (steady-state tick),
+ *  which is the churn-loop guard — refreshAuthFiles' 30s timer calls this on
+ *  every tick once the proxy is running, and once the cache is warm the
+ *  signature stops changing. */
+export function didCliProxyModelCacheChange(
+  previousSignature: string | null,
+  nextEntries: ReturnType<typeof listCliProxyModelCacheEntries>
+): boolean {
+  return cliProxyModelCacheSignature(nextEntries) !== previousSignature
+}
+
 /** Snapshot the current cache as a plain object, keyed by model id — the
  *  shape routingProxy/manager.ts persists to disk after a successful
  *  refresh (see models/cliProxyModelCachePersistence.ts). Kept separate from

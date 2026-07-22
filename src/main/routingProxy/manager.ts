@@ -46,7 +46,9 @@ import {
   listCliProxyModelCacheEntries,
   shouldRefreshCliProxyModelCache,
   snapshotCliProxyModelCache,
-  hydrateCliProxyModelCacheFromPersisted
+  hydrateCliProxyModelCacheFromPersisted,
+  didCliProxyModelCacheChange,
+  cliProxyModelCacheSignature
 } from '../models/sources/cliproxy'
 import {
   loadPersistedCliProxyModelCache,
@@ -362,6 +364,17 @@ export async function install(deps: InstallDeps = defaultInstallDeps()): Promise
 
 let authRefreshTimer: ReturnType<typeof setInterval> | null = null
 
+// The cold-boot picker-staleness fix's churn-loop guard — the signature
+// (cliproxy.ts's cliProxyModelCacheSignature) of the model cache content as
+// of the LAST time refreshAuthFiles actually re-broadcast the snapshot for a
+// catalog change. Compared on every tick via didCliProxyModelCacheChange so
+// the steady-state 30s interval only re-broadcasts (and triggers every
+// mounted picker's refetch) when the catalog genuinely changed, not on every
+// tick. Reset is never needed — a fresh empty-string signature naturally
+// differs from any populated one, so a proxy stop/restart's fresh empty
+// cache still compares correctly against whatever was last broadcast.
+let lastBroadcastCliProxyModelSignature: string | null = null
+
 async function refreshAuthFiles(): Promise<void> {
   const secret = getManagementSecret()
   if (!secret || !isRunning()) return
@@ -385,6 +398,21 @@ async function refreshAuthFiles(): Promise<void> {
   // hydrateSnapshotAtBoot below).
   await refreshCliProxyModelCache(getRoutingProxyUrl(), secret)
   persistCliProxyModelCache(snapshotCliProxyModelCache())
+  // The cold-boot picker-staleness fix: the setSnapshot above already fired
+  // BEFORE this fetch, so a picker mounted in that window saw whatever the
+  // cache held at that instant (empty, on a cold boot). Broadcast a SECOND
+  // time now that the catalog is (re)populated — but only when the content
+  // actually changed since the last such broadcast (didCliProxyModelCacheChange),
+  // so the steady-state 30s tick doesn't refetch every mounted picker for no
+  // reason once the cache is warm. Mirrors startModelCacheRefresh's own
+  // post-populate re-broadcast (the on-demand picker-open path) — this is
+  // the automatic-tick counterpart of the same fix.
+  const cliProxyEntries = listCliProxyModelCacheEntries()
+  const cliProxySignature = cliProxyModelCacheSignature(cliProxyEntries)
+  if (didCliProxyModelCacheChange(lastBroadcastCliProxyModelSignature, cliProxyEntries)) {
+    lastBroadcastCliProxyModelSignature = cliProxySignature
+    setSnapshot({})
+  }
   // The reported-bug fix: once the cache is (re)populated, aliases that
   // previously resolved to nothing may now resolve — re-check and rewrite
   // config.yaml if the resolved set actually changed. See
@@ -445,6 +473,11 @@ function startModelCacheRefresh(secret: string): Promise<void> {
       const entries = listCliProxyModelCacheEntries()
       if (entries.length > 0) {
         persistCliProxyModelCache(snapshotCliProxyModelCache())
+        // Record the signature we're broadcasting here too — keeps it in
+        // sync with refreshAuthFiles' own guard (same module-level variable)
+        // so the NEXT 30s tick doesn't immediately re-broadcast a signature
+        // this on-demand path already sent.
+        lastBroadcastCliProxyModelSignature = cliProxyModelCacheSignature(entries)
         setSnapshot({})
         // This is the cold-start leg of the reported-bug fix: this on-demand
         // path only ever runs when the cache was previously EMPTY (see
