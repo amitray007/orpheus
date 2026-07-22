@@ -28,6 +28,7 @@ import type {
   ChipDropdownResult,
   ChipDropdownGroup,
   ChipGroupedDropdownProps,
+  ChipGroupedDropdownPatch,
   ChipGroupedDropdownResult,
   WorkspaceSettingsCardProps,
   WorkspaceSettingsCardPatch,
@@ -49,6 +50,7 @@ export type {
   ChipDropdownResult,
   ChipDropdownGroup,
   ChipGroupedDropdownProps,
+  ChipGroupedDropdownPatch,
   ChipGroupedDropdownResult,
   WorkspaceSettingsCardProps,
   WorkspaceSettingsCardPatch,
@@ -1005,6 +1007,24 @@ export function hideChipGroupedDropdown(id: string): void {
   } else {
     void window.api.overlay.hide(id).catch(() => {})
   }
+}
+
+/**
+ * Push a partial props update into an OPEN grouped chip dropdown — mirrors
+ * updateWorkspaceSettingsCard/updateNewWorkspaceMenu's identical one-liner.
+ * The call site (DropdownChip.tsx) uses this to keep the popover's `groups`
+ * in sync with its own live useSelectableModels subscription while the
+ * flyout is open (model-routing unit 12 — "Refresh models" button, plus any
+ * other background catalog change) — the flyout otherwise only ever saw a
+ * static snapshot taken at open() time. A no-op (via the same
+ * .catch(() => {})) if the overlay has already closed by the time this
+ * resolves; OverlayRoot's own onUpdate listener additionally no-ops if the
+ * id/generation no longer matches what's currently shown (see that file's
+ * own doc comment), so a stale/late push can never resurrect a closed
+ * popover or corrupt whatever's shown next.
+ */
+export function updateChipGroupedDropdown(id: string, patch: ChipGroupedDropdownPatch): void {
+  void window.api.overlay.update(id, patch as unknown as Record<string, unknown>).catch(() => {})
 }
 
 // ── Workspace settings card (title bar Settings gear, U-overlay-migration) ─

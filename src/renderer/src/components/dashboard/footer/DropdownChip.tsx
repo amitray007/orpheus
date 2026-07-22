@@ -14,6 +14,7 @@ import {
   chipDropdownId,
   showChipGroupedDropdown,
   hideChipGroupedDropdown,
+  updateChipGroupedDropdown,
   chipGroupedDropdownId,
   showChipTooltip,
   hideOverlayCard,
@@ -22,6 +23,7 @@ import {
 import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { playSound } from '../../../lib/sound'
 import { useSelectableModels, refetchSelectableModels } from '@/lib/useSelectableModels'
+import { useRoutingProxyEnabled } from '@/lib/routingProxyEnabledStore'
 import { setWorkspaceModel, useWorkspaceModel } from '@/lib/workspaceModelStore'
 import { setWorkspaceEffort, useWorkspaceEffort } from '@/lib/workspaceEffortStore'
 import { buildModelDropdownItems, buildModelDropdownGroups } from '@/lib/modelPickerOptions'
@@ -269,6 +271,12 @@ export function DropdownChip({
     needsModelList ? modelValue : undefined,
     needsModelList
   )
+  // Gates the model flyout's pinned "Refresh models" footer (model-routing
+  // unit 12) — a Claude-only flyout (routing disabled) has nothing to
+  // refresh. Only meaningful for the model chip; harmless to read
+  // unconditionally otherwise (this hook is a cheap subscribed boolean, no
+  // IPC per-render).
+  const routingProxyEnabled = useRoutingProxyEnabled()
   // isClaude lookup for the CURRENT effective model, used below to decide
   // whether a model switch is live-applicable (see onSelect's own comment).
   // A model not present in the list (e.g. transient fetch gap) is treated as
@@ -491,7 +499,19 @@ export function DropdownChip({
   // addition — see this file's own header comment and
   // ChipGroupedDropdown.tsx's for why this is a separate overlay kind rather
   // than a mode flag on the existing one.
-  const dropdownGroups = isModelSelect ? buildModelDropdownGroups(selectableModels) : []
+  //
+  // Memoized against `selectableModels` (itself reference-stable across
+  // renders unless the store actually changed — see setEntry's own
+  // reference-equality guard in selectableModelsStore.ts) rather than
+  // recomputed as a plain `const` — the "keep the open flyout in sync"
+  // effect below depends on this array's IDENTITY, and an unmemoized
+  // recompute would give it a fresh reference (and thus fire that effect)
+  // on every unrelated re-render of this component, not just an actual
+  // model-list change.
+  const dropdownGroups = useMemo(
+    () => (isModelSelect ? buildModelDropdownGroups(selectableModels) : []),
+    [isModelSelect, selectableModels]
+  )
   const dropdownOverlayId = isModelSelect
     ? chipGroupedDropdownId(`${item.actionId}:${item.id}:${workspaceId}`)
     : chipDropdownId(`${item.actionId}:${item.id}:${workspaceId}`)
@@ -501,7 +521,7 @@ export function DropdownChip({
       showChipGroupedDropdown(
         dropdownOverlayId,
         rect,
-        { groups: dropdownGroups, selectedValue, title: item.label },
+        { groups: dropdownGroups, selectedValue, title: item.label, routingProxyEnabled },
         {
           // Purely navigational — the kind already tracks activeProviderId
           // itself for rendering; this event exists only so the call site
@@ -541,6 +561,24 @@ export function DropdownChip({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dropdownGroups/selectedValue/onSelect/submenuHoverCard are recomputed/recreated fresh every render from item/workspaceId/local state; including them would churn the callback identity without changing behavior.
     [dropdownOverlayId, workspaceId, item.label]
   )
+
+  // Keep the OPEN model flyout's `groups`/`routingProxyEnabled` in sync with
+  // this component's own live useSelectableModels subscription (model-
+  // routing unit 12) — mirrors components/dashboard/NewWorkspaceMenu.tsx's
+  // identical "keep the open popover's props in sync" effect. Without this,
+  // showChipGroupedDropdown's props (above) are a ONE-TIME snapshot taken at
+  // open() time — any later change (a background provider-health change, or
+  // this flyout's OWN "Refresh models" button, which calls
+  // refetchSelectableModels() and relies on THIS effect to make the result
+  // visible) would update dropdownGroups on this component's next render but
+  // never reach the already-open overlay. Gated on `open && isModelSelect`
+  // so it's a no-op for the effort/custom-dropdown chip instances (which
+  // never open a chipGroupedDropdown at all) and while the popover is
+  // closed.
+  useEffect(() => {
+    if (!open || !isModelSelect) return
+    updateChipGroupedDropdown(dropdownOverlayId, { groups: dropdownGroups, routingProxyEnabled })
+  }, [open, isModelSelect, dropdownOverlayId, dropdownGroups, routingProxyEnabled])
 
   const handleClick = useCallback((): void => {
     if (!chipRef.current) return

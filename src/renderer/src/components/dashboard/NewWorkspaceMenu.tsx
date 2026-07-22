@@ -11,6 +11,7 @@ import {
 import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { playSound } from '@/lib/sound'
 import { useSelectableModels } from '@/lib/useSelectableModels'
+import { useRoutingProxyEnabled } from '@/lib/routingProxyEnabledStore'
 import {
   groupModelsForCreation,
   initialCreationProviderId,
@@ -203,6 +204,9 @@ export function NewWorkspaceMenu({
   const { models: selectableModels } = useSelectableModels(undefined, view !== 'closed')
   const groups = groupModelsForCreation(selectableModels)
   const lastUsed = useCreationLastUsedState()
+  // Gates the pinned "Refresh models" row (model-routing unit 12) — see
+  // overlay/kinds/NewWorkspaceMenu.tsx's own doc comment on that row.
+  const routingProxyEnabled = useRoutingProxyEnabled()
 
   const hasPickedRef = useRef(false)
 
@@ -300,7 +304,8 @@ export function NewWorkspaceMenu({
       lastUsedModelIdByProvider: {},
       branchValue: defaultBranch,
       branchExists: null,
-      branchCreating: false
+      branchCreating: false,
+      routingProxyEnabled
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- defaultBranch/fetchModes/menuId are all stable-per-projectId (or per-render-but-content-stable) — re-running openMenu's identity on their churn would defeat the hover-intent timer's callback stability.
   }, [projectId, fetchModes, menuId])
@@ -493,7 +498,8 @@ export function NewWorkspaceMenu({
       branchValue: branch,
       branchExists,
       branchCreating,
-      branchError: branchError ?? undefined
+      branchError: branchError ?? undefined,
+      routingProxyEnabled
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -508,7 +514,8 @@ export function NewWorkspaceMenu({
     branch,
     branchExists,
     branchCreating,
-    branchError
+    branchError,
+    routingProxyEnabled
   ])
 
   // Outside-click dismissal: the popover lives in a separate child

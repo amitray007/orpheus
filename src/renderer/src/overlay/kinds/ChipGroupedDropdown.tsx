@@ -4,6 +4,7 @@ import { Check, CaretRight } from '@phosphor-icons/react'
 import type { ChipGroupedDropdownProps, ChipDropdownGroup } from '@shared/types'
 import type { OverlayKindProps } from '../registry'
 import { ProviderIcon } from '../../components/ProviderIcon'
+import { RefreshModelsButton } from '../../components/RefreshModelsButton'
 import {
   computeSubmenuSide,
   reduceRowHover,
@@ -165,7 +166,7 @@ function SubmenuPanel({
 
 export function ChipGroupedDropdown({ props, emit }: OverlayKindProps): React.JSX.Element {
   const data = props as unknown as ChipGroupedDropdownProps
-  const { groups, selectedValue, title } = data
+  const { groups, selectedValue, title, routingProxyEnabled } = data
 
   // Which provider's submenu is open — starts on whichever group contains
   // the currently-selected model (so opening the chip shows the running
@@ -347,59 +348,88 @@ export function ChipGroupedDropdown({ props, emit }: OverlayKindProps): React.JS
       // surfaces always reach the same bottom edge, so they read as one
       // coherent menu at any content height. See SubmenuPanel's max-h-80
       // comment for why the submenu itself still needs an independent
-      // scroll cap (13+ model lists) rather than also stretching.
-      className="w-64 flex-shrink-0 self-stretch rounded-lg border border-border-default bg-surface-overlay shadow-lg p-1.5 flex flex-col justify-start gap-0.5"
+      // scroll cap (13+ model lists) rather than also stretching. This
+      // outer box is now `flex flex-col` with TWO children — the scroll
+      // region (title + provider rows) and, when routing is enabled, a
+      // pinned footer (RefreshModelsButton, model-routing unit 12) — rather
+      // than being the single scrolling box itself; self-stretch/flex-col
+      // still make its OWN surface fill the row's height exactly as this
+      // comment describes, the split just moves where the padding/scroll
+      // cap live (see the scroll-region div immediately below).
+      className="w-64 flex-shrink-0 self-stretch rounded-lg border border-border-default bg-surface-overlay shadow-lg flex flex-col"
     >
-      {title && (
-        <span className="text-xs font-medium text-text-muted uppercase tracking-wider px-1.5 pt-0.5 pb-1">
-          {title}
-        </span>
-      )}
-      <div
-        role="menu"
-        onMouseEnter={() => {
-          if (!hasGenuinelyMoved()) return
-          emit('enterSubmenu')
-        }}
-        onMouseLeave={() => {
-          if (!hasGenuinelyMoved()) return
-          emit('leaveSubmenu')
-        }}
-      >
-        {groups.map((group, idx) => (
-          <ProviderRow
-            key={group.providerId}
-            providerId={group.providerId}
-            label={group.label}
-            modelCount={group.models.length}
-            highlighted={focusPanel === 'providers' && idx === effectiveHighlighted}
-            hasSubmenuOpen={activeProviderId === group.providerId}
-            onHover={() => {
-              const genuine = hasGenuinelyMoved()
-              setHoveredRow((current) =>
-                reduceRowHover(
-                  { type: 'pointerEnter', panel: 'providers', index: idx, genuine },
-                  current
+      {/* Scroll region — title + provider rows. `min-h-0` is required for a
+          flex child's max-h/overflow to actually cap it (a flex item's
+          default min-height is `auto`, i.e. "at least as tall as my
+          content", which silently defeats max-h-80 without this). Capped at
+          the SAME max-h-80 the model submenu already uses (SubmenuPanel,
+          above) so a long provider list scrolls instead of growing the
+          popover unboundedly, while the footer below stays pinned and never
+          scrolls with it. */}
+      <div className="flex-1 min-h-0 overflow-y-auto max-h-80 p-1.5 flex flex-col justify-start gap-0.5">
+        {title && (
+          <span className="text-xs font-medium text-text-muted uppercase tracking-wider px-1.5 pt-0.5 pb-1">
+            {title}
+          </span>
+        )}
+        <div
+          role="menu"
+          onMouseEnter={() => {
+            if (!hasGenuinelyMoved()) return
+            emit('enterSubmenu')
+          }}
+          onMouseLeave={() => {
+            if (!hasGenuinelyMoved()) return
+            emit('leaveSubmenu')
+          }}
+        >
+          {groups.map((group, idx) => (
+            <ProviderRow
+              key={group.providerId}
+              providerId={group.providerId}
+              label={group.label}
+              modelCount={group.models.length}
+              highlighted={focusPanel === 'providers' && idx === effectiveHighlighted}
+              hasSubmenuOpen={activeProviderId === group.providerId}
+              onHover={() => {
+                const genuine = hasGenuinelyMoved()
+                setHoveredRow((current) =>
+                  reduceRowHover(
+                    { type: 'pointerEnter', panel: 'providers', index: idx, genuine },
+                    current
+                  )
                 )
-              )
-              if (!genuine) return
-              previewSubmenuFor(group.providerId)
-              setFocusPanel('providers')
-            }}
-            onLeave={() => {
-              setHoveredRow((current) =>
-                reduceRowHover({ type: 'pointerLeave', panel: 'providers', index: idx }, current)
-              )
-            }}
-            onClick={() => {
-              setHighlighted(idx)
-              setHoveredRow(null)
-              previewSubmenuFor(group.providerId)
-              setFocusPanel('models')
-            }}
-          />
-        ))}
+                if (!genuine) return
+                previewSubmenuFor(group.providerId)
+                setFocusPanel('providers')
+              }}
+              onLeave={() => {
+                setHoveredRow((current) =>
+                  reduceRowHover({ type: 'pointerLeave', panel: 'providers', index: idx }, current)
+                )
+              }}
+              onClick={() => {
+                setHighlighted(idx)
+                setHoveredRow(null)
+                previewSubmenuFor(group.providerId)
+                setFocusPanel('models')
+              }}
+            />
+          ))}
+        </div>
       </div>
+      {/* Pinned footer — NEVER scrolls with the provider list above (see the
+          scroll-region div's own comment). Only shown when routing is
+          actually enabled (multiple providers possible) — a Claude-only
+          flyout has nothing to refresh (RefreshModelsButton's own doc
+          comment). currentModelId is `selectedValue`, the SAME id this
+          popover's own `groups`/`●` marker are scoped to — refreshing must
+          target the exact cache entry this flyout is reading from. */}
+      {routingProxyEnabled && (
+        <div className="flex-shrink-0 border-t border-border-default/60 p-1.5">
+          <RefreshModelsButton currentModelId={selectedValue} />
+        </div>
+      )}
     </div>
   )
 

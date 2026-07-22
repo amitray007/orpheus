@@ -4,6 +4,7 @@ import { CaretRight, GitBranch, House, ArrowElbowDownLeft, SpinnerGap } from '@p
 import type { NewWorkspaceMenuProps } from '@shared/types'
 import type { OverlayKindProps } from '../registry'
 import { ProviderIcon } from '../../components/ProviderIcon'
+import { RefreshModelsButton } from '../../components/RefreshModelsButton'
 import { labelFor } from '../../lib/modelPickerOptions'
 import {
   computeSubmenuSide,
@@ -446,7 +447,8 @@ export function NewWorkspaceMenu({ props, emit }: OverlayKindProps): React.JSX.E
     branchValue,
     branchExists,
     branchCreating,
-    branchError
+    branchError,
+    routingProxyEnabled
   } = data
 
   // Local highlighted-row index for KEYBOARD nav within whichever panel has
@@ -754,6 +756,22 @@ export function NewWorkspaceMenu({ props, emit }: OverlayKindProps): React.JSX.E
               />
             ))}
           </div>
+
+          {/* Pinned "Refresh models" row (model-routing unit 12) — placed
+              ABOVE the Local/Worktree divider so it never collides with the
+              isolation toggle/branch panel below it. Only shown when routing
+              is actually enabled (a Claude-only provider list has nothing to
+              refresh — RefreshModelsButton's own doc comment).
+              currentModelId is undefined here — this popover has no "current
+              model" concept (it's a creation picker, not an editor of an
+              existing workspace's setting), matching this same file's own
+              useSelectableModels(undefined, ...) call at its call site
+              (components/dashboard/NewWorkspaceMenu.tsx). */}
+          {routingProxyEnabled && (
+            <div className="px-2 pt-1.5 mt-1 border-t border-border-default/60">
+              <RefreshModelsButton currentModelId={undefined} />
+            </div>
+          )}
 
           {/* Local / Worktree — isolation SELECTORS only (rule 4's
               inversion). Neither creates; both just toggle `isolation`. */}

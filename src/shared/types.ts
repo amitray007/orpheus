@@ -1872,7 +1872,23 @@ export type ChipGroupedDropdownProps = {
    *  inside that group's model list. */
   selectedValue?: string
   title?: string
+  /** True when the routing proxy is enabled (multiple providers possible) —
+   *  gates the pinned "Refresh models" footer (RefreshModelsButton.tsx,
+   *  model-routing unit 12). A Claude-only flyout has nothing to refresh, so
+   *  this is false/undefined when routing is disabled. Threaded through as a
+   *  prop (computed by the call site via routingProxyEnabledStore.ts) rather
+   *  than the overlay kind reaching into a new IPC/store subscription
+   *  itself — same "props down" contract as `groups`. */
+  routingProxyEnabled?: boolean
 }
+
+/** Partial props pushed via `overlay:update` as the call site's own live
+ *  selectable-model subscription changes — same shallow-merge contract
+ *  NewWorkspaceMenuPatch/WorkspaceSettingsCardPatch use. Lets the footer
+ *  Model chip's flyout (unlike the flat ChipDropdown it's a sibling of)
+ *  reflect a background catalog refresh — including one triggered by its
+ *  OWN "Refresh models" button — without the user closing and reopening it. */
+export type ChipGroupedDropdownPatch = Partial<ChipGroupedDropdownProps>
 
 /** Resolves on a model row click/Enter; caller resolves `null` on
  *  Cancel/Escape/outside-click/IPC failure — same settle contract as
@@ -1988,6 +2004,11 @@ export type NewWorkspaceMenuProps = {
   branchExists: boolean | null
   branchCreating: boolean
   branchError?: string
+  /** True when the routing proxy is enabled (multiple providers possible) —
+   *  gates the pinned "Refresh models" row (RefreshModelsButton.tsx,
+   *  model-routing unit 12), same contract as
+   *  ChipGroupedDropdownProps.routingProxyEnabled above. */
+  routingProxyEnabled?: boolean
 }
 
 /** Partial props pushed via `overlay:update` — same shallow-merge contract
