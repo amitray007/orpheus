@@ -40,6 +40,7 @@
     "test:effort": "bun run scripts/verify-effort-levels.ts",
     "test:model-refresh": "bun run scripts/verify-model-refresh.ts",
     "test:refresh-models-button": "bun run scripts/verify-refresh-models-button.ts",
+    "test:overlay-purity": "bun run scripts/verify-overlay-window-api-purity.ts",
     "test:oauth": "bun run scripts/verify-oauth.ts",
     "test:overlay": "bun run scripts/verify-loading-overlay.ts",
     "test:creation": "bun run scripts/verify-creation-provider-menu.ts",

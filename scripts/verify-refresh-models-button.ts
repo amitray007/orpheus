@@ -3,13 +3,16 @@
 //
 // Assertion harness for the pinned "Refresh models" control's state machine
 // (model-routing unit 12, user-approved ASCII, plus the "1/4" step-progress
-// follow-up): reduceRefreshButtonState
+// follow-up, plus the window.api-crash fix): reduceRefreshButtonState
 // (src/renderer/src/lib/refreshModelsButtonLogic.ts), the pure transition
-// table RefreshModelsButton.tsx's own local useState drives. Mirrors the
-// existing scripts/verify-*.ts convention: a script run directly via
-// `bun run` (the `test:refresh-models-button` package.json script), no test
-// framework. This module has no React/DOM/window/IPC dependency by
-// construction, so it's exercised directly and fully offline/deterministic.
+// table src/renderer/src/lib/useRefreshModelsController.ts's useState now
+// drives (moved there from RefreshModelsButton.tsx's own local state after
+// that component turned out to be rendering in the wrong BrowserWindow —
+// see this file's own ARCHITECTURE NOTE below). Mirrors the existing
+// scripts/verify-*.ts convention: a script run directly via `bun run` (the
+// `test:refresh-models-button` package.json script), no test framework.
+// This module has no React/DOM/window/IPC dependency by construction, so
+// it's exercised directly and fully offline/deterministic.
 //
 // Exact copy this state machine drives (per the approved ASCII + follow-up):
 //   idle       -> "Refresh models" (refresh icon)
@@ -262,33 +265,58 @@ const refreshingNoProgress: RefreshButtonState = { kind: 'refreshing', progress:
 }
 
 // ---------------------------------------------------------------------------
-// HONEST COVERAGE NOTE: this proves the pure state-transition table
-// RefreshModelsButton.tsx's local useState drives. It does NOT exercise the
-// component itself — the actual DOM button/spinner/label/count text, the
-// stopPropagation guard, the two real calls (window.api.routingProxy.
-// refreshAuthFiles() + refetchSelectableModels()), the routingProxy:
-// refreshProgress subscription lifecycle (subscribe only while 'refreshing',
-// unsubscribe on leaving that state or on unmount), the unmount-during-
-// "Updated"-window timer cleanup, or the overlay:update push that keeps an
-// open ChipGroupedDropdown/NewWorkspaceMenu flyout's `groups` in sync — none
-// of that is verifiable by this offline, DOM-free harness (no renderer test
-// runner in this repo — same constraint every other verify-*.ts script in
-// this repo is under).
+// ARCHITECTURE NOTE (post-crash-fix): this state machine's IMPERATIVE half
+// (the click handler, the progress subscription, the "Updated" hold timer,
+// and every window.api call) now lives in
+// src/renderer/src/lib/useRefreshModelsController.ts, used ONLY by the two
+// MAIN-window "smart half" call sites (DropdownChip.tsx / components/
+// dashboard/NewWorkspaceMenu.tsx). RefreshModelsButton.tsx (the component
+// rendered INSIDE the overlay's own separate BrowserWindow) is now a PURE
+// render component: it takes `state: RefreshButtonState` and
+// `onRefresh: () => void` as props and has ZERO window.api/IPC/store access
+// of its own — see that file's own header comment for the crash this fixes
+// (the overlay window's preload, src/preload/overlay.ts, exposes ONLY
+// window.overlayApi; an earlier version of that component called
+// window.api.routingProxy.* directly and crashed on the first real click,
+// a class of bug now guarded against by scripts/verify-overlay-window-api-purity.ts,
+// which fails if window.api ever appears in that component's or any overlay
+// kind's code again).
 //
-// Manually confirmed by reading the source: RefreshModelsButton.tsx's
-// handleClick computes `reduceRefreshButtonState(state, {type:'click'})` and
-// bails if the result is REFERENCE-IDENTICAL to the current state (the
-// double-click guard — reduceRefreshButtonState's no-op branches literally
-// `return state`, so this comparison is sound), sets the new state, awaits
-// refreshAuthFiles() inside a try/catch that never lets a throw skip the
-// rest of the sequence, calls refetchSelectableModels(currentModelId), then
-// (guarded by mountedRef) dispatches 'settled' and arms a 2000ms
-// (UPDATED_HOLD_MS) timer that dispatches 'timeout', clearing that timer on
-// unmount. A separate useEffect keyed on `state.kind` subscribes to
-// window.api.routingProxy.onRefreshProgress ONLY while state.kind ===
+// HONEST COVERAGE NOTE: this file proves the pure state-transition table
+// (reduceRefreshButtonState) both RefreshModelsButton.tsx's display-layer
+// guard and useRefreshModelsController.ts's authoritative state machine
+// drive. It does NOT exercise either of those components/hooks themselves —
+// the actual DOM button/spinner/label/count text, the stopPropagation guard,
+// the two real calls (window.api.routingProxy.refreshAuthFiles() +
+// refetchSelectableModels()), the routingProxy:refreshProgress subscription
+// lifecycle (subscribe only while 'refreshing', unsubscribe on leaving that
+// state or on unmount), the unmount-during-"Updated"-window timer cleanup,
+// or the overlay:update push that keeps an open ChipGroupedDropdown/
+// NewWorkspaceMenu flyout's `groups`/`refreshState` in sync — none of that is
+// verifiable by this offline, DOM-free harness (no renderer test runner in
+// this repo — same constraint every other verify-*.ts script in this repo is
+// under).
+//
+// Manually confirmed by reading the source: useRefreshModelsController's
+// onRefresh computes `reduceRefreshButtonState(refreshState, {type:'click'})`
+// and bails if the result is REFERENCE-IDENTICAL to the current state (the
+// authoritative double-click guard — reduceRefreshButtonState's no-op
+// branches literally `return state`, so this comparison is sound), sets the
+// new state, awaits refreshAuthFiles() inside a try/catch that never lets a
+// throw skip the rest of the sequence, calls
+// refetchSelectableModels(currentModelId) — on the MAIN window's store, the
+// one the flyout actually renders from — then (guarded by mountedRef)
+// dispatches 'settled' and arms a 2000ms (UPDATED_HOLD_MS) timer that
+// dispatches 'timeout', clearing that timer on unmount. A separate
+// useEffect keyed on `refreshState.kind` subscribes to
+// window.api.routingProxy.onRefreshProgress ONLY while refreshState.kind ===
 // 'refreshing', dispatching 'progress' events into the SAME reducer — that
 // effect's cleanup (returned by onRefreshProgress itself) unsubscribes the
-// instant state.kind changes away from 'refreshing', including on unmount.
+// instant refreshState.kind changes away from 'refreshing', including on
+// unmount. RefreshModelsButton.tsx's own handleClick applies the SAME
+// reducer as a display-layer, non-authoritative guard, then calls the
+// `onRefresh` prop — which each overlay kind wires to `emit('refresh')`,
+// routed back to whichever of the two hook instances opened that popover.
 //
 // manager.ts's refreshAuthFilesNow (the ONLY caller that broadcasts on
 // routingProxy:refreshProgress) computes total as PROVIDERS.length + 1 —

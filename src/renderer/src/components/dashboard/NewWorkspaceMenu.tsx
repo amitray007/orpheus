@@ -12,6 +12,7 @@ import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { playSound } from '@/lib/sound'
 import { useSelectableModels } from '@/lib/useSelectableModels'
 import { useRoutingProxyEnabled } from '@/lib/routingProxyEnabledStore'
+import { useRefreshModelsController } from '@/lib/useRefreshModelsController'
 import {
   groupModelsForCreation,
   initialCreationProviderId,
@@ -207,6 +208,14 @@ export function NewWorkspaceMenu({
   // Gates the pinned "Refresh models" row (model-routing unit 12) — see
   // overlay/kinds/NewWorkspaceMenu.tsx's own doc comment on that row.
   const routingProxyEnabled = useRoutingProxyEnabled()
+  // Owns the "Refresh models" row's state machine + the real window.api
+  // calls it drives — RefreshModelsButton.tsx is a pure render component
+  // with no window.api access of its own (it renders in the overlay's own
+  // separate BrowserWindow, which has none — see that file's own header
+  // comment). No currentModelId here — this popover has no "current model"
+  // concept, matching this file's own useSelectableModels(undefined, ...)
+  // call above.
+  const { refreshState, onRefresh: handleRefreshModels } = useRefreshModelsController(undefined)
 
   const hasPickedRef = useRef(false)
 
@@ -305,7 +314,8 @@ export function NewWorkspaceMenu({
       branchValue: defaultBranch,
       branchExists: null,
       branchCreating: false,
-      routingProxyEnabled
+      routingProxyEnabled,
+      refreshState
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- defaultBranch/fetchModes/menuId are all stable-per-projectId (or per-render-but-content-stable) — re-running openMenu's identity on their churn would defeat the hover-intent timer's callback stability.
   }, [projectId, fetchModes, menuId])
@@ -475,10 +485,15 @@ export function NewWorkspaceMenu({
       onCreate: () => void handleCreate(),
       onCancel: handleClose,
       onEnterSubmenu: handleEnterSubmenu,
-      onLeaveSubmenu: handleLeaveSubmenu
+      onLeaveSubmenu: handleLeaveSubmenu,
+      // The pinned "Refresh models" row's click (model-routing unit 12) —
+      // routed to useRefreshModelsController's onRefresh, which owns the
+      // actual window.api calls (the overlay window itself has none — see
+      // RefreshModelsButton.tsx's own header comment).
+      onRefresh: handleRefreshModels
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, menuId, groups, lastUsed, selectedModelId, selectedProviderId])
+  }, [view, menuId, groups, lastUsed, selectedModelId, selectedProviderId, handleRefreshModels])
 
   // Keep the open popover's props in sync as state changes (mirrors
   // WorkspaceSettingsPopover's isDirty->updateWorkspaceSettingsCard effect).
@@ -499,7 +514,8 @@ export function NewWorkspaceMenu({
       branchExists,
       branchCreating,
       branchError: branchError ?? undefined,
-      routingProxyEnabled
+      routingProxyEnabled,
+      refreshState
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -515,7 +531,8 @@ export function NewWorkspaceMenu({
     branchExists,
     branchCreating,
     branchError,
-    routingProxyEnabled
+    routingProxyEnabled,
+    refreshState
   ])
 
   // Outside-click dismissal: the popover lives in a separate child

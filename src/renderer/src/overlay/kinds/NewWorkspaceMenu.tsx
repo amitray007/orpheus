@@ -448,7 +448,8 @@ export function NewWorkspaceMenu({ props, emit }: OverlayKindProps): React.JSX.E
     branchExists,
     branchCreating,
     branchError,
-    routingProxyEnabled
+    routingProxyEnabled,
+    refreshState
   } = data
 
   // Local highlighted-row index for KEYBOARD nav within whichever panel has
@@ -761,15 +762,14 @@ export function NewWorkspaceMenu({ props, emit }: OverlayKindProps): React.JSX.E
               ABOVE the Local/Worktree divider so it never collides with the
               isolation toggle/branch panel below it. Only shown when routing
               is actually enabled (a Claude-only provider list has nothing to
-              refresh — RefreshModelsButton's own doc comment).
-              currentModelId is undefined here — this popover has no "current
-              model" concept (it's a creation picker, not an editor of an
-              existing workspace's setting), matching this same file's own
-              useSelectableModels(undefined, ...) call at its call site
-              (components/dashboard/NewWorkspaceMenu.tsx). */}
+              refresh — RefreshModelsButton's own doc comment). `onRefresh`
+              emits 'refresh' back to the call site
+              (components/dashboard/NewWorkspaceMenu.tsx) — this component has
+              no window.api access of its own (see RefreshModelsButton.tsx's
+              own header comment). */}
           {routingProxyEnabled && (
             <div className="px-2 pt-1.5 mt-1 border-t border-border-default/60">
-              <RefreshModelsButton currentModelId={undefined} />
+              <RefreshModelsButton state={refreshState} onRefresh={() => emit('refresh')} />
             </div>
           )}
 

@@ -1,137 +1,108 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback } from 'react'
 import type React from 'react'
 import { ArrowClockwise, Check } from '@phosphor-icons/react'
-import { refetchSelectableModels } from '@/lib/useSelectableModels'
 import { reduceRefreshButtonState, type RefreshButtonState } from '@/lib/refreshModelsButtonLogic'
-
-const UPDATED_HOLD_MS = 2000
 
 // ---------------------------------------------------------------------------
 // RefreshModelsButton — the pinned "Refresh models" control in the model-
 // provider flyout's provider-list panel (model-routing unit 12, user-
-// approved ASCII). Force re-pulls the routed model catalog + provider health
-// from CLIProxyAPI and refetches the shared selectable-model list, so the
-// picker reflects a background change (a provider connection recovering, a
-// new model appearing) without the user closing and reopening the flyout.
+// approved ASCII). PURE RENDER COMPONENT — props down, `onRefresh` up, ZERO
+// window.api/IPC/store access of its own.
+//
+// WHY THIS IS PURE (the crash this fixes): this component renders INSIDE
+// overlay/kinds/ChipGroupedDropdown.tsx and overlay/kinds/NewWorkspaceMenu.tsx
+// — both of which render in the overlay's own, SEPARATE BrowserWindow (see
+// overlayLayer.ts main-side / OverlayRoot.tsx renderer-side). That window's
+// preload is src/preload/overlay.ts, which exposes ONLY `window.overlayApi`
+// (onShow/onUpdate/sendEvent/ackPainted/reportSize) — there is NO
+// `window.api` there at all. An earlier version of this component called
+// window.api.routingProxy.refreshAuthFiles()/onRefreshProgress() and
+// refetchSelectableModels() (which itself calls window.api.models.*)
+// directly from here — every one of those calls threw
+// "Cannot read properties of undefined (reading 'routingProxy')" the moment
+// a real user clicked it, caught by the overlay's own OverlayErrorBoundary
+// and surfaced as the "Something went wrong" crash card. TypeScript/lint/the
+// offline verify-*.ts harnesses could not catch this: `window.api` is
+// declared on the global `Window` type (see preload/index.d.ts), so every
+// call type-checked cleanly: the failure is a RUNTIME window-boundary fact
+// no static check in this repo's gate set observes.
+//
+// There's also a correctness reason beyond the crash, not just a process
+// boundary one: even if window.api DID exist in the overlay window, calling
+// refetchSelectableModels() there would refresh the OVERLAY window's OWN
+// independent selectableModelsStore.ts module instance — but this flyout
+// renders from the MAIN window's store (pushed in as the `groups` prop via
+// updateChipGroupedDropdown/updateNewWorkspaceMenu, see those files' own
+// "keep the open flyout in sync" effects). The refresh has to be driven from
+// the MAIN window's store to have any visible effect on what's on screen —
+// this component was structurally in the wrong process to ever work, crash
+// or no crash.
+//
+// THE FIX: every window.api call + the reduceRefreshButtonState state
+// machine's IMPERATIVE half (the click handler, the progress subscription,
+// the "Updated" hold timer) now live in useRefreshModelsController.ts, a
+// hook used ONLY by the two MAIN-window call sites
+// (DropdownChip.tsx / components/dashboard/NewWorkspaceMenu.tsx — the
+// "smart halves" that already own every other window.api.* call for their
+// respective popovers, per WorkspaceSettingsCard.tsx's/that file's own
+// documented "props down, events up" contract). This component just renders
+// whatever `state` it's handed and calls `onRefresh()` on click — `onRefresh`
+// is wired by each overlay kind to `emit('refresh')` (the SAME event-up
+// mechanism every other action in these popovers already uses), which the
+// main-window call site turns into the real refresh via the controller hook,
+// then pushes the resulting `refreshState` back down as a prop — exactly
+// mirroring how `groups`/`routingProxyEnabled` already flow.
 //
 // ONE shared component, imported by BOTH provider flyouts
-// (overlay/kinds/ChipGroupedDropdown.tsx — the footer Model chip's flyout —
-// and overlay/kinds/NewWorkspaceMenu.tsx — the "+ new workspace" creation
-// menu's provider list) rather than a third near-duplicate copy of this
-// logic; those two files are already close enough in shape that check:dup
-// flags them, so this state machine + the two IPC/store calls it drives live
-// in exactly one place.
+// (overlay/kinds/ChipGroupedDropdown.tsx and
+// overlay/kinds/NewWorkspaceMenu.tsx) rather than a third near-duplicate
+// copy — those two files are already close enough in shape that check:dup
+// flags them.
 //
-// WHAT A CLICK DOES (in this exact order):
-//   1. await window.api.routingProxy.refreshAuthFiles() — force re-pulls the
-//      model catalog AND re-checks provider health server-side (internally
-//      calls refreshCliProxyModelCache — this is the catalog+health re-pull,
-//      not just an auth-file check), then broadcasts the routing-proxy
-//      snapshot. Never lets a throw here break the button's own state
-//      machine — refreshAuthFilesNow() itself no-ops cleanly if the proxy
-//      isn't running (see manager.ts's own doc comment); any OTHER failure
-//      (e.g. a network hiccup talking to the local proxy) is caught and
-//      logged, and the button still proceeds to refetch + show "Updated" —
-//      per spec, a failed background refresh is not this button's problem
-//      to surface, only to attempt.
-//   2. refetchSelectableModels(currentModelId) — the shared store's own
-//      imperative refetch (selectableModelsStore.ts), immediate so THIS
-//      window's picker updates without waiting on the push from step 1.
-//
-// STEP PROGRESS ("1/4", follow-up to the initial ship): while state is
-// 'refreshing', this component subscribes to routingProxy:refreshProgress
-// (manager.ts's refreshAuthFilesNow — the ONLY caller that broadcasts on
-// that channel; the automatic 30s background tick calls the same underlying
-// refresh with no progress callback and never broadcasts, so it can't leak a
-// count into a button that isn't even mid-refresh). The count is appended at
-// the END of "Refreshing…" and stays HIDDEN (no "0/?" or bare "/4") until
-// the first step actually reports — reduceRefreshButtonState's 'refreshing'
-// member carries `progress: {done,total} | null` for exactly this, and a
-// fresh click always resets it to null so a second refresh never opens by
-// showing the PREVIOUS refresh's stale count.
-//
-// EFFORT COVERAGE: effort ladders derive from the SAME selectable-model list
-// (SelectableModel.effortLevels -> resolveEffortLevelsForScope in
-// effortPickerOptions.ts) that refetchSelectableModels refreshes — so
-// refreshing the model store refreshes the effort options automatically,
-// with no separate per-chip effort refetch needed from here.
-//
-// DOUBLE-CLICK / UNMOUNT: reduceRefreshButtonState's own 'click' branch is a
-// no-op once state.kind is 'refreshing' or 'updated' (see that module's doc
-// comment) — belt-and-suspenders with the DOM `disabled` attribute below,
-// which covers the 'refreshing' case; state genuinely can't stack a second
-// refresh from either angle. `mountedRef` guards every setState after the
-// async work settles (the flyout can close mid-refresh) so no "set state on
-// an unmounted component" warning/leak is possible; the "Updated" hold timer
-// is cleared on unmount for the same reason, and the progress subscription
-// (below) is scoped to state.kind === 'refreshing' so it un-subscribes the
-// instant that's no longer true, including on unmount.
+// Exact copy (per the approved ASCII + the "1/4" step-progress follow-up):
+//   idle       -> "Refresh models" (refresh icon)
+//   refreshing -> "Refreshing…"    (spinner, button disabled), with a "d/t"
+//                 step count appended at the END once known — hidden (no
+//                 count at all) until state.progress is non-null
+//   updated    -> "Updated"        (check icon)
 // ---------------------------------------------------------------------------
 
 export interface RefreshModelsButtonProps {
-  /** The currentModelId this picker is scoped to — threaded straight into
-   *  refetchSelectableModels so the SAME cache key this picker reads from
-   *  (see selectableModelsStore.ts's cacheKey) gets refreshed. Undefined for
-   *  a picker with no "current model" concept (the creation menu). */
-  currentModelId?: string
+  /** Current display state — computed and owned by the MAIN-window call
+   *  site's useRefreshModelsController.ts, pushed down as a plain prop. */
+  state: RefreshButtonState
+  /** Called on click (after stopPropagation) — the call site turns this into
+   *  emit('refresh'), routed back to the main window's controller hook. This
+   *  component never decides what a refresh DOES, only when the user asked
+   *  for one. */
+  onRefresh: () => void
   /** Extra class names merged onto the button — callers control layout
    *  (a full-width pinned row vs. a compact icon-button fallback). */
   className?: string
 }
 
 export function RefreshModelsButton({
-  currentModelId,
+  state,
+  onRefresh,
   className
 }: RefreshModelsButtonProps): React.JSX.Element {
-  const [state, setState] = useState<RefreshButtonState>({ kind: 'idle' })
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const mountedRef = useRef(true)
-
-  useEffect(
-    () => () => {
-      mountedRef.current = false
-      if (timerRef.current) clearTimeout(timerRef.current)
-    },
-    []
-  )
-
-  // Live step-progress — subscribed ONLY while a refresh THIS button started
-  // is in flight (see this file's header comment on why the automatic 30s
-  // tick can never emit into this at all).
-  useEffect(() => {
-    if (state.kind !== 'refreshing') return
-    return window.api.routingProxy.onRefreshProgress(({ done, total }) => {
-      setState((prev) => reduceRefreshButtonState(prev, { type: 'progress', done, total }))
-    })
-  }, [state.kind])
-
   const handleClick = useCallback(
     (e: React.MouseEvent): void => {
       // Never select a provider/model, never trigger the flyout's own
       // outside-click/hover-dismissal — this button lives INSIDE the same
       // popover those mechanisms guard against dismissing.
       e.stopPropagation()
-      const next = reduceRefreshButtonState(state, { type: 'click' })
-      if (next === state) return // already refreshing/updated
-      setState(next)
-      void (async () => {
-        try {
-          await window.api.routingProxy.refreshAuthFiles()
-        } catch (err) {
-          // Best-effort — see this file's header comment. Still proceed to
-          // refetch + "Updated" below regardless.
-          console.error('[RefreshModelsButton] refreshAuthFiles failed', err)
-        }
-        refetchSelectableModels(currentModelId)
-        if (!mountedRef.current) return
-        setState((prev) => reduceRefreshButtonState(prev, { type: 'settled' }))
-        timerRef.current = setTimeout(() => {
-          if (!mountedRef.current) return
-          setState((prev) => reduceRefreshButtonState(prev, { type: 'timeout' }))
-        }, UPDATED_HOLD_MS)
-      })()
+      // Display-layer guard mirroring reduceRefreshButtonState's own 'click'
+      // no-op (already refreshing/updated) — belt-and-suspenders with the
+      // DOM `disabled` attribute below (which only covers 'refreshing'; this
+      // also covers 'updated'). NOT the authoritative guard: the controller
+      // hook applies the SAME reducer to its own state before doing
+      // anything, so an emit that slips through here anyway is still a
+      // clean no-op there, never a stacked refresh.
+      if (reduceRefreshButtonState(state, { type: 'click' }) === state) return
+      onRefresh()
     },
-    [state, currentModelId]
+    [state, onRefresh]
   )
 
   const label =

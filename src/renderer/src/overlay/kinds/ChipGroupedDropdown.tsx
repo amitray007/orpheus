@@ -166,7 +166,7 @@ function SubmenuPanel({
 
 export function ChipGroupedDropdown({ props, emit }: OverlayKindProps): React.JSX.Element {
   const data = props as unknown as ChipGroupedDropdownProps
-  const { groups, selectedValue, title, routingProxyEnabled } = data
+  const { groups, selectedValue, title, routingProxyEnabled, refreshState } = data
 
   // Which provider's submenu is open — starts on whichever group contains
   // the currently-selected model (so opening the chip shows the running
@@ -422,12 +422,13 @@ export function ChipGroupedDropdown({ props, emit }: OverlayKindProps): React.JS
           scroll-region div's own comment). Only shown when routing is
           actually enabled (multiple providers possible) — a Claude-only
           flyout has nothing to refresh (RefreshModelsButton's own doc
-          comment). currentModelId is `selectedValue`, the SAME id this
-          popover's own `groups`/`●` marker are scoped to — refreshing must
-          target the exact cache entry this flyout is reading from. */}
+          comment). `onRefresh` emits 'refresh' back to the call site
+          (DropdownChip.tsx) rather than touching window.api itself — this
+          component (like every other kind in this file) has no access to it;
+          see RefreshModelsButton.tsx's own header comment for why. */}
       {routingProxyEnabled && (
         <div className="flex-shrink-0 border-t border-border-default/60 p-1.5">
-          <RefreshModelsButton currentModelId={selectedValue} />
+          <RefreshModelsButton state={refreshState} onRefresh={() => emit('refresh')} />
         </div>
       )}
     </div>

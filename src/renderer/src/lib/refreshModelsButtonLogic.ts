@@ -28,17 +28,17 @@
 // no-op rather than relying solely on the `disabled` DOM attribute (which
 // the component still sets too, as a second layer — see that file's own
 // doc comment).
+//
+// RefreshButtonState/RefreshButtonProgress live in @shared/types (not here)
+// because they cross the overlay props/patch boundary — see that module's
+// own doc comment above ChipGroupedDropdownProps for why. Re-exported here
+// so every renderer-side caller of this reducer can import both the state
+// type and the reducer from ONE module.
 // ---------------------------------------------------------------------------
 
-export interface RefreshButtonProgress {
-  done: number
-  total: number
-}
+import type { RefreshButtonState, RefreshButtonProgress } from '@shared/types'
 
-export type RefreshButtonState =
-  | { kind: 'idle' }
-  | { kind: 'refreshing'; progress: RefreshButtonProgress | null }
-  | { kind: 'updated' }
+export type { RefreshButtonState, RefreshButtonProgress }
 
 export type RefreshButtonAction =
   | { type: 'click' }
