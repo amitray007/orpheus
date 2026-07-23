@@ -48,8 +48,19 @@ const PERMISSION_OPTIONS = [
 // the footer chip's modelValue === '' case uses) — 'Use global' is a
 // DIFFERENT concept from 'auto' and is prepended as `leading`, never
 // collapsed into it.
+
+// Tri-state: unset means "inherit the global sourceZshrc value", 'on'/'off'
+// are an explicit project-scope override — mirrors MODEL/PERMISSION/EFFORT's
+// 'default' = "Use global" sentinel pattern above.
+const SOURCE_ZSHRC_OPTIONS = [
+  { value: 'default', label: 'Use global' },
+  { value: 'on', label: 'On' },
+  { value: 'off', label: 'Off' }
+] as const
+
 type PermissionOption = (typeof PERMISSION_OPTIONS)[number]['value']
 type EffortOption = string
+type SourceZshrcOption = (typeof SOURCE_ZSHRC_OPTIONS)[number]['value']
 
 // Stable fallback identity for the CLI flags editor's value/inheritedFlags
 // props. A fresh `[]` literal allocated inline in JSX (`x ?? []`) gets a new
@@ -112,6 +123,56 @@ function OverrideField<T extends string>({
       {description && <p className="text-xs text-text-muted mb-2">{description}</p>}
       <Select options={options} value={value} onChange={onChange} ariaLabel={ariaLabel} />
       {children}
+    </div>
+  )
+}
+
+interface TextOverrideFieldProps {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  isOverridden: boolean
+  ariaLabel: string
+  description?: string
+  placeholder?: string
+}
+
+// Free-text analogue of OverrideField, for override values that aren't a
+// fixed enum (preLaunchSnippet). An empty textarea clears the override back
+// to "inherit global" — same undefined-clears semantics as the Select rows,
+// just driven by blur (mirrors ClaudeToolsSection's global textarea) instead
+// of onChange, so the override isn't rewritten on every keystroke.
+function TextOverrideField({
+  label,
+  value,
+  onChange,
+  isOverridden,
+  ariaLabel,
+  description,
+  placeholder
+}: TextOverrideFieldProps): React.JSX.Element {
+  return (
+    <div className="px-4 py-3 border-t border-border-default/30 first:border-t-0">
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="text-sm font-medium text-text-secondary uppercase tracking-wider">
+          {label}
+        </label>
+        {isOverridden && (
+          <span
+            className="w-1.5 h-1.5 rounded-full bg-accent/80"
+            title="Overrides global default"
+          />
+        )}
+      </div>
+      {description && <p className="text-xs text-text-muted mb-2">{description}</p>}
+      <textarea
+        aria-label={ariaLabel}
+        defaultValue={value}
+        key={value}
+        onBlur={(e) => onChange(e.target.value.trim())}
+        placeholder={placeholder}
+        className="w-full min-h-[76px] px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono resize-y cursor-text"
+      />
     </div>
   )
 }
@@ -253,6 +314,12 @@ export function SettingsDrawer({
   function handleEffort(v: EffortOption): void {
     patch({ effort: v === 'default' ? undefined : (v as ClaudeEffort) })
   }
+  function handleSourceZshrc(v: SourceZshrcOption): void {
+    patch({ sourceZshrc: v === 'default' ? undefined : v === 'on' })
+  }
+  function handlePreLaunchSnippet(v: string): void {
+    patch({ preLaunchSnippet: v === '' ? undefined : v })
+  }
 
   function resetAll(): void {
     setShowCustomModel(false)
@@ -262,7 +329,9 @@ export function SettingsDrawer({
       permissionMode: undefined,
       effort: undefined,
       customCliFlags: undefined,
-      customEnvVars: undefined
+      customEnvVars: undefined,
+      sourceZshrc: undefined,
+      preLaunchSnippet: undefined
     })
   }
 
@@ -312,12 +381,17 @@ export function SettingsDrawer({
   const effortValue: EffortOption =
     localOverrides.effort !== undefined ? localOverrides.effort : 'default'
 
+  const sourceZshrcValue: SourceZshrcOption =
+    localOverrides.sourceZshrc === undefined ? 'default' : localOverrides.sourceZshrc ? 'on' : 'off'
+
   const overrideCount =
     (localOverrides.model !== undefined ? 1 : 0) +
     (localOverrides.permissionMode !== undefined ? 1 : 0) +
     (localOverrides.effort !== undefined ? 1 : 0) +
     ((localOverrides.customCliFlags?.length ?? 0) > 0 ? 1 : 0) +
-    (Object.keys(localOverrides.customEnvVars ?? {}).length > 0 ? 1 : 0)
+    (Object.keys(localOverrides.customEnvVars ?? {}).length > 0 ? 1 : 0) +
+    (localOverrides.sourceZshrc !== undefined ? 1 : 0) +
+    (localOverrides.preLaunchSnippet !== undefined ? 1 : 0)
   const hasAnyOverride = overrideCount > 0
 
   return (
@@ -414,6 +488,24 @@ export function SettingsDrawer({
                   description="Thinking depth Claude applies by default for this project."
                 />
               )}
+              <OverrideField
+                label="Source ~/.zshrc before Claude"
+                options={SOURCE_ZSHRC_OPTIONS}
+                value={sourceZshrcValue}
+                onChange={handleSourceZshrc}
+                isOverridden={localOverrides.sourceZshrc !== undefined}
+                ariaLabel="Project source ~/.zshrc override"
+                description="Source your full ~/.zshrc before Claude starts, for this project's workspaces."
+              />
+              <TextOverrideField
+                label="Custom shell before Claude"
+                value={localOverrides.preLaunchSnippet ?? ''}
+                onChange={handlePreLaunchSnippet}
+                isOverridden={localOverrides.preLaunchSnippet !== undefined}
+                ariaLabel="Project custom shell before Claude override"
+                description='Runs as you, in your shell, right before Claude starts for this project. Example: eval "$(direnv export zsh)"'
+                placeholder='eval "$(direnv export zsh)"'
+              />
             </div>
 
             {hasAnyOverride && (

@@ -32,6 +32,13 @@ unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID \
       CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_EXECPATH \
       CLAUDE_CODE_SSE_PORT AI_AGENT
 
+# User-controlled shell init (Orpheus settings). Runs AFTER PATH setup so
+# tools are reachable, and BEFORE claude launches. ORPHEUS_SOURCE_ZSHRC sources
+# the user's full interactive rc; ORPHEUS_PRE_LAUNCH_SNIPPET is free-text shell
+# (e.g. `eval "$(direnv export zsh)"`) eval'd verbatim. Both are opt-in user config.
+[[ "${ORPHEUS_SOURCE_ZSHRC:-}" == "1" && -r ~/.zshrc ]] && source ~/.zshrc 2>/dev/null
+[[ -n "${ORPHEUS_PRE_LAUNCH_SNIPPET:-}" ]] && eval "${ORPHEUS_PRE_LAUNCH_SNIPPET}"
+
 # ORPHEUS_CLAUDE_FLAGS — pre-separated argv tokens composed by Orpheus from
 # the user's Settings (e.g. --model, --permission-mode, session continuity,
 # and free-text custom CLI flags), joined with 0x1F (Unit Separator) rather

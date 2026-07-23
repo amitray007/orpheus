@@ -685,6 +685,12 @@ export type ClaudeGlobalSettings = {
   // Env-var controls (v66) — General / Model behavior
   lowPowerMode: boolean
 
+  // Shell init controls (shell-init-hook) — orpheus-claude.sh deliberately
+  // skips ~/.zshrc for startup speed; these let the user opt into sourcing
+  // it and/or running an arbitrary pre-launch snippet before claude starts.
+  sourceZshrc: boolean
+  preLaunchSnippet: string
+
   updatedAt: number
 }
 
@@ -805,6 +811,10 @@ export type ClaudeProjectSettingsOverrides = {
   // Custom env vars (project scope) — merged with global scope as a plain
   // Record spread, last-wins (unlike flags, no append/override algebra).
   customEnvVars?: Record<string, string>
+  // Shell init controls (project scope) — override the global sourceZshrc /
+  // preLaunchSnippet settings; unset means inherit the global value.
+  sourceZshrc?: boolean
+  preLaunchSnippet?: string
 }
 
 export type ClaudeProjectSettings = {
@@ -829,6 +839,11 @@ export type ClaudeWorkspaceSettingsOverrides = {
   // as a plain Record spread, last-wins (unlike flags, no append/override
   // algebra); workspace wins on same-key conflict, highest precedence.
   customEnvVars?: Record<string, string>
+  // Shell init controls (workspace scope) — override the global/project
+  // sourceZshrc / preLaunchSnippet settings; unset means inherit the layer
+  // below (project override, or global if the project doesn't override).
+  sourceZshrc?: boolean
+  preLaunchSnippet?: string
 }
 
 export type ClaudeWorkspaceSettings = {

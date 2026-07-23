@@ -242,7 +242,7 @@ export const schema: SchemaDef = {
   },
 
   // ---------------------------------------------------------------------
-  // claude_global_settings (117 columns)
+  // claude_global_settings (119 columns)
   // ---------------------------------------------------------------------
   claude_global_settings: {
     columns: {
@@ -411,6 +411,10 @@ export const schema: SchemaDef = {
       disable_mouse_clicks: bool('disable_mouse_clicks', '0'),
       rewind_on_error_enabled: bool('rewind_on_error_enabled', '0'),
       low_power_mode: bool('low_power_mode', '0'),
+      // Shell init controls (shell-init-hook) — user-controlled pre-launch
+      // shell setup, since orpheus-claude.sh deliberately skips ~/.zshrc.
+      source_zshrc: bool('source_zshrc', '0'),
+      pre_launch_snippet: { type: 'TEXT', notNull: true, default: "''" },
       updated_at: INTEGER_NOT_NULL
     },
     normalizeOnRebuild: {

@@ -31,6 +31,20 @@ const store = createOverridesStore<
     if ('customEnvVars' in patch && patch.customEnvVars != null) {
       validateCustomEnvVarsValue(patch.customEnvVars, 'claudeProjectSettings')
     }
+    if (
+      'sourceZshrc' in patch &&
+      patch.sourceZshrc != null &&
+      typeof patch.sourceZshrc !== 'boolean'
+    ) {
+      throw new Error('claudeProjectSettings: sourceZshrc must be a boolean')
+    }
+    if (
+      'preLaunchSnippet' in patch &&
+      patch.preLaunchSnippet != null &&
+      typeof patch.preLaunchSnippet !== 'string'
+    ) {
+      throw new Error('claudeProjectSettings: preLaunchSnippet must be a string')
+    }
   }
 })
 
