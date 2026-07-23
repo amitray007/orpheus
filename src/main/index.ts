@@ -73,7 +73,12 @@ import { startUsagePoller, stopUsagePoller } from './usagePoller'
 import { startClaudeActivityPoller, stopClaudeActivityPoller } from './claudeActivityPoller'
 import { getUserShellPath, getCachedShellPath } from './shellHelpers'
 import type { WorkspaceRecord } from '../shared/types'
-import { loadOrpheusSurface, buildMountEnv } from './orpheusSurfaceAdapter'
+import {
+  loadOrpheusSurface,
+  buildMountEnv,
+  isRoutedMount,
+  composeLaunchForMount
+} from './orpheusSurfaceAdapter'
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
@@ -83,7 +88,7 @@ import type { DiagEvent } from '../shared/types'
 import { bootActions, setTerminalAddonRef, registerWebContentsCleanup } from './actions/index'
 import { evictAccumulator } from './actions/session'
 import { seedDefaultFooterActions } from './footerActions'
-import { refreshFromModelsDev } from './pricing'
+import { refreshModelsDevCache } from './models/registry'
 import {
   startDiagnostics,
   stopDiagnostics,
@@ -126,6 +131,16 @@ import { registerFilesIpc } from './ipc/files'
 import { registerShellIpc } from './ipc/shell'
 import { registerSystemIpc } from './ipc/system'
 import { registerUpdatesIpc } from './ipc/updates'
+import { registerRoutingProxyIpc } from './ipc/routingProxy'
+import { registerProvidersIpc } from './ipc/providers'
+import { registerAliasesIpc } from './ipc/aliases'
+import { registerOAuthIpc } from './ipc/oauth'
+import {
+  hydrateSnapshotAtBoot,
+  reconcileRoutingProxy,
+  shutdownRoutingProxySync,
+  ensureHealthyForRouting
+} from './routingProxy/manager'
 import { registerMcpIpc } from './ipc/mcp'
 import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
 import { registerClaudeHooksIpc } from './ipc/claudeHooks'
@@ -142,6 +157,7 @@ import { registerWorktreesIpc } from './ipc/worktrees'
 import { registerHooksIpc } from './ipc/hooks'
 import { registerUiStateIpc, syncDiagFlags } from './ipc/uiState'
 import { registerSessionsIpc } from './ipc/sessions'
+import { registerModelsIpc } from './ipc/models'
 import { registerProjectsIpc } from './ipc/projects'
 import { registerWorkspacesIpc } from './ipc/workspaces'
 import { registerActionsIpc } from './ipc/actions'
@@ -954,13 +970,14 @@ registerWorkspacesIpc({ performArchive, performClose })
 // ---------------------------------------------------------------------------
 
 registerSessionsIpc()
+registerModelsIpc()
 
 // ---------------------------------------------------------------------------
 // Claude Settings IPC (global + per-project + per-workspace + footer
 // Model/Effort chips) — extracted to ipc/claudeSettings.ts.
 // ---------------------------------------------------------------------------
 
-registerClaudeSettingsIpc()
+registerClaudeSettingsIpc({ getMainWindow })
 
 // ---------------------------------------------------------------------------
 // Ghostty Settings IPC
@@ -1038,6 +1055,14 @@ registerHooksIpc({ reconcileHooks })
 registerSystemIpc({ getAppUiState })
 
 registerUpdatesIpc()
+
+registerRoutingProxyIpc()
+
+registerProvidersIpc()
+
+registerAliasesIpc()
+
+registerOAuthIpc()
 
 handle('doctor:check', async (): Promise<DoctorResult> => {
   const { installed, version, path: claudePath } = await checkClaude()
@@ -1168,16 +1193,28 @@ async function traceTerminalMount(
   addon: GhosttySurfaceAddon,
   rect: TerminalRect,
   scaleFactor: number,
-  launchOut: { launch?: ReturnType<typeof buildMountEnv>['launch'] }
+  launchOut: {
+    launch?: ReturnType<typeof buildMountEnv>['launch']
+    authEnv?: ReturnType<typeof buildMountEnv>['authEnv']
+  },
+  precomposedLaunch: ReturnType<typeof composeLaunchForMount>
 ): Promise<{ workspaceId: string; created: boolean }> {
   const _mountStart = Date.now()
   return diag.trace('terminal.mount', { workspaceId }, (s) => {
-    // Compose launch env as a child span nested under terminal.mount.
-    // buildMountEnv is sync; use diag.span (not diag.trace).
+    // Assemble the surface env as a child span nested under terminal.mount.
+    // buildMountEnv is sync; use diag.span (not diag.trace). precomposedLaunch
+    // was already composed once by the caller (for the isRoutedMount gate) —
+    // passed through so this span does NOT re-run composeClaudeLaunch.
     let buildResult!: ReturnType<typeof buildMountEnv>
     try {
       buildResult = diag.span('launch.compose', { workspaceId, projectId: projectId ?? null }, () =>
-        buildMountEnv(workspaceId, projectId, notifyServer?.sockPath, commandServer ?? undefined)
+        buildMountEnv(
+          workspaceId,
+          projectId,
+          notifyServer?.sockPath,
+          commandServer ?? undefined,
+          precomposedLaunch
+        )
       )
     } catch (err) {
       logDiagMain({
@@ -1190,8 +1227,9 @@ async function traceTerminalMount(
       })
       throw err
     }
-    const { command, env: surfaceEnv, launch: composedLaunch } = buildResult
+    const { command, env: surfaceEnv, launch: composedLaunch, authEnv } = buildResult
     launchOut.launch = composedLaunch
+    launchOut.authEnv = authEnv
 
     console.log(
       '[terminal] mount workspaceId=%s flags=%s settingsJson=%s envKeys=%s',
@@ -1243,10 +1281,15 @@ async function traceTerminalMount(
 
 /** Post-mount overlay handling: show the "Starting workspace" overlay only when a
  *  new surface was actually created (re-attach/resize of an already-running
- *  workspace has no boot to mask), and arm the 10s fallback dismissal timer. */
-function handlePostMountOverlay(workspaceId: string, created: boolean): void {
+ *  workspace has no boot to mask), and arm the 10s fallback dismissal timer.
+ *  `routed` (from isRoutedMount(precomposedLaunch), already computed by the
+ *  caller for the health-gate check above) picks the slow-watchdog copy and
+ *  threshold inside loadingOverlay.ts — a routed mount waits on a proxy
+ *  round-trip before claude registers its session file, so the generic
+ *  "hooks/auth" slow copy would be wrong and 3s too aggressive for it. */
+function handlePostMountOverlay(workspaceId: string, created: boolean, routed: boolean): void {
   if (created) {
-    showLoadingOverlay(workspaceId, { title: 'Starting workspace' })
+    showLoadingOverlay(workspaceId, { title: 'Starting workspace' }, routed)
 
     // If the session is already past its starting phase (re-mount of a
     // running workspace), dismiss the overlay immediately.
@@ -1332,7 +1375,35 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     return { workspaceId, aborted: 'gone' as const }
   }
 
-  const launchBox: { launch?: ReturnType<typeof buildMountEnv>['launch'] } = {}
+  // Compose claude settings -> ClaudeLaunch ONCE for this mount. Both the
+  // routed-model health gate below and traceTerminalMount's env assembly
+  // need the composed launch; previously each called composeClaudeLaunch
+  // independently (a real DB read of global/project/workspace settings rows
+  // every time), so every single mount — including Claude-only ones — paid
+  // for settings composition twice. Composing once here and threading the
+  // result through both call sites halves that cost for every workspace.
+  const precomposedLaunch = composeLaunchForMount(projectId, workspaceId)
+
+  // Fail-closed gate (model-routing unit 04): an unreachable routing proxy
+  // makes Claude Code hang ~44-128s silently (measured) once addon.mount
+  // spawns the wrapper script against it. Check reachability BEFORE spawning
+  // for routed-model workspaces only — this is a strict no-op (zero extra
+  // network calls, zero added latency, zero extra composition) for
+  // Claude-model workspaces, mirroring computeRoutingEnv's own no-op
+  // guarantee for the Claude path.
+  if (isRoutedMount(precomposedLaunch)) {
+    try {
+      await ensureHealthyForRouting()
+    } catch (err) {
+      hideLoadingOverlay(workspaceId)
+      throw err
+    }
+  }
+
+  const launchBox: {
+    launch?: ReturnType<typeof buildMountEnv>['launch']
+    authEnv?: ReturnType<typeof buildMountEnv>['authEnv']
+  } = {}
   const result = await traceTerminalMount(
     workspaceId,
     projectId,
@@ -1341,9 +1412,11 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     addon,
     rect,
     scaleFactor,
-    launchBox
+    launchBox,
+    precomposedLaunch
   )
   const launch = launchBox.launch!
+  const authEnv = launchBox.authEnv!
 
   if (result.created) {
     logDiagMain({
@@ -1354,10 +1427,11 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     })
   }
 
-  handlePostMountOverlay(workspaceId, result.created)
+  handlePostMountOverlay(workspaceId, result.created, isRoutedMount(precomposedLaunch))
 
-  // Snapshot the composed launch so we can detect settings drift later.
-  setLaunchSnapshot(workspaceId, launch)
+  // Snapshot the composed launch (+ auth env layer) so we can detect settings
+  // AND auth drift later — see LaunchSnapshot in workspaceResources.ts.
+  setLaunchSnapshot(workspaceId, { ...launch, authEnv })
   setDirty(workspaceId, false)
 
   // Push the current canInject state so the renderer chip gets an immediate
@@ -2167,8 +2241,9 @@ if (!app.requestSingleInstanceLock()) {
         console.error('[footerActions] failed to seed defaults:', err)
       }
 
-      // Refresh model pricing from models.dev — fire-and-forget, never blocks boot.
-      refreshFromModelsDev().catch(() => {})
+      // Refresh model context/pricing from models.dev — fire-and-forget, never
+      // blocks boot. See src/main/models/registry.ts.
+      refreshModelsDevCache().catch(() => {})
 
       // Clear stale in_progress / attention statuses left over from a prior
       // session (crash, hard quit). Without this, the WorkspaceView would show a
@@ -2262,6 +2337,13 @@ if (!app.requestSingleInstanceLock()) {
         // disabled (default) → remove any previously-installed managed hooks and
         // do NOT start the socket server.
         reconcileHooks()
+
+        // Managed routing proxy (model-routing unit 04) — mirrors reconcileHooks
+        // exactly: hydrate the snapshot (detect an already-installed binary),
+        // then start/stop the child process to match routingProxyEnabled
+        // (default off). Never blocks first-frame paint — deferred into this
+        // same setImmediate as the hook reconcile above.
+        void hydrateSnapshotAtBoot().then(() => reconcileRoutingProxy())
 
         // Start the command server unconditionally — the CLI shouldn't depend on
         // hooks being enabled. Provides a request/response channel for CLI workspace
@@ -2682,6 +2764,7 @@ if (!app.requestSingleInstanceLock()) {
     stopAllGitWatches()
     stopFilesWatch()
     stopDiagnostics()
+    shutdownRoutingProxySync()
   })
 
   app.on('window-all-closed', () => {

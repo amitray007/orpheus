@@ -33,6 +33,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
 import { getActivitySnapshot, useActiveIdsKey } from '@/lib/activityStore'
 import { getActivityTimeSnapshot } from '@/lib/activityTimeStore'
+import { useModelLabels } from '@/lib/useModelLabels'
 import { buildLiveAgentRows, type LiveAgentRow } from './liveAgents.helpers'
 
 export interface LiveAgentsData {
@@ -110,6 +111,11 @@ export function useLiveAgents(): LiveAgentsData {
   // which matches this table's own live-agent filter).
   useActiveIdsKey(workspaceIds)
 
+  // Model labels are resolved through the registry (src/main/models/
+  // registry.ts) via IPC, not parsed client-side — see useModelLabels.ts.
+  const sessionModelIds = useMemo(() => sessions?.map((s) => s.model) ?? [], [sessions])
+  const getModelLabel = useModelLabels(sessionModelIds)
+
   return useMemo(() => {
     if (projects === null || workspaces === null || sessions === null) {
       return { ...EMPTY, error }
@@ -125,7 +131,8 @@ export function useLiveAgents(): LiveAgentsData {
       projectNameById,
       sessionById,
       activitySnapshot,
-      liveActivityTimes
+      liveActivityTimes,
+      getModelLabel
     )
 
     let waitingCount = 0
@@ -136,5 +143,5 @@ export function useLiveAgents(): LiveAgentsData {
     }
 
     return { loading: false, error, rows, waitingCount, finishedCount }
-  }, [projects, workspaces, sessions, error])
+  }, [projects, workspaces, sessions, error, getModelLabel])
 }

@@ -16,6 +16,17 @@
 
 import type { ClaudeLaunch } from './claudeSettings'
 
+// The snapshot taken at terminal:mount time. Extends the pure ClaudeLaunch
+// (composeClaudeLaunch's output) with the auth env layer (ANTHROPIC_API_KEY,
+// cloud-provider routing vars, etc.) that's merged in downstream by
+// buildMountEnv/orpheusSurfaceAdapter — composeClaudeLaunch itself never sees
+// auth, so it must be captured separately to make auth changes (e.g.
+// cloud_provider, auth_base_url) visible to the dirty/"Restart to apply"
+// comparison. Values here are the same plaintext auth env already merged into
+// the surface process's env at mount time — never logged (see terminal:mount's
+// envKeys-only log line) and never leaves this in-memory map.
+export type LaunchSnapshot = ClaudeLaunch & { authEnv: Record<string, string> }
+
 type BroadcastFn = (channel: string, payload: unknown) => void
 
 let broadcast: BroadcastFn = () => {
@@ -33,13 +44,13 @@ export function configureWorkspaceResources(deps: { broadcast: BroadcastFn }): v
 // diffed later by recomputeDirty() (in index.ts) to detect settings drift.
 // ---------------------------------------------------------------------------
 
-const launchSnapshots = new Map<string, ClaudeLaunch>()
+const launchSnapshots = new Map<string, LaunchSnapshot>()
 
-export function getLaunchSnapshot(workspaceId: string): ClaudeLaunch | undefined {
+export function getLaunchSnapshot(workspaceId: string): LaunchSnapshot | undefined {
   return launchSnapshots.get(workspaceId)
 }
 
-export function setLaunchSnapshot(workspaceId: string, launch: ClaudeLaunch): void {
+export function setLaunchSnapshot(workspaceId: string, launch: LaunchSnapshot): void {
   launchSnapshots.set(workspaceId, launch)
 }
 
@@ -47,7 +58,7 @@ export function deleteLaunchSnapshot(workspaceId: string): boolean {
   return launchSnapshots.delete(workspaceId)
 }
 
-export function launchSnapshotEntries(): IterableIterator<[string, ClaudeLaunch]> {
+export function launchSnapshotEntries(): IterableIterator<[string, LaunchSnapshot]> {
   return launchSnapshots.entries()
 }
 

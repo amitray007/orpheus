@@ -66,6 +66,19 @@ import type {
   UpdateCheckResult,
   UpdateProgress,
   UpdateSnapshot,
+  RoutingProxySnapshot,
+  RoutingProxyRefreshProgress,
+  RoutingProxyAssetInfo,
+  RoutingProxyUpdateCheckResult,
+  RoutingProxyMaintenanceResult,
+  ProviderDescriptorSummary,
+  ProviderConfigSummary,
+  ProviderApiKeyEntrySummary,
+  ModelAliasesState,
+  ModelAliasTargetOption,
+  OAuthStartResult,
+  OAuthPollResult,
+  SelectableModel,
   ClaudeStatusSnapshot,
   ActionResult,
   ActionAuditEntry,
@@ -267,7 +280,9 @@ const api = {
     refreshMetadata: (projectId: string): Promise<void> =>
       invoke('sessions:refreshMetadata', { projectId }),
     delete: (id: string): Promise<void> => invoke('sessions:delete', { id }),
-    getContextBudget: (workspaceId: string): Promise<{ contextBudget: number; modelId: string }> =>
+    getContextBudget: (
+      workspaceId: string
+    ): Promise<{ contextBudget: number | null; modelId: string; modelLabel: string }> =>
       invoke('sessions:getContextBudget', { workspaceId })
   },
   workspaces: {
@@ -366,7 +381,18 @@ const api = {
     // Footer Effort chip: reads the effective effort a workspace would launch
     // with right now, via composeClaudeLaunch — the single source of truth.
     getEffectiveEffort: (workspaceId: string): Promise<{ effort: string }> =>
-      invoke('workspace:getEffectiveEffort', { workspaceId })
+      invoke('workspace:getEffectiveEffort', { workspaceId }),
+    // Model-routing unit 11 (bugfix): pushed by every model-persisting main-
+    // process handler (workspace:setModel, claudeWorkspaceSettings:update,
+    // claudeProjectSettings:update, claudeSettings:update — all four funnel
+    // through withReconciledEffort) right after a change lands, carrying the
+    // FRESH effective {model, effort}. workspaceModelStore/
+    // workspaceEffortStore subscribe to this so the footer's model AND
+    // effort chips (two separate DropdownChip instances) both react live to
+    // a model change made by either one, without waiting for a remount.
+    onEffectiveSettingsChanged: (
+      cb: (e: { workspaceId: string; model: string; effort: string }) => void
+    ): (() => void) => subscribe(PUSH_CHANNELS.workspaceEffectiveSettingsChanged, cb)
   },
   worktrees: {
     branchExists: (projectId: string, branch: string): Promise<boolean> =>
@@ -374,6 +400,12 @@ const api = {
   },
   pins: {
     listAll: (): Promise<PinnedItem[]> => invoke('pins:listAll')
+  },
+  models: {
+    resolveLabels: (modelIds: string[]): Promise<Record<string, string>> =>
+      invoke('models:resolveLabels', { modelIds }),
+    listSelectable: (currentModelId?: string): Promise<SelectableModel[]> =>
+      invoke('models:listSelectable', { currentModelId })
   },
   claudeSettings: {
     get: (): Promise<ClaudeGlobalSettings> => invoke('claudeSettings:get'),
@@ -801,6 +833,65 @@ const api = {
       subscribe(PUSH_CHANNELS.updatesDone, cb),
     onCheckResult: (cb: (result: UpdateCheckResult) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.updatesCheckResult, cb)
+  },
+  routingProxy: {
+    getState: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:getState'),
+    setEnabled: (enabled: boolean): Promise<RoutingProxySnapshot> =>
+      invoke('routingProxy:setEnabled', { enabled }),
+    install: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:install'),
+    getAssetInfo: (): Promise<RoutingProxyAssetInfo | null> => invoke('routingProxy:getAssetInfo'),
+    checkForUpdate: (): Promise<RoutingProxyUpdateCheckResult> =>
+      invoke('routingProxy:checkForUpdate'),
+    refreshAuthFiles: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:refreshAuthFiles'),
+    restart: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:restart'),
+    forceRefreshModels: (): Promise<RoutingProxyMaintenanceResult> =>
+      invoke('routingProxy:forceRefreshModels'),
+    forceRefreshConnections: (): Promise<RoutingProxyMaintenanceResult> =>
+      invoke('routingProxy:forceRefreshConnections'),
+    forceRegenerateConfig: (): Promise<RoutingProxyMaintenanceResult> =>
+      invoke('routingProxy:forceRegenerateConfig'),
+    onSnapshot: (cb: (snapshot: RoutingProxySnapshot) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.routingProxySnapshot, cb),
+    onRefreshProgress: (cb: (progress: RoutingProxyRefreshProgress) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.routingProxyRefreshProgress, cb)
+  },
+  providers: {
+    descriptors: (): Promise<ProviderDescriptorSummary[]> => invoke('providers:descriptors'),
+    list: (): Promise<ProviderConfigSummary[]> => invoke('providers:list'),
+    setEnabled: (providerId: string, enabled: boolean): Promise<ProviderConfigSummary[]> =>
+      invoke('providers:setEnabled', { providerId, enabled }),
+    setApiKeys: (
+      providerId: string,
+      apiKeys: ProviderApiKeyEntrySummary[]
+    ): Promise<ProviderConfigSummary[]> => invoke('providers:setApiKeys', { providerId, apiKeys }),
+    setBaseUrl: (providerId: string, baseUrl: string | null): Promise<ProviderConfigSummary[]> =>
+      invoke('providers:setBaseUrl', { providerId, baseUrl })
+  },
+  aliases: {
+    list: (): Promise<ModelAliasesState> => invoke('aliases:list'),
+    listTargets: (): Promise<ModelAliasTargetOption[]> => invoke('aliases:listTargets'),
+    setEnabled: (enabled: boolean): Promise<ModelAliasesState> =>
+      invoke('aliases:setEnabled', { enabled }),
+    setAlias: (
+      claudeName: string,
+      targetProviderId: string | null,
+      targetModelId: string | null
+    ): Promise<ModelAliasesState> =>
+      invoke('aliases:setAlias', { claudeName, targetProviderId, targetModelId }),
+    useDefaults: (): Promise<ModelAliasesState> => invoke('aliases:useDefaults'),
+    addCustom: (
+      claudeName: string,
+      targetProviderId: string | null,
+      targetModelId: string | null
+    ): Promise<ModelAliasesState> =>
+      invoke('aliases:addCustom', { claudeName, targetProviderId, targetModelId }),
+    removeCustom: (claudeName: string): Promise<ModelAliasesState> =>
+      invoke('aliases:removeCustom', { claudeName })
+  },
+  oauth: {
+    start: (providerId: string): Promise<OAuthStartResult> => invoke('oauth:start', { providerId }),
+    poll: (state: string): Promise<OAuthPollResult> => invoke('oauth:poll', { state }),
+    cancel: (state: string): Promise<void> => invoke('oauth:cancel', { state })
   },
   status: {
     get: (): Promise<ClaudeStatusSnapshot> => invoke('status:get'),

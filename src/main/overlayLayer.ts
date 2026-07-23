@@ -47,6 +47,7 @@ import type {
   OverlayEvent
 } from '../shared/types'
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
+import { decideHideAction, shouldForceDismissOnOutsideInteraction } from './overlayDismissal'
 
 // ---------------------------------------------------------------------------
 // State
@@ -478,6 +479,28 @@ function wireOverlayWebContentsListeners(window: BrowserWindow): void {
     if (!initialLoadDone) return
     enterRecovering('did-start-navigation')
   })
+
+  // Escape defense-in-depth: OverlayRoot.tsx's own keydown listener already
+  // emits 'cancel' for any takesFocus descriptor (the primary path — see its
+  // "Escape while a takesFocus descriptor is shown" effect), which is enough
+  // under normal operation. This is a main-process backstop for the case
+  // that primary path can't cover: the overlay renderer wedged/mid-recovery
+  // (so its own JS never runs) with the child window still holding OS key
+  // focus — main-process before-input-event fires independent of renderer
+  // JS health, so Escape still reaches a handler and the overlay still goes
+  // away even then. Harmless to double-fire on the happy path: forceHide is
+  // idempotent (state guards make a no-op of a second call).
+  wc.on('before-input-event', (_event, input) => {
+    if (input.type !== 'keyDown' || input.key !== 'Escape') return
+    if (!shouldForceDismissOnOutsideInteraction(state, currentDescriptor?.takesFocus)) return
+    const { id, kind } = currentDescriptor!
+    deps?.getMainWindow()?.webContents.send(PUSH_CHANNELS.overlayEvent, {
+      overlayId: id,
+      kind,
+      type: 'cancel'
+    } satisfies OverlayEvent)
+    forceHide('escape-backstop')
+  })
 }
 
 function enterRecovering(reason: string): void {
@@ -646,16 +669,31 @@ function wireWindowGeometryListeners(window: BrowserWindow): void {
     }
   }
 
+  const onFocus = (): void => {
+    dismissInteractiveOverlayOnMainFocus()
+  }
+
   window.on('resize', onResize)
   window.on('enter-full-screen', onEnterFullScreen)
   window.on('leave-full-screen', onLeaveFullScreen)
   window.on('move', onMove)
+  // prependListener, not on(): index.ts registers its OWN 'focus' listener
+  // (kickActiveTerminal) at setup time, before initOverlayLayer runs from
+  // 'ready-to-show' — so a plain .on() here would always run SECOND. That
+  // ordering matters: kickActiveTerminal checks isInteractiveOverlayVisible()
+  // to decide "refocus the overlay" vs. "refocus the terminal", and it must
+  // see the POST-dismissal state, not the stale pre-dismissal state, or a
+  // click meant to dismiss the overlay could instead bounce focus back onto
+  // it via focusOverlay(). prependListener guarantees this dismissal check
+  // always runs first regardless of registration order elsewhere.
+  window.prependListener('focus', onFocus)
 
   const cleanup = (): void => {
     window.removeListener('resize', onResize)
     window.removeListener('enter-full-screen', onEnterFullScreen)
     window.removeListener('leave-full-screen', onLeaveFullScreen)
     window.removeListener('move', onMove)
+    window.removeListener('focus', onFocus)
   }
   geometryListenersCleanup = cleanup
   window.once('closed', () => {
@@ -810,10 +848,16 @@ export function updateOverlay(id: string, props: Record<string, unknown>): void 
 // ---------------------------------------------------------------------------
 
 export async function hideOverlay(id: string): Promise<void> {
-  if (!currentDescriptor || currentDescriptor.id !== id) return // no-op, silent
-  if (state !== 'visible') return
+  // See decideHideAction's doc comment for the full "orphaned descriptor"
+  // story this replaces a silent state !== 'visible' no-op with.
+  const action = decideHideAction(id, currentDescriptor?.id ?? null, state)
+  if (action === 'noop') return
+  if (action === 'force-hide') {
+    forceHide(`hide-while-pending:${id}`)
+    return
+  }
 
-  const hadTakesFocus = currentDescriptor.takesFocus
+  const hadTakesFocus = currentDescriptor!.takesFocus
   const gen = currentGeneration
   state = 'exiting'
 
@@ -888,6 +932,49 @@ export function forceHideOwnedBy(workspaceId: string): void {
   if (currentDescriptor.placement.mode !== 'anchored') return
   if (currentDescriptor.ownerWorkspaceId !== workspaceId) return
   forceHide(`workspace-unmount:${workspaceId}`)
+}
+
+// ---------------------------------------------------------------------------
+// Guaranteed dismissal for takesFocus overlays (the "stuck popover" fix)
+//
+// takesFocus overlays (newWorkspaceMenu, workspaceSettingsCard, chipPrompt,
+// chipDropdown) are card-sized child windows with NO backdrop area — the
+// window IS the card, pixel for pixel (see computeScreenBounds/
+// computeAnchoredPlacement above). Every one of their call sites dismisses
+// via a `document.addEventListener('pointerdown', ...)` on the MAIN window's
+// document (see e.g. NewWorkspaceMenu.tsx, WorkspaceSettingsPopover.tsx,
+// ActionChip.tsx, DropdownChip.tsx) — a renderer-only mechanism that can only
+// ever see clicks that land on the main window in the first place. That
+// mechanism is sound for clicks OUTSIDE the overlay's bounds (those pixels
+// belong to the main window, not the child window, so the OS delivers them
+// there directly) — the failure mode is an ORPHANED descriptor: the owning
+// component unmounted (see hideOverlay's 'pending' fix above) before it ever
+// wired that listener, or wired it and then still failed to unregister
+// (crash, race), leaving the overlay showing with nothing left to dismiss
+// it. This is the general, kind-agnostic backstop for exactly that case,
+// independent of any renderer-side listener ever running at all.
+//
+// The signal: clicking ANYWHERE on the main window while a takesFocus
+// overlay is pending/visible is unambiguous proof the click did NOT land on
+// the overlay (a takesFocus overlay is the key window while shown — a click
+// on the main window is what makes AppKit hand key-window status back to
+// it, firing this 'focus' event). So "main window regains focus" IS "outside
+// click", for every takesFocus kind, with no per-kind wiring required. On
+// that signal we emit the SAME 'cancel' event Escape already produces (see
+// OverlayRoot.tsx's Escape handler + overlayClient.ts's onCancel handlers)
+// so any live owner's existing onCancel logic still runs, and independently
+// force-hide the overlay window itself — so even a fully orphaned overlay
+// (no live owner left to react to 'cancel') is guaranteed to disappear the
+// instant the user clicks back into the app. There is now always a way out.
+function dismissInteractiveOverlayOnMainFocus(): void {
+  if (!shouldForceDismissOnOutsideInteraction(state, currentDescriptor?.takesFocus)) return
+  const { id, kind } = currentDescriptor!
+  deps?.getMainWindow()?.webContents.send(PUSH_CHANNELS.overlayEvent, {
+    overlayId: id,
+    kind,
+    type: 'cancel'
+  } satisfies OverlayEvent)
+  forceHide('main-window-refocused')
 }
 
 // ---------------------------------------------------------------------------

@@ -7,13 +7,13 @@ import { DotmSquare13 } from '../../ui/dotm-square-13'
 import { ConfirmModal } from '../../ConfirmModal'
 import { SessionsFilterBar } from './SessionsFilterBar'
 import { useDebouncedValue } from '@/lib/useDebouncedValue'
+import { useModelLabels } from '@/lib/useModelLabels'
 import {
   PAGE_SIZE_FULL,
   PAGE_SIZE_COMPACT,
   dateRangeToFrom,
   relativeTime,
   formatBytes,
-  shortModel,
   type DateRange,
   type SortBy
 } from './sessions-tab-helpers'
@@ -255,6 +255,9 @@ export function SessionsTab({
     }
   }
 
+  const modelIds = useMemo(() => rows.map((r) => r.model), [rows])
+  const getModelLabel = useModelLabels(modelIds)
+
   const columns = useMemo<DataTableColumn<SessionRecord>[]>(() => {
     const promptCol: DataTableColumn<SessionRecord> = {
       key: 'title',
@@ -363,7 +366,7 @@ export function SessionsTab({
         label: 'Model',
         width: '90px',
         render: (r) => (
-          <span className="text-xs font-mono text-text-secondary">{shortModel(r.model)}</span>
+          <span className="text-xs font-mono text-text-secondary">{getModelLabel(r.model)}</span>
         )
       },
       {
@@ -399,7 +402,7 @@ export function SessionsTab({
       deleteCol,
       resumeCol
     ]
-  }, [resumingId, compact, onResumedInWorkspace])
+  }, [resumingId, compact, onResumedInWorkspace, getModelLabel])
 
   async function confirmDelete(): Promise<void> {
     if (!pendingDelete) return

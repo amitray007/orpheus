@@ -17,6 +17,8 @@ import {
 import { getClaudeGlobalSettings } from './claudeSettings'
 import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getProject } from './projects'
+import { withReconciledEffort } from './effortReconciliation'
+import { CLAUDE_EFFORT_VALUES } from '../shared/types'
 import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 import { onWorkspaceStatusChange } from './orpheusNotify'
 import { getWorkspaceFileInfo, getWorkspaceFileStatusSync, forceReconcile } from './sessionState'
@@ -314,8 +316,16 @@ function buildWorkspaceSettingsOverride(args: Record<string, unknown>): {
   ) {
     settingsOverride.permissionMode = args.permissionMode as ClaudePermissionMode
   }
-  const VALID_EFFORTS: ClaudeEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
-  if (typeof args.effort === 'string' && VALID_EFFORTS.includes(args.effort as ClaudeEffort)) {
+  // Sourced from CLAUDE_EFFORT_VALUES (src/shared/types.ts's single
+  // canonical list, model-routing unit 11) rather than a re-declared
+  // literal — without this, a CLI-created workspace passing effort:
+  // 'minimal'/'none' would silently have that field DROPPED here (fails the
+  // includes() check, so it's just omitted from settingsOverride — no
+  // error, no signal to the caller).
+  if (
+    typeof args.effort === 'string' &&
+    CLAUDE_EFFORT_VALUES.includes(args.effort as ClaudeEffort)
+  ) {
     settingsOverride.effort = args.effort as ClaudeEffort
   }
   return settingsOverride
@@ -363,7 +373,18 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
 
       // Apply workspace-level settings overrides (model / permissionMode / effort)
       // These are stored in claude_workspace_settings and picked up by composeClaudeLaunch.
-      const settingsOverride = buildWorkspaceSettingsOverride(args)
+      // withReconciledEffort (model-routing unit 11, work item 4 — the CLI/
+      // command-server path was the one persistence path that bypassed this
+      // reconciliation entirely, since it writes via updateClaudeWorkspaceSettings
+      // directly rather than through the claudeWorkspaceSettings:update IPC
+      // handler) reconciles the newly-created workspace's effort against
+      // whichever model was chosen, UNLESS the caller also passed --effort
+      // explicitly (never overriding explicit CLI intent).
+      const settingsOverride = withReconciledEffort(
+        buildWorkspaceSettingsOverride(args),
+        ws.projectId,
+        ws.id
+      )
       if (Object.keys(settingsOverride).length > 0) {
         updateClaudeWorkspaceSettings(ws.id, settingsOverride)
       }

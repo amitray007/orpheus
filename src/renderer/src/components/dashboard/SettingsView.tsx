@@ -25,7 +25,8 @@ import {
   FirstAidKit,
   Coffee,
   SquaresFour,
-  Compass
+  Compass,
+  ShareNetwork
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -109,6 +110,11 @@ const OrpheusKeepAwakeSection = lazy(() =>
 const OrpheusUpdatesSection = lazy(() =>
   import('./settings/OrpheusUpdatesSection').then((m) => ({ default: m.OrpheusUpdatesSection }))
 )
+const OrpheusModelRoutingSection = lazy(() =>
+  import('./settings/OrpheusModelRoutingSection').then((m) => ({
+    default: m.OrpheusModelRoutingSection
+  }))
+)
 const OrpheusStatusSection = lazy(() =>
   import('./settings/OrpheusStatusSection').then((m) => ({ default: m.OrpheusStatusSection }))
 )
@@ -168,6 +174,7 @@ export type SectionId =
   | 'orpheus-workspaces'
   | 'orpheus-keep-awake'
   | 'orpheus-updates'
+  | 'orpheus-model-routing'
   | 'orpheus-status'
   | 'orpheus-footer'
   | 'orpheus-developer'
@@ -248,6 +255,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Updates',
         icon: ArrowsClockwise,
         Component: OrpheusUpdatesSection
+      },
+      {
+        id: 'orpheus-model-routing',
+        label: 'Model Routing',
+        icon: ShareNetwork,
+        Component: OrpheusModelRoutingSection
       },
       {
         id: 'orpheus-status',

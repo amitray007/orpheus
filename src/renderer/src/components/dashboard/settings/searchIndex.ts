@@ -18,6 +18,7 @@ export type SectionId =
   | 'orpheus-notifications'
   | 'orpheus-workspaces'
   | 'orpheus-updates'
+  | 'orpheus-model-routing'
   | 'orpheus-status'
   | 'orpheus-developer'
   | 'orpheus-about'
@@ -1816,6 +1817,30 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     description: 'Manually trigger an update check against the release channel.',
     mapsTo: [],
     keywords: ['check now', 'manual update', 'force update check', 'update now']
+  },
+
+  // ---------------------------------------------------------------------------
+  // Orpheus › Model Routing
+  // ---------------------------------------------------------------------------
+  {
+    sectionId: 'orpheus-model-routing',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Model Routing',
+    settingId: 'enable-managed-routing-proxy',
+    label: 'Enable managed routing proxy',
+    description: 'Download and run a local CLIProxyAPI process for non-Claude model workspaces.',
+    mapsTo: ['routing_proxy_enabled'],
+    keywords: ['cliproxyapi', 'proxy', 'routing', 'non-claude', 'gpt', 'grok', 'model routing']
+  },
+  {
+    sectionId: 'orpheus-model-routing',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Model Routing',
+    settingId: 'routing-proxy-connected-accounts',
+    label: 'Connected accounts',
+    description: 'Providers connected to the managed routing proxy and their health.',
+    mapsTo: [],
+    keywords: ['auth files', 'connected accounts', 'oauth', 'provider health']
   },
 
   // ---------------------------------------------------------------------------

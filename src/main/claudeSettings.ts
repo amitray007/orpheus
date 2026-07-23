@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import { getDb } from './db'
+import { CLAUDE_EFFORT_VALUES } from '../shared/types'
 import type {
   ClaudeGlobalSettings,
   ClaudeGlobalSettingsPatch,
@@ -18,6 +19,7 @@ import { getWorkspace } from './workspaces'
 import { encodePathToClaudeDir } from './claudeProjectDir'
 import { FLAG_DELIMITER, mergeFlagScopes, parseFlagEntry } from '../shared/cliFlags'
 import { validateCustomCliFlagsValue, validateCustomEnvVarsValue } from './overridesStore'
+import { shouldEmitFallbackModel } from './modelRouting'
 
 // One-way-true cache for session JSONL existence checks.
 // Key: `${cwd}:${sessionId}`. Once a JSONL is confirmed to exist (true), it
@@ -328,7 +330,6 @@ const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
   'plan',
   'bypassPermissions'
 ]
-const VALID_EFFORTS: ClaudeEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
 const VALID_OUTPUT_STYLES: ClaudeOutputStyle[] = ['default', 'explanatory', 'proactive', 'learning']
 const VALID_TUI_MODES: ClaudeTuiMode[] = ['default', 'fullscreen']
 const VALID_EDITOR_MODES: ClaudeEditorMode[] = ['normal', 'vim']
@@ -562,7 +563,7 @@ function validateBooleanKeys(patch: ClaudeGlobalSettingsPatch): void {
 function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
   validateModelKey(patch)
   validateEnum(patch, 'permissionMode', VALID_PERMISSION_MODES, 'permissionMode')
-  validateEnum(patch, 'effort', VALID_EFFORTS, 'effort')
+  validateEnum(patch, 'effort', CLAUDE_EFFORT_VALUES, 'effort')
   validateEnum(patch, 'outputStyle', VALID_OUTPUT_STYLES, 'outputStyle')
   validateEnum(patch, 'tuiMode', VALID_TUI_MODES, 'tuiMode')
   validateEnum(patch, 'editorMode', VALID_EDITOR_MODES, 'editorMode')
@@ -631,6 +632,11 @@ export type ClaudeLaunch = {
   /** Environment variables to set in the surface process, e.g.
    *  { CLAUDE_CODE_NATIVE_CURSOR: '1' }. Empty object when all at defaults. */
   env: Record<string, string>
+  /** Effective resolved model id (workspace → project → global), the same
+   *  value emitted as the --model flag. Callers (buildMountEnv's routing
+   *  conditional) use this to decide isClaude(model) without re-parsing
+   *  `flags`. Empty string means claude's own default (bare sonnet). */
+  model: string
 }
 
 // Applies a scope's scalar overrides (model, permissionMode, effort) on top
@@ -773,8 +779,15 @@ function composeFlagTokens(
     flagTokens.push('--debug')
   }
 
-  // --fallback-model: only emit when non-empty
-  if (s.fallbackModel && s.fallbackModel.trim() !== '') {
+  // --fallback-model: only emit when non-empty AND the launch model is not
+  // routed. --fallback-model is a Claude-CLI-native concept (Anthropic
+  // overload fallback) with no meaning against a third-party routed backend
+  // — see shouldEmitFallbackModel's doc comment in modelRouting.ts for the
+  // full rationale (unknown-provider errors, or worse, a silent backend
+  // switch mid-session). Claude launches (s.model unrouted, including the ''
+  // default) are unaffected: shouldEmitFallbackModel returns true for them,
+  // so this is byte-for-byte identical to the prior unconditional check.
+  if (s.fallbackModel && s.fallbackModel.trim() !== '' && shouldEmitFallbackModel(s.model)) {
     flagTokens.push('--fallback-model', s.fallbackModel.trim())
   }
 
@@ -1238,7 +1251,7 @@ export function composeClaudeLaunch(
 
   const env = composeLaunchEnv(s, global, projectEnvVars, workspaceEnvVars)
 
-  return { flags, settingsJson, env }
+  return { flags, settingsJson, env, model: s.model }
 }
 
 // ---------------------------------------------------------------------------
