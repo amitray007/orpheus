@@ -80,6 +80,7 @@ import {
   composeLaunchForMount
 } from './orpheusSurfaceAdapter'
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
+import { buildAppMenu } from './appMenu'
 import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor } from '../shared/types'
@@ -2222,6 +2223,23 @@ if (!app.requestSingleInstanceLock()) {
       }
       startDiagnostics()
       syncDiagFlags()
+
+      // Build the native app menu with the Privacy Mode checkbox item wired to
+      // uiState — best-effort so a menu failure never blocks boot.
+      try {
+        buildAppMenu({
+          privacyMode: getAppUiState().privacyMode,
+          onTogglePrivacyMode: (checked) => {
+            const result = updateAppUiState({ privacyMode: checked })
+            const win = getMainWindow()
+            if (win && !win.isDestroyed()) {
+              win.webContents.send(PUSH_CHANNELS.uiStateChanged, result)
+            }
+          }
+        })
+      } catch (err) {
+        console.error('[startup] failed to build application menu:', err)
+      }
 
       // Wire the workspaceResources registry's main→renderer broadcast bridge
       // once at boot (mirrors configureLoadingOverlay's injection pattern) —

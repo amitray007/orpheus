@@ -250,6 +250,10 @@ const api = {
     reorderByActivity: (): Promise<string[]> => invoke('projects:reorderByActivity'),
     setPinned: (id: string, pinned: boolean): Promise<ProjectRecord> =>
       invoke('projects:setPinned', { id, pinned }),
+    setClassified: (id: string, classified: boolean): Promise<ProjectRecord> =>
+      invoke('projects:setClassified', { id, classified }),
+    setHidden: (id: string, hidden: boolean): Promise<ProjectRecord> =>
+      invoke('projects:setHidden', { id, hidden }),
     refreshGithub: (projectId: string): Promise<void> =>
       invoke('projects:refreshGithub', projectId),
     onGithubDataUpdated: (
@@ -260,7 +264,9 @@ const api = {
         githubAvatarUrl: string | null
         githubCheckedAt: number
       }) => void
-    ): (() => void) => subscribe(PUSH_CHANNELS.projectsGithubDataUpdated, cb)
+    ): (() => void) => subscribe(PUSH_CHANNELS.projectsGithubDataUpdated, cb),
+    onChanged: (cb: (project: ProjectRecord) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.projectsChanged, (e) => cb(e.project))
   },
   sessions: {
     listForProject: (

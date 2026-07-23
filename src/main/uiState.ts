@@ -135,6 +135,8 @@ type AppUiStateRow = {
   routing_proxy_enabled: number | null
   // Model-name aliasing (model-routing unit 08)
   model_aliases_enabled: number | null
+  // Privacy mode (v66)
+  privacy_mode: number | null
   updated_at: number
 }
 
@@ -265,6 +267,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     routingProxyEnabled: (row.routing_proxy_enabled ?? 0) === 1,
     // Model-name aliasing (model-routing unit 08) — default false (off)
     modelAliasesEnabled: (row.model_aliases_enabled ?? 0) === 1,
+    // Privacy mode (v66) — default false
+    privacyMode: (row.privacy_mode ?? 0) === 1,
     updatedAt: row.updated_at
   }
 }
@@ -492,6 +496,11 @@ function validateFilesViewPatch(patch: AppUiStatePatch): void {
       )
     }
   }
+  if ('privacyMode' in patch && patch.privacyMode !== undefined) {
+    if (typeof patch.privacyMode !== 'boolean') {
+      throw new Error('uiState: privacyMode must be a boolean')
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -620,7 +629,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Managed routing proxy (v70)
     routingProxyEnabled: 'routing_proxy_enabled',
     // Model-name aliasing (model-routing unit 08)
-    modelAliasesEnabled: 'model_aliases_enabled'
+    modelAliasesEnabled: 'model_aliases_enabled',
+    // Privacy mode (v66)
+    privacyMode: 'privacy_mode'
   }
 
   const setClauses: string[] = []

@@ -9,7 +9,8 @@ import {
   Archive,
   GitFork,
   PushPin,
-  ArrowsDownUp
+  ArrowsDownUp,
+  Lock
 } from '@phosphor-icons/react'
 import { WorktreeBadge } from './WorktreeBadge'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
@@ -684,6 +685,10 @@ interface ProjectRowProps {
   staleAfterMinutes: number
   /** Current time in epoch ms, updated once per minute at sidebar root. */
   nowMs: number
+  /** True when this project should render as the redacted CLASSIFIED bar (privacy on, classified, not peeked). */
+  redacted: boolean
+  /** Epoch ms this project's peek expires, when currently peeked (drives the depleting bar). Undefined when not peeking. */
+  peekExpiresAt?: number
   onSelect: () => void
   onToggleExpand: () => void
   onSelectWorkspace: (workspaceId: string) => void
@@ -703,6 +708,8 @@ interface ProjectRowProps {
   onCloseWorkspace: (workspaceId: string) => void
   onTogglePinWorkspace: (workspaceId: string) => void
   onTogglePinProject: () => void
+  onHideProject: () => void
+  onRevealProject: () => void
   wsDragId: string | null
   wsDropTargetId: string | null
   wsDropPos: 'before' | 'after'
@@ -735,6 +742,8 @@ const ProjectRow = memo(function ProjectRow({
   sessionMtimeBySessionId,
   staleAfterMinutes,
   nowMs,
+  redacted,
+  peekExpiresAt,
   onSelect,
   onToggleExpand,
   onSelectWorkspace,
@@ -754,6 +763,8 @@ const ProjectRow = memo(function ProjectRow({
   onCloseWorkspace,
   onTogglePinWorkspace,
   onTogglePinProject,
+  onHideProject,
+  onRevealProject,
   wsDragId,
   wsDropTargetId,
   wsDropPos,
@@ -783,13 +794,28 @@ const ProjectRow = memo(function ProjectRow({
 
   function handleContextMenu(e: React.MouseEvent): void {
     e.preventDefault()
-    const isPinned = project.pinnedAt !== null
     const rect = sidebarBoundsRef?.current?.getBoundingClientRect()
+    // Redacted row: only "Reveal this project" is offered — nothing else
+    // should be actionable on a project whose name isn't even shown.
+    if (redacted) {
+      if (!rect || rect.width < 200) {
+        void window.api.contextMenu
+          .show([{ label: 'Reveal this project', action: 'reveal' }])
+          .then((action) => {
+            if (action === 'reveal') onRevealProject()
+          })
+        return
+      }
+      setMenu({ x: e.clientX, y: e.clientY })
+      return
+    }
+    const isPinned = project.pinnedAt !== null
     if (!rect || rect.width < 200) {
       void window.api.contextMenu
         .show([
           { label: isPinned ? 'Unpin' : 'Pin', action: 'togglePin' },
           { label: 'Rename', action: 'rename' },
+          { label: 'Hide project', action: 'hide' },
           { divider: true },
           { label: 'Remove', action: 'remove' }
         ])
@@ -797,6 +823,7 @@ const ProjectRow = memo(function ProjectRow({
           if (!action) return
           if (action === 'togglePin') onTogglePinProject()
           else if (action === 'rename') onBeginRename()
+          else if (action === 'hide') onHideProject()
           else if (action === 'remove') onRequestRemove()
         })
       return
@@ -844,9 +871,13 @@ const ProjectRow = memo(function ProjectRow({
   const hiddenCount = workspaces.length - visibleIds.size
 
   const isPinned = project.pinnedAt !== null
+  const redactedMenuItems: ContextMenuItem[] = [
+    { label: 'Reveal this project', onClick: onRevealProject }
+  ]
   const projectMenuItems: ContextMenuItem[] = [
     { label: isPinned ? 'Unpin' : 'Pin', onClick: onTogglePinProject },
     { label: 'Rename', onClick: onBeginRename },
+    { label: 'Hide project', onClick: onHideProject },
     { label: '', divider: true, onClick: () => {} },
     { label: 'Remove', onClick: onRequestRemove }
   ]
@@ -858,11 +889,23 @@ const ProjectRow = memo(function ProjectRow({
     if (!willCommit) onCancelRename()
   }
 
+  // Redaction is a render-time mask only — workspaces/chevron/expand state
+  // are never touched here, so un-redacting (privacy off or a peek) restores
+  // the row exactly as it was.
+  const showChevron = !redacted
+
   return (
     <div className="flex flex-col">
       <div
         className={[
           'relative flex items-center rounded-r-md transition-colors duration-150 group',
+          // Height is intentionally NOT forked here. The real-content wrapper
+          // below stays mounted (opacity-only) in both states, so it always
+          // establishes this container's intrinsic height — the redacted
+          // overlay is absolutely positioned over whatever that height is.
+          // This structurally guarantees zero layout shift; a hand-tuned
+          // fixed height (e.g. h-9) would only approximate it.
+          peekExpiresAt !== undefined ? 'bg-accent/5' : '',
           active
             ? 'bg-accent/15 text-text-primary border-l-2 border-accent'
             : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
@@ -871,53 +914,67 @@ const ProjectRow = memo(function ProjectRow({
         onMouseLeave={() => setHovered(false)}
         onContextMenu={handleContextMenu}
       >
-        {/* Main clickable row — navigate to project view. py-2 → ~40px hit target */}
-        <button
-          type="button"
-          onClick={onSelect}
-          className="flex items-center gap-2 px-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md cursor-pointer"
-          title={project.path}
-          aria-label={project.name}
+        {/* Real content — fades out under the hatch overlay when redacted (200ms crossfade).
+            Stays mounted/in-flow in both states so its intrinsic size drives the
+            container's height (see className comment above). `inert` (React 19
+            supports it as a native boolean prop) removes it from the tab order and
+            AT tree entirely while redacted — pointer-events-none alone only blocks
+            the mouse, not keyboard/AT reachability of nested buttons. */}
+        <div
+          inert={redacted}
+          aria-hidden={redacted}
+          className={[
+            'flex items-center flex-1 min-w-0 transition-opacity duration-200',
+            redacted ? 'opacity-0 pointer-events-none' : 'opacity-100'
+          ].join(' ')}
         >
-          <span className="relative inline-flex items-center flex-shrink-0">
-            <Identicon
-              seed={project.path}
-              size={20}
-              avatarUrl={fetchGithubAvatars ? project.githubAvatarUrl : null}
-            />
-            {project.pinnedAt !== null && (
-              <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-surface-raised border border-border-default flex items-center justify-center pointer-events-none">
-                <PushPin size={6} weight="fill" className="text-accent" />
-              </span>
-            )}
-          </span>
-          {renaming ? (
-            <RenameInput
-              ariaLabel="Rename project"
-              value={rename.value}
-              onChange={(e) => rename.setValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleRenameCommit()
-                if (e.key === 'Escape') onCancelRename()
-              }}
-              onBlur={handleRenameCommit}
-              onClick={(e) => e.stopPropagation()}
-              className="bg-surface-overlay border border-accent/40 rounded px-2 py-0.5 outline-none text-sm font-medium text-text-primary min-w-0 flex-1"
-            />
-          ) : (
-            <span className="text-sm truncate min-w-0 flex-1 flex items-center gap-1.5">
-              <span className="truncate">{project.name}</span>
-              {workspaceCountInline && workspaceCount > 0 && (
-                <span className="text-xs text-text-muted flex-shrink-0">· {workspaceCount}</span>
+          {/* Main clickable row — navigate to project view. py-2 → ~40px hit target */}
+          <button
+            type="button"
+            onClick={onSelect}
+            className="flex items-center gap-2 px-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md cursor-pointer"
+            title={project.path}
+            aria-label={project.name}
+          >
+            <span className="relative inline-flex items-center flex-shrink-0">
+              <Identicon
+                seed={project.path}
+                size={20}
+                avatarUrl={fetchGithubAvatars ? project.githubAvatarUrl : null}
+              />
+              {project.pinnedAt !== null && (
+                <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-surface-raised border border-border-default flex items-center justify-center pointer-events-none">
+                  <PushPin size={6} weight="fill" className="text-accent" />
+                </span>
               )}
             </span>
-          )}
-        </button>
+            {renaming ? (
+              <RenameInput
+                ariaLabel="Rename project"
+                value={rename.value}
+                onChange={(e) => rename.setValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleRenameCommit()
+                  if (e.key === 'Escape') onCancelRename()
+                }}
+                onBlur={handleRenameCommit}
+                onClick={(e) => e.stopPropagation()}
+                className="bg-surface-overlay border border-accent/40 rounded px-2 py-0.5 outline-none text-sm font-medium text-text-primary min-w-0 flex-1"
+              />
+            ) : (
+              <span className="text-sm truncate min-w-0 flex-1 flex items-center gap-1.5">
+                <span className="truncate">{project.name}</span>
+                {workspaceCountInline && workspaceCount > 0 && (
+                  <span className="text-xs text-text-muted flex-shrink-0">· {workspaceCount}</span>
+                )}
+              </span>
+            )}
+          </button>
 
-        {/* Right controls: add workspace + chevron. Each button is 32x32. */}
-        {!renaming && (
-          <div className="flex items-center gap-0.5 pr-1 flex-shrink-0">
-            {/* Add workspace — CSS-visible-on-hover (opacity), not
+          {/* Right controls: add workspace + chevron. Each button is 32x32. */}
+          {!renaming && (
+            <div className="flex items-center gap-0.5 pr-1 flex-shrink-0">
+              {/* Add workspace — CSS-visible-on-hover (opacity), not
                 conditionally MOUNTED on `hovered` — NewWorkspaceMenu now owns
                 a native-overlay popover with its own hover-intent timers
                 (model-routing unit 10-creation); unmounting the trigger the
@@ -929,51 +986,80 @@ const ProjectRow = memo(function ProjectRow({
                 towards it" bug, just one level up from NewWorkspaceMenu's own
                 fix. Kept mounted always; `group-hover` (from the row's own
                 `group` class above) only toggles visibility/hit-testing. */}
-            <NewWorkspaceMenu
-              projectId={project.id}
-              defaultName={nextWorkspaceName(workspaces)}
-              onCreateLocal={(modelId) => onAddWorkspace(modelId)}
-              onCreated={(ws) => onSelectWorkspace(ws.id)}
-              className={hovered ? '' : 'opacity-0 pointer-events-none'}
-            >
-              <button
-                type="button"
-                className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
-                title="New workspace"
-                aria-label="New workspace"
+              <NewWorkspaceMenu
+                projectId={project.id}
+                defaultName={nextWorkspaceName(workspaces)}
+                onCreateLocal={(modelId) => onAddWorkspace(modelId)}
+                onCreated={(ws) => onSelectWorkspace(ws.id)}
+                className={hovered ? '' : 'opacity-0 pointer-events-none'}
               >
-                <Plus size={14} weight="bold" />
-              </button>
-            </NewWorkspaceMenu>
+                <button
+                  type="button"
+                  className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
+                  title="New workspace"
+                  aria-label="New workspace"
+                >
+                  <Plus size={14} weight="bold" />
+                </button>
+              </NewWorkspaceMenu>
 
-            {/* Expand/collapse chevron */}
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                onToggleExpand()
-              }}
-              className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
-              title={expanded ? 'Collapse' : 'Expand workspaces'}
-              aria-label={expanded ? 'Collapse workspaces' : 'Expand workspaces'}
-            >
-              {expanded ? <CaretDown size={14} /> : <CaretRight size={14} />}
-            </button>
-          </div>
-        )}
+              {/* Expand/collapse chevron — omitted entirely while redacted (no chevron on a locked row) */}
+              {showChevron && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onToggleExpand()
+                  }}
+                  className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
+                  title={expanded ? 'Collapse' : 'Expand workspaces'}
+                  aria-label={expanded ? 'Collapse workspaces' : 'Expand workspaces'}
+                >
+                  {expanded ? <CaretDown size={14} /> : <CaretRight size={14} />}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Redaction hatch overlay — diagonal stripes over a dark base, centered lock + label.
+            Absolutely positioned so it never affects row height; opacity-only
+            crossfade against the real content above (both animate together). */}
+        <div
+          aria-hidden={!redacted}
+          className={[
+            'absolute inset-0 flex items-center justify-center rounded-r-md transition-opacity duration-200',
+            redacted ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          ].join(' ')}
+          style={{
+            backgroundColor: '#2a2a2a',
+            backgroundImage:
+              'repeating-linear-gradient(45deg, rgba(255,255,255,0.035) 0px, rgba(255,255,255,0.035) 2px, transparent 2px, transparent 9px)'
+          }}
+        >
+          <span className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-text-muted">
+            <Lock size={11} weight="fill" />
+            CLASSIFIED
+          </span>
+        </div>
+
+        {/* Depleting peek bar — thin, no numeric text, left-to-right shrink over the remaining peek duration. */}
+        {/* Keyed on expiresAt so a re-reveal (timer reset while already peeking) remounts the bar and restarts the depletion animation from full width. */}
+        {peekExpiresAt !== undefined && <PeekBar key={peekExpiresAt} expiresAt={peekExpiresAt} />}
+
         {menu && (
           <ContextMenu
             x={menu.x}
             y={menu.y}
-            items={projectMenuItems}
+            items={redacted ? redactedMenuItems : projectMenuItems}
             onClose={() => setMenu(null)}
             boundsRef={sidebarBoundsRef ?? undefined}
           />
         )}
       </div>
 
-      {/* Nested workspace rows */}
-      {expanded && workspaces.length === 0 && (
+      {/* Nested workspace rows — never rendered while redacted, regardless of `expanded` (zero leak). */}
+      {!redacted && expanded && workspaces.length === 0 && (
         <NewWorkspaceMenu
           projectId={project.id}
           defaultName={nextWorkspaceName(workspaces)}
@@ -996,7 +1082,7 @@ const ProjectRow = memo(function ProjectRow({
           </button>
         </NewWorkspaceMenu>
       )}
-      {expanded && workspaces.length > 0 && (
+      {!redacted && expanded && workspaces.length > 0 && (
         <div className="flex flex-col gap-0.5 mt-0.5">
           {/* Rows hidden by the cap have no drop target here — they're not
               rendered, so there's nowhere to drag onto. Reordering into the
@@ -1060,6 +1146,47 @@ const ProjectRow = memo(function ProjectRow({
     </div>
   )
 })
+
+// ---------------------------------------------------------------------------
+// Peek bar — thin depleting progress bar under a peeking project row
+// ---------------------------------------------------------------------------
+
+/**
+ * Renders a ~2px bar under a peeking project row that shrinks left→right
+ * from full width to zero over the remaining peek duration, then holds at
+ * zero (the row re-redacts on its own once Dashboard's peek timeout fires).
+ * No numeric/time text — purely a CSS transform transition, matching the
+ * approved mockup. Uses a two-frame mount (full width → 0) so the browser
+ * commits the starting transform before the transition to 0 is requested;
+ * otherwise the initial paint and the animated target would collapse into
+ * the same frame and no animation would be visible.
+ */
+function PeekBar({ expiresAt }: { expiresAt: number }): React.JSX.Element {
+  // The parent keys this component on expiresAt, so a fresh mount (not a
+  // re-render) is what drives every reveal/re-reveal — the lazy initializer
+  // below only ever runs once per mount, and `depleted` always starts false.
+  // Reading Date.now() in the initializer (rather than inline during render)
+  // keeps the render body itself pure.
+  const [remainingMs] = useState(() => Math.max(0, expiresAt - Date.now()))
+  const [depleted, setDepleted] = useState(false)
+
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setDepleted(true))
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  return (
+    <div className="absolute left-2 right-2 bottom-0.5 h-0.5 rounded-full bg-white/5 overflow-hidden pointer-events-none">
+      <div
+        className="h-full origin-left bg-accent rounded-full"
+        style={{
+          transform: depleted ? 'scaleX(0)' : 'scaleX(1)',
+          transition: depleted ? `transform ${remainingMs}ms linear` : 'none'
+        }}
+      />
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Drop indicator
@@ -1145,6 +1272,12 @@ interface ProjectsSectionProps {
     workspaces: WorkspaceRecord[]
   ) => void
   onWorkspaceDragEnd: () => void
+  /** Global privacy-mode toggle (View menu / Settings → Privacy). Redacts classified projects when on. */
+  privacyMode: boolean
+  /** projectId → expiresAt (epoch ms) for classified projects currently un-redacted via "Reveal this project". */
+  peeks: Map<string, number>
+  onHideProject: (projectId: string) => void | Promise<void>
+  onRevealProject: (projectId: string) => void
 }
 
 function ProjectsSection({
@@ -1200,7 +1333,11 @@ function ProjectsSection({
   onWorkspaceDragStart,
   onWorkspaceDragOver,
   onWorkspaceDrop,
-  onWorkspaceDragEnd
+  onWorkspaceDragEnd,
+  privacyMode,
+  peeks,
+  onHideProject,
+  onRevealProject
 }: ProjectsSectionProps): React.JSX.Element {
   return (
     <div className="mt-2 flex flex-col gap-0.5 flex-1 min-h-0">
@@ -1230,10 +1367,12 @@ function ProjectsSection({
           ) : (
             <div className="flex flex-col gap-0.5 overflow-y-auto flex-1 min-h-0 no-scrollbar">
               {projects.map((p) => {
-                const expanded = expandedProjectIds.has(p.id)
-                const workspaces = (workspacesByProject[p.id] ?? []).filter(
-                  (w) => w.archivedAt === null
-                )
+                const peekExpiresAt = peeks.get(p.id)
+                const redacted = privacyMode && p.classified && peekExpiresAt === undefined
+                const expanded = !redacted && expandedProjectIds.has(p.id)
+                const workspaces = redacted
+                  ? []
+                  : (workspacesByProject[p.id] ?? []).filter((w) => w.archivedAt === null)
                 const showLineAbove = dropTargetId === p.id && dropPos === 'before'
                 const showLineBelow = dropTargetId === p.id && dropPos === 'after'
                 const isDragging = dragId === p.id
@@ -1264,6 +1403,8 @@ function ProjectsSection({
                       sessionMtimeBySessionId={sessionMtimesByProject.get(p.id) ?? EMPTY_MTIME_MAP}
                       staleAfterMinutes={staleAfterMinutes}
                       nowMs={nowMs}
+                      redacted={redacted}
+                      peekExpiresAt={peekExpiresAt}
                       onSelect={() => onSelectProject(p.id)}
                       onToggleExpand={() => onToggleProjectExpand(p.id)}
                       onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
@@ -1285,6 +1426,8 @@ function ProjectsSection({
                       onCloseWorkspace={(wsId) => onCloseWorkspace(wsId, p.id)}
                       onTogglePinWorkspace={(wsId) => onTogglePinWorkspace(wsId, p.id)}
                       onTogglePinProject={() => onTogglePinProject(p.id)}
+                      onHideProject={() => onHideProject(p.id)}
+                      onRevealProject={() => onRevealProject(p.id)}
                       wsDragId={wsDragId}
                       wsDropTargetId={wsDropTargetId}
                       wsDropPos={wsDropPos}
@@ -1310,6 +1453,8 @@ function ProjectsSection({
           onSelectProject={onSelectProject}
           onAddProject={onAddProject}
           workspacesByProject={workspacesByProject}
+          privacyMode={privacyMode}
+          peeks={peeks}
         />
       )}
     </div>
@@ -1343,6 +1488,10 @@ interface SidebarProps {
   sidebarWidth: number // px, expanded state only
   // Privacy (v37)
   fetchGithubAvatars: boolean
+  /** Global privacy-mode toggle (View menu / Settings → Privacy). Redacts classified projects when on. */
+  privacyMode: boolean
+  /** projectId → expiresAt (epoch ms) for classified projects currently un-redacted via "Reveal this project". */
+  peeks: Map<string, number>
   pinnedItems: PinnedItem[]
   onSelectProject: (id: string) => void
   onAddProject: () => void
@@ -1361,6 +1510,8 @@ interface SidebarProps {
   onCloseWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onTogglePinWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onTogglePinProject: (projectId: string) => void | Promise<void>
+  onHideProject: (projectId: string) => void | Promise<void>
+  onRevealProject: (projectId: string) => void
   onReorderProjects: (orderedIds: string[]) => void
   onReorderProjectsByActivity: () => void
   onReorderWorkspaces: (projectId: string, orderedIds: string[]) => void
@@ -1380,6 +1531,8 @@ export function Sidebar({
   workspaceCountInline,
   sidebarWidth,
   fetchGithubAvatars,
+  privacyMode,
+  peeks,
   onSelectProject,
   onAddProject,
   addingProject = false,
@@ -1393,6 +1546,8 @@ export function Sidebar({
   onCloseWorkspace,
   onTogglePinWorkspace,
   onTogglePinProject,
+  onHideProject,
+  onRevealProject,
   onReorderProjects,
   onReorderProjectsByActivity,
   onReorderWorkspaces,
@@ -1626,6 +1781,19 @@ export function Sidebar({
     setWsDropTargetId(null)
   }, [])
 
+  // Pinned rows are a leak surface: they carry the project name regardless of
+  // sidebar expand state. Drop hidden-project rows unconditionally, and drop
+  // classified-project rows while privacy is on and not peeked.
+  const visiblePinnedItems = useMemo(
+    () =>
+      pinnedItems.filter((item) => {
+        if (item.project.hidden) return false
+        if (privacyMode && item.project.classified && !peeks.has(item.project.id)) return false
+        return true
+      }),
+    [pinnedItems, privacyMode, peeks]
+  )
+
   // Used by CollapsedProjectList to highlight the currently-active project.
   const isProjectActive = useCallback(
     (projectId: string): boolean =>
@@ -1692,7 +1860,7 @@ export function Sidebar({
             shifts the layout. */}
         <ProjectsSection
           collapsed={collapsed}
-          pinnedItems={pinnedItems}
+          pinnedItems={visiblePinnedItems}
           onRefreshPins={onRefreshPins}
           projects={projects}
           projectsLoading={projectsLoading}
@@ -1744,6 +1912,10 @@ export function Sidebar({
           onWorkspaceDragOver={onWorkspaceDragOver}
           onWorkspaceDrop={onWorkspaceDrop}
           onWorkspaceDragEnd={onWorkspaceDragEnd}
+          privacyMode={privacyMode}
+          peeks={peeks}
+          onHideProject={onHideProject}
+          onRevealProject={onRevealProject}
         />
       </aside>
     </SidebarBoundsContext.Provider>
