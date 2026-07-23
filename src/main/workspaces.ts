@@ -48,6 +48,9 @@ type ProjectRow = {
   github_repo: string | null
   github_avatar_url: string | null
   github_checked_at: number | null
+  // v66
+  classified: number
+  hidden: number
 }
 
 function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
@@ -88,7 +91,10 @@ function rowToProjectRecord(row: ProjectRow): ProjectRecord {
     githubOwner: row.github_owner ?? null,
     githubRepo: row.github_repo ?? null,
     githubAvatarUrl: row.github_avatar_url ?? null,
-    githubCheckedAt: row.github_checked_at ?? null
+    githubCheckedAt: row.github_checked_at ?? null,
+    // v66
+    classified: (row.classified ?? 0) === 1,
+    hidden: (row.hidden ?? 0) === 1
   }
 }
 
@@ -596,7 +602,9 @@ export function listAllPinned(): PinnedItem[] {
               p.added_at as p_added_at, p.last_opened_at as p_last_opened_at,
               p.expanded_in_sidebar as p_expanded_in_sidebar,
               p.sort_order as p_sort_order,
-              p.pinned_at as p_pinned_at
+              p.pinned_at as p_pinned_at,
+              p.classified as p_classified,
+              p.hidden as p_hidden
        FROM workspaces w
        JOIN projects p ON p.id = w.project_id
        WHERE w.pinned_at IS NOT NULL
@@ -613,6 +621,8 @@ export function listAllPinned(): PinnedItem[] {
     p_expanded_in_sidebar: number
     p_sort_order: number | null
     p_pinned_at: number | null
+    p_classified: number
+    p_hidden: number
   })[]
 
   return rows.map((row) => ({
@@ -630,7 +640,9 @@ export function listAllPinned(): PinnedItem[] {
       github_owner: null,
       github_repo: null,
       github_avatar_url: null,
-      github_checked_at: null
+      github_checked_at: null,
+      classified: row.p_classified,
+      hidden: row.p_hidden
     })
   }))
 }

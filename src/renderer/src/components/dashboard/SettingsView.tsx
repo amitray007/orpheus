@@ -26,7 +26,8 @@ import {
   Coffee,
   SquaresFour,
   Compass,
-  ShareNetwork
+  ShareNetwork,
+  EyeSlash
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -107,6 +108,9 @@ const OrpheusWorkspacesSection = lazy(() =>
 const OrpheusKeepAwakeSection = lazy(() =>
   import('./settings/OrpheusKeepAwakeSection').then((m) => ({ default: m.OrpheusKeepAwakeSection }))
 )
+const OrpheusPrivacySection = lazy(() =>
+  import('./settings/OrpheusPrivacySection').then((m) => ({ default: m.OrpheusPrivacySection }))
+)
 const OrpheusUpdatesSection = lazy(() =>
   import('./settings/OrpheusUpdatesSection').then((m) => ({ default: m.OrpheusUpdatesSection }))
 )
@@ -173,6 +177,7 @@ export type SectionId =
   | 'orpheus-notifications'
   | 'orpheus-workspaces'
   | 'orpheus-keep-awake'
+  | 'orpheus-privacy'
   | 'orpheus-updates'
   | 'orpheus-model-routing'
   | 'orpheus-status'
@@ -249,6 +254,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Keep Awake',
         icon: Coffee,
         Component: OrpheusKeepAwakeSection
+      },
+      {
+        id: 'orpheus-privacy',
+        label: 'Privacy',
+        icon: EyeSlash,
+        Component: OrpheusPrivacySection
       },
       {
         id: 'orpheus-updates',

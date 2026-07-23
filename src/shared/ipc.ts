@@ -175,6 +175,8 @@ export interface InvokeChannelMap {
   'projects:reorder': { req: [{ orderedIds: string[] }]; res: void }
   'projects:reorderByActivity': { req: []; res: string[] }
   'projects:setPinned': { req: [{ id: string; pinned: boolean }]; res: ProjectRecord }
+  'projects:setClassified': { req: [{ id: string; classified: boolean }]; res: ProjectRecord }
+  'projects:setHidden': { req: [{ id: string; hidden: boolean }]; res: ProjectRecord }
   'projects:refreshGithub': { req: [string]; res: void }
   'workspaces:listForProject': {
     req: [{ projectId: string; scope?: 'active' | 'archived' | 'all' }]
@@ -913,6 +915,7 @@ export interface RendererPushMap {
   'workspaces:created': { workspace: WorkspaceRecord }
   'workspaces:archived': { workspaceId: string; projectId: string }
   'workspaces:changed': { workspace: WorkspaceRecord }
+  'projects:changed': { project: ProjectRecord }
   'uiState:changed': AppUiState
   'git:statusChanged': { workspaceId: string; status: GitStatus }
   'github:prChanged': { workspaceId: string; pr: GhPullRequest | null }
@@ -996,6 +999,7 @@ export const PUSH_CHANNELS = {
   workspacesCreated: 'workspaces:created',
   workspacesArchived: 'workspaces:archived',
   workspacesChanged: 'workspaces:changed',
+  projectsChanged: 'projects:changed',
   uiStateChanged: 'uiState:changed',
   gitStatusChanged: 'git:statusChanged',
   githubPrChanged: 'github:prChanged',
