@@ -1,6 +1,7 @@
 import { getDb } from './db'
 import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
+import { CLAUDE_EFFORT_VALUES } from '../shared/types'
 import type { ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 import { parseFlagEntry } from '../shared/cliFlags'
 import { isValidEnvVarKey } from '../shared/envVars'
@@ -34,8 +35,6 @@ const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
   'plan',
   'bypassPermissions'
 ]
-const VALID_EFFORTS: ClaudeEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
-
 function validateBasePatch(patch: BaseOverrides): void {
   if (
     patch.permissionMode !== undefined &&
@@ -43,7 +42,12 @@ function validateBasePatch(patch: BaseOverrides): void {
   ) {
     throw new Error(`Invalid permissionMode: ${patch.permissionMode}`)
   }
-  if (patch.effort !== undefined && !VALID_EFFORTS.includes(patch.effort)) {
+  // Sourced from CLAUDE_EFFORT_VALUES (src/shared/types.ts's single
+  // canonical list, model-routing unit 11) — this is the validator that
+  // actually gates claude_workspace_settings/claude_project_settings writes,
+  // so a workspace/project-scope effort reconciliation producing 'minimal'/
+  // 'none' would be silently rejected here if this weren't kept in sync.
+  if (patch.effort !== undefined && !CLAUDE_EFFORT_VALUES.includes(patch.effort)) {
     throw new Error(`Invalid effort: ${patch.effort}`)
   }
   if (patch.model !== undefined && typeof patch.model !== 'string') {

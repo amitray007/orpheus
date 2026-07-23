@@ -1,11 +1,26 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
-import { GitBranch, Plus, SpinnerGap } from '@phosphor-icons/react'
-import type { WorkspaceRecord } from '@shared/types'
-import { Overlay } from '../ui/Overlay'
-import { useFocusOnMount } from '@/lib/useFocusOnMount'
+import type { WorkspaceRecord, NewWorkspaceMenuIsolation } from '@shared/types'
+import {
+  showNewWorkspaceMenu,
+  updateNewWorkspaceMenu,
+  hideNewWorkspaceMenu,
+  newWorkspaceMenuId,
+  onNewWorkspaceMenuEvent
+} from '@/lib/overlayClient'
+import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { playSound } from '@/lib/sound'
-import { useSidebarBounds } from './SidebarBoundsContext'
+import { useSelectableModels } from '@/lib/useSelectableModels'
+import { useRoutingProxyEnabled } from '@/lib/routingProxyEnabledStore'
+import { useRefreshModelsController } from '@/lib/useRefreshModelsController'
+import {
+  groupModelsForCreation,
+  initialCreationProviderId,
+  lastUsedModelForProvider
+} from '@/lib/creationProviderMenu'
+import { recordCreationLastUsed, useCreationLastUsedState } from '@/lib/creationLastUsedStore'
+import { setWorkspaceModel } from '@/lib/workspaceModelStore'
+import { decideCreateAction } from '@/lib/newWorkspaceMenuLogic'
 
 // ---------------------------------------------------------------------------
 // Renderer-side slug helper (mirrors main/worktrees.ts worktreeSlug without
@@ -24,121 +39,352 @@ function worktreeSlugRenderer(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Branch-field sub-view (shown when Worktree mode is active)
+// Offered modes cache — module-level, shared across all instances.
 // ---------------------------------------------------------------------------
 
-interface BranchFieldProps {
+const modesCache = new Map<string, { local: boolean; worktree: boolean }>()
+
+// Submenu hover-intent timing (the "+" TRIGGER itself is click-only — no
+// open delay there at all, see handleTriggerClick below; this timing is now
+// scoped ENTIRELY to the provider -> model flyout submenu's own
+// diagonal-traversal problem). 120ms open matches every other hover-driven
+// overlay in this app (Sidebar's HoverCard, WorkspaceTitleBar's DetailsCard);
+// 200ms close (toward the top of the requested 150-250ms range) gives room
+// to cross the row-to-submenu gap before the flyout vanishes.
+const SUBMENU_OPEN_DELAY_MS = 120
+const SUBMENU_CLOSE_DELAY_MS = 200
+
+// ---------------------------------------------------------------------------
+// NewWorkspaceMenu
+//
+// Ported to the native overlay layer (model-routing unit 10-creation) so the
+// popover paints OVER the terminal instead of being clipped inside the
+// sidebar — see src/renderer/src/overlay/kinds/NewWorkspaceMenu.tsx (the
+// dumb render+emit half) and src/renderer/src/lib/overlayClient.ts's
+// showNewWorkspaceMenu/onNewWorkspaceMenuEvent (the props-down/events-up
+// wiring). This component keeps ALL data hooks and every window.api.* call
+// (offeredModes, worktrees.branchExists, workspaces.createWorktree/setModel)
+// — the overlay kind never computes model facts or touches IPC directly,
+// mirroring WorkspaceSettingsPopover.tsx's contract exactly.
+//
+// CLICK-ONLY TRIGGER (this unit's fix — "it shouldn't open on hover for the
+// + icon... only on click, and it should be open until I stay in popover"):
+// the "+" trigger has NO hover-open at all anymore — handleTriggerClick is
+// the ONLY way the popover opens (a plain toggle: click opens, click again
+// closes). Once open, it stays open regardless of pointer position — it
+// closes ONLY on: outside click (the pointerdown effect below), Escape (the
+// overlay kind's own handler, which emits 'cancel'), a successful create, or
+// clicking the trigger again. The `hoverCard` timer machinery below is now
+// scoped ENTIRELY to the provider -> model FLYOUT SUBMENU's own
+// diagonal-traversal problem (see PROVIDER -> MODEL FLYOUT SUBMENU below) —
+// it has nothing to do with the top-level trigger/popover open state
+// anymore.
+//
+// PROVIDER -> MODEL FLYOUT SUBMENU (this unit's redesign — was an in-place
+// swap that hid the provider list and lost the user's place): the overlay
+// kind (src/renderer/src/overlay/kinds/NewWorkspaceMenu.tsx) now renders the
+// provider list AND the active provider's model list as two SIDE-BY-SIDE
+// panels in the SAME overlay surface (an in-flow flex layout, not a second
+// overlay window — see that file's header comment for the full reasoning on
+// why one surface is simpler and is what the existing overlay
+// infrastructure supports naturally). This component still owns every
+// window.api.* call and the `activeProviderId`/`selectedProviderId`/
+// `selectedModelId` state the kind renders from; `onEnterSubmenu`/
+// `onLeaveSubmenu` below are the new events that solve the diagonal-
+// traversal problem for that submenu specifically (entering EITHER the
+// provider row list or the submenu itself cancels any pending close;
+// leaving either re-arms it) — the same shape as the trigger-hover fix this
+// unit REMOVES from the top level, just moved one level down to where a
+// hover-driven affordance still legitimately exists.
+//
+// CREATE-ACTION INVERSION, HOVER VS. PICK (this unit's bug fixes — see
+// onHoverProvider/onPickProvider/onPickModel below): the top line (provider
+// icon + model name + an Enter-key affordance) is the ONLY create action, so
+// every OTHER interaction in this popover must be purely a SELECTION step,
+// never itself destructive of a prior selection:
+//   - onHoverProvider (mouse hover) is PURELY NAVIGATIONAL — it opens/
+//     switches the flyout submenu so the user can browse a provider's models,
+//     but must NOT write to selectedProviderId/selectedModelId (the top
+//     line/create payload). Hovering around must never change what Enter/the
+//     top line would create.
+//   - onPickProvider (explicit click, or ArrowRight/Enter navigating INTO a
+//     provider row) IS deliberate user intent, unlike a hover — this DOES
+//     commit that provider's last-used model to the top line.
+//   - onPickModel (clicking a specific model row) commits that model to the
+//     top line AND leaves the submenu OPEN — picking a model is a STEP, not
+//     the create action; the user still needs to reach the top line and
+//     click it (or press Enter) to actually create. Only outside-click, Esc,
+//     a successful create, or clicking the "+" trigger again close things.
+//
+// Props:
+//   projectId     — the project this workspace will belong to
+//   defaultName   — auto-generated workspace name (used to seed the branch slug)
+//   onCreateLocal — callback to perform the plain-create (Local) path; now
+//                   receives the model id chosen in this popover (undefined
+//                   = use the global/project default, unchanged pre-existing
+//                   behavior)
+//   onCreated     — callback fired after a worktree workspace is created
+//   children      — the trigger element (the "+" button or similar)
+//   className     — forwarded to the wrapper div
+// ---------------------------------------------------------------------------
+
+export interface NewWorkspaceMenuProps {
   projectId: string
-  defaultBranch: string
+  /** Auto-generated workspace name for the current project (e.g. "Workspace 2"). */
+  defaultName: string
+  /** Called to create a local workspace via the existing plain-create path.
+   *  `modelId` is the model chosen in this popover (undefined = default). */
+  onCreateLocal: (modelId?: string) => void
+  /** Called after a worktree workspace has been created. */
   onCreated: (record: WorkspaceRecord) => void
-  onCancel: () => void
+  /** The trigger element — the "+" button or text link. */
+  children: React.ReactNode
+  /** Extra class names applied to the wrapper div. */
+  className?: string
+  /** Disambiguates the overlay id when more than one NewWorkspaceMenu trigger
+   *  can be mounted for the SAME projectId at once — e.g. ProjectRow renders
+   *  both the always-mounted "+" trigger AND (only while expanded with zero
+   *  workspaces) the empty-state "Add workspace" row. Both derive their
+   *  overlay id from `projectId` alone by default, so without a suffix they'd
+   *  collide: the empty-state instance unmounts the instant the FIRST
+   *  workspace is created (workspaces.length flips to 1), and its cleanup
+   *  effect calls hideNewWorkspaceMenu(menuId) — which, with a shared id,
+   *  force-closes the OTHER instance's popover if it happened to be the one
+   *  currently open. Give every extra trigger for the same project a unique
+   *  suffix so their overlay ids never alias. */
+  idSuffix?: string
 }
 
-function BranchInput({
-  value,
-  onChange,
-  onKeyDown,
-  className,
-  disabled
-}: {
-  value: string
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
-  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
-  className: string
-  disabled?: boolean
-}): React.JSX.Element {
-  const ref = useRef<HTMLInputElement | null>(null)
-  useFocusOnMount(ref)
-  return (
-    <input
-      ref={ref}
-      type="text"
-      value={value}
-      onChange={onChange}
-      onKeyDown={onKeyDown}
-      disabled={disabled}
-      className={className}
-      placeholder="branch-name"
-      aria-label="Branch name for worktree workspace"
-      spellCheck={false}
-      autoComplete="off"
-      autoCorrect="off"
-      autoCapitalize="off"
-    />
-  )
-}
+type MenuView = 'closed' | 'providers' | 'models'
 
-function BranchField({
+export function NewWorkspaceMenu({
   projectId,
-  defaultBranch,
+  defaultName,
+  onCreateLocal,
   onCreated,
-  onCancel
-}: BranchFieldProps): React.JSX.Element {
-  const [branch, setBranch] = useState(defaultBranch)
-  const [exists, setExists] = useState<boolean | null>(null)
-  const [creating, setCreating] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const activeCheckRef = useRef(0)
+  children,
+  className,
+  idSuffix
+}: NewWorkspaceMenuProps): React.JSX.Element {
+  const [view, setView] = useState<MenuView>('closed')
+  const [modes, setModes] = useState<{ local: boolean; worktree: boolean } | null>(
+    () => modesCache.get(projectId) ?? null
+  )
+  const [activeProviderId, setActiveProviderId] = useState<string | null>(null)
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null)
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null)
+  const [isolation, setIsolation] = useState<NewWorkspaceMenuIsolation>('local')
 
-  // Clear any pending debounce timer on unmount to prevent a stale IPC call
-  // firing after Escape/close, which could collide with a fresh remount's token.
+  // Branch-panel state (was BranchField's local state — now lives here since
+  // the panel renders inside the SAME popover instance, not a swapped-in
+  // second Overlay).
+  const [branch, setBranch] = useState('')
+  const [branchExists, setBranchExists] = useState<boolean | null>(null)
+  const [branchCreating, setBranchCreating] = useState(false)
+  const [branchError, setBranchError] = useState<string | null>(null)
+  const branchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const branchCheckTokenRef = useRef(0)
+
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const menuId = idSuffix
+    ? `${newWorkspaceMenuId(projectId)}:${idSuffix}`
+    : newWorkspaceMenuId(projectId)
+  const openRef = useRef(false)
+  // Scoped to the provider -> model flyout submenu ONLY (see this file's own
+  // header comment) — the top-level trigger/popover no longer uses any
+  // hover timer at all, it's click-toggle only.
+  const submenuHoverCard = useOverlayHoverCard({
+    openDelay: SUBMENU_OPEN_DELAY_MS,
+    closeDelay: SUBMENU_CLOSE_DELAY_MS
+  })
+
+  // The full selectable-model list (Claude always present; routed groups
+  // gated on proxy/provider health — see selectable.ts). Shared/cached with
+  // every other picker in the app (footer chip, drawers) — this popover
+  // computes NO model facts of its own, only groups/orders what main sent.
+  const { models: selectableModels } = useSelectableModels(undefined, view !== 'closed')
+  const groups = groupModelsForCreation(selectableModels)
+  const lastUsed = useCreationLastUsedState()
+  // Gates the pinned "Refresh models" row (model-routing unit 12) — see
+  // overlay/kinds/NewWorkspaceMenu.tsx's own doc comment on that row.
+  const routingProxyEnabled = useRoutingProxyEnabled()
+  // Owns the "Refresh models" row's state machine + the real window.api
+  // calls it drives — RefreshModelsButton.tsx is a pure render component
+  // with no window.api access of its own (it renders in the overlay's own
+  // separate BrowserWindow, which has none — see that file's own header
+  // comment). No currentModelId here — this popover has no "current model"
+  // concept, matching this file's own useSelectableModels(undefined, ...)
+  // call above.
+  const { refreshState, onRefresh: handleRefreshModels } = useRefreshModelsController(undefined)
+
+  const hasPickedRef = useRef(false)
+
+  // Seeding is NOT done at click/hover-open time — at that moment
+  // useSelectableModels is still disabled (view is about to flip from
+  // 'closed'), so `groups` could still be the Claude-only fallback even when
+  // the real last-used was a routed provider. Instead, re-seed via effect
+  // whenever the popover is on the provider view AND the user hasn't made an
+  // explicit pick yet this session.
   useEffect(() => {
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current)
-    }
-  }, [])
+    if (view !== 'providers' || hasPickedRef.current) return
+    const initialProviderId = initialCreationProviderId(lastUsed, groups)
+    const initialGroup = groups.find((g) => g.providerId === initialProviderId)
+    const initialModels = initialGroup?.models ?? []
+    const modelId = lastUsedModelForProvider(lastUsed, initialProviderId, initialModels)
+    setSelectedProviderId(initialProviderId)
+    setSelectedModelId(modelId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- groups is recomputed fresh every render from selectableModels; re-running this seed effect on identity churn (not content) would fight hasPickedRef's "only seed until a real pick" contract.
+  }, [view, lastUsed])
+
+  const fetchModes = useCallback((): void => {
+    window.api.app
+      .offeredModes(projectId)
+      .then((m) => {
+        modesCache.set(projectId, m)
+        setModes(m)
+      })
+      .catch(() => {
+        const fallback = { local: true, worktree: false }
+        modesCache.set(projectId, fallback)
+        setModes(fallback)
+      })
+  }, [projectId])
+
+  const defaultBranch = `worktree-${worktreeSlugRenderer(defaultName)}`
 
   const checkBranch = useCallback(
     (value: string): void => {
-      if (debounceRef.current) clearTimeout(debounceRef.current)
+      if (branchDebounceRef.current) clearTimeout(branchDebounceRef.current)
       if (!value.trim()) {
-        setExists(null)
+        setBranchExists(null)
         return
       }
-      const token = ++activeCheckRef.current
-      debounceRef.current = setTimeout(() => {
+      const token = ++branchCheckTokenRef.current
+      branchDebounceRef.current = setTimeout(() => {
         window.api.worktrees
           .branchExists(projectId, value.trim())
           .then((result) => {
-            if (token === activeCheckRef.current) setExists(result)
+            if (token === branchCheckTokenRef.current) setBranchExists(result)
           })
           .catch(() => {
-            if (token === activeCheckRef.current) setExists(null)
+            if (token === branchCheckTokenRef.current) setBranchExists(null)
           })
       }, 300)
     },
     [projectId]
   )
 
-  function handleChange(e: React.ChangeEvent<HTMLInputElement>): void {
-    const v = e.target.value
-    setBranch(v)
-    setError(null)
-    setExists(null)
-    checkBranch(v)
+  function handleClose(): void {
+    openRef.current = false
+    setView('closed')
+    setActiveProviderId(null)
+    setIsolation('local')
+    setBranch('')
+    setBranchExists(null)
+    setBranchCreating(false)
+    setBranchError(null)
+    if (branchDebounceRef.current) clearTimeout(branchDebounceRef.current)
+    hideNewWorkspaceMenu(menuId)
   }
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      e.stopPropagation()
-      onCancel()
+  const openMenu = useCallback((): void => {
+    if (openRef.current || !wrapperRef.current) return
+    openRef.current = true
+
+    modesCache.delete(projectId)
+    fetchModes()
+
+    setActiveProviderId(null)
+    setSelectedProviderId(null)
+    setSelectedModelId(null)
+    setIsolation('local')
+    setBranch(defaultBranch)
+    setBranchExists(null)
+    setBranchCreating(false)
+    setBranchError(null)
+    hasPickedRef.current = false
+    setView('providers')
+
+    showNewWorkspaceMenu(menuId, wrapperRef.current, {
+      loading: true,
+      groups: [],
+      view: 'providers',
+      isolation: 'local',
+      lastUsedModelIdByProvider: {},
+      branchValue: defaultBranch,
+      branchExists: null,
+      branchCreating: false,
+      routingProxyEnabled,
+      refreshState
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- defaultBranch/fetchModes/menuId are all stable-per-projectId (or per-render-but-content-stable) — re-running openMenu's identity on their churn would defeat the hover-intent timer's callback stability.
+  }, [projectId, fetchModes, menuId])
+
+  // CLICK-ONLY: the sole way this popover opens. No hover-open, no
+  // hover-close — once open it stays open until outside-click/Escape/create/
+  // clicking the trigger again (see this file's header comment).
+  function handleTriggerClick(e: React.MouseEvent): void {
+    e.stopPropagation()
+    if (openRef.current) {
+      handleClose()
       return
     }
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      void handleCreate()
-    }
+    openMenu()
+  }
+
+  // Submenu hover-bridge (the provider -> model FLYOUT SUBMENU's own
+  // diagonal-traversal fix, NOT the top-level trigger/popover — that one is
+  // click-only now, see handleTriggerClick above). The overlay lives in a
+  // separate child BrowserWindow, so entering/leaving the provider row list
+  // or the submenu panel doesn't reach this component as a native DOM event
+  // — the overlay kind emits 'enterSubmenu'/'leaveSubmenu' (routed through
+  // onNewWorkspaceMenuEvent below) whenever the pointer crosses into or out
+  // of EITHER panel. Entering either cancels any pending close; leaving
+  // either re-arms the SAME close timer, so leaving via the submenu behaves
+  // identically to leaving via the row list.
+  function handleEnterSubmenu(): void {
+    submenuHoverCard.clearTimer()
+  }
+
+  function handleLeaveSubmenu(): void {
+    submenuHoverCard.armClose(() => {
+      setActiveProviderId(null)
+      setView('providers')
+    })
+  }
+
+  // Per-provider last-used marker map — passed down as-is so the overlay
+  // kind can render the `●` on the right model row without needing to know
+  // about CreationLastUsedState's Map-based shape itself.
+  const lastUsedModelIdByProvider: Record<string, string> = {}
+  for (const [providerId, modelId] of lastUsed.byProvider) {
+    lastUsedModelIdByProvider[providerId] = modelId
   }
 
   async function handleCreate(): Promise<void> {
-    const trimmed = branch.trim()
-    if (!trimmed || creating) return
-    setCreating(true)
-    setError(null)
+    // decideCreateAction is the pure, assertable half of this decision (see
+    // scripts/verify-new-workspace-menu.ts) — this handler is just its
+    // side-effecting continuation (persist last-used, call the right
+    // window.api.* path).
+    const decision = decideCreateAction(isolation, selectedModelId, branch)
+    if (decision.kind === 'disabled' || branchCreating) return
+
+    const modelId = decision.modelId
+    if (modelId && selectedProviderId) recordCreationLastUsed(selectedProviderId, modelId)
+
+    if (decision.kind === 'local') {
+      handleClose()
+      onCreateLocal(modelId)
+      return
+    }
+
+    // Worktree — create using whatever branch text is currently in the
+    // inline branch field.
+    const trimmed = decision.branch
+    setBranchCreating(true)
+    setBranchError(null)
+    updateNewWorkspaceMenu(menuId, { branchCreating: true })
     try {
-      // Derive a workspace name from the branch (strip worktree- prefix, capitalise).
       const name =
         trimmed
           .replace(/^worktree-/, '')
@@ -149,304 +395,175 @@ function BranchField({
         name,
         branch: trimmed
       })
+      // Creation-time model routing (unit 10) — same persistence path the
+      // Local button uses (see handleAddWorkspace in Dashboard.tsx): write
+      // to workspace:setModel (the SAME storage the footer chip writes)
+      // BEFORE onCreated fires navigation, so the first terminal:mount for
+      // this worktree workspace composes routed with no restart needed.
+      if (modelId) {
+        try {
+          await window.api.workspaces.setModel(record.id, modelId)
+          setWorkspaceModel(record.id, modelId)
+        } catch (err) {
+          console.error('[NewWorkspaceMenu] failed to set creation-time model', err)
+        }
+      }
       playSound('pop')
+      handleClose()
       onCreated(record)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      setCreating(false)
+      const message = err instanceof Error ? err.message : String(err)
+      setBranchError(message)
+      setBranchCreating(false)
+      updateNewWorkspaceMenu(menuId, { branchCreating: false, branchError: message })
     }
   }
 
-  const trimmed = branch.trim()
-  const hint =
-    exists === true ? 'branch exists — will check it out' : exists === false ? 'new branch' : null
-
-  return (
-    <div className="flex flex-col gap-1.5 p-2">
-      <div className="flex items-center gap-1.5">
-        <GitBranch size={12} className="text-text-muted flex-shrink-0" />
-        <span className="text-xs text-text-muted">Branch</span>
-      </div>
-      <div className="relative flex items-center">
-        <BranchInput
-          value={branch}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          disabled={creating}
-          className={[
-            'w-full text-xs px-2 py-1.5 rounded-md border outline-none',
-            'bg-surface-default text-text-primary placeholder:text-text-muted',
-            creating
-              ? 'border-border-default opacity-60 cursor-not-allowed'
-              : 'border-border-default focus:border-accent/60',
-            error ? 'border-red-500/60' : ''
-          ]
-            .filter(Boolean)
-            .join(' ')}
-        />
-        {creating && (
-          <span className="absolute right-2 text-text-muted animate-spin">
-            <SpinnerGap size={12} />
-          </span>
-        )}
-      </div>
-
-      {hint && !error && <p className="text-xs text-text-muted leading-tight">{hint}</p>}
-      {error && <p className="text-xs text-red-400 leading-tight break-words">{error}</p>}
-
-      <div className="flex items-center gap-1.5 mt-0.5">
-        <button
-          type="button"
-          onClick={() => void handleCreate()}
-          disabled={!trimmed || creating}
-          className={[
-            'flex-1 text-xs px-2 py-1 rounded-md border font-medium',
-            'transition-colors duration-100',
-            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-            !trimmed || creating
-              ? 'opacity-40 cursor-not-allowed border-border-default text-text-muted'
-              : 'bg-accent/15 border-accent/30 text-text-primary hover:bg-accent/25 cursor-pointer'
-          ].join(' ')}
-        >
-          {creating ? 'Creating…' : 'Create'}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={creating}
-          className="text-xs px-2 py-1 rounded-md border border-border-default text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Offered modes cache — module-level, shared across all instances.
-// ---------------------------------------------------------------------------
-
-const modesCache = new Map<string, { local: boolean; worktree: boolean }>()
-
-// ---------------------------------------------------------------------------
-// NewWorkspaceMenu
-//
-// Props:
-//   projectId     — the project this workspace will belong to
-//   defaultName   — auto-generated workspace name (used to seed the branch slug)
-//   onCreateLocal — callback to perform the plain-create (Local) path
-//   onCreated     — callback fired after a worktree workspace is created
-//   children      — the trigger element (the "+" button or similar)
-//   className     — forwarded to the wrapper div
-// ---------------------------------------------------------------------------
-
-export interface NewWorkspaceMenuProps {
-  projectId: string
-  /** Auto-generated workspace name for the current project (e.g. "Workspace 2"). */
-  defaultName: string
-  /** Called to create a local workspace via the existing plain-create path. */
-  onCreateLocal: () => void
-  /** Called after a worktree workspace has been created. */
-  onCreated: (record: WorkspaceRecord) => void
-  /** The trigger element — the "+" button or text link. */
-  children: React.ReactNode
-  /** Extra class names applied to the wrapper div. */
-  className?: string
-}
-
-type MenuView = 'closed' | 'picker' | 'branch'
-
-// Anchor position captured on click so the overlay can use `position: fixed`
-// without reading `ref.current` during render.
-type AnchorPos = { top: number; left: number }
-
-// Clamped popover position, computed after the rendered content is measured.
-type ClampedPos = { top: number; left: number }
-
-export function NewWorkspaceMenu({
-  projectId,
-  defaultName,
-  onCreateLocal,
-  onCreated,
-  children,
-  className
-}: NewWorkspaceMenuProps): React.JSX.Element {
-  const [view, setView] = useState<MenuView>('closed')
-  const [modes, setModes] = useState<{ local: boolean; worktree: boolean } | null>(
-    () => modesCache.get(projectId) ?? null
-  )
-  const [anchorPos, setAnchorPos] = useState<AnchorPos | null>(null)
-  const [clampedPos, setClampedPos] = useState<ClampedPos | null>(null)
-  const wrapperRef = useRef<HTMLDivElement>(null)
-  const contentRef = useRef<HTMLDivElement>(null)
-  const sidebarBoundsRef = useSidebarBounds()
-
-  // Fetch offered modes (async IPC call), populating the cache.
-  // Single-fire auto-create: if only one mode is available, collapse immediately
-  // in the .then() resolve handler — never in a reactive effect — so the local-only
-  // path runs exactly once per fetch regardless of onCreateLocal identity changes.
-  const fetchModes = useCallback((): void => {
-    window.api.app
-      .offeredModes(projectId)
-      .then((m) => {
-        modesCache.set(projectId, m)
-        setModes(m)
-        // Collapse immediately in the resolve handler (single-fire, no re-run risk).
-        // Only collapse when the picker is open (view check via functional update pattern
-        // is not available here, but the menu is guaranteed open since fetchModes is only
-        // called from handleTriggerClick when transitioning to 'picker').
-        if (!m.local && !m.worktree) return // both unavailable — leave picker visible
-        if (m.local && m.worktree) return // both offered — keep picker open
-        if (m.worktree) {
-          setView('branch')
-        } else {
-          // local-only: auto-create once, right here in the resolve handler.
-          setView('closed')
-          onCreateLocal()
-        }
-      })
-      .catch(() => {
-        const fallback = { local: true, worktree: false }
-        modesCache.set(projectId, fallback)
-        setModes(fallback)
-        // On error, fallback is local-only — auto-create once.
-        setView('closed')
-        onCreateLocal()
-      })
-  }, [projectId, onCreateLocal])
-
-  // When modes load while the picker is shown, collapse to the appropriate action.
-  // Note: auto-create (local-only path) is handled directly in fetchModes above.
-  // This effect only handles the worktree-only collapse (no double-create risk).
+  // Route the popover's emitted events back into this component's state,
+  // then push the resulting state back down via updateNewWorkspaceMenu — the
+  // same "emit -> handler -> update() push" loop WorkspaceSettingsPopover
+  // uses for its editors.
   useEffect(() => {
-    if (view !== 'picker' || modes === null) return
-    // Both offered → keep picker open; otherwise collapse.
-    if (modes.local && modes.worktree) return
-    if (modes.worktree) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- triggered by async offeredModes resolve, not a cascading sync call
-      setView('branch')
-    }
-    // local-only case is handled in fetchModes .then() — do NOT call onCreateLocal here.
-  }, [modes, view])
+    if (view === 'closed') return undefined
+    return onNewWorkspaceMenuEvent(menuId, {
+      onHoverProvider: (providerId) => {
+        // PURELY NAVIGATIONAL (bug fix — hovering must never mutate the
+        // committed top-line selection): opens/switches the FLYOUT SUBMENU to
+        // this provider's model list so the user can see its models, but does
+        // NOT touch selectedProviderId/selectedModelId (the top line, which
+        // is also the create action) and does NOT set hasPickedRef — a mere
+        // hover is not a pick. The submenu still previews that provider's
+        // last-used model (via lastUsedModelIdByProvider, already threaded
+        // down) without committing it. `view` moves to 'models' so arrow
+        // keys act on the now-open submenu.
+        setActiveProviderId(providerId)
+        setView('models')
+      },
+      onPickProvider: (providerId) => {
+        // EXPLICIT pick (click, or ArrowRight/Enter navigating into a
+        // provider row): deliberate, not incidental like a hover — this DOES
+        // commit that provider's last-used model to the top line, same as
+        // picking a model directly. See this file's header comment for the
+        // reasoning (hover must stay non-destructive; an explicit action on
+        // the row is a reasonable proxy for "I want this provider").
+        hasPickedRef.current = true
+        setActiveProviderId(providerId)
+        const group = groups.find((g) => g.providerId === providerId)
+        const modelId = lastUsedModelForProvider(lastUsed, providerId, group?.models ?? [])
+        setSelectedProviderId(providerId)
+        setSelectedModelId(modelId)
+        setView('models')
+      },
+      onBackToProviders: () => {
+        setActiveProviderId(null)
+        setView('providers')
+      },
+      onPickModel: (providerId, modelId) => {
+        // Selecting a model updates the top line but leaves the submenu OPEN
+        // (bug fix — picking a model is only a STEP now, not the create
+        // action itself: the user still needs to reach the top line and
+        // click it/press Enter to actually create). The submenu stays
+        // anchored on this provider (activeProviderId untouched) with the
+        // picked model shown checked; only outside-click/Esc/create/
+        // clicking the trigger again close the popover.
+        hasPickedRef.current = true
+        setSelectedProviderId(providerId)
+        setSelectedModelId(modelId)
+      },
+      onPickIsolation: (nextIsolation) => {
+        setIsolation(nextIsolation)
+        if (nextIsolation === 'worktree' && selectedModelId && selectedProviderId) {
+          recordCreationLastUsed(selectedProviderId, selectedModelId)
+        }
+      },
+      onChangeBranch: (value) => {
+        setBranch(value)
+        setBranchError(null)
+        setBranchExists(null)
+        checkBranch(value)
+      },
+      onCreate: () => void handleCreate(),
+      onCancel: handleClose,
+      onEnterSubmenu: handleEnterSubmenu,
+      onLeaveSubmenu: handleLeaveSubmenu,
+      // The pinned "Refresh models" row's click (model-routing unit 12) —
+      // routed to useRefreshModelsController's onRefresh, which owns the
+      // actual window.api calls (the overlay window itself has none — see
+      // RefreshModelsButton.tsx's own header comment).
+      onRefresh: handleRefreshModels
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, menuId, groups, lastUsed, selectedModelId, selectedProviderId, handleRefreshModels])
 
-  // Clamp the popover inside the sidebar bounds (falling back to the viewport),
-  // mirroring ContextMenu's clamping math. Re-runs whenever the anchor changes,
-  // the view switches (picker -> branch resizes the card), or modes finish
-  // loading (loading -> loaded picker can change size).
-  useLayoutEffect(() => {
-    if (view === 'closed' || !anchorPos) return
-    const el = contentRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    let top = anchorPos.top
-    let left = anchorPos.left
-    const bounds = sidebarBoundsRef?.current?.getBoundingClientRect() ?? {
-      left: 0,
-      top: 0,
-      right: window.innerWidth,
-      bottom: window.innerHeight
-    }
-    if (left + rect.width > bounds.right) left = bounds.right - rect.width - 4
-    if (top + rect.height > bounds.bottom) top = bounds.bottom - rect.height - 4
-    if (left < bounds.left) left = bounds.left + 4
-    if (top < bounds.top) top = bounds.top + 4
-    setClampedPos({ top, left })
-  }, [anchorPos, view, modes, sidebarBoundsRef])
-
-  // Reposition on window resize while open (mirrors TopBar's StatusPopover).
+  // Keep the open popover's props in sync as state changes (mirrors
+  // WorkspaceSettingsPopover's isDirty->updateWorkspaceSettingsCard effect).
   useEffect(() => {
     if (view === 'closed') return
-    function reposition(): void {
-      if (!wrapperRef.current) return
-      const rect = wrapperRef.current.getBoundingClientRect()
-      setAnchorPos({ top: rect.bottom + 4, left: rect.left })
+    const topLineProviderId = selectedProviderId ?? 'claude'
+    updateNewWorkspaceMenu(menuId, {
+      loading: modes === null,
+      groups,
+      view: view === 'models' ? 'models' : 'providers',
+      activeProviderId: activeProviderId ?? undefined,
+      selectedProviderId: topLineProviderId,
+      selectedModelId: selectedModelId ?? undefined,
+      isolation,
+      modes: modes ?? undefined,
+      lastUsedModelIdByProvider,
+      branchValue: branch,
+      branchExists,
+      branchCreating,
+      branchError: branchError ?? undefined,
+      routingProxyEnabled,
+      refreshState
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    view,
+    menuId,
+    groups,
+    modes,
+    activeProviderId,
+    selectedProviderId,
+    selectedModelId,
+    isolation,
+    branch,
+    branchExists,
+    branchCreating,
+    branchError,
+    routingProxyEnabled,
+    refreshState
+  ])
+
+  // Outside-click dismissal: the popover lives in a separate child
+  // BrowserWindow, so the main renderer's document-level listener never sees
+  // clicks landing INSIDE it — only clicks in the main window (including the
+  // terminal) reach here, which is exactly the "outside" set (mirrors
+  // WorkspaceSettingsPopover's identical effect).
+  useEffect(() => {
+    if (view === 'closed') return undefined
+    const onPointerDown = (e: PointerEvent): void => {
+      if (wrapperRef.current && wrapperRef.current.contains(e.target as Node)) return
+      handleClose()
     }
-    window.addEventListener('resize', reposition)
-    return () => window.removeEventListener('resize', reposition)
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view])
 
-  function captureAnchor(): AnchorPos | null {
-    if (!wrapperRef.current) return null
-    const rect = wrapperRef.current.getBoundingClientRect()
-    return { top: rect.bottom + 4, left: rect.left }
-  }
-
-  function handleTriggerClick(e: React.MouseEvent): void {
-    e.stopPropagation()
-
-    if (view !== 'closed') {
-      setView('closed')
-      return
-    }
-
-    // Capture anchor position immediately while the element is still in layout.
-    const pos = captureAnchor()
-    setAnchorPos(pos)
-    // Reset the clamped position so the popover doesn't briefly render at a
-    // stale clamped location from a prior open before the layout effect reruns.
-    setClampedPos(pos)
-
-    // Always re-fetch on open to pick up config changes (clears the cache entry).
-    modesCache.delete(projectId)
-    // Kick off async fetch; state update arrives via setModes in fetchModes.
-    fetchModes()
-
-    // Open immediately and stay open through the async fetch — the picker
-    // renders a stable loading state (see showLoading below) instead of
-    // vanishing while modes === null, so there's no flicker.
-    setView('picker')
-  }
-
-  // Genuine-dismiss only: outside-click, Escape (both handled by Overlay), or an
-  // explicit selection (Local/Worktree picked, or branch created/cancelled).
-  // The trigger's onMouseDown stopPropagation (above) prevents the same click
-  // that opens the menu from being seen as an "outside" click by Overlay.
-  function handleClose(): void {
-    setView('closed')
-    setAnchorPos(null)
-    setClampedPos(null)
-  }
-
-  function handlePickLocal(e: React.MouseEvent): void {
-    e.stopPropagation()
-    setView('closed')
-    onCreateLocal()
-  }
-
-  function handlePickWorktree(e: React.MouseEvent): void {
-    e.stopPropagation()
-    setView('branch')
-  }
-
-  function handleCreated(record: WorkspaceRecord): void {
-    setView('closed')
-    onCreated(record)
-  }
-
-  const defaultBranch = `worktree-${worktreeSlugRenderer(defaultName)}`
-
-  // The picker stays mounted for the entire 'picker' view — including while
-  // fetchModes() is in flight — so the menu never visually vanishes-then-
-  // reappears. While modes === null we render a stable disabled/loading state
-  // instead of nothing; once modes resolve to "both offered" we render the
-  // real Local/Worktree items (single-mode cases collapse away via the effect
-  // above / fetchModes' resolve handler, never rendered here).
-  const showPicker = view === 'picker'
-  const showBranch = view === 'branch'
-  const pickerLoading = modes === null
-
-  const overlayStyle: React.CSSProperties | undefined = clampedPos ?? anchorPos ?? undefined
+  // Hide on unmount so a stale popover never outlives its owning trigger.
+  useEffect(() => {
+    return () => hideNewWorkspaceMenu(menuId)
+  }, [menuId])
 
   return (
     <div ref={wrapperRef} className={['relative flex', className].filter(Boolean).join(' ')}>
-      {/* Trigger wrapper — intercepts clicks before they reach the inner button.
-          onMouseDown stops propagation so the SAME click that opens the menu
-          isn't also seen by Overlay's document-level outside-mousedown listener
-          (which would otherwise fire onDismiss for the trigger's own mousedown,
-          since the trigger sits outside the portaled Overlay's ref). flex-1 so
-          the trigger (and the button inside it) can stretch to fill a
-          full-width wrapper — inline-flex would shrink both to content size. */}
+      {/* Trigger wrapper — CLICK ONLY (no onMouseEnter/onMouseLeave at all;
+          see this file's header comment). Intercepts clicks before they
+          reach the inner button. onMouseDown stops propagation so the SAME
+          click that opens the menu isn't also seen as an outside-click by
+          the popover's own dismissal listener. flex-1 so the trigger (and
+          the button inside it) can stretch to fill a full-width wrapper. */}
       <div
         onClick={handleTriggerClick}
         onMouseDown={(e) => e.stopPropagation()}
@@ -454,72 +571,6 @@ export function NewWorkspaceMenu({
       >
         {children}
       </div>
-
-      {/* Picker dropdown: Local | Worktree. Stays mounted (view='picker') through
-          the async fetchModes() load — shows a disabled/loading state rather
-          than unmounting, so the menu never flickers or vanishes mid-load. */}
-      <Overlay
-        open={showPicker}
-        interactive
-        onDismiss={handleClose}
-        portal
-        className="fixed z-50 min-w-[140px] rounded-md border border-border-default bg-surface-overlay shadow-lg py-1"
-        style={overlayStyle}
-      >
-        <div ref={contentRef} role="menu">
-          {pickerLoading ? (
-            <div className="flex items-center gap-2 px-3 py-2 text-sm text-text-muted">
-              <SpinnerGap size={12} className="animate-spin flex-shrink-0" />
-              Loading…
-            </div>
-          ) : modes && modes.local && modes.worktree ? (
-            <>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={handlePickLocal}
-                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-text-primary transition-colors duration-100 hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised cursor-pointer"
-              >
-                <Plus size={12} weight="bold" className="text-text-muted flex-shrink-0" />
-                Local
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={handlePickWorktree}
-                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-text-primary transition-colors duration-100 hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised cursor-pointer"
-              >
-                <GitBranch size={12} className="text-text-muted flex-shrink-0" />
-                Worktree
-              </button>
-            </>
-          ) : (
-            // Both modes unavailable (rare/error edge case) — nothing sensible
-            // to offer; render an empty measured node so clamping still works
-            // and the menu doesn't look broken open with no content semantics.
-            <div className="px-3 py-2 text-sm text-text-muted">No workspace types available</div>
-          )}
-        </div>
-      </Overlay>
-
-      {/* Branch field panel */}
-      <Overlay
-        open={showBranch}
-        interactive
-        onDismiss={handleClose}
-        portal
-        className="fixed z-50 w-64 rounded-md border border-border-default bg-surface-overlay shadow-lg"
-        style={overlayStyle}
-      >
-        <div ref={contentRef}>
-          <BranchField
-            projectId={projectId}
-            defaultBranch={defaultBranch}
-            onCreated={handleCreated}
-            onCancel={handleClose}
-          />
-        </div>
-      </Overlay>
     </div>
   )
 }

@@ -3,15 +3,17 @@
 // the Workbench; kept so a future "overrides" home (e.g. a Workbench tab) can
 // reuse it.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import { X, ArrowCounterClockwise } from '@phosphor-icons/react'
 import { Select } from './settings/primitives'
 import { ActivityIndicator } from './ActivityIndicator'
 import { WorkspaceOverridesSkeleton } from '../Skeleton'
+import { useSelectableModels } from '@/lib/useSelectableModels'
+import { buildModelSelectOptions, MODEL_CUSTOM_VALUE } from '@/lib/modelPickerOptions'
+import { effortOptionsFor, resolveEffortLevelsForScope } from '@/lib/effortPickerOptions'
 import {
-  CLAUDE_MODEL_OPTIONS,
-  CLAUDE_MODEL_ALIAS_START_INDEX,
+  EFFORT_LADDER_ORDER,
   type WorkspaceRecord,
   type WorkspaceStatus,
   type WorkspaceActivityDetail,
@@ -84,17 +86,13 @@ function ActivitySection({ activity, detail }: ActivitySectionProps): React.JSX.
 // Overrides section
 // ---------------------------------------------------------------------------
 
-// Grouped model options: default → specific versions → separator → aliases.
-// The separator sentinel value is never committed; the Select renders it as a
-// visual divider. We use a plain array (not `as const`) so we can add the
-// dynamic separator without fighting TypeScript's tuple inference.
-const MODEL_SEP = '__sep_model' as const
-const MODEL_OPTIONS = [
-  { value: 'default', label: 'Default' },
-  ...CLAUDE_MODEL_OPTIONS.slice(0, CLAUDE_MODEL_ALIAS_START_INDEX),
-  { value: MODEL_SEP, label: '── Always latest ──' },
-  ...CLAUDE_MODEL_OPTIONS.slice(CLAUDE_MODEL_ALIAS_START_INDEX)
-] as const
+// Model options are now data-driven (models:listSelectable — Claude always
+// present, routed models gated on proxy/provider health; see
+// buildModelSelectOptions), not a hardcoded CLAUDE_MODEL_OPTIONS slice — see
+// the useSelectableModels() call inside OverridesSection below. 'default' is
+// still a picker-only leading option (never a real model id), and
+// MODEL_CUSTOM_VALUE is still the shared 'Custom…' escape hatch (unit 01).
+type ModelOption = string
 
 const PERMISSION_OPTIONS = [
   { value: 'default', label: 'Default' },
@@ -103,19 +101,15 @@ const PERMISSION_OPTIONS = [
   { value: 'bypassPermissions', label: 'Bypass' }
 ] as const
 
-const EFFORT_OPTIONS = [
-  { value: 'default', label: 'Default' },
-  { value: 'auto', label: 'Auto' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'Extra High' },
-  { value: 'max', label: 'Max' }
-] as const
-
-type ModelOption = (typeof MODEL_OPTIONS)[number]['value']
+// Effort options are data-driven (model-routing unit 11) — the workspace's
+// effective model's real effortLevels via resolveEffortLevelsForScope/
+// effortOptionsFor (see the useMemo in OverridesSection below), never a
+// hardcoded ladder. A workspace with no model override has no single
+// resolved model at THIS scope (see resolveEffortLevelsForScope's own doc
+// comment) — 'Default' ("no override, inherit") is a DIFFERENT concept
+// from 'auto' and is prepended as `leading`, never collapsed into it.
 type PermissionOption = (typeof PERMISSION_OPTIONS)[number]['value']
-type EffortOption = (typeof EFFORT_OPTIONS)[number]['value']
+type EffortOption = string
 
 interface OverridesSectionProps {
   workspaceId: string
@@ -130,6 +124,47 @@ function OverridesSection({
 }: OverridesSectionProps): React.JSX.Element {
   const [settings, setSettings] = useState<ClaudeWorkspaceSettings | null>(null)
   const [localOverrides, setLocalOverrides] = useState<ClaudeWorkspaceSettingsOverrides>({})
+  // "Custom…" escape hatch (mirrors ModelPicker in settings/primitives.tsx):
+  // an override whose model id isn't one of the hardcoded MODEL_OPTIONS
+  // (e.g. commandServer set an arbitrary string) must still render AS that
+  // value, not silently collapse to 'default' — collapsing was bug-prone
+  // because `localOverrides.model !== undefined` stayed true (still showed
+  // "overridden") while the Select displayed 'Default', and the next
+  // unrelated field edit would commit `model: undefined` and destroy the
+  // override. showCustomModel/customModelValue back the free-text input.
+  const [showCustomModel, setShowCustomModel] = useState(false)
+  const [customModelValue, setCustomModelValue] = useState('')
+
+  // Data-driven model list (Claude always present; routed models gated on
+  // proxy/provider health server-side) — refetches whenever the currently
+  // selected model changes so an unavailable-but-selected routed model is
+  // never silently dropped (see useSelectableModels' own doc comment).
+  const { models: selectableModels, loading: selectableModelsLoading } = useSelectableModels(
+    localOverrides.model
+  )
+  const modelOptions = useMemo(
+    () => buildModelSelectOptions(selectableModels, { value: 'default', label: 'Default' }),
+    [selectableModels]
+  )
+  // Effort options: data-driven off this WORKSPACE's own effective model
+  // (model-routing unit 11) — see EFFORT_OPTIONS' own doc comment for why
+  // 'Default' is a distinct `leading` concept from 'auto', and
+  // resolveEffortLevelsForScope's own doc comment for the full null/
+  // undefined/string[] fallback contract.
+  const effortLevels = resolveEffortLevelsForScope(
+    localOverrides.model,
+    selectableModels,
+    selectableModelsLoading
+  )
+  const showEffortField = effortLevels !== null
+  const effortOptions = useMemo(
+    () =>
+      effortOptionsFor(effortLevels ?? [...EFFORT_LADDER_ORDER], {
+        value: 'default',
+        label: 'Default'
+      }),
+    [effortLevels]
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -139,12 +174,17 @@ function OverridesSection({
         if (!cancelled) {
           setSettings(s)
           setLocalOverrides(s.overrides)
+          const m = s.overrides.model
+          const isCustom = m !== undefined && !selectableModels.some((o) => o.id === m)
+          setShowCustomModel(isCustom)
+          setCustomModelValue(isCustom ? m : '')
         }
       })
       .catch((err) => console.error('[WorkspaceDrawer] overrides load failed', err))
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectableModels intentionally excluded: this effect only runs on workspaceId change (initial load), not every time the list refetches, to avoid fighting in-progress custom-model typing.
   }, [workspaceId])
 
   function patch(update: ClaudeWorkspaceSettingsOverrides): void {
@@ -171,8 +211,20 @@ function OverridesSection({
 
   function handleModel(v: ModelOption): void {
     // Guard: separator values start with '__sep' and should never be committed
-    if ((v as string).startsWith('__sep')) return
+    if (v.startsWith('__sep')) return
+    // 'custom' is a picker-only sentinel (switches to the free-text input
+    // below) — never a real model id, so never commit it as one.
+    if (v === MODEL_CUSTOM_VALUE) {
+      setShowCustomModel(true)
+      return
+    }
+    setShowCustomModel(false)
     patch({ model: v === 'default' ? undefined : v })
+  }
+
+  function handleCustomModelBlur(): void {
+    const v = customModelValue.trim()
+    if (v) patch({ model: v })
   }
 
   function handlePermission(v: PermissionOption): void {
@@ -184,6 +236,8 @@ function OverridesSection({
   }
 
   function resetAll(): void {
+    setShowCustomModel(false)
+    setCustomModelValue('')
     patch({ model: undefined, permissionMode: undefined, effort: undefined })
   }
 
@@ -194,9 +248,9 @@ function OverridesSection({
 
   const modelValue: ModelOption =
     localOverrides.model !== undefined
-      ? MODEL_OPTIONS.some((o) => o.value === localOverrides.model)
-        ? (localOverrides.model as ModelOption)
-        : 'default'
+      ? selectableModels.some((o) => o.id === localOverrides.model)
+        ? localOverrides.model
+        : MODEL_CUSTOM_VALUE
       : 'default'
 
   const permissionValue: PermissionOption =
@@ -205,7 +259,7 @@ function OverridesSection({
       : 'default'
 
   const effortValue: EffortOption =
-    localOverrides.effort !== undefined ? (localOverrides.effort as EffortOption) : 'default'
+    localOverrides.effort !== undefined ? localOverrides.effort : 'default'
 
   const overrideCount =
     (localOverrides.model !== undefined ? 1 : 0) +
@@ -229,12 +283,23 @@ function OverridesSection({
         <div>
           <OverrideField
             label="Model"
-            options={MODEL_OPTIONS}
+            options={modelOptions}
             value={modelValue}
             onChange={handleModel}
             isOverridden={localOverrides.model !== undefined}
             ariaLabel="Workspace model override"
-          />
+          >
+            {showCustomModel && (
+              <input
+                aria-label="Custom model ID"
+                value={customModelValue}
+                onChange={(e) => setCustomModelValue(e.target.value)}
+                onBlur={handleCustomModelBlur}
+                placeholder="model-id (e.g. claude-opus-4-7)"
+                className="mt-1.5 w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus:border-accent/50 transition-colors duration-150 font-mono"
+              />
+            )}
+          </OverrideField>
           <OverrideField
             label="Permission mode"
             options={PERMISSION_OPTIONS}
@@ -243,14 +308,16 @@ function OverridesSection({
             isOverridden={localOverrides.permissionMode !== undefined}
             ariaLabel="Workspace permission mode override"
           />
-          <OverrideField
-            label="Effort"
-            options={EFFORT_OPTIONS}
-            value={effortValue}
-            onChange={handleEffort}
-            isOverridden={localOverrides.effort !== undefined}
-            ariaLabel="Workspace effort override"
-          />
+          {showEffortField && (
+            <OverrideField
+              label="Effort"
+              options={effortOptions}
+              value={effortValue}
+              onChange={handleEffort}
+              isOverridden={localOverrides.effort !== undefined}
+              ariaLabel="Workspace effort override"
+            />
+          )}
         </div>
       )}
 
@@ -297,6 +364,9 @@ interface OverrideFieldProps<T extends string> {
   onChange: (v: T) => void
   isOverridden: boolean
   ariaLabel: string
+  /** Optional extra control rendered below the Select — e.g. the "Custom…"
+   *  free-text fallback (see MODEL_CUSTOM / showCustomModel above). */
+  children?: React.ReactNode
 }
 
 function OverrideField<T extends string>({
@@ -305,7 +375,8 @@ function OverrideField<T extends string>({
   value,
   onChange,
   isOverridden,
-  ariaLabel
+  ariaLabel,
+  children
 }: OverrideFieldProps<T>): React.JSX.Element {
   return (
     <div className="px-4 py-3 border-t border-border-default/30 first:border-t-0">
@@ -321,6 +392,7 @@ function OverrideField<T extends string>({
         )}
       </div>
       <Select options={options} value={value} onChange={onChange} ariaLabel={ariaLabel} />
+      {children}
     </div>
   )
 }

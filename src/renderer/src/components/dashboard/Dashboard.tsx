@@ -13,6 +13,8 @@ import { setAuthoritativeActiveWorkspace, getActiveRemount } from '@/lib/freezeW
 import { bumpActivityTime, deleteActivityTime } from '@/lib/activityTimeStore'
 import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
+import { setWorkspaceModel, deleteWorkspaceModel } from '@/lib/workspaceModelStore'
+import { setWorkspaceEffort, deleteWorkspaceEffort } from '@/lib/workspaceEffortStore'
 import { setPr, deletePr } from '@/lib/prStore'
 import { removeWorkbenchEntry } from '@/lib/workbenchStore'
 import { removeWorkbenchTerminalsEntry } from '@/lib/workbenchTerminalsStore'
@@ -207,6 +209,23 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
+  // Bugfix, model-routing unit 11: single hoisted subscription writing into
+  // BOTH workspaceModelStore and workspaceEffortStore from the SAME push —
+  // pushed by every main-process handler that can change a workspace's
+  // effective model/effort (footer chip, creation menu, settings drawers,
+  // CLI — see registerClaudeSettingsIpc's four handlers in
+  // src/main/ipc/claudeSettings.ts). Before this, the footer's Model chip
+  // and Effort chip were two separate DropdownChip component instances each
+  // owning local useState with no way to learn the OTHER chip just changed
+  // something — switching the model never updated the Effort chip's
+  // displayed options/value until the whole component remounted.
+  useEffect(() => {
+    return window.api.workspaces.onEffectiveSettingsChanged(({ workspaceId, model, effort }) => {
+      setWorkspaceModel(workspaceId, model)
+      setWorkspaceEffort(workspaceId, effort)
+    })
+  }, [])
+
   useEffect(() => {
     return window.api.workspaces.onActiveWorkspaceChanged(({ workspaceId }) => {
       setAuthoritativeActiveWorkspace(workspaceId)
@@ -346,6 +365,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteActivityTime(workspaceId)
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
+      deleteWorkspaceModel(workspaceId)
+      deleteWorkspaceEffort(workspaceId)
       deletePr(workspaceId)
       removeWorkbenchEntry(workspaceId)
       removeWorkbenchTerminalsEntry(workspaceId)
@@ -1109,7 +1130,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   )
 
   const handleAddWorkspace = useCallback(
-    async (projectId: string): Promise<void> => {
+    async (projectId: string, modelId?: string): Promise<void> => {
       // Read synchronously from refs — setState updaters are not guaranteed to
       // run synchronously in React 18+ createRoot, so reading state via a
       // functional updater callback is unreliable here.
@@ -1128,6 +1149,24 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           cwd: finalPath
         })
         playSound('pop')
+        // Creation-time model routing (unit 10): when the creation popover
+        // chose a non-default model, persist it to the SAME per-workspace
+        // storage the footer Model chip writes (workspace:setModel ->
+        // claude_workspace_settings) BEFORE navigating/mounting — this is the
+        // only restart-free moment to route a brand-new workspace, since
+        // composeClaudeLaunch reads this setting at terminal:mount time.
+        // Awaited (not fire-and-forget) so the setting is durably persisted
+        // before handleSelectWorkspace below triggers WorkspaceView's mount
+        // effect. Also seed the sidebar's provider-icon cache optimistically
+        // — no need to wait for the row's own fetch-on-mount round trip.
+        if (modelId) {
+          try {
+            await window.api.workspaces.setModel(newWs.id, modelId)
+            setWorkspaceModel(newWs.id, modelId)
+          } catch (err) {
+            console.error('[dashboard] failed to set creation-time model', err)
+          }
+        }
         // Append the newly-created workspace directly to local state instead of
         // re-fetching the full list — the create IPC already returned everything
         // we need. Eliminates a redundant DB roundtrip before the user can see
@@ -1208,6 +1247,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteActivityTime(workspaceId)
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
+      deleteWorkspaceModel(workspaceId)
+      deleteWorkspaceEffort(workspaceId)
       deletePr(workspaceId)
       removeWorkbenchEntry(workspaceId)
       removeWorkbenchTerminalsEntry(workspaceId)
@@ -1250,6 +1291,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteActivityTime(workspaceId)
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
+      deleteWorkspaceModel(workspaceId)
+      deleteWorkspaceEffort(workspaceId)
       deletePr(workspaceId)
       removeWorkbenchEntry(workspaceId)
       removeWorkbenchTerminalsEntry(workspaceId)
@@ -1374,6 +1417,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         deleteActivityTime(ws.id)
         deleteTitle(ws.id)
         deleteGitStatus(ws.id)
+        deleteWorkspaceModel(ws.id)
+        deleteWorkspaceEffort(ws.id)
         deletePr(ws.id)
         removeWorkbenchEntry(ws.id)
         removeWorkbenchTerminalsEntry(ws.id)

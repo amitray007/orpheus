@@ -353,6 +353,15 @@ export type AppUiState = {
   // fallback), refreshed on each app open via `gh api user`. Null when gh
   // is missing/unauth or has never been resolved.
   githubUsername: string | null
+  // Managed routing proxy (v70) — opt-in, off by default. Mirrors
+  // hooksIntegrationEnabled exactly: a declarative reconcile (see
+  // src/main/index.ts) starts/stops the managed CLIProxyAPI child process
+  // when this flips. See src/main/routingProxy/.
+  routingProxyEnabled: boolean
+  // Model-name aliasing (model-routing unit 08) — opt-in, off by default.
+  // Master switch for whether any stored routing_proxy_model_aliases row is
+  // folded into the generated config.yaml. See src/main/routingProxy/aliases.ts.
+  modelAliasesEnabled: boolean
   updatedAt: number
 }
 
@@ -363,7 +372,39 @@ export type AppUiStatePatch = Partial<Omit<AppUiState, 'updatedAt'>>
 // ---------------------------------------------------------------------------
 
 export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
-export type ClaudeEffort = 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+// 'auto' is a CLI-level "reset to model default" — never a wire value sent as
+// output_config.effort to a routed model (see composeClaudeLaunch's own
+// skip-on-auto handling). 'none'/'minimal' are genuine on-ladder-adjacent
+// values some routed providers report (an off-ladder disable and the lowest
+// standard rung respectively) — kept distinct from each other and from
+// 'low', never conflated (model-routing unit 11).
+export type ClaudeEffort = 'auto' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+// The single canonical value list for ClaudeEffort (model-routing unit 11)
+// — every validator that needs to check "is this a legal effort value"
+// (schema.ts's EFFORT CHECK constraint, claudeSettings.ts's validatePatch,
+// overridesStore.ts's validateBasePatch, commandServer.ts's CLI-arg
+// validator, packages/orpheus-cli's ws-new.ts help text) imports THIS array
+// directly rather than re-declaring or re-exporting its own copy. Before
+// this, five independent copies existed and several of them silently
+// drifted out of sync with the widened ClaudeEffort type when 'none'/
+// 'minimal' were added — this array is the fix for that class of bug, not
+// just a one-time patch to the copies that had already drifted.
+// scripts/verify-effort-levels.ts imports this directly too (it's the one
+// electron-free member of the group — schema.ts's EFFORT and this array are
+// literally the same reference, but claudeSettings.ts/overridesStore.ts/
+// commandServer.ts all import electron transitively via ./db, so they can't
+// be imported into that offline harness; asserting against this array IS
+// asserting against the exact runtime values those validators check).
+export const CLAUDE_EFFORT_VALUES: readonly ClaudeEffort[] = [
+  'auto',
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+]
 export type ClaudeOutputStyle = 'default' | 'explanatory' | 'proactive' | 'learning'
 export type ClaudeTuiMode = 'default' | 'fullscreen'
 export type ClaudeEditorMode = 'normal' | 'vim'
@@ -397,8 +438,13 @@ export type KeepAwakeState = {
 //   1. Explicit versioned IDs — unambiguous pricing + context lookup
 //   2. Always-latest aliases — claude resolves the exact version at launch
 //
-// The `family` field is used by the title-bar chip for color-coding and by
-// `getPricing` family-alias resolution.
+// The `family` field here is display metadata only (picker grouping) — it
+// does NOT drive title-bar colour-coding (no such feature exists) and is
+// NOT used for pricing resolution. Model facts (label, family, pricing,
+// context) are owned exclusively by src/main/models/registry.ts, which
+// resolves by exact id / date-stamped-id-prefix only — never by matching
+// this array's `family` string against arbitrary ids (see that module's
+// header comment for why family-substring matching was a landmine).
 export const CLAUDE_MODEL_OPTIONS = [
   // Explicit versions — unambiguous pricing + context lookup
   { value: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus' },
@@ -424,6 +470,45 @@ export type ClaudeModelOption = (typeof CLAUDE_MODEL_OPTIONS)[number]['value']
 export const CLAUDE_MODEL_ALIAS_START_INDEX = CLAUDE_MODEL_OPTIONS.findIndex(
   (o) => o.value === o.family
 )
+
+// ---------------------------------------------------------------------------
+// Effort-level ladder (model-routing unit 11) — the single canonical
+// ordering every effort-driven surface (DropdownChip, the stale-selection
+// guard, the verify harness) sorts/clamps against. 'none' and 'auto' are
+// deliberately OFF this ladder — they're off-ladder modes, not positions on
+// it (see CLIProxyAPI's validate.go standardLevelOrder, which this mirrors
+// exactly for the on-ladder rungs). Never mutate in place; every consumer
+// treats this as read-only ordering data.
+// ---------------------------------------------------------------------------
+export const EFFORT_LADDER_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+
+/** Per-model builtin Claude effort levels (model-routing unit 11) — replaces
+ *  the old blanket `effortLevels: null` for every Claude entry. Sourced from
+ *  the model-routing spec's verified table (Claude is not proxy-sourced, so
+ *  this is hand-maintained here, mirroring how CLAUDE_MODEL_OPTIONS itself is
+ *  hand-maintained rather than fetched). Keyed by CLAUDE_MODEL_OPTIONS value;
+ *  an "always-latest" alias (opus/sonnet/haiku/fable) carries the same levels
+ *  as that family's current latest explicit version — never a separate,
+ *  potentially-drifted list. `null` here means "no reasoning-effort control
+ *  at all" (not currently used by any Claude entry, but kept as a valid
+ *  value so this table has the same shape/meaning as SelectableModel.effortLevels
+ *  everywhere else — never conflate "unknown" with "none").
+ */
+export const CLAUDE_BUILTIN_EFFORT_LEVELS: Readonly<Record<ClaudeModelOption, string[] | null>> = {
+  'claude-opus-4-8': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-opus-4-7': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-sonnet-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-sonnet-4-6': ['low', 'medium', 'high', 'max'],
+  'claude-haiku-4-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-fable-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+  // Always-latest aliases — same levels as each family's current latest
+  // explicit version above (opus -> 4.8, sonnet -> 5, fable -> 5). Haiku has
+  // only one explicit version today, so its alias matches directly.
+  opus: ['low', 'medium', 'high', 'xhigh', 'max'],
+  sonnet: ['low', 'medium', 'high', 'xhigh', 'max'],
+  haiku: ['low', 'medium', 'high', 'xhigh', 'max'],
+  fable: ['low', 'medium', 'high', 'xhigh', 'max']
+}
 
 // ---------------------------------------------------------------------------
 // Ghostty user config (v53)
@@ -600,6 +685,12 @@ export type ClaudeGlobalSettings = {
   // Env-var controls (v66) — General / Model behavior
   lowPowerMode: boolean
 
+  // Shell init controls (shell-init-hook) — orpheus-claude.sh deliberately
+  // skips ~/.zshrc for startup speed; these let the user opt into sourcing
+  // it and/or running an arbitrary pre-launch snippet before claude starts.
+  sourceZshrc: boolean
+  preLaunchSnippet: string
+
   updatedAt: number
 }
 
@@ -720,6 +811,10 @@ export type ClaudeProjectSettingsOverrides = {
   // Custom env vars (project scope) — merged with global scope as a plain
   // Record spread, last-wins (unlike flags, no append/override algebra).
   customEnvVars?: Record<string, string>
+  // Shell init controls (project scope) — override the global sourceZshrc /
+  // preLaunchSnippet settings; unset means inherit the global value.
+  sourceZshrc?: boolean
+  preLaunchSnippet?: string
 }
 
 export type ClaudeProjectSettings = {
@@ -744,6 +839,11 @@ export type ClaudeWorkspaceSettingsOverrides = {
   // as a plain Record spread, last-wins (unlike flags, no append/override
   // algebra); workspace wins on same-key conflict, highest precedence.
   customEnvVars?: Record<string, string>
+  // Shell init controls (workspace scope) — override the global/project
+  // sourceZshrc / preLaunchSnippet settings; unset means inherit the layer
+  // below (project override, or global if the project doesn't override).
+  sourceZshrc?: boolean
+  preLaunchSnippet?: string
 }
 
 export type ClaudeWorkspaceSettings = {
@@ -756,7 +856,13 @@ export type ClaudeWorkspaceSettings = {
 // Claude Authentication (v13)
 // ---------------------------------------------------------------------------
 
-export type ClaudeCloudProvider = 'anthropic' | 'bedrock' | 'vertex' | 'foundry'
+// 'routed' sends traffic to Orpheus's local translating proxy instead of a
+// cloud provider. It is structurally mutually exclusive with
+// bedrock/vertex/foundry: each of those emits a CLAUDE_CODE_USE_* env var
+// that makes the Claude CLI take a different code path and ignore
+// ANTHROPIC_BASE_URL entirely, so a workspace can never be routed AND on a
+// cloud provider at once. See src/main/orpheusSurfaceAdapter.ts buildMountEnv.
+export type ClaudeCloudProvider = 'anthropic' | 'bedrock' | 'vertex' | 'foundry' | 'routed'
 
 // Public API shape — what the renderer sees
 export type ClaudeAuthState = {
@@ -1376,15 +1482,26 @@ export type SessionUsage = {
    *  = input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens for that turn.
    *  Used for the context chip in the footer. Do NOT use for cost (cost uses cumulative fields). */
   lastTurnContextTokens: number
-  /** Effective maxContextTokens from global settings (or default 200k) */
-  contextBudget: number
-  /** lastTurnContextTokens / contextBudget * 100, capped at 100 */
+  /** Effective context window for the resolved model, in tokens, after
+   *  applying disable1mContext / maxContextTokens caps (see
+   *  src/main/models/registry.ts's resolveContextBudget). `null` when the
+   *  model's context window is unknown — consumers must render an explicit
+   *  "unknown" state, never a fabricated number. */
+  contextBudget: number | null
+  /** lastTurnContextTokens / contextBudget * 100, capped at 100. 0 when
+   *  contextBudget is null (nothing to divide by). */
   usedPct: number
 }
 
 export type SessionCost = {
   usd: number
   byModel: Record<string, number>
+  /** True when at least one model tallied in this session has no known
+   *  pricing (getPricing returned null) and was therefore excluded from
+   *  `usd`/`byModel`. Consumers must show this — otherwise a session that
+   *  used only unpriced models silently reads as "$0.00", indistinguishable
+   *  from genuinely free. */
+  hasUnknownPricing: boolean
 }
 
 export type SessionLastTurn = {
@@ -1713,6 +1830,12 @@ export type ChipDropdownItem = {
   label: string
   sublabel?: string
   destructive?: boolean
+  /** SelectableModel.providerId ('claude' | 'codex' | 'xai' | 'antigravity'),
+   *  set only by model-picker callers (buildModelDropdownItems) so
+   *  ChipDropdown can render a ProviderIcon prefix per row. Absent for every
+   *  non-model dropdown (e.g. PanesView's layout-options menu) — those rows
+   *  render with no icon, identical to before this field existed. */
+  providerId?: string
 }
 
 /** Interactive dropdown/list popover — opens upward from its anchor chip. */
@@ -1725,6 +1848,98 @@ export type ChipDropdownProps = {
 
 /** Resolves on row click/Enter; caller resolves `null` on Cancel/Escape/outside-click/IPC failure. */
 export type ChipDropdownResult = { kind: 'select'; value: string } | null
+
+// ---------------------------------------------------------------------------
+// Overlay kind: chipGroupedDropdown — the footer Model chip's provider ->
+// model FLYOUT variant of chipDropdown (model-routing unit 10-creation,
+// footer follow-up). Deliberately a SEPARATE overlay kind rather than a mode
+// flag on chipDropdown/ChipDropdownProps: chipDropdown is shared by
+// footer.effortSelect and footer.dropdown (author-configured custom options),
+// neither of which has a provider concept at all, and its flat single-panel
+// contract (ChipDropdownProps/ChipDropdownResult above) stays completely
+// untouched by this addition. The flyout mechanics (single-hovered-row,
+// genuine-hover gate, left/right flip, diagonal-traversal close-delay) are
+// NOT reimplemented here — the kind (ChipGroupedDropdown.tsx) imports the
+// SAME pure reducers newWorkspaceMenuLogic.ts already exports
+// (computeSubmenuSide/reduceHoverGate/isGenuineHover/reduceRowHover), proven
+// by scripts/verify-new-workspace-menu.ts, rather than re-deriving them.
+// ---------------------------------------------------------------------------
+
+/** One provider group in the grouped dropdown's provider list — a thin,
+ *  serializable projection the call site computes (DropdownChip.tsx via
+ *  buildModelDropdownGroups); the kind never groups/filters models itself. */
+export type ChipDropdownGroup = {
+  providerId: string
+  label: string
+  models: ChipDropdownItem[]
+}
+
+/**
+ * Serializable display state for the pinned "Refresh models" button
+ * (RefreshModelsButton.tsx, model-routing unit 12) — lives in shared/types.ts
+ * (not the renderer-only lib it's driven from) because it crosses the
+ * overlay props/patch boundary: the MAIN window computes it (via
+ * useRefreshModelsController.ts, which owns the actual window.api calls and
+ * the reduceRefreshButtonState state machine) and pushes it down into the
+ * overlay window as a plain prop, exactly like `groups`/`routingProxyEnabled`
+ * below. RefreshModelsButton.tsx itself is a PURE render component — it
+ * lives INSIDE the overlay's own separate BrowserWindow (see that file's own
+ * header comment for the crash this fixes: that window's preload
+ * (src/preload/overlay.ts) exposes ONLY `window.overlayApi`, never
+ * `window.api` — a component rendered there can never call window.api.* or
+ * any lib function that does, directly or transitively).
+ */
+export interface RefreshButtonProgress {
+  done: number
+  total: number
+}
+
+export type RefreshButtonState =
+  | { kind: 'idle' }
+  | { kind: 'refreshing'; progress: RefreshButtonProgress | null }
+  | { kind: 'updated' }
+
+/** Interactive provider -> model flyout popover — opens upward from its
+ *  anchor chip (same anchoring contract as ChipDropdownProps), but the
+ *  top-level list is providers; picking one opens a submenu of that
+ *  provider's models beside it (mirrors NewWorkspaceMenuProps' groups/view
+ *  shape, minus the creation-only isolation/branch fields this chip has no
+ *  use for). */
+export type ChipGroupedDropdownProps = {
+  groups: ChipDropdownGroup[]
+  /** Currently-selected model value — drives both the provider row's
+   *  submenu-open state (whichever group contains it) and the `●`/checkmark
+   *  inside that group's model list. */
+  selectedValue?: string
+  title?: string
+  /** True when the routing proxy is enabled (multiple providers possible) —
+   *  gates the pinned "Refresh models" footer (RefreshModelsButton.tsx,
+   *  model-routing unit 12). A Claude-only flyout has nothing to refresh, so
+   *  this is false/undefined when routing is disabled. Threaded through as a
+   *  prop (computed by the call site via routingProxyEnabledStore.ts) rather
+   *  than the overlay kind reaching into a new IPC/store subscription
+   *  itself — same "props down" contract as `groups`. */
+  routingProxyEnabled?: boolean
+  /** The "Refresh models" button's current display state — see
+   *  RefreshButtonState's own doc comment above. Always supplied by the call
+   *  site (DropdownChip.tsx), including at open() time (`{kind:'idle'}`),
+   *  and kept in sync via the SAME overlay:update push that keeps `groups`
+   *  current while the popover is open. */
+  refreshState: RefreshButtonState
+}
+
+/** Partial props pushed via `overlay:update` as the call site's own live
+ *  selectable-model subscription changes — same shallow-merge contract
+ *  NewWorkspaceMenuPatch/WorkspaceSettingsCardPatch use. Lets the footer
+ *  Model chip's flyout (unlike the flat ChipDropdown it's a sibling of)
+ *  reflect a background catalog refresh — including one triggered by its
+ *  OWN "Refresh models" button — without the user closing and reopening it. */
+export type ChipGroupedDropdownPatch = Partial<ChipGroupedDropdownProps>
+
+/** Resolves on a model row click/Enter; caller resolves `null` on
+ *  Cancel/Escape/outside-click/IPC failure — same settle contract as
+ *  ChipDropdownResult. */
+export type ChipGroupedDropdownResult = { kind: 'select'; value: string } | null
 
 // ---------------------------------------------------------------------------
 // Overlay kind: workspaceSettingsCard — the workspace title bar's Settings
@@ -1765,6 +1980,93 @@ export type WorkspaceSettingsCardProps = {
 /** Partial props pushed via `overlay:update` as async loads/edits resolve —
  *  same shallow-merge contract DetailsCardProps' patches use. */
 export type WorkspaceSettingsCardPatch = Partial<WorkspaceSettingsCardProps>
+
+// ---------------------------------------------------------------------------
+// Overlay kind: newWorkspaceMenu — the "+ new workspace" popover
+// (NewWorkspaceMenu.tsx), migrated off the in-page `Overlay` component
+// (model-routing unit 10-creation) so it can paint OVER the terminal instead
+// of being clipped inside the sidebar. Long-lived + focusable + hover- AND
+// keyboard-driven, closest in shape to workspaceSettingsCard: props down,
+// events up. The call site keeps every window.api.* call (offeredModes,
+// worktrees.branchExists, workspaces.createWorktree/setModel) and all
+// selectable-model/last-used data hooks; this props bag is a pure
+// serializable snapshot, and the kind emits intent events the call site turns
+// back into state changes + a follow-up updateNewWorkspaceMenu push.
+//
+// Inverted create-flow (per the approved redesign): the top line (provider
+// icon + selected model name + an Enter-key affordance) is now the SOLE
+// create action — click or Enter creates immediately with the
+// currently-selected model + currently-selected isolation mode. Local/
+// Worktree became a two-way isolation TOGGLE (never creates by itself);
+// selecting Worktree reveals the branch input in the SAME card (no separate
+// overlay swap), and creating from the top line while Worktree is selected
+// creates the worktree workspace using whatever branch text is currently in
+// that field.
+// ---------------------------------------------------------------------------
+
+/** One provider group in the creation menu's provider list — a thin,
+ *  serializable projection of CreationProviderGroup (creationProviderMenu.ts)
+ *  that the call site computes; the kind never groups/filters models itself. */
+export type NewWorkspaceMenuGroup = {
+  providerId: string
+  label: string
+  models: SelectableModel[]
+}
+
+export type NewWorkspaceMenuView = 'providers' | 'models'
+
+export type NewWorkspaceMenuIsolation = 'local' | 'worktree'
+
+export type NewWorkspaceMenuProps = {
+  /** True while offeredModes (Local/Worktree availability) is still loading —
+   *  selectableModels never gates the picker (see NewWorkspaceMenu.tsx's own
+   *  doc comment: the Claude-only fallback is synchronous). */
+  loading: boolean
+  /** Every provider group the popover can show — Claude always present. */
+  groups: NewWorkspaceMenuGroup[]
+  /** 'providers' (top-level list) or 'models' (a specific provider's models,
+   *  shown when the user hovers/clicks a provider row). */
+  view: NewWorkspaceMenuView
+  /** The provider whose model list is showing in the 'models' view — undefined
+   *  while on the 'providers' view. */
+  activeProviderId?: string
+  /** The currently-selected provider/model — drives the top line AND what
+   *  Local/Worktree create with. Undefined selectedModelId means "use the
+   *  global/project default" (Claude's unchanged pre-existing behavior). */
+  selectedProviderId?: string
+  selectedModelId?: string
+  /** Which isolation mode is currently toggled — drives whether the branch
+   *  panel is shown. Defaults to 'local' when the popover first opens. */
+  isolation: NewWorkspaceMenuIsolation
+  /** Local/Worktree availability for this project (see app:offeredModes) —
+   *  undefined while `loading` is true. */
+  modes?: { local: boolean; worktree: boolean }
+  /** Per-provider "last used" marker (session-scoped) so the model list can
+   *  show a `●` next to the right row without the kind computing it itself. */
+  lastUsedModelIdByProvider: Record<string, string>
+  // --- Worktree/branch-panel fields (only rendered when isolation === 'worktree') ---
+  branchValue: string
+  /** null = not checked yet/empty input, true/false = debounced check result. */
+  branchExists: boolean | null
+  branchCreating: boolean
+  branchError?: string
+  /** True when the routing proxy is enabled (multiple providers possible) —
+   *  gates the pinned "Refresh models" row (RefreshModelsButton.tsx,
+   *  model-routing unit 12), same contract as
+   *  ChipGroupedDropdownProps.routingProxyEnabled above. */
+  routingProxyEnabled?: boolean
+  /** The "Refresh models" row's current display state — see
+   *  RefreshButtonState's own doc comment (above ChipGroupedDropdownProps).
+   *  Always supplied by the call site (components/dashboard/NewWorkspaceMenu.tsx),
+   *  including at showNewWorkspaceMenu() time (`{kind:'idle'}`), and kept in
+   *  sync via the SAME updateNewWorkspaceMenu push that keeps `groups`
+   *  current while the popover is open. */
+  refreshState: RefreshButtonState
+}
+
+/** Partial props pushed via `overlay:update` — same shallow-merge contract
+ *  WorkspaceSettingsCardPatch/DetailsCardProps patches use. */
+export type NewWorkspaceMenuPatch = Partial<NewWorkspaceMenuProps>
 
 // ---------------------------------------------------------------------------
 // Workbench Files tab — file tree + viewer data sources (Stage A backend).
@@ -2012,3 +2314,351 @@ export type FilesMutationResult =
 export type FileImage =
   | { ok: true; dataUrl: string; size: number }
   | { ok: false; error: 'too-large' | 'denied' | 'missing' }
+
+// ---------------------------------------------------------------------------
+// Managed routing proxy (model-routing unit 04) — CLIProxyAPI component
+//
+// An opt-in, Orpheus-downloaded/managed CLIProxyAPI binary that non-Claude
+// ("routed") model workspaces talk to instead of api.anthropic.com directly.
+// See src/main/routingProxy/ for the manager; src/main/modelRouting.ts for
+// how a workspace's launch env points at this proxy's URL/token.
+// ---------------------------------------------------------------------------
+
+/** Component lifecycle state, mirroring the shape of UpdateSnapshot's 'kind' union. */
+export type RoutingProxyStatus =
+  | 'not_installed'
+  | 'installing'
+  | 'stopped'
+  | 'starting'
+  | 'running'
+  | 'error'
+
+/** One connected-provider row from GET /v0/management/auth-files. */
+export interface RoutingProxyAuthFile {
+  provider: string
+  /** Display label / filename as reported by the management API. */
+  label: string
+  /** Best-effort health signal — the management API's own field name varies
+   *  by provider, so this is normalized to a small enum by the manager. */
+  health: 'ok' | 'error' | 'unknown'
+}
+
+/** Rehydratable snapshot the renderer polls/subscribes to — mirrors UpdateSnapshot. */
+export interface RoutingProxySnapshot {
+  enabled: boolean
+  status: RoutingProxyStatus
+  /** Installed version (e.g. "7.2.92"), or null if never installed. */
+  installedVersion: string | null
+  /** Version this build of Orpheus is pinned to. */
+  pinnedVersion: string
+  /** Set only while status === 'installing'. */
+  installProgress: {
+    phase: 'downloading' | 'verifying' | 'extracting'
+    percent: number | null
+  } | null
+  /** Human-readable error, set only when status === 'error'. */
+  error: string | null
+  /** Connected accounts, populated only while status === 'running'. */
+  authFiles: RoutingProxyAuthFile[]
+  /** Last time authFiles was refreshed, or null. */
+  authFilesCheckedAt: number | null
+}
+
+/**
+ * Step-progress for a MANUAL refresh — pushed on `routingProxy:refreshProgress`
+ * as each step of a refreshAuthFiles() call completes (model-routing unit 12,
+ * the pinned "Refresh models" button's "1/4" step count). `total` is derived
+ * from the actual step list (the auth-files fetch, plus one step per routed
+ * provider channel — see manager.ts's own doc comment), never hardcoded, so
+ * it stays correct if the provider list changes. ONLY emitted for a manual,
+ * explicitly user-triggered refresh (refreshAuthFilesNow) — the automatic
+ * 30s background tick calls the same underlying refresh logic with no
+ * progress callback and never broadcasts this, so it can't become a second
+ * source of renderer churn every 30 seconds. */
+export interface RoutingProxyRefreshProgress {
+  done: number
+  total: number
+}
+
+/** Result of a "check for updates" call against the GitHub latest-release API. */
+export interface RoutingProxyUpdateCheckResult {
+  current: string | null
+  latest: string | null
+  available: boolean
+  checkedAt: number
+  error?: string
+}
+
+/** Result of a manual maintenance action (model-routing unit 09-polish's
+ *  "Refresh models" / "Refresh connections" / "Regenerate config" buttons —
+ *  see OrpheusModelRoutingSection.tsx's Maintenance group). Every action
+ *  reports a concrete, honest outcome — never a silent no-op — so the UI can
+ *  show something like "Refreshed — 10 models from 1 provider" or "Couldn't
+ *  reach the proxy" rather than just clearing a spinner. */
+export interface RoutingProxyMaintenanceResult {
+  ok: boolean
+  /** Human-readable summary, e.g. "10 models from 1 provider" or "Couldn't
+   *  reach the proxy — is it running?". Always present, success or failure. */
+  message: string
+  /** Only meaningful for the "Refresh models" action. */
+  modelCount?: number
+  providerCount?: number
+}
+
+/** Download size info surfaced before an install, so the Settings UI can show it. */
+export interface RoutingProxyAssetInfo {
+  version: string
+  assetName: string
+  sizeBytes: number | null
+}
+
+// ---------------------------------------------------------------------------
+// Provider framework (model-routing unit 05) — declarative non-Claude
+// provider descriptors + per-provider stored config, surfaced to the
+// renderer's Settings > Model Routing > Providers section. See
+// src/main/routingProxy/providers/ for the main-process source of truth;
+// these are renderer-facing mirrors (never re-derive "is this a known
+// provider" client-side — the descriptor list always comes from main via
+// providers:list).
+// ---------------------------------------------------------------------------
+
+export type ProviderAuthMethodShared = 'oauth' | 'apiKey' | 'openaiCompatible'
+
+/** One provider descriptor, as sent to the renderer (docsUrl/oauthLoginFlag
+ *  included for display only — this unit does not build the OAuth
+ *  connect-button flow; see the oauthLoginFlag field's own doc comment in
+ *  providers/types.ts). */
+export interface ProviderDescriptorSummary {
+  id: string
+  label: string
+  authMethods: ProviderAuthMethodShared[]
+  oauthLoginFlag?: string
+  apiKeyConfigKey?: string
+  openaiCompatibleDefaultBaseUrl?: string
+  docsUrl?: string
+}
+
+/** One stored API-key entry, as sent to/from the renderer. The renderer only
+ *  ever displays a redacted form of `apiKey` (see the Settings UI's own
+ *  masking) — the real value is still present on this wire type because the
+ *  add/update flow needs to send a new key value up; it is never logged. */
+export interface ProviderApiKeyEntrySummary {
+  id: string
+  apiKey: string
+  prefix?: string
+  baseUrl?: string
+}
+
+/** One provider's full stored config + live connection status, as sent to
+ *  the renderer. `connection` is populated from the routing-proxy snapshot's
+ *  authFiles (oauth providers) — null when the proxy isn't running or the
+ *  provider hasn't connected via OAuth. */
+export interface ProviderConfigSummary {
+  providerId: string
+  enabled: boolean
+  authMethod: ProviderAuthMethodShared
+  apiKeys: ProviderApiKeyEntrySummary[]
+  baseUrl?: string
+  displayName?: string
+  prefix?: string
+  connection: RoutingProxyAuthFile | null
+}
+
+// ---------------------------------------------------------------------------
+// OAuth "Connect <provider>" flow (model-routing unit 07) — see
+// src/main/routingProxy/oauth.ts for the main-process implementation this
+// mirrors. Only providers whose descriptor declares 'oauth' in authMethods
+// (see ProviderDescriptorSummary.authMethods) are eligible — Gemini has no
+// OAuth endpoint and must never be offered a Connect action.
+// ---------------------------------------------------------------------------
+
+/** Returned by oauth:start — everything the renderer needs to show the
+ *  connect dialog (a clickable link as a visible fallback to the
+ *  auto-opened browser, plus a device-flow user code when present). */
+export interface OAuthStartResult {
+  url: string
+  state: string
+  flow?: 'device'
+  userCode?: string
+  expiresIn?: number
+}
+
+/** Result of a single get-auth-status check (oauth:poll). The renderer
+ *  drives its own client-side 2s interval calling this repeatedly and stops
+ *  on 'ok' or 'error' (a 401 from the server surfaces as 'error' here too —
+ *  see oauth.ts's pollOAuthLogin doc comment — the renderer must not keep
+ *  polling after an 'error' outcome, mirroring the main-process no-retry
+ *  rule). */
+export type OAuthPollStatus = 'ok' | 'wait' | 'error'
+
+export interface OAuthPollResult {
+  status: OAuthPollStatus
+  /** Populated only when status === 'error'. */
+  error?: string
+}
+
+// ---------------------------------------------------------------------------
+// Model picker (model-routing unit 06) — the single selectable-model list a
+// workspace/project picker renders from. Assembled server-side by
+// models:listSelectable (src/main/ipc/models.ts) from the registry + the
+// routing-proxy snapshot + provider connection health; the renderer must
+// never compute this list itself (mirrors models:resolveLabels' contract —
+// see that channel's own doc comment).
+// ---------------------------------------------------------------------------
+
+/** One model a workspace may select, already resolved + availability-gated
+ *  server-side. Claude entries are always `available: true` (the offline
+ *  guarantee — see models:listSelectable's doc comment); routed entries are
+ *  `available: false` when the proxy isn't running or the owning provider
+ *  isn't connected/healthy, but are still LISTED if a workspace already has
+ *  them selected — a workspace's setting must never be silently dropped just
+ *  because its backend went offline. */
+export interface SelectableModel {
+  id: string
+  label: string
+  /** 'claude' for the built-in Claude group, otherwise a provider id from
+   *  routingProxy/providers/registry.ts (e.g. 'codex', 'xai'). */
+  providerId: string
+  /** Human-readable group label for the picker, e.g. "Claude" or "Grok (xAI)". */
+  providerLabel: string
+  isClaude: boolean
+  available: boolean
+  /** Native context window in tokens, or null when unknown — never fabricated. */
+  contextWindow: number | null
+  /** Real thinking/effort levels reported by the provider, or null when the
+   *  model has none — the effort control must be disabled/hidden for a model
+   *  with no levels, never fall back to a generic list. */
+  effortLevels: string[] | null
+  /** True when this entry's `available: true` is a startup-window
+   *  optimisation (persisted-last-session connection state), not a
+   *  LIVE-confirmed health signal yet — see selectable.ts's
+   *  persistedAvailability doc comment (model-routing unit 09-polish). Always
+   *  false for Claude and for any routed entry backed by real live authFiles
+   *  data. The picker MAY show a subtle "connecting…" affordance for a
+   *  provisional entry; it must never be treated as less real for selection
+   *  purposes — the actual safety backstop is ensureHealthyForRouting's
+   *  fail-closed gate at mount time, which still runs regardless of this
+   *  flag. */
+  provisional: boolean
+}
+
+/**
+ * Cross-model effort reconciliation / stale-selection guard (model-routing
+ * unit 11, work item 4): given a currently-stored effort value and the
+ * NEWLY-selected model's effortLevels, resolve to a level that model actually
+ * supports — rather than letting a value like `xhigh` silently ride along
+ * onto a model whose ladder is `[low, medium, high]` and get invisibly
+ * clamped upstream by the proxy (the exact bug this unit fixes; see
+ * effort-spec.md's clampLevel notes). Called both at UI selection time
+ * (DropdownChip's model-switch handler) and from the main-process choke
+ * point where every model-persisting path (footer chip, creation menu,
+ * workspace/project settings) converges, so the reconciliation happens
+ * exactly once per model change regardless of which surface triggered it.
+ *
+ * Resolution order:
+ *   1. `effortLevels === null` (no reasoning control at all, e.g. an image
+ *      model) -> 'auto': there is no effort concept for this model, so the
+ *      guard resets to the one value that's never sent as a wire effort at
+ *      all (see composeClaudeLaunch's skip-on-auto handling).
+ *   2. `current === 'auto'` -> ALWAYS stays 'auto', unconditionally. 'auto'
+ *      means "model default" — it must never be resolved to a concrete rung
+ *      just because the new model happens to support some rung.
+ *   3. `current` already in `effortLevels` -> returned unchanged, byte-
+ *      identical (no needless rewrite even if `effortLevels` also contains
+ *      other equally-valid values).
+ *   4. `current === 'none'` and the model doesn't support 'none' -> falls
+ *      back to the LOWEST supported level (by EFFORT_LADDER_ORDER position),
+ *      NOT a distance computation — 'none' is an off-ladder disable mode
+ *      with no meaningful index of its own, so "nearest by distance" isn't a
+ *      coherent question for it the way it is for an on-ladder value.
+ *   5. otherwise -> the nearest ON-LADDER supported level by index distance
+ *      in EFFORT_LADDER_ORDER. On a genuine tie (two supported levels
+ *      equidistant from `current`), the LOWER one wins — this is OUR
+ *      deliberate, explicit choice, not a port of CLIProxyAPI's own
+ *      tie-break: that upstream code path is dead (bestIdx inits to -1, so
+ *      `idx < bestIdx` never fires), so mirroring it would just be copying
+ *      an accident. Choosing lower is the conservative direction (never
+ *      silently escalates reasoning effort/cost beyond what was stored).
+ */
+export function clampEffortToSupportedLevel(
+  current: string,
+  effortLevels: string[] | null
+): string {
+  if (effortLevels === null || effortLevels.length === 0) return 'auto'
+  if (current === 'auto') return 'auto'
+  if (effortLevels.includes(current)) return current
+
+  if (current === 'none') {
+    // No meaningful "distance" for an off-ladder value — fall back to
+    // whichever supported level sits lowest on the ladder.
+    const onLadder = EFFORT_LADDER_ORDER.filter((level) => effortLevels.includes(level))
+    return onLadder[0] ?? effortLevels[0]
+  }
+
+  const currentIdx = EFFORT_LADDER_ORDER.indexOf(current as (typeof EFFORT_LADDER_ORDER)[number])
+  let best: string | undefined
+  let bestIdx = -1
+  let bestDist = Infinity
+  for (const level of effortLevels) {
+    const idx = EFFORT_LADDER_ORDER.indexOf(level as (typeof EFFORT_LADDER_ORDER)[number])
+    if (idx === -1) continue // an off-ladder level (e.g. 'none') never wins a distance comparison
+    const dist = Math.abs(idx - currentIdx)
+    // Strict '<' plus this explicit tie-break: on dist === bestDist, keep
+    // the LOWER-indexed (lower-rung) candidate — our deliberate choice (see
+    // this function's own doc comment), evaluated regardless of iteration
+    // order over `effortLevels`.
+    if (dist < bestDist || (dist === bestDist && idx < bestIdx)) {
+      bestDist = dist
+      bestIdx = idx
+      best = level
+    }
+  }
+  return best ?? effortLevels[0]
+}
+
+// ---------------------------------------------------------------------------
+// Model-name aliasing (model-routing unit 08) — see
+// src/main/routingProxy/aliases.ts. Lets a Claude-facing model name (e.g.
+// 'sonnet', pinned by a subagent's frontmatter) resolve on the ROUTING PROXY
+// to a routed model instead of failing with "unknown provider for model X"
+// on a routed workspace. This is proxy-side model-name resolution only — it
+// never changes which model a workspace itself uses (see selectable.ts,
+// which never reads this table) and never proxies Claude credentials.
+// ---------------------------------------------------------------------------
+
+/** One stored alias row, as sent to/from the renderer. `targetProviderId`/
+ *  `targetModelId` are null when the row exists but hasn't been pointed at a
+ *  model yet (e.g. freshly added from the picker before a target is chosen).
+ *  `isCustom` is false for the auto-managed rows sourced from
+ *  CLAUDE_MODEL_OPTIONS (one row per entry, regenerated by "Use defaults" —
+ *  never user-removable) and true for a user-added row via
+ *  aliases:addCustom (any free-text name, removable via
+ *  aliases:removeCustom) — see AliasesSection.tsx's doc comment for the UI
+ *  grouping this drives. */
+export interface ModelAliasSummary {
+  claudeName: string
+  enabled: boolean
+  targetProviderId: string | null
+  targetModelId: string | null
+  isCustom: boolean
+}
+
+/** One candidate target a Claude name can be aliased to — a model the live
+ *  cliproxy cache currently reports for an enabled, connected provider.
+ *  aliases:listTargets returns only THESE (never Claude models, never a
+ *  provider that isn't actually usable) so the dropdown can't offer a
+ *  mapping that would immediately be skipped at config-generation time. */
+export interface ModelAliasTargetOption {
+  providerId: string
+  providerLabel: string
+  modelId: string
+}
+
+/** Full aliasing state for the Settings UI: the master on/off switch plus
+ *  every stored alias row (one per name in CLAUDE_MODEL_OPTIONS the user has
+ *  touched — see aliases:list's doc comment for how the candidate name list
+ *  itself is derived). */
+export interface ModelAliasesState {
+  enabled: boolean
+  aliases: ModelAliasSummary[]
+}

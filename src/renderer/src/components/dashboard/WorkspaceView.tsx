@@ -881,6 +881,7 @@ export function WorkspaceView({
             workspaceName={workspace.name}
             onSelectWorkspace={onSelectWorkspace}
             activityDetail={detail}
+            onRestart={handleRestart}
           />
         </div>
 

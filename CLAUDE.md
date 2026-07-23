@@ -155,6 +155,8 @@ The terminal is `libghostty` running `resources/orpheus-claude.sh`. The shell wr
 - `ORPHEUS_CLAUDE_FLAGS` — whitespace-split CLI flags
 - `ORPHEUS_CLAUDE_SETTINGS_JSON` — inline JSON for `claude --settings`
 
+It also honors two **user-controlled shell-init** vars (settings `sourceZshrc` / `preLaunchSnippet`), applied after PATH setup and before `claude` launches: `ORPHEUS_SOURCE_ZSHRC=1` sources the user's full `~/.zshrc` (the wrapper otherwise skips it for speed — it's `zsh -l`, not interactive), and `ORPHEUS_PRE_LAUNCH_SNIPPET` is free-text shell `eval`'d verbatim (e.g. `eval "$(direnv export zsh)"` to load direnv/nvm/etc.). Both are opt-in, layered global → project override like every other launch setting, and — being arbitrary user shell — run as the user with no logging of their contents.
+
 Both are produced by `composeClaudeLaunch(projectId, workspaceId)` in `src/main/claudeSettings.ts`. That function returns `{ flags, settingsJson, env }` and is the **single source of truth** for how UI settings → CLI/env. It layers:
 
 ```

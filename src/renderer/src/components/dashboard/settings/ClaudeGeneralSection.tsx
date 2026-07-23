@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import type { ClaudeGlobalSettings, ClaudePermissionMode, ClaudeEffort } from '@shared/types'
 import {
@@ -11,6 +11,8 @@ import {
   Eyebrow
 } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
+import { useSelectableModels } from '@/lib/useSelectableModels'
+import { effortOptionsFor, resolveEffortLevelsForScope } from '@/lib/effortPickerOptions'
 
 // ---------------------------------------------------------------------------
 // ClaudeGeneralSection — model, permission mode, effort, auto-memory, extended thinking
@@ -19,6 +21,31 @@ import { SettingsSectionSkeleton } from '../../Skeleton'
 export function ClaudeGeneralSection(): React.JSX.Element {
   const [settings, setSettings] = useState<ClaudeGlobalSettings | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Data-driven effort options (model-routing unit 11) — the global scope's
+  // effective model's real effortLevels via resolveEffortLevelsForScope,
+  // never a hardcoded ladder. Unlike project/workspace scope, the global
+  // model is ALWAYS a concrete value (schema.ts's model column is NOT NULL
+  // with a real default — see validateModelKey's "must be a non-empty
+  // string" rule), so there's no 'default'/"inherit" concept here at all;
+  // this is the one scope with no `leading` option. Called unconditionally
+  // (Rules of Hooks) even while `settings` is still null/loading — passing
+  // undefined then resolves to the full ladder via resolveEffortLevelsForScope's
+  // own "no single model" branch, harmless since the loading-state early
+  // return below never reads it.
+  const { models: selectableModels, loading: selectableModelsLoading } = useSelectableModels(
+    settings?.model
+  )
+  const effortLevels = resolveEffortLevelsForScope(
+    settings?.model,
+    selectableModels,
+    selectableModelsLoading
+  )
+  const showEffortRow = effortLevels !== null
+  const effortOptions = useMemo(
+    () => effortOptionsFor(effortLevels ?? []) as { value: ClaudeEffort; label: string }[],
+    [effortLevels]
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -113,25 +140,20 @@ export function ClaudeGeneralSection(): React.JSX.Element {
               onChange={(v) => patch({ permissionMode: v })}
             />
           </SettingRow>
-          <SettingRow
-            label="Effort"
-            description="Trade-off between speed and thoroughness."
-            mapsTo={['--effort', 'CLAUDE_CODE_EFFORT_LEVEL']}
-          >
-            <SegmentedControl<ClaudeEffort>
-              ariaLabel="Effort level"
-              options={[
-                { value: 'auto', label: 'Auto' },
-                { value: 'low', label: 'Low' },
-                { value: 'medium', label: 'Med' },
-                { value: 'high', label: 'High' },
-                { value: 'xhigh', label: 'X-High' },
-                { value: 'max', label: 'Max' }
-              ]}
-              value={settings.effort}
-              onChange={(v) => patch({ effort: v })}
-            />
-          </SettingRow>
+          {showEffortRow && (
+            <SettingRow
+              label="Effort"
+              description="Trade-off between speed and thoroughness."
+              mapsTo={['--effort', 'CLAUDE_CODE_EFFORT_LEVEL']}
+            >
+              <SegmentedControl<ClaudeEffort>
+                ariaLabel="Effort level"
+                options={effortOptions}
+                value={settings.effort}
+                onChange={(v) => patch({ effort: v })}
+              />
+            </SettingRow>
+          )}
         </div>
       </section>
 

@@ -70,6 +70,17 @@ import type {
   GitBranchInfo,
   GitCommit,
   UpdateSnapshot,
+  RoutingProxySnapshot,
+  RoutingProxyRefreshProgress,
+  RoutingProxyUpdateCheckResult,
+  RoutingProxyAssetInfo,
+  RoutingProxyMaintenanceResult,
+  ProviderDescriptorSummary,
+  ProviderConfigSummary,
+  ProviderApiKeyEntrySummary,
+  SelectableModel,
+  ModelAliasesState,
+  ModelAliasTargetOption,
   ActionResult,
   ActionKind,
   ActionAuditEntry,
@@ -104,7 +115,9 @@ import type {
   PanePanelKind,
   PaneLayout,
   PaneTerminal,
-  SplitTree
+  SplitTree,
+  OAuthStartResult,
+  OAuthPollResult
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -227,7 +240,30 @@ export interface InvokeChannelMap {
   'sessions:delete': { req: [{ id: string }]; res: void }
   'sessions:getContextBudget': {
     req: [{ workspaceId: string }]
-    res: { contextBudget: number; modelId: string }
+    // contextBudget is null when the model's pricing/context window is
+    // unknown — callers must render an explicit "unknown" state, never a
+    // fabricated number. modelLabel is the registry's one canonical label
+    // (src/main/models/registry.ts) — the renderer must not re-derive a
+    // label from modelId itself. See ContextBudgetResult in
+    // src/main/sessions.ts.
+    res: { contextBudget: number | null; modelId: string; modelLabel: string }
+  }
+  'models:resolveLabels': {
+    req: [{ modelIds: string[] }]
+    // id -> the registry's one canonical label (src/main/models/registry.ts).
+    // The renderer must consume this rather than parsing model ids itself.
+    res: Record<string, string>
+  }
+  // The single selectable-model list for a workspace/project picker
+  // (model-routing unit 06). `currentModelId` is optional — when provided
+  // and it names a routed model that is no longer available (proxy down /
+  // provider disconnected), that entry is still included in the result,
+  // marked `available: false`, so a workspace's stored setting is never
+  // silently dropped from the picker. See models:listSelectable's own doc
+  // comment in src/main/ipc/models.ts for the full gating rules.
+  'models:listSelectable': {
+    req: [{ currentModelId?: string }]
+    res: SelectableModel[]
   }
   'claudeSettings:get': { req: []; res: ClaudeGlobalSettings }
   'claudeSettings:update': { req: [ClaudeGlobalSettingsPatch]; res: ClaudeGlobalSettings }
@@ -595,6 +631,92 @@ export interface InvokeChannelMap {
   'updates:install': { req: []; res: void }
   'updates:restart': { req: []; res: void }
   'updates:getState': { req: []; res: UpdateSnapshot }
+  // Managed routing proxy (model-routing unit 04) — see src/main/routingProxy/.
+  'routingProxy:getState': { req: []; res: RoutingProxySnapshot }
+  'routingProxy:setEnabled': { req: [{ enabled: boolean }]; res: RoutingProxySnapshot }
+  'routingProxy:install': { req: []; res: RoutingProxySnapshot }
+  'routingProxy:getAssetInfo': { req: []; res: RoutingProxyAssetInfo | null }
+  'routingProxy:checkForUpdate': { req: []; res: RoutingProxyUpdateCheckResult }
+  'routingProxy:refreshAuthFiles': { req: []; res: RoutingProxySnapshot }
+  // (model-routing unit 09-polish) Explicit restart — a recovery tool for a
+  // wedged process/stale state/a config key that doesn't hot-reload. NOT
+  // required for ordinary alias/provider edits (those already hot-reload via
+  // config.yaml's fsnotify watch, see aliases:setAlias's doc comment) — this
+  // is a deliberate manual action. Reuses the same stop()/start() lifecycle
+  // as the enable toggle; guarded against re-entrant double-invocation while
+  // a restart is already in flight (see manager.ts's restart()).
+  'routingProxy:restart': { req: []; res: RoutingProxySnapshot }
+  // (model-routing unit 09-polish) Manual maintenance actions — escape
+  // hatches for a stuck/stale state, grouped in Settings' Maintenance area.
+  // See manager.ts's forceRefreshCliProxyModelCache/forceRefreshConnections/
+  // forceRegenerateConfig doc comments — these are NOT the primary
+  // mechanism, the automatic paths already keep everything current.
+  'routingProxy:forceRefreshModels': { req: []; res: RoutingProxyMaintenanceResult }
+  'routingProxy:forceRefreshConnections': { req: []; res: RoutingProxyMaintenanceResult }
+  'routingProxy:forceRegenerateConfig': { req: []; res: RoutingProxyMaintenanceResult }
+
+  // Provider framework (model-routing unit 05) — see
+  // src/main/routingProxy/providers/. 'providers:descriptors' returns the
+  // static declarative list (PROVIDERS in providers/registry.ts) so the UI
+  // can render an unconfigured provider before any config row exists.
+  // 'providers:list' returns each configured provider merged with its live
+  // connection status.
+  'providers:descriptors': { req: []; res: ProviderDescriptorSummary[] }
+  'providers:list': { req: []; res: ProviderConfigSummary[] }
+  'providers:setEnabled': {
+    req: [{ providerId: string; enabled: boolean }]
+    res: ProviderConfigSummary[]
+  }
+  'providers:setApiKeys': {
+    req: [{ providerId: string; apiKeys: ProviderApiKeyEntrySummary[] }]
+    res: ProviderConfigSummary[]
+  }
+  'providers:setBaseUrl': {
+    req: [{ providerId: string; baseUrl: string | null }]
+    res: ProviderConfigSummary[]
+  }
+
+  // Model-name aliasing (model-routing unit 08) — see
+  // src/main/routingProxy/aliases.ts. 'aliases:list' returns the master
+  // switch + every stored row; 'aliases:listTargets' returns only the
+  // currently-usable routed models an alias may point to (live cliproxy
+  // cache, cross-referenced against enabled+healthy providers — never
+  // Claude, see ModelAliasTargetOption's doc comment). Every mutating
+  // handler regenerates config.yaml immediately (mirrors providers:* —
+  // CLIProxyAPI watches config.yaml via fsnotify and reloads it itself, no
+  // proxy restart required) and returns the fresh state.
+  'aliases:list': { req: []; res: ModelAliasesState }
+  'aliases:listTargets': { req: []; res: ModelAliasTargetOption[] }
+  'aliases:setEnabled': { req: [{ enabled: boolean }]; res: ModelAliasesState }
+  'aliases:setAlias': {
+    req: [{ claudeName: string; targetProviderId: string | null; targetModelId: string | null }]
+    res: ModelAliasesState
+  }
+  'aliases:useDefaults': { req: []; res: ModelAliasesState }
+  // (model-routing unit 09-polish) Custom alias rows — an arbitrary
+  // free-text name (not restricted to CLAUDE_MODEL_OPTIONS) a user adds by
+  // hand, e.g. a manual escape hatch for a date-stamped id auto-detection
+  // missed, or a non-Claude name some other tool requests. Validated at the
+  // IPC layer (trim/non-empty/no-duplicate-incl-auto-rows/name!=target) —
+  // see ipc/aliases.ts's addCustom handler. Throws (renderer surfaces the
+  // error) rather than silently no-opping on invalid input.
+  'aliases:addCustom': {
+    req: [{ claudeName: string; targetProviderId: string | null; targetModelId: string | null }]
+    res: ModelAliasesState
+  }
+  'aliases:removeCustom': { req: [{ claudeName: string }]; res: ModelAliasesState }
+
+  // OAuth "Connect <provider>" flow (model-routing unit 07) — see
+  // src/main/routingProxy/oauth.ts. 'oauth:start' opens the provider's
+  // auth-url in the default browser and returns the url/state (+ device-flow
+  // fields) so the UI can also show them as a fallback. 'oauth:poll' is
+  // called on a client-side 2s interval by the renderer (not server-driven)
+  // so the dialog can show its own countdown/cancel affordance; each call is
+  // a single get-auth-status check, not the whole bounded wait loop — the
+  // renderer decides when to stop polling (success/error/timeout/cancel).
+  'oauth:start': { req: [{ providerId: string }]; res: OAuthStartResult }
+  'oauth:poll': { req: [{ state: string }]; res: OAuthPollResult }
+  'oauth:cancel': { req: [{ state: string }]; res: void }
   'status:get': { req: []; res: ClaudeStatusSnapshot }
   'status:refresh': { req: []; res: ClaudeStatusSnapshot }
   'status:openPage': { req: []; res: void }
@@ -801,6 +923,10 @@ export interface RendererPushMap {
   'updates:progress': UpdateProgress
   'updates:done': { success: boolean; code: number | null }
   'updates:checkResult': UpdateCheckResult
+  // Managed routing proxy — pushed on every status/progress/authFiles change
+  // so the Settings panel updates live without polling (mirrors updates:*).
+  'routingProxy:snapshot': RoutingProxySnapshot
+  'routingProxy:refreshProgress': RoutingProxyRefreshProgress
   'status:change': ClaudeStatusSnapshot
   // Dashboard "Usage" card background poller (D3) — pushed on each successful
   // poll tick (see src/main/usagePoller.ts) so the renderer can silently
@@ -825,6 +951,23 @@ export interface RendererPushMap {
   // idempotent for the renderer store to apply, so no ordering/dedup logic
   // is needed on either side. See paneLiveLayoutsStore.ts.
   'panes:liveLayoutsChanged': { layoutIds: string[] }
+  // Model-routing unit 11 (bugfix): pushed by registerClaudeSettingsIpc's
+  // withReconciledEffort call sites (workspace:setModel, claudeWorkspace
+  // Settings:update, claudeProjectSettings:update, claudeSettings:update)
+  // right after a model/effort change persists — every path that can change
+  // a workspace's effective model (footer chip, creation menu, settings
+  // drawers, and the CLI/command-server path, which persists through the
+  // SAME updateClaudeWorkspaceSettings this push wraps) funnels through one
+  // of those four handlers, so this single push covers all of them. Carries
+  // the FRESH effective {model, effort} for the affected workspace — the
+  // effort chip subscribes to this (via workspaceModelStore/
+  // workspaceEffortStore) instead of owning its own local useState, so it
+  // reacts live to a model change made by a DIFFERENT DropdownChip instance
+  // (the model chip and effort chip are separate component instances —
+  // see WorkspaceFooter.tsx) without waiting for a remount. `effort` is the
+  // value AFTER any main-process reconciliation (clampEffortToSupported
+  // Level) — never the pre-reconciliation value a caller submitted.
+  'workspace:effectiveSettingsChanged': { workspaceId: string; model: string; effort: string }
 }
 
 export type PushChannel = keyof RendererPushMap
@@ -860,6 +1003,8 @@ export const PUSH_CHANNELS = {
   updatesProgress: 'updates:progress',
   updatesDone: 'updates:done',
   updatesCheckResult: 'updates:checkResult',
+  routingProxySnapshot: 'routingProxy:snapshot',
+  routingProxyRefreshProgress: 'routingProxy:refreshProgress',
   statusChange: 'status:change',
   claudeUsagePushed: 'claude:usagePushed',
   claudeActivityPushed: 'claude:activityPushed',
@@ -867,7 +1012,8 @@ export const PUSH_CHANNELS = {
   diagStream: 'diag:stream',
   keepAwakeState: 'keepAwake:state',
   overlayEvent: 'overlay:event',
-  panesLiveLayoutsChanged: 'panes:liveLayoutsChanged'
+  panesLiveLayoutsChanged: 'panes:liveLayoutsChanged',
+  workspaceEffectiveSettingsChanged: 'workspace:effectiveSettingsChanged'
 } satisfies Record<string, PushChannel>
 
 // Exhaustiveness check: every PushChannel must appear as a value above (the

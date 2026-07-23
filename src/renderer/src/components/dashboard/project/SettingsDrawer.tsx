@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import { ArrowCounterClockwise, X } from '@phosphor-icons/react'
 import {
-  CLAUDE_MODEL_OPTIONS,
-  CLAUDE_MODEL_ALIAS_START_INDEX,
+  EFFORT_LADDER_ORDER,
   type ClaudeEffort,
   type ClaudeGlobalSettings,
   type ClaudePermissionMode,
@@ -13,6 +12,9 @@ import {
 import { Select, CliFlagsEditor, CustomEnvVarsEditor } from '../settings/primitives'
 import { Overlay } from '@/components/ui/Overlay'
 import { WorkspaceCreationSettings } from './WorkspaceCreationSettings'
+import { useSelectableModels } from '@/lib/useSelectableModels'
+import { buildModelSelectOptions, MODEL_CUSTOM_VALUE } from '@/lib/modelPickerOptions'
+import { effortOptionsFor, resolveEffortLevelsForScope } from '@/lib/effortPickerOptions'
 
 // ---------------------------------------------------------------------------
 // Per-project settings drawer
@@ -23,13 +25,12 @@ import { WorkspaceCreationSettings } from './WorkspaceCreationSettings'
 // side panel slot like WorkspaceView does).
 // ---------------------------------------------------------------------------
 
-// Grouped model options: "Use global" → specific versions → separator → aliases.
-const MODEL_OPTIONS = [
-  { value: 'default', label: 'Use global' },
-  ...CLAUDE_MODEL_OPTIONS.slice(0, CLAUDE_MODEL_ALIAS_START_INDEX),
-  { value: '__sep_model', label: '' }, // visual divider — Select renders "Always latest"
-  ...CLAUDE_MODEL_OPTIONS.slice(CLAUDE_MODEL_ALIAS_START_INDEX)
-] as const
+// Model options are data-driven (models:listSelectable — Claude always
+// present, routed models gated on proxy/provider health; see
+// buildModelSelectOptions) rather than a hardcoded CLAUDE_MODEL_OPTIONS
+// slice — see the useSelectableModels() call below. MODEL_CUSTOM_VALUE is
+// the shared 'Custom…' escape hatch (unit 01).
+type ModelOption = string
 
 const PERMISSION_OPTIONS = [
   { value: 'default', label: 'Use global' },
@@ -38,19 +39,28 @@ const PERMISSION_OPTIONS = [
   { value: 'bypassPermissions', label: 'Bypass' }
 ] as const
 
-const EFFORT_OPTIONS = [
+// Effort options are data-driven (model-routing unit 11) — the project's
+// effective model's real effortLevels via resolveEffortLevelsForScope/
+// effortOptionsFor (see the useMemo below), never a hardcoded ladder. A
+// project has no single resolved model unless localOverrides.model is set
+// (see resolveEffortLevelsForScope's own doc comment for why 'default'/"no
+// override at this scope" resolves to the full ladder, the same fallback
+// the footer chip's modelValue === '' case uses) — 'Use global' is a
+// DIFFERENT concept from 'auto' and is prepended as `leading`, never
+// collapsed into it.
+
+// Tri-state: unset means "inherit the global sourceZshrc value", 'on'/'off'
+// are an explicit project-scope override — mirrors MODEL/PERMISSION/EFFORT's
+// 'default' = "Use global" sentinel pattern above.
+const SOURCE_ZSHRC_OPTIONS = [
   { value: 'default', label: 'Use global' },
-  { value: 'auto', label: 'Auto' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'Extra High' },
-  { value: 'max', label: 'Max' }
+  { value: 'on', label: 'On' },
+  { value: 'off', label: 'Off' }
 ] as const
 
-type ModelOption = (typeof MODEL_OPTIONS)[number]['value']
 type PermissionOption = (typeof PERMISSION_OPTIONS)[number]['value']
-type EffortOption = (typeof EFFORT_OPTIONS)[number]['value']
+type EffortOption = string
+type SourceZshrcOption = (typeof SOURCE_ZSHRC_OPTIONS)[number]['value']
 
 // Stable fallback identity for the CLI flags editor's value/inheritedFlags
 // props. A fresh `[]` literal allocated inline in JSX (`x ?? []`) gets a new
@@ -82,6 +92,9 @@ interface OverrideFieldProps<T extends string> {
   isOverridden: boolean
   ariaLabel: string
   description?: string
+  /** Optional extra control rendered below the Select — e.g. the "Custom…"
+   *  free-text fallback (see MODEL_CUSTOM / showCustomModel below). */
+  children?: React.ReactNode
 }
 
 function OverrideField<T extends string>({
@@ -91,7 +104,8 @@ function OverrideField<T extends string>({
   onChange,
   isOverridden,
   ariaLabel,
-  description
+  description,
+  children
 }: OverrideFieldProps<T>): React.JSX.Element {
   return (
     <div className="px-4 py-3 border-t border-border-default/30 first:border-t-0">
@@ -108,6 +122,57 @@ function OverrideField<T extends string>({
       </div>
       {description && <p className="text-xs text-text-muted mb-2">{description}</p>}
       <Select options={options} value={value} onChange={onChange} ariaLabel={ariaLabel} />
+      {children}
+    </div>
+  )
+}
+
+interface TextOverrideFieldProps {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  isOverridden: boolean
+  ariaLabel: string
+  description?: string
+  placeholder?: string
+}
+
+// Free-text analogue of OverrideField, for override values that aren't a
+// fixed enum (preLaunchSnippet). An empty textarea clears the override back
+// to "inherit global" — same undefined-clears semantics as the Select rows,
+// just driven by blur (mirrors ClaudeToolsSection's global textarea) instead
+// of onChange, so the override isn't rewritten on every keystroke.
+function TextOverrideField({
+  label,
+  value,
+  onChange,
+  isOverridden,
+  ariaLabel,
+  description,
+  placeholder
+}: TextOverrideFieldProps): React.JSX.Element {
+  return (
+    <div className="px-4 py-3 border-t border-border-default/30 first:border-t-0">
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="text-sm font-medium text-text-secondary uppercase tracking-wider">
+          {label}
+        </label>
+        {isOverridden && (
+          <span
+            className="w-1.5 h-1.5 rounded-full bg-accent/80"
+            title="Overrides global default"
+          />
+        )}
+      </div>
+      {description && <p className="text-xs text-text-muted mb-2">{description}</p>}
+      <textarea
+        aria-label={ariaLabel}
+        defaultValue={value}
+        key={value}
+        onBlur={(e) => onChange(e.target.value.trim())}
+        placeholder={placeholder}
+        className="w-full min-h-[76px] px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono resize-y cursor-text"
+      />
     </div>
   )
 }
@@ -123,6 +188,52 @@ export function SettingsDrawer({
   // Global settings, fetched alongside project settings — needed only to
   // render inherited CLI flags (muted) in the CliFlagsEditor preview.
   const [globalSettings, setGlobalSettings] = useState<ClaudeGlobalSettings | null>(null)
+  // "Custom…" escape hatch (mirrors ModelPicker in settings/primitives.tsx):
+  // an override whose model id isn't one of the hardcoded MODEL_OPTIONS must
+  // still render AS that value, not silently collapse to 'default' —
+  // collapsing was bug-prone because isOverridden stayed true (still showed
+  // the override dot) while the Select displayed 'Use global', and the next
+  // unrelated field edit would commit `model: undefined` and destroy it.
+  const [showCustomModel, setShowCustomModel] = useState(false)
+  const [customModelValue, setCustomModelValue] = useState('')
+
+  // Data-driven model list (Claude always present; routed models gated on
+  // proxy/provider health server-side) — refetches whenever the currently
+  // selected model changes so an unavailable-but-selected routed model is
+  // never silently dropped (see useSelectableModels' own doc comment).
+  const { models: selectableModels, loading: selectableModelsLoading } = useSelectableModels(
+    localOverrides.model
+  )
+  const modelOptions = useMemo(
+    () => buildModelSelectOptions(selectableModels, { value: 'default', label: 'Use global' }),
+    [selectableModels]
+  )
+  // Effort options: data-driven off the PROJECT's own effective model (model-
+  // routing unit 11) — resolveEffortLevelsForScope returns the full ladder
+  // when localOverrides.model is unset (no single project-scope model to
+  // resolve; 'Use global' is prepended separately as `leading`, a distinct
+  // concept from 'auto' — see EffortOption's own doc comment) OR while the
+  // model list is still loading (`undefined`, treated the same as
+  // "unresolved -> full ladder" here since this drawer has no separate
+  // pending/non-interactive visual state the way the footer chip does).
+  // `null` (the project's OWN explicit model genuinely has no reasoning
+  // control, e.g. an image model) is the one case NOT folded into the full
+  // ladder — showEffortField below hides the field entirely then, mirroring
+  // the footer chip's own "hide, never fabricate" rule.
+  const effortLevels = resolveEffortLevelsForScope(
+    localOverrides.model,
+    selectableModels,
+    selectableModelsLoading
+  )
+  const showEffortField = effortLevels !== null
+  const effortOptions = useMemo(
+    () =>
+      effortOptionsFor(effortLevels ?? [...EFFORT_LADDER_ORDER], {
+        value: 'default',
+        label: 'Use global'
+      }),
+    [effortLevels]
+  )
 
   useEffect(() => {
     if (!open) return
@@ -133,6 +244,10 @@ export function SettingsDrawer({
         if (cancelled) return
         setSettings(s)
         setLocalOverrides(s.overrides)
+        const m = s.overrides.model
+        const isCustom = m !== undefined && !selectableModels.some((o) => o.id === m)
+        setShowCustomModel(isCustom)
+        setCustomModelValue(isCustom ? m : '')
       })
       .catch((err) => console.error('[settings-drawer] failed to load', err))
     window.api.claudeSettings
@@ -144,6 +259,7 @@ export function SettingsDrawer({
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectableModels intentionally excluded: this effect only runs on open/projectId change (initial load), not every time the list refetches, to avoid fighting in-progress custom-model typing.
   }, [open, projectId])
 
   // Stable patch: uses functional setState so it doesn't close over
@@ -178,8 +294,19 @@ export function SettingsDrawer({
 
   function handleModel(v: ModelOption): void {
     // Guard: separator values start with '__sep' and should never be committed
-    if ((v as string).startsWith('__sep')) return
+    if (v.startsWith('__sep')) return
+    // 'custom' is a picker-only sentinel (switches to the free-text input
+    // below) — never a real model id, so never commit it as one.
+    if (v === MODEL_CUSTOM_VALUE) {
+      setShowCustomModel(true)
+      return
+    }
+    setShowCustomModel(false)
     patch({ model: v === 'default' ? undefined : v })
+  }
+  function handleCustomModelBlur(): void {
+    const v = customModelValue.trim()
+    if (v) patch({ model: v })
   }
   function handlePermission(v: PermissionOption): void {
     patch({ permissionMode: v === 'default' ? undefined : (v as ClaudePermissionMode) })
@@ -187,14 +314,24 @@ export function SettingsDrawer({
   function handleEffort(v: EffortOption): void {
     patch({ effort: v === 'default' ? undefined : (v as ClaudeEffort) })
   }
+  function handleSourceZshrc(v: SourceZshrcOption): void {
+    patch({ sourceZshrc: v === 'default' ? undefined : v === 'on' })
+  }
+  function handlePreLaunchSnippet(v: string): void {
+    patch({ preLaunchSnippet: v === '' ? undefined : v })
+  }
 
   function resetAll(): void {
+    setShowCustomModel(false)
+    setCustomModelValue('')
     patch({
       model: undefined,
       permissionMode: undefined,
       effort: undefined,
       customCliFlags: undefined,
-      customEnvVars: undefined
+      customEnvVars: undefined,
+      sourceZshrc: undefined,
+      preLaunchSnippet: undefined
     })
   }
 
@@ -230,9 +367,10 @@ export function SettingsDrawer({
   if (!open) return null
 
   const modelValue: ModelOption =
-    localOverrides.model !== undefined &&
-    MODEL_OPTIONS.some((o) => o.value === localOverrides.model)
-      ? (localOverrides.model as ModelOption)
+    localOverrides.model !== undefined
+      ? selectableModels.some((o) => o.id === localOverrides.model)
+        ? localOverrides.model
+        : MODEL_CUSTOM_VALUE
       : 'default'
 
   const permissionValue: PermissionOption =
@@ -241,14 +379,19 @@ export function SettingsDrawer({
       : 'default'
 
   const effortValue: EffortOption =
-    localOverrides.effort !== undefined ? (localOverrides.effort as EffortOption) : 'default'
+    localOverrides.effort !== undefined ? localOverrides.effort : 'default'
+
+  const sourceZshrcValue: SourceZshrcOption =
+    localOverrides.sourceZshrc === undefined ? 'default' : localOverrides.sourceZshrc ? 'on' : 'off'
 
   const overrideCount =
     (localOverrides.model !== undefined ? 1 : 0) +
     (localOverrides.permissionMode !== undefined ? 1 : 0) +
     (localOverrides.effort !== undefined ? 1 : 0) +
     ((localOverrides.customCliFlags?.length ?? 0) > 0 ? 1 : 0) +
-    (Object.keys(localOverrides.customEnvVars ?? {}).length > 0 ? 1 : 0)
+    (Object.keys(localOverrides.customEnvVars ?? {}).length > 0 ? 1 : 0) +
+    (localOverrides.sourceZshrc !== undefined ? 1 : 0) +
+    (localOverrides.preLaunchSnippet !== undefined ? 1 : 0)
   const hasAnyOverride = overrideCount > 0
 
   return (
@@ -307,13 +450,24 @@ export function SettingsDrawer({
             <div className={!settings ? 'opacity-50 pointer-events-none' : ''}>
               <OverrideField
                 label="Model"
-                options={MODEL_OPTIONS}
+                options={modelOptions}
                 value={modelValue}
                 onChange={handleModel}
                 isOverridden={localOverrides.model !== undefined}
                 ariaLabel="Project model override"
-                description="Default Claude model for new workspaces in this project."
-              />
+                description="Default model for new workspaces in this project — Claude or a connected routed provider."
+              >
+                {showCustomModel && (
+                  <input
+                    aria-label="Custom model ID"
+                    value={customModelValue}
+                    onChange={(e) => setCustomModelValue(e.target.value)}
+                    onBlur={handleCustomModelBlur}
+                    placeholder="model-id (e.g. claude-opus-4-7)"
+                    className="mt-1.5 w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus:border-accent/50 transition-colors duration-150 font-mono"
+                  />
+                )}
+              </OverrideField>
               <OverrideField
                 label="Permission mode"
                 options={PERMISSION_OPTIONS}
@@ -323,14 +477,34 @@ export function SettingsDrawer({
                 ariaLabel="Project permission mode override"
                 description="How Claude handles tool permissions when this project's workspaces launch."
               />
+              {showEffortField && (
+                <OverrideField
+                  label="Effort"
+                  options={effortOptions}
+                  value={effortValue}
+                  onChange={handleEffort}
+                  isOverridden={localOverrides.effort !== undefined}
+                  ariaLabel="Project effort override"
+                  description="Thinking depth Claude applies by default for this project."
+                />
+              )}
               <OverrideField
-                label="Effort"
-                options={EFFORT_OPTIONS}
-                value={effortValue}
-                onChange={handleEffort}
-                isOverridden={localOverrides.effort !== undefined}
-                ariaLabel="Project effort override"
-                description="Thinking depth Claude applies by default for this project."
+                label="Source ~/.zshrc before Claude"
+                options={SOURCE_ZSHRC_OPTIONS}
+                value={sourceZshrcValue}
+                onChange={handleSourceZshrc}
+                isOverridden={localOverrides.sourceZshrc !== undefined}
+                ariaLabel="Project source ~/.zshrc override"
+                description="Source your full ~/.zshrc before Claude starts, for this project's workspaces."
+              />
+              <TextOverrideField
+                label="Custom shell before Claude"
+                value={localOverrides.preLaunchSnippet ?? ''}
+                onChange={handlePreLaunchSnippet}
+                isOverridden={localOverrides.preLaunchSnippet !== undefined}
+                ariaLabel="Project custom shell before Claude override"
+                description='Runs as you, in your shell, right before Claude starts for this project. Example: eval "$(direnv export zsh)"'
+                placeholder='eval "$(direnv export zsh)"'
               />
             </div>
 

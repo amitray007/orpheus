@@ -192,7 +192,7 @@ interface ProjectActionsProps {
   activeTerminal: DetectedApp | null
   onPickEditor: (name: string) => void
   onPickTerminal: (name: string) => void
-  onNewWorkspace: () => void
+  onNewWorkspace: (modelId?: string) => void
   onWorktreeCreated: (workspace: WorkspaceRecord) => void
   onOpenSettings: () => void
   onOpenMenu: (e: React.MouseEvent) => void
@@ -323,7 +323,7 @@ interface ProjectHeaderProps {
   overrideCount: number | null
   /** Auto-generated next workspace name (e.g. "Workspace 2"), used to seed the worktree branch slug. */
   workspaceDefaultName: string
-  onNewWorkspace: () => void
+  onNewWorkspace: (modelId?: string) => void
   /** Called after a worktree workspace has been created — navigate to it. */
   onWorktreeCreated: (workspace: WorkspaceRecord) => void
   onOpenSettings: () => void

@@ -52,43 +52,7 @@ export function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export function shortModel(model: string | null): string {
-  if (!model) return '—'
-  const m = model.toLowerCase()
-
-  // Detect family first
-  const isOpus = m.includes('opus')
-  const isSonnet = m.includes('sonnet')
-  const isHaiku = m.includes('haiku')
-  const isFable = m.includes('fable')
-  if (!isOpus && !isSonnet && !isHaiku && !isFable) return model
-
-  const family = isOpus ? 'Opus' : isSonnet ? 'Sonnet' : isHaiku ? 'Haiku' : 'Fable'
-
-  // Extract version numbers from patterns like:
-  //   "claude-opus-4-7"    → "4.7"
-  //   "claude-sonnet-4-6"  → "4.6"
-  //   "claude-haiku-4-5"   → "4.5"
-  //   "opus" / "sonnet"    → "" (alias, add "(latest)" suffix)
-  //
-  // Family aliases (no digits) → show with "(latest)" marker.
-  // Date-stamped IDs like "claude-sonnet-4-6-20260416" → "Sonnet 4.6"
-  const stripped = m
-    .replace(/^claude-/, '')
-    .replace(/(opus|sonnet|haiku|fable)-?/, '')
-    .replace(/-\d{8}$/, '') // strip trailing date stamp (e.g. 20260416)
-    .trim()
-
-  // After stripping the family name, remaining segments are the version
-  // e.g. "4-7" → "4.7"
-  const versionParts = stripped.split('-').filter((p) => /^\d+$/.test(p))
-  if (versionParts.length >= 2) {
-    return `${family} ${versionParts.join('.')}`
-  }
-  if (versionParts.length === 1) {
-    return `${family} ${versionParts[0]}`
-  }
-
-  // Pure alias (e.g. model = "opus", "sonnet", "haiku")
-  return `${family}*`
-}
+// Model label rendering moved to src/renderer/src/lib/useModelLabels.ts,
+// which resolves through the registry (src/main/models/registry.ts) via IPC
+// instead of parsing the model id client-side — see that file's header for
+// why the renderer must not compute model facts itself.

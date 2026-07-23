@@ -47,28 +47,40 @@ function getStatusDotColor(value: unknown): string {
   }
 }
 
+// session.getUsage — render occupancy from the most-recent turn only (e.g. "78.2k")
+function formatUsageValue(v: Record<string, unknown>): string | null {
+  if (typeof v.lastTurnContextTokens === 'number') {
+    return formatTokens(v.lastTurnContextTokens)
+  }
+  // Fallback for stale cached values without the new field
+  if (typeof v.usedPct === 'number') {
+    return `${Math.round(v.usedPct)}%`
+  }
+  return null
+}
+
+// session.getCost — render cost with 3 sig figs (e.g. "$0.0042" or "< $0.01").
+// hasUnknownPricing means some spent tokens were excluded from `usd` (no
+// pricing data for that model) — a bare "$0" there would read as "free"
+// rather than "unknown", so show an explicit unknown marker instead.
+function formatCostValue(v: Record<string, unknown>): string | null {
+  if (typeof v.usd !== 'number') return null
+  if (v.hasUnknownPricing === true) {
+    return v.usd > 0 ? `${formatUsd(v.usd)}+?` : '—'
+  }
+  return formatUsd(v.usd)
+}
+
 // Format values for display
 function formatValue(actionId: string, value: unknown): string | null {
   if (value === null || value === undefined) return null
 
-  // session.getUsage — render occupancy from the most-recent turn only (e.g. "78.2k")
-  if (actionId === 'session.getUsage' && typeof value === 'object' && value !== null) {
-    const v = value as Record<string, unknown>
-    if (typeof v.lastTurnContextTokens === 'number') {
-      return formatTokens(v.lastTurnContextTokens as number)
-    }
-    // Fallback for stale cached values without the new field
-    if (typeof v.usedPct === 'number') {
-      return `${Math.round(v.usedPct as number)}%`
-    }
+  if (actionId === 'session.getUsage' && typeof value === 'object') {
+    return formatUsageValue(value as Record<string, unknown>)
   }
 
-  // session.getCost — render cost with 3 sig figs (e.g. "$0.0042" or "< $0.01")
-  if (actionId === 'session.getCost' && typeof value === 'object' && value !== null) {
-    const v = value as Record<string, unknown>
-    if (typeof v.usd === 'number') {
-      return formatUsd(v.usd as number)
-    }
+  if (actionId === 'session.getCost' && typeof value === 'object') {
+    return formatCostValue(value as Record<string, unknown>)
   }
 
   // workspace.getActivityStatus — show the detail string

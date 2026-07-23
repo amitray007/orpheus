@@ -1,5 +1,6 @@
 import type { ColumnDef, SchemaDef, TableDef } from './types'
 import { enumCheck, enumClause } from './render'
+import { CLAUDE_EFFORT_VALUES } from '../../shared/types'
 
 // Shared enum arrays — exported for reuse by app code (renderer/main) so the
 // set of valid values lives in exactly one place. Values copied verbatim from
@@ -16,12 +17,27 @@ const KEEP_AWAKE_MODE = ['off', 'auto', 'on'] as const
 const PANE_PANEL_KIND = ['general', 'project'] as const
 
 const PERMISSION_MODE = ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const
-const EFFORT = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+// Sourced from src/shared/types.ts's CLAUDE_EFFORT_VALUES (the single
+// canonical list, model-routing unit 11) rather than a re-declared literal —
+// this is the fix for the class of bug where independent copies of this
+// array silently drifted out of sync with ClaudeEffort when 'none'/'minimal'
+// were added. Kept under the name EFFORT for every existing call site
+// (enumCheck/enumCoerce below, plus scripts/verify-*.ts imports).
+const EFFORT = CLAUDE_EFFORT_VALUES
 const OUTPUT_STYLE = ['default', 'explanatory', 'proactive', 'learning'] as const
 const TUI_MODE = ['default', 'fullscreen'] as const
 const EDITOR_MODE = ['normal', 'vim'] as const
-const CLOUD_PROVIDER = ['anthropic', 'bedrock', 'vertex', 'foundry'] as const
+// 'routed' (unit 03, model routing) sends traffic to Orpheus's local
+// translating proxy — structurally mutually exclusive with the other three,
+// which each emit a CLAUDE_CODE_USE_* var that makes the CLI ignore
+// ANTHROPIC_BASE_URL. See ClaudeCloudProvider in src/shared/types.ts.
+const CLOUD_PROVIDER = ['anthropic', 'bedrock', 'vertex', 'foundry', 'routed'] as const
 const LOG_LEVEL = ['debug', 'info', 'warn', 'error'] as const
+// Mirrors ProviderAuthMethod in src/main/routingProxy/providers/types.ts.
+// Fixed vocabulary (part of the ProviderDescriptor shape) — unlike
+// routing_proxy_providers.provider_id, which is deliberately free-text so
+// adding a new PROVIDER never requires a schema change.
+const PROVIDER_AUTH_METHOD = ['oauth', 'apiKey', 'openaiCompatible'] as const
 
 // 'panes' added (KTD2 nav-rail work) so lastViewKind='panes' doesn't violate
 // the CHECK; 'dashboard' is kept for legacy rows and a future rail surface
@@ -226,7 +242,7 @@ export const schema: SchemaDef = {
   },
 
   // ---------------------------------------------------------------------
-  // claude_global_settings (117 columns)
+  // claude_global_settings (119 columns)
   // ---------------------------------------------------------------------
   claude_global_settings: {
     columns: {
@@ -395,6 +411,10 @@ export const schema: SchemaDef = {
       disable_mouse_clicks: bool('disable_mouse_clicks', '0'),
       rewind_on_error_enabled: bool('rewind_on_error_enabled', '0'),
       low_power_mode: bool('low_power_mode', '0'),
+      // Shell init controls (shell-init-hook) — user-controlled pre-launch
+      // shell setup, since orpheus-claude.sh deliberately skips ~/.zshrc.
+      source_zshrc: bool('source_zshrc', '0'),
+      pre_launch_snippet: { type: 'TEXT', notNull: true, default: "''" },
       updated_at: INTEGER_NOT_NULL
     },
     normalizeOnRebuild: {
@@ -531,6 +551,18 @@ export const schema: SchemaDef = {
       hooks_integration_enabled: { type: 'INTEGER', notNull: true, default: '0' },
       // Files-tab editor save mode (v62) — default 0 (manual save via Cmd/Ctrl+S).
       files_auto_save: bool('files_auto_save', '0'),
+      // Managed routing proxy (v70) — default 0 (off); opt-in to downloading
+      // + running the managed CLIProxyAPI child process. Mirrors
+      // hooks_integration_enabled exactly.
+      routing_proxy_enabled: { type: 'INTEGER', notNull: true, default: '0' },
+      // Model-name aliasing on the routing proxy (model-routing unit 08) —
+      // default 0 (off), same "explicit opt-in" shape as routing_proxy_enabled.
+      // Gates whether ANY stored routing_proxy_model_aliases row is folded
+      // into the generated config.yaml — see renderProvidersYaml's caller in
+      // config.ts. Kept separate from the individual alias rows' own enabled
+      // flags so there's one master switch a user can flip off without losing
+      // their per-alias mappings.
+      model_aliases_enabled: { type: 'INTEGER', notNull: true, default: '0' },
       // ALTER-only columns folded into desired state (drift vs the fresh-install
       // constant per _db-surface.md's "Columns added ONLY via later ALTER" list)
       notify_attention: { type: 'BOOLEAN', notNull: true, default: '1' },
@@ -972,6 +1004,103 @@ export const schema: SchemaDef = {
       payload_json: TEXT_NOT_NULL,
       fetched_at: INTEGER_NOT_NULL
     }
+  },
+
+  // ---------------------------------------------------------------------
+  // routing_proxy_providers — model-routing unit 05 (provider framework).
+  // One row per provider a user has configured (codex, xai, antigravity,
+  // ...) — provider_id is free-text, NOT an enum CHECK,
+  // deliberately: the whole point of the descriptor layer
+  // (src/main/routingProxy/providers/registry.ts) is that a new provider is
+  // addable as data, and an enum CHECK here would turn "add a provider" back
+  // into a migration. Validity against the known descriptor set is enforced
+  // in code (getProviderDescriptor), not the schema.
+  // auth_method mirrors ProviderAuthMethod ('oauth' | 'apiKey' |
+  // 'openaiCompatible') — kept as a CHECK since that vocabulary IS fixed
+  // (part of the ProviderDescriptor shape, not per-provider data).
+  // ---------------------------------------------------------------------
+  routing_proxy_providers: {
+    columns: {
+      provider_id: TEXT_PK,
+      enabled: bool('enabled', '0'),
+      auth_method: {
+        type: 'TEXT',
+        notNull: true,
+        default: "'apiKey'",
+        check: enumCheck('auth_method', PROVIDER_AUTH_METHOD)
+      },
+      base_url: 'TEXT',
+      display_name: 'TEXT',
+      prefix: 'TEXT',
+      updated_at: INTEGER_NOT_NULL
+    }
+  },
+
+  // ---------------------------------------------------------------------
+  // routing_proxy_provider_api_keys — one row per stored API-key credential
+  // entry for a provider (a provider can have multiple, e.g. several
+  // OpenRouter keys pooled under the same alias — mirrors CLIProxyAPI's own
+  // `<provider>-api-key:` LIST shape). api_key is plaintext, same convention
+  // as auth_api_key/auth_token elsewhere in this schema (see CLAUDE.md's
+  // "Plaintext SQLite columns are intentional" note) — never logged (see
+  // config.ts's writeRoutingProxyConfig doc comment) and the generated
+  // config.yaml this feeds is written 0600.
+  // models_json is a JSON-serialized ProviderModelEntry[] (upstream
+  // name/alias/display-name/thinking-levels/... — see providers/types.ts) —
+  // kept as one JSON blob rather than a child table since it's read/written
+  // wholesale with the owning key, never queried/filtered independently.
+  // ---------------------------------------------------------------------
+  routing_proxy_provider_api_keys: {
+    columns: {
+      id: TEXT_PK,
+      provider_id: TEXT_NOT_NULL,
+      api_key: TEXT_NOT_NULL,
+      prefix: 'TEXT',
+      base_url: 'TEXT',
+      proxy_url: 'TEXT',
+      disable_cooling: bool('disable_cooling', '0'),
+      models_json: { type: 'TEXT', notNull: true, default: "'[]'" },
+      excluded_models_json: { type: 'TEXT', notNull: true, default: "'[]'" },
+      sort_order: { type: 'INTEGER', notNull: true, default: '0' },
+      created_at: INTEGER_NOT_NULL
+    },
+    foreignKeys: [
+      { columns: ['provider_id'], ref: 'routing_proxy_providers(provider_id)', onDelete: 'CASCADE' }
+    ],
+    indexes: {
+      idx_routing_proxy_provider_api_keys_provider: ['provider_id']
+    }
+  },
+
+  // ---------------------------------------------------------------------
+  // routing_proxy_model_aliases — model-routing unit 08. One row per
+  // Claude-facing model name (e.g. 'sonnet', 'claude-opus-4-8') a user has
+  // pointed at a routed model. Read by config.ts's renderProvidersYaml,
+  // which folds each ENABLED row into a `models: [{name, alias}]` entry on
+  // the OWNING provider's block (matched by target_provider_id) — see that
+  // module's doc comment for why this must never leak into
+  // buildSelectableModels (models/selectable.ts only ever reads the cliproxy
+  // model cache, never this table).
+  //
+  // claude_name is free-text, NOT a CHECK against CLAUDE_MODEL_OPTIONS —
+  // deliberately: a subagent's frontmatter can pin an arbitrary string
+  // ('sonnet', 'claude-sonnet-5', a future model name Orpheus doesn't know
+  // about yet), and the whole point of this feature is resolving whatever
+  // name CLIProxyAPI actually receives, not a closed enum Orpheus controls.
+  // target_provider_id/target_model_id identify which provider's block and
+  // which upstream model this alias should route to; both are re-validated
+  // against the live provider config + cliproxy model cache at config-
+  // generation time (a stale row naming a model no longer in the cache is
+  // skipped, not emitted broken — see config.ts).
+  // ---------------------------------------------------------------------
+  routing_proxy_model_aliases: {
+    columns: {
+      claude_name: TEXT_PK,
+      enabled: bool('enabled', '1'),
+      target_provider_id: 'TEXT',
+      target_model_id: 'TEXT',
+      updated_at: INTEGER_NOT_NULL
+    }
   }
 }
 
@@ -987,6 +1116,7 @@ export {
   EDITOR_MODE,
   CLOUD_PROVIDER,
   LOG_LEVEL,
+  PROVIDER_AUTH_METHOD,
   LAST_VIEW_KIND,
   PROJECTS_LAST_VIEW_KIND,
   THEME,

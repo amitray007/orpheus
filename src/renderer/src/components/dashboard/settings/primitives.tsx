@@ -54,6 +54,12 @@ export interface SettingRowProps {
   label: string
   description?: string
   mapsTo?: string | string[]
+  /** Optional prefix rendered immediately before the label, e.g. a brand
+   *  ProviderIcon (see ProvidersSection.tsx / OrpheusModelRoutingSection.tsx's
+   *  connected-accounts list) — purely presentational, doesn't affect the
+   *  row's id/slug (still derived from `label` alone). Absent for every
+   *  other SettingRow caller, so this is a no-op everywhere else. */
+  icon?: React.ReactNode
   children: React.ReactNode
 }
 function labelToSlug(label: string): string {
@@ -67,6 +73,7 @@ export function SettingRow({
   label,
   description,
   mapsTo,
+  icon,
   children
 }: SettingRowProps): React.JSX.Element {
   // Two-column row: label+description on the left, control on the right.
@@ -80,6 +87,9 @@ export function SettingRow({
     >
       <div className="flex flex-col gap-0.5 min-w-0 sm:max-w-sm">
         <div className="flex flex-wrap items-center gap-1.5">
+          {icon && (
+            <span className="flex items-center justify-center w-3 h-3 flex-shrink-0">{icon}</span>
+          )}
           <label className="text-sm font-medium text-text-primary">{label}</label>
           {chips.map((key) => (
             <code
@@ -385,7 +395,11 @@ export function Select<T extends string>({
             onKeyDown={onPopoverKeyDown}
           >
             {options.map((opt) => {
-              // Separator — render as non-interactive section divider
+              // Separator — render as non-interactive section divider. Label
+              // is the group heading (e.g. a provider name for the model
+              // picker's Claude-vs-routed-provider grouping); empty-label
+              // separators (the original Claude versions/aliases split)
+              // fall back to "Always latest" for backward compatibility.
               if (opt.value.startsWith('__sep')) {
                 return (
                   <div
@@ -393,7 +407,7 @@ export function Select<T extends string>({
                     aria-hidden="true"
                     className="px-2.5 py-1 mt-1 text-xs text-text-muted uppercase tracking-wider font-medium border-t border-border-default/40"
                   >
-                    Always latest
+                    {opt.label || 'Always latest'}
                   </div>
                 )
               }

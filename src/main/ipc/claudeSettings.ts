@@ -18,19 +18,22 @@
 // deps bag needed for this domain.
 // ---------------------------------------------------------------------------
 
+import type { BrowserWindow } from 'electron'
 import { getWorkspace } from '../workspaces'
 import {
   getClaudeGlobalSettings,
   updateClaudeGlobalSettings,
   composeClaudeLaunch
 } from '../claudeSettings'
-import type { ClaudeLaunch } from '../claudeSettings'
+import { getClaudeAuthEnv } from '../claudeAuth'
+import { isLiveApplicableModelChange } from '../modelRouting'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from '../claudeProjectSettings'
 import {
   getClaudeWorkspaceSettings,
   updateClaudeWorkspaceSettings
 } from '../claudeWorkspaceSettings'
 import type { ClaudeWorkspaceSettings, ClaudeEffort } from '../../shared/types'
+import { withReconciledEffort } from '../effortReconciliation'
 import {
   getLaunchSnapshot,
   setLaunchSnapshot,
@@ -39,7 +42,9 @@ import {
   launchSnapshotCount,
   setDirty
 } from '../workspaceResources'
+import type { LaunchSnapshot } from '../workspaceResources'
 import { handle } from './handle'
+import { PUSH_CHANNELS } from '../../shared/ipc'
 import {
   FLAG_DELIMITER,
   groupTokensByFlag,
@@ -47,26 +52,44 @@ import {
   findFlagValue
 } from '../../shared/cliFlags'
 
-function launchEquals(a: ClaudeLaunch, b: ClaudeLaunch): boolean {
-  if (a.flags !== b.flags || a.settingsJson !== b.settingsJson) return false
-  const ak = Object.keys(a.env).sort()
-  const bk = Object.keys(b.env).sort()
+// Compares two env-like records by key/value (order-independent). Shared by
+// launchEquals for both the settings `env` layer and the `authEnv` layer.
+function envEquals(a: Record<string, string>, b: Record<string, string>): boolean {
+  const ak = Object.keys(a).sort()
+  const bk = Object.keys(b).sort()
   if (ak.length !== bk.length) return false
   for (let i = 0; i < ak.length; i++) {
     if (ak[i] !== bk[i]) return false
-    if (a.env[ak[i]] !== b.env[ak[i]]) return false
+    if (a[ak[i]] !== b[ak[i]]) return false
   }
+  return true
+}
+
+function launchEquals(a: LaunchSnapshot, b: LaunchSnapshot): boolean {
+  if (a.flags !== b.flags || a.settingsJson !== b.settingsJson) return false
+  if (!envEquals(a.env, b.env)) return false
+  // Auth env (cloud_provider, api key/token, base URL, etc.) is merged in
+  // downstream of composeClaudeLaunch (see buildMountEnv), so it must be
+  // compared separately — this is the fix for auth changes not marking the
+  // workspace dirty. NEVER log these values.
+  if (!envEquals(a.authEnv, b.authEnv)) return false
   return true
 }
 
 // Recomputes the dirty flag for every workspace with a tracked launch
 // snapshot, comparing it against a freshly composed launch. Called whenever
-// any settings layer (global/project/workspace) mutates.
-function recomputeDirty(): void {
+// any settings layer (global/project/workspace) OR auth layer mutates.
+// Exported so registerClaudeAuthIpc (a separate IPC domain — auth changes
+// alter the env layer merged downstream of composeClaudeLaunch, see
+// LaunchSnapshot) can trigger the same drift recheck.
+export function recomputeDirty(): void {
   if (launchSnapshotCount() === 0) return
   // Fetch global settings once — shared across all workspaces in the loop.
   // Each composeClaudeLaunch would otherwise run a redundant DB read.
   const globalSettings = getClaudeGlobalSettings()
+  // getClaudeAuthEnv is cached (invalidated on updateClaudeAuth) and identical
+  // for every workspace (auth is global, not per-workspace), so read once.
+  const authEnv = getClaudeAuthEnv()
   for (const [workspaceId, snap] of launchSnapshotEntries()) {
     const ws = getWorkspace(workspaceId)
     if (!ws) {
@@ -78,7 +101,7 @@ function recomputeDirty(): void {
       continue
     }
     const fresh = composeClaudeLaunch(ws.projectId, workspaceId, globalSettings)
-    setDirty(workspaceId, !launchEquals(snap, fresh))
+    setDirty(workspaceId, !launchEquals(snap, { ...fresh, authEnv }))
   }
 }
 
@@ -98,6 +121,41 @@ function parseFlagTokens(flags: string): ReturnType<typeof groupTokensByFlag> {
 const FOOTER_CHIP_FLAG_NAME: Record<'model' | 'effort', string> = {
   model: '--model',
   effort: '--effort'
+}
+
+/**
+ * Broadcasts workspace:effectiveSettingsChanged for every currently-mounted
+ * workspace (bugfix, model-routing unit 11) — pushed after EVERY model/
+ * effort-persisting handler below, since a global or project-scope change
+ * can affect many workspaces at once (not just the one the caller named),
+ * exactly mirroring recomputeDirty()'s own "iterate every tracked launch
+ * snapshot" scope. A workspace-scoped change (workspace:setModel) only
+ * actually affects itself, but broadcasting for every mounted workspace here
+ * too is harmless (the renderer store just re-applies the same value) and
+ * keeps this ONE code path for all four call sites rather than a narrower
+ * single-workspace variant plus a broader multi-workspace one.
+ *
+ * getMainWindow may be null (no window yet, e.g. very early boot) — the
+ * push is simply skipped then, same as every other push-channel call site
+ * in this codebase (see uiState:update's identical guard).
+ */
+function broadcastEffectiveSettingsForMountedWorkspaces(
+  getMainWindow: () => BrowserWindow | null
+): void {
+  if (launchSnapshotCount() === 0) return
+  const win = getMainWindow()
+  if (!win || win.isDestroyed()) return
+  const globalSettings = getClaudeGlobalSettings()
+  for (const [workspaceId] of launchSnapshotEntries()) {
+    const ws = getWorkspace(workspaceId)
+    if (!ws) continue // evicted by recomputeDirty's own pass; nothing to push
+    const fresh = composeClaudeLaunch(ws.projectId, workspaceId, globalSettings)
+    win.webContents.send(PUSH_CHANNELS.workspaceEffectiveSettingsChanged, {
+      workspaceId,
+      model: fresh.model,
+      effort: findFlagValue(fresh.flags, '--effort') ?? ''
+    })
+  }
 }
 
 // Persists a model/effort change made via a footer dropdown chip (Model or
@@ -180,7 +238,8 @@ function reconcileFlagsExceptTarget(
 function setWorkspaceSettingAndSuppressDirty(
   workspaceId: string,
   patch: Partial<{ model: string; effort: ClaudeEffort }>,
-  flagName: 'model' | 'effort'
+  flagName: 'model' | 'effort',
+  getMainWindow: () => BrowserWindow | null
 ): ClaudeWorkspaceSettings {
   const result = updateClaudeWorkspaceSettings(workspaceId, patch)
 
@@ -191,32 +250,67 @@ function setWorkspaceSettingAndSuppressDirty(
       // Recompose fresh — this reflects the NEW value (already persisted
       // above) plus whatever ELSE currently differs from the snapshot.
       const fresh = composeClaudeLaunch(ws.projectId, workspaceId)
-      const patchedFlags = reconcileFlagsExceptTarget(snap.flags, fresh.flags, flagName)
 
-      // Only `flags` changes; settingsJson/env stay from the OLD snapshot.
-      setLaunchSnapshot(workspaceId, { ...snap, flags: patchedFlags })
+      // Model changes are only suppressible when the switch stays on the
+      // same backend (Claude -> Claude). A Claude<->routed (or
+      // routed<->different-routed) switch needs a new process with
+      // different env, so it must fall through to a genuine dirty flag
+      // ("Restart to apply") rather than being silently marked clean.
+      const suppressible =
+        flagName !== 'model' ||
+        isLiveApplicableModelChange(findFlagValue(snap.flags, '--model') ?? '', fresh.model)
+
+      if (suppressible) {
+        const patchedFlags = reconcileFlagsExceptTarget(snap.flags, fresh.flags, flagName)
+        // Only `flags` changes; settingsJson/env stay from the OLD snapshot.
+        setLaunchSnapshot(workspaceId, { ...snap, flags: patchedFlags })
+      }
+      // else: leave the snapshot untouched — recomputeDirty() below will
+      // then see the new model in `fresh` diverge from the stale snapshot
+      // and correctly mark the workspace dirty.
     }
   }
 
   // Recompute dirty for ALL workspaces (cheap, existing behavior) — now that
-  // the target flag's dimension of this workspace's snapshot matches fresh,
-  // only a GENUINE pre-existing divergence (unrelated to flagName) would
-  // still flag dirty.
+  // the target flag's dimension of this workspace's snapshot matches fresh
+  // (when suppressible), only a GENUINE pre-existing divergence (unrelated
+  // to flagName) would still flag dirty. When NOT suppressible, the model
+  // divergence itself is what (correctly) flags dirty here.
   recomputeDirty()
+  // Bugfix (model-routing unit 11): push the fresh effective {model,effort}
+  // for every mounted workspace so the footer's model AND effort chips (two
+  // separate DropdownChip instances) react live, without waiting for a
+  // remount — see broadcastEffectiveSettingsForMountedWorkspaces' own doc
+  // comment.
+  broadcastEffectiveSettingsForMountedWorkspaces(getMainWindow)
 
   return result
 }
 
-export function registerClaudeSettingsIpc(): void {
+export interface ClaudeSettingsIpcDeps {
+  getMainWindow: () => BrowserWindow | null
+}
+
+export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
   // ---------------------------------------------------------------------------
   // Claude Settings IPC (global)
   // ---------------------------------------------------------------------------
 
   handle('claudeSettings:get', () => getClaudeGlobalSettings())
 
+  // Reconciles effort against a model change (model-routing unit 11, work
+  // item 4) — see withReconciledEffort's own doc comment. Global scope has
+  // no workspaceId/projectId; composeClaudeLaunch(undefined, undefined)
+  // reads the global row directly, which is exactly "effective effort at
+  // global scope" (nothing above it to inherit from). A global-scope change
+  // can affect every mounted workspace with no override of its own, so the
+  // broadcast below iterates all of them (see its own doc comment) rather
+  // than a single workspaceId.
   handle('claudeSettings:update', (_e, patch) => {
-    const result = updateClaudeGlobalSettings(patch)
+    const reconciledPatch = withReconciledEffort(patch, undefined, undefined)
+    const result = updateClaudeGlobalSettings(reconciledPatch)
     recomputeDirty()
+    broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
     return result
   })
 
@@ -226,9 +320,16 @@ export function registerClaudeSettingsIpc(): void {
 
   handle('claudeProjectSettings:get', (_e, { projectId }) => getClaudeProjectSettings(projectId))
 
+  // Reconciles effort against a model change at project scope — see
+  // withReconciledEffort's own doc comment. workspaceId is intentionally
+  // undefined here: this reconciles against the EFFECTIVE effort a project
+  // (with no workspace override) would launch with, matching what the
+  // project-level model change itself applies to.
   handle('claudeProjectSettings:update', (_e, args) => {
-    const result = updateClaudeProjectSettings(args.projectId, args.patch)
+    const reconciledPatch = withReconciledEffort(args.patch, args.projectId, undefined)
+    const result = updateClaudeProjectSettings(args.projectId, reconciledPatch)
     recomputeDirty()
+    broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
     return result
   })
 
@@ -240,18 +341,46 @@ export function registerClaudeSettingsIpc(): void {
     getClaudeWorkspaceSettings(workspaceId)
   )
 
+  // Reconciles effort against a model change at workspace scope (e.g. a
+  // model switch made via WorkspaceDrawer rather than the footer chip) — see
+  // withReconciledEffort's own doc comment.
   handle('claudeWorkspaceSettings:update', (_e, args) => {
-    const result = updateClaudeWorkspaceSettings(args.workspaceId, args.patch)
+    const ws = getWorkspace(args.workspaceId)
+    const reconciledPatch = withReconciledEffort(args.patch, ws?.projectId, args.workspaceId)
+    const result = updateClaudeWorkspaceSettings(args.workspaceId, reconciledPatch)
     recomputeDirty()
+    broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
     return result
   })
 
-  // Footer Model chip: persist a model override and suppress the resulting
-  // dirty delta (the chip also injects `/model <value>` into the terminal live
-  // right after this resolves, so the running process already matches — see
-  // setWorkspaceSettingAndSuppressDirty above).
+  // Footer Model chip (and the creation-menu's creation-time model write,
+  // which uses this SAME channel — see NewWorkspaceMenu.tsx): persist a
+  // model override and suppress the resulting dirty delta (the chip also
+  // injects `/model <value>` into the terminal live right after this
+  // resolves, so the running process already matches — see
+  // setWorkspaceSettingAndSuppressDirty above). Also reconciles the
+  // workspace's stored effort against the NEW model's real levels (model-
+  // routing unit 11, work item 4) — folded into the SAME patch/DB write as
+  // the model change so setWorkspaceSettingAndSuppressDirty's existing
+  // dirty-recompute machinery surfaces a genuine effort divergence via the
+  // existing "Restart to apply" chip, with no new UI needed: only `model`
+  // (the flagName argument) is treated as the intentionally-suppressed
+  // dimension, so if effort also changed here, reconcileFlagsExceptTarget
+  // restores the OLD effort to the snapshot and recomputeDirty correctly
+  // flags the divergence.
   handle('workspace:setModel', (_e, args) => {
-    return setWorkspaceSettingAndSuppressDirty(args.workspaceId, { model: args.model }, 'model')
+    const ws = getWorkspace(args.workspaceId)
+    const reconciledPatch = withReconciledEffort(
+      { model: args.model },
+      ws?.projectId,
+      args.workspaceId
+    )
+    return setWorkspaceSettingAndSuppressDirty(
+      args.workspaceId,
+      reconciledPatch,
+      'model',
+      deps.getMainWindow
+    )
   })
 
   // Footer Model chip: read the TRUE effective model a workspace would launch
@@ -272,7 +401,12 @@ export function registerClaudeSettingsIpc(): void {
   // right after this resolves, so the running process already matches — see
   // setWorkspaceSettingAndSuppressDirty above).
   handle('workspace:setEffort', (_e, args) => {
-    return setWorkspaceSettingAndSuppressDirty(args.workspaceId, { effort: args.effort }, 'effort')
+    return setWorkspaceSettingAndSuppressDirty(
+      args.workspaceId,
+      { effort: args.effort },
+      'effort',
+      deps.getMainWindow
+    )
   })
 
   // Footer Effort chip: read the TRUE effective effort a workspace would launch
