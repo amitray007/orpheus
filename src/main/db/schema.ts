@@ -136,7 +136,13 @@ export const schema: SchemaDef = {
       // app queries it (listAllSessions, idx_projects_archived_at). Not in
       // the fresh-install CREATE TABLE constant but must be part of desired
       // state so a fresh build has it too.
-      archived_at: 'INTEGER'
+      archived_at: 'INTEGER',
+      // Privacy mode (classified/hidden project flags) — classified marks a
+      // project as sensitive (redacted UI treatment); hidden excludes it
+      // from normal listings while privacy mode is off. Mirrors the
+      // glob_hidden/files_show_hidden bool() pattern used throughout.
+      classified: bool('classified', '0'),
+      hidden: bool('hidden', '0')
     },
     indexes: {
       idx_projects_archived_at: ['archived_at'],
@@ -665,6 +671,9 @@ export const schema: SchemaDef = {
       // fallback) from `gh api user`, refreshed on each app open. Nullable:
       // no default, since a user with gh missing/unauth never has one.
       github_username: { type: 'TEXT', notNull: false },
+      // Privacy mode toggle — when on, projects/workspaces flagged
+      // classified/hidden get redacted/excluded treatment in the UI.
+      privacy_mode: bool('privacy_mode', '0'),
       updated_at: INTEGER_NOT_NULL
     },
     // workbench_enabled (Workbench feature flag) was removed once the

@@ -47,6 +47,9 @@ import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
 const Sidebar = memo(SidebarBase)
 const MainContent = memo(MainContentBase)
 
+// Timed reveal duration for a classified project's "Reveal this project" peek.
+const PEEK_MS = 60_000
+
 interface DashboardProps {
   claudeInstalled: boolean
 }
@@ -72,6 +75,17 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   // Which project rows are expanded in the sidebar
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(new Set())
+
+  // Privacy mode + timed "peek" reveals for classified projects. privacyMode
+  // mirrors uiState.privacyMode (kept as its own piece of state so the
+  // Sidebar/CollapsedProjectList prop doesn't force a re-render on every
+  // unrelated uiState field). peeks maps projectId → expiresAt (epoch ms);
+  // presence in the map means the project is currently un-redacted.
+  const [privacyMode, setPrivacyMode] = useState(false)
+  const [peeks, setPeeks] = useState<Map<string, number>>(new Map())
+  const peekTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const privacyModeRef = useRef(false)
+  const peeksRef = useRef<Map<string, number>>(new Map())
 
   // Sessions list — fetched at Dashboard level so WorkspacesView can look up
   // session metadata (model, msg count, preview) via workspace.claudeSessionId
@@ -129,6 +143,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     selectedProjectIdRef.current = selectedProjectId
     workspacesByProjectRef.current = workspacesByProject
     projectsRef.current = projects
+    privacyModeRef.current = privacyMode
+    peeksRef.current = peeks
   })
 
   // Tracks workspace ids for which we've already issued an imperative git fetch
@@ -166,6 +182,18 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setSoundPack(uiState.soundPack ?? 'core')
     // eslint-disable-next-line react-hooks/exhaustive-deps -- field-level deps are intentional; depending on the whole uiState object would re-run this effect on unrelated uiState changes
   }, [uiState?.soundPack])
+
+  // Bridge the privacyMode uiState field into local state. privacyMode is
+  // driven from two places outside this component — the View → Privacy Mode
+  // app-menu checkbox and the Settings → Privacy toggle — both of which write
+  // through uiState.update and broadcast uiState:changed, so we subscribe
+  // rather than relying solely on the field-level bridge effects above.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- seeding local state from the already-fetched uiState prop, not a cascading derived update
+    if (uiState) setPrivacyMode(uiState.privacyMode)
+    return window.api.uiState.onChanged((s) => setPrivacyMode(s.privacyMode))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- field-level dep is intentional; only the initial hydration should re-run this, the subscription itself is stable
+  }, [uiState?.privacyMode])
 
   // Diagnostic: log every native action_cb tag to the console so we can debug
   // the title flow. Tag 37 = SET_TITLE, 38 = SET_TAB_TITLE in the current
@@ -250,6 +278,17 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             : p
         )
       )
+    })
+  }, [])
+
+  // Classified/hidden flags are toggled from Settings → Privacy, which patches
+  // its own local list from the ProjectRecord returned by setClassified/setHidden.
+  // That local update doesn't reach this component's projects state (the one
+  // driving the Sidebar), so main also broadcasts the updated record — patch it
+  // in-place here, mirroring the onGithubDataUpdated subscription above.
+  useEffect(() => {
+    return window.api.projects.onChanged((rec) => {
+      setProjects((prev) => prev.map((p) => (p.id === rec.id ? rec : p)))
     })
   }, [])
 
@@ -417,6 +456,58 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     }
   }, [])
 
+  // Timed peek reveal for a classified project — un-redacts it in the sidebar
+  // for PEEK_MS, resetting the timer on repeat reveals (re-right-click while
+  // already peeking). Peeks are per-project independent and are a pure
+  // render-time overlay: nothing about expandedProjectIds or persisted state
+  // is touched here.
+  const revealProject = useCallback((projectId: string): void => {
+    const existingTimeout = peekTimeoutsRef.current.get(projectId)
+    if (existingTimeout !== undefined) clearTimeout(existingTimeout)
+    const expiresAt = Date.now() + PEEK_MS
+    setPeeks((prev) => new Map(prev).set(projectId, expiresAt))
+    const timeout = setTimeout(() => {
+      peekTimeoutsRef.current.delete(projectId)
+      setPeeks((prev) => {
+        if (!prev.has(projectId)) return prev
+        const next = new Map(prev)
+        next.delete(projectId)
+        return next
+      })
+    }, PEEK_MS)
+    peekTimeoutsRef.current.set(projectId, timeout)
+  }, [])
+
+  // Privacy mode turning off clears every active peek — there's nothing left
+  // to redact, so the timers/state are just dead weight until the next time
+  // privacy mode is re-enabled.
+  useEffect(() => {
+    if (privacyMode) return
+    for (const timeout of peekTimeoutsRef.current.values()) clearTimeout(timeout)
+    peekTimeoutsRef.current.clear()
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to an external prop flip (privacyMode going false), not a derived/cascading update; guarded to a no-op when already empty
+    setPeeks((prev) => (prev.size === 0 ? prev : new Map()))
+  }, [privacyMode])
+
+  // Clear all pending peek timers on unmount.
+  useEffect(() => {
+    const timeouts = peekTimeoutsRef.current
+    return () => {
+      for (const timeout of timeouts.values()) clearTimeout(timeout)
+    }
+  }, [])
+
+  // Reads refs (not state) so callers can call it from stable, zero/low-dep
+  // callbacks without needing privacyMode/peeks in their dep arrays. A
+  // project is locked when privacy is on, it's classified, and it isn't
+  // currently peeked.
+  const isProjectLocked = useCallback((projectId: string): boolean => {
+    if (!privacyModeRef.current) return false
+    const project = projectsRef.current.find((p) => p.id === projectId)
+    if (!project?.classified) return false
+    return !peeksRef.current.has(projectId)
+  }, [])
+
   // Stable sidebar toggle handler — uses functional setState to avoid capturing
   // sidebarCollapsed in closure (keeps this stable with empty deps).
   const handleToggleSidebarCollapsed = useCallback((): void => {
@@ -431,6 +522,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleSelectWorkspace = useCallback(
     (workspaceId: string, projectId: string): void => {
+      // Classified + redacted: no-op. The sidebar/sessions view already hide
+      // this workspace's row while locked, but guard here too in case a
+      // caller reaches this via a stale reference (e.g. onNavigateTo).
+      if (isProjectLocked(projectId)) return
       const fromId = selectedWorkspaceIdRef.current
       const toId = workspaceId
       if (fromId !== toId) {
@@ -489,7 +584,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           .catch(console.error)
       })()
     },
-    [fetchWorkspacesForProject]
+    [fetchWorkspacesForProject, isProjectLocked]
   )
   // Sync the handleSelectWorkspace ref after the callback is defined — placed
   // here (after declaration) so the linter can confirm no forward-reference
@@ -600,6 +695,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleToggleProjectExpand = useCallback(
     (id: string): void => {
+      // Classified + redacted: expand/collapse is a no-op. The Sidebar
+      // already hides the chevron on a redacted row, but this guard covers
+      // any caller reaching the handler directly.
+      if (isProjectLocked(id)) return
       setExpandedProjectIds((prev) => {
         const next = new Set(prev)
         if (next.has(id)) {
@@ -622,11 +721,13 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         return next
       })
     },
-    [fetchWorkspacesForProject]
+    [fetchWorkspacesForProject, isProjectLocked]
   )
 
   const handleSelectProject = useCallback(
     (id: string): void => {
+      // Classified + redacted: left-click on a redacted row is inert.
+      if (isProjectLocked(id)) return
       setSelectedProjectId(id)
       setSelectedWorkspaceId(null)
       setView({ kind: 'project', projectId: id })
@@ -643,7 +744,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         projectsLastWorkspaceId: null
       })
     },
-    [fetchWorkspacesForProject]
+    [fetchWorkspacesForProject, isProjectLocked]
   )
 
   // Restore the last Projects-surface location: workspace > project > empty
@@ -1001,6 +1102,23 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   }, [uiState, projectsLoading, projects])
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  // Auto-navigate away when privacy mode flips on (or a project is freshly
+  // marked classified) while the active view targets a now-locked project —
+  // same fallback pattern as the archived-workspace listener above (route to
+  // 'sessions' + persist the uiState nulls so a relaunch doesn't restore
+  // straight back into the classified project/workspace).
+  useEffect(() => {
+    if (view.kind !== 'project' && view.kind !== 'workspace') return
+    if (!isProjectLocked(view.projectId)) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to an external flip (privacyMode/project.classified going true), not a derived/cascading update; guarded so it only fires once per lock transition
+    setSelectedProjectId(null)
+    setSelectedWorkspaceId(null)
+    setView({ kind: 'sessions' })
+    window.api.uiState
+      .update({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
+      .catch(console.error)
+  }, [view, privacyMode, isProjectLocked])
+
   const { available: updateAvailable, latest: updateLatest } = useUpdateAvailable()
 
   const handleSelectSettings = useCallback((): void => {
@@ -1103,6 +1221,29 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     } catch (err) {
       console.error('[dashboard] project setPinned failed', err)
       window.api.projects.list().then(setProjects).catch(console.error)
+    }
+  }, [])
+
+  // Permanent declutter — hidden projects drop out of the sidebar/sessions
+  // view entirely regardless of privacy mode. Unhide only happens from
+  // Settings → Privacy, so this handler is one-directional.
+  const handleHideProject = useCallback(async (projectId: string): Promise<void> => {
+    try {
+      const updated = await window.api.projects.setHidden(projectId, true)
+      setProjects((arr) => arr.map((p) => (p.id === projectId ? updated : p)))
+      // If the hidden project (or a workspace inside it) was in view, route
+      // back to sessions — same fallback used by the classified auto-navigate
+      // effect, since a hidden project can no longer be rendered anywhere.
+      if (selectedProjectIdRef.current === projectId) {
+        setSelectedProjectId(null)
+        setSelectedWorkspaceId(null)
+        setView({ kind: 'sessions' })
+        window.api.uiState
+          .update({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
+          .catch(console.error)
+      }
+    } catch (err) {
+      console.error('[dashboard] project setHidden failed', err)
     }
   }, [])
 
@@ -1601,6 +1742,12 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const activeView = viewToSidebarActiveView(view)
 
+  // Hidden projects are a permanent declutter — filtered out at the
+  // Sidebar/CollapsedProjectList pass-site only, so the raw `projects` state
+  // stays intact for Settings → Privacy (which needs the full list, hidden
+  // included, to drive the "Hidden projects" unhide list).
+  const sidebarProjects = useMemo(() => projects.filter((p) => !p.hidden), [projects])
+
   // Which top-level surface ActivityRail highlights, and which secondary
   // sidebar column (if any) renders to its right. null while in Settings —
   // Sidebar (Projects) is still shown behind Settings so the tree stays
@@ -1631,7 +1778,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     secondaryColumn = (
       <Sidebar
         collapsed={sidebarCollapsed}
-        projects={projects}
+        projects={sidebarProjects}
         projectsLoading={projectsLoading}
         selectedProjectId={selectedProjectId}
         selectedWorkspaceId={selectedWorkspaceId}
@@ -1642,6 +1789,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         workspaceCountInline={uiState?.workspaceCountInline ?? true}
         sidebarWidth={resolvedSidebarWidth}
         fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
+        privacyMode={privacyMode}
+        peeks={peeks}
         pinnedItems={pinnedItems}
         onSelectProject={handleSelectProject}
         onAddProject={handleAddProject}
@@ -1656,6 +1805,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         onCloseWorkspace={handleCloseWorkspace}
         onTogglePinWorkspace={handleToggleWorkspacePin}
         onTogglePinProject={handleToggleProjectPin}
+        onHideProject={handleHideProject}
+        onRevealProject={revealProject}
         onReorderProjects={handleReorderProjects}
         onReorderProjectsByActivity={handleReorderProjectsByActivity}
         onReorderWorkspaces={handleReorderWorkspaces}

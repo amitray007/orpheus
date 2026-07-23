@@ -23,7 +23,9 @@ import {
   setProjectExpandedInSidebar,
   reorderProjects,
   reorderProjectsByActivity,
-  setProjectPinned
+  setProjectPinned,
+  setProjectClassified,
+  setProjectHidden
 } from '../projects'
 import { withRepoLock, removeWorktree, isWorktreeDirty } from '../worktrees'
 import { refreshGithubData } from '../githubAvatar'
@@ -129,6 +131,10 @@ export function registerProjectsIpc(deps: ProjectsIpcDeps): void {
   handle('projects:reorderByActivity', () => reorderProjectsByActivity())
 
   handle('projects:setPinned', (_e, { id, pinned }) => setProjectPinned(id, pinned))
+
+  handle('projects:setClassified', (_e, { id, classified }) => setProjectClassified(id, classified))
+
+  handle('projects:setHidden', (_e, { id, hidden }) => setProjectHidden(id, hidden))
 
   handle('projects:refreshGithub', (_e, projectId) => refreshGithubData(projectId))
 }

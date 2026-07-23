@@ -80,10 +80,15 @@ export function SettingRow({
   // On narrow widths it stacks; min 480px wide it goes side-by-side.
   const chips = mapsTo ? (Array.isArray(mapsTo) ? mapsTo : [mapsTo]) : []
   const id = `setting-${labelToSlug(label)}`
+  // Rows with a description align to the label's baseline (sm:items-start) since the
+  // description makes the left column taller than the control. Rows with just a label
+  // are single-line on both sides, so center them against the control (sm:items-center) —
+  // items-start would otherwise leave the label sitting above the control's midline.
+  const alignment = description ? 'sm:items-start' : 'sm:items-center'
   return (
     <div
       id={id}
-      className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-6 py-4 border-b border-border-default/40 last:border-b-0"
+      className={`flex flex-col gap-2 sm:flex-row ${alignment} sm:justify-between sm:gap-6 py-4 border-b border-border-default/40 last:border-b-0`}
     >
       <div className="flex flex-col gap-0.5 min-w-0 sm:max-w-sm">
         <div className="flex flex-wrap items-center gap-1.5">

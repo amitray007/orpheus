@@ -73,6 +73,15 @@ import {
   reclaimOrphanRoutingProxyPort,
   type OrphanReclaimDeps
 } from '../src/main/routingProxy/orphan.ts'
+import {
+  respawnBackoffDelayMs,
+  decideRespawnAction,
+  decideWatchdogAction,
+  RoutingProxySupervisor,
+  MAX_CONSECUTIVE_RESPAWN_FAILURES,
+  type RoutingProxySupervisorDeps,
+  type SupervisorLogger
+} from '../src/main/routingProxy/supervisor.ts'
 
 // ---------------------------------------------------------------------------
 // Test scratch dir — everything this harness writes lives here, never under
@@ -1179,6 +1188,545 @@ async function cleanup(): Promise<void> {
     'the guard must release after completion, allowing a later restart'
   )
   console.log('✓ the re-entrancy guard releases after completion, allowing a subsequent restart')
+}
+
+// ---------------------------------------------------------------------------
+// 15. Auto-supervision (respawn + health watchdog) — src/main/routingProxy/
+//     supervisor.ts. Fully offline: a fake clock/scheduler stands in for
+//     setTimeout/setInterval so backoff/watchdog timing is asserted exactly,
+//     with no real delays. This is the ONE module in routingProxy/ purpose-
+//     built to be importable by this electron-free harness while still
+//     covering the respawn/backoff/watchdog/give-up decision logic that
+//     manager.ts wires to real electron/process APIs (manager.ts itself
+//     stays untestable here for the same reason restart() is, per section 14
+//     above — it imports `electron`).
+// ---------------------------------------------------------------------------
+
+// 15a. Pure backoff-delay calculator: attempt 0->1s, 1->2s, 2->4s, 3->8s,
+// 4->16s, 5+->30s (capped), per the required schedule exactly.
+{
+  const schedule = [0, 1, 2, 3, 4, 5, 6, 100].map(respawnBackoffDelayMs)
+  assert.deepEqual(
+    schedule,
+    [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000],
+    'backoff schedule must be attempt 0->1s, 1->2s, 2->4s, 3->8s, 4->16s, 5+->30s (capped)'
+  )
+  console.log(
+    '✓ respawnBackoffDelayMs follows the exact required schedule (1s/2s/4s/8s/16s/30s-capped)'
+  )
+}
+
+// 15b. Pure respawn decision function — expected vs unexpected exit.
+{
+  const respawnWhenUnexpected = decideRespawnAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: false,
+    consecutiveFailures: 0
+  })
+  assert.equal(
+    respawnWhenUnexpected.action,
+    'respawn',
+    'an unexpected exit with no restart in flight and under the failure cap must trigger a respawn'
+  )
+  if (respawnWhenUnexpected.action === 'respawn') {
+    assert.equal(
+      respawnWhenUnexpected.delayMs,
+      1000,
+      'first respawn attempt uses the 1s base delay'
+    )
+  }
+
+  const skipWhenExpected = decideRespawnAction({
+    enabled: true,
+    expectedShutdown: true,
+    restarting: false,
+    consecutiveFailures: 0
+  })
+  assert.equal(
+    skipWhenExpected.action,
+    'skip',
+    'an exit marked as expected (manual stop/restart/quit) must NOT trigger a respawn'
+  )
+
+  const skipWhenDisabled = decideRespawnAction({
+    enabled: false,
+    expectedShutdown: false,
+    restarting: false,
+    consecutiveFailures: 0
+  })
+  assert.equal(
+    skipWhenDisabled.action,
+    'skip',
+    'supervision must never fight an intentional stop — disabled must skip respawn entirely'
+  )
+
+  const skipWhenRestarting = decideRespawnAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: true,
+    consecutiveFailures: 0
+  })
+  assert.equal(
+    skipWhenRestarting.action,
+    'skip',
+    'a manual restart already in flight must not be raced by a second supervised respawn'
+  )
+  console.log(
+    '✓ decideRespawnAction: unexpected exit respawns, expected/disabled/restarting-in-flight all skip'
+  )
+}
+
+// 15c. Give-up after MAX_CONSECUTIVE_RESPAWN_FAILURES (5) consecutive
+// failures — and NOT before.
+{
+  const stillTrying = decideRespawnAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: false,
+    consecutiveFailures: MAX_CONSECUTIVE_RESPAWN_FAILURES - 1
+  })
+  assert.equal(
+    stillTrying.action,
+    'respawn',
+    'must keep respawning right up to (but not including) the failure cap'
+  )
+
+  const givesUp = decideRespawnAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: false,
+    consecutiveFailures: MAX_CONSECUTIVE_RESPAWN_FAILURES
+  })
+  assert.equal(
+    givesUp.action,
+    'give-up',
+    `must give up once consecutiveFailures reaches ${MAX_CONSECUTIVE_RESPAWN_FAILURES}`
+  )
+  console.log(
+    `✓ decideRespawnAction gives up after exactly ${MAX_CONSECUTIVE_RESPAWN_FAILURES} consecutive failed respawn attempts, not before`
+  )
+}
+
+// 15d. Watchdog decision — a hung-but-alive (running, unhealthy) process
+// must trigger a restart; a healthy one, a not-running one, a disabled
+// state, an expected-shutdown, and a restart-in-flight must all skip.
+{
+  const restartsWhenHung = decideWatchdogAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: false,
+    isRunning: true,
+    healthy: false
+  })
+  assert.equal(
+    restartsWhenHung.action,
+    'restart',
+    'a running-but-unhealthy (bound, not answering the management probe) process must be restarted'
+  )
+
+  const skipsWhenHealthy = decideWatchdogAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: false,
+    isRunning: true,
+    healthy: true
+  })
+  assert.equal(skipsWhenHealthy.action, 'skip', 'a healthy running process must not be restarted')
+
+  const skipsWhenNotRunning = decideWatchdogAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: false,
+    isRunning: false,
+    healthy: false
+  })
+  assert.equal(
+    skipsWhenNotRunning.action,
+    'skip',
+    'nothing running means nothing for the watchdog to restart — the respawn-on-exit path owns that case'
+  )
+
+  const skipsWhenDisabled = decideWatchdogAction({
+    enabled: false,
+    expectedShutdown: false,
+    restarting: false,
+    isRunning: true,
+    healthy: false
+  })
+  assert.equal(
+    skipsWhenDisabled.action,
+    'skip',
+    'a disabled proxy must never be watchdog-restarted'
+  )
+  console.log(
+    '✓ decideWatchdogAction restarts a hung-but-running proxy and skips in every other case (healthy/not-running/disabled)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 16. RoutingProxySupervisor — the stateful orchestration class, driven with
+// a fully fake scheduler (no real setTimeout/setInterval) so backoff/
+// watchdog timing is deterministic and instantaneous in this harness.
+// ---------------------------------------------------------------------------
+
+interface FakeTimer {
+  id: number
+  cb: () => void
+  fireAt: number
+  interval: number | null
+}
+
+/** Minimal fake scheduler: setTimer/setRepeatingTimer register a callback
+ *  against a virtual clock; advance(ms) fires everything due, repeating
+ *  timers reschedule themselves exactly like the real setInterval would. */
+function makeFakeScheduler(): {
+  deps: Pick<RoutingProxySupervisorDeps, 'setTimer' | 'clearTimer' | 'setRepeatingTimer'>
+  advance: (ms: number) => void
+  pendingCount: () => number
+} {
+  let now = 0
+  let nextId = 1
+  const timers = new Map<number, FakeTimer>()
+
+  const setTimer: RoutingProxySupervisorDeps['setTimer'] = (cb, delayMs) => {
+    const id = nextId++
+    timers.set(id, { id, cb, fireAt: now + delayMs, interval: null })
+    return id
+  }
+  const setRepeatingTimer: RoutingProxySupervisorDeps['setRepeatingTimer'] = (cb, intervalMs) => {
+    const id = nextId++
+    timers.set(id, { id, cb, fireAt: now + intervalMs, interval: intervalMs })
+    return id
+  }
+  const clearTimer: RoutingProxySupervisorDeps['clearTimer'] = (handle) => {
+    timers.delete(handle as number)
+  }
+  const advance = (ms: number): void => {
+    const target = now + ms
+    // Fire due timers in fireAt order, one at a time, so a callback that
+    // itself schedules a new timer within the advanced window is picked up
+    // correctly (mirrors real event-loop ordering closely enough for this
+    // harness's purposes).
+    while (true) {
+      let due: FakeTimer | null = null
+      for (const t of timers.values()) {
+        if (t.fireAt <= target && (due === null || t.fireAt < due.fireAt)) due = t
+      }
+      if (!due) break
+      now = due.fireAt
+      if (due.interval !== null) {
+        due.fireAt = now + due.interval
+      } else {
+        timers.delete(due.id)
+      }
+      due.cb()
+    }
+    now = target
+  }
+  return {
+    deps: { setTimer, setRepeatingTimer, clearTimer },
+    advance,
+    pendingCount: () => timers.size
+  }
+}
+
+function silentLogger(): SupervisorLogger {
+  return { info: () => {}, warn: () => {}, error: () => {} }
+}
+
+/** Flushes pending microtasks (e.g. an `await deps.startProxy()` inside the
+ *  supervisor's respawn path) so synchronous fake-timer `advance()` calls in
+ *  this harness correctly observe state that only settles after a promise
+ *  continuation — mirrors the real event loop interleaving timers/microtasks
+ *  closely enough for these assertions. */
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
+// 16a. Expected shutdown suppresses respawn entirely.
+{
+  const scheduler = makeFakeScheduler()
+  let startCalls = 0
+  let giveUpCalls = 0
+  const deps: RoutingProxySupervisorDeps = {
+    startProxy: async () => {
+      startCalls++
+    },
+    killProxy: () => {},
+    isRunning: () => false,
+    isRestarting: () => false,
+    isEnabled: () => true,
+    checkHealth: async () => ({ healthy: true }),
+    onGiveUp: () => {
+      giveUpCalls++
+    },
+    logger: silentLogger(),
+    ...scheduler.deps
+  }
+  const supervisor = new RoutingProxySupervisor(deps)
+
+  supervisor.markExpectedShutdown()
+  supervisor.onUnexpectedExit(0, null)
+  scheduler.advance(60_000)
+  assert.equal(
+    startCalls,
+    0,
+    'marking a shutdown as expected BEFORE the exit must suppress respawn entirely, even after a long wait'
+  )
+  assert.equal(giveUpCalls, 0, 'no give-up should fire either when the exit was expected')
+  console.log(
+    '✓ RoutingProxySupervisor: an exit preceded by markExpectedShutdown() does NOT trigger a respawn'
+  )
+}
+
+// 16b. An exit with NO prior expected-shutdown mark DOES trigger a respawn,
+// on the correct 1s backoff.
+{
+  const scheduler = makeFakeScheduler()
+  let startCalls = 0
+  const deps: RoutingProxySupervisorDeps = {
+    startProxy: async () => {
+      startCalls++
+    },
+    killProxy: () => {},
+    isRunning: () => true,
+    isRestarting: () => false,
+    isEnabled: () => true,
+    checkHealth: async () => ({ healthy: true }),
+    onGiveUp: () => {},
+    logger: silentLogger(),
+    ...scheduler.deps
+  }
+  const supervisor = new RoutingProxySupervisor(deps)
+
+  supervisor.markStarted()
+  supervisor.onUnexpectedExit(1, null)
+  assert.equal(
+    startCalls,
+    0,
+    'the respawn must be scheduled on a backoff timer, not fired synchronously'
+  )
+  scheduler.advance(999)
+  await flushMicrotasks()
+  assert.equal(startCalls, 0, 'must not respawn before the 1s backoff elapses')
+  scheduler.advance(1)
+  await flushMicrotasks()
+  assert.equal(
+    startCalls,
+    1,
+    'must respawn once the 1s backoff elapses for an unmarked (unexpected) exit'
+  )
+  console.log(
+    '✓ RoutingProxySupervisor: an exit with NO prior expected-shutdown mark respawns after exactly the 1s backoff'
+  )
+}
+
+// 16c. Give up after 5 consecutive failed respawn attempts, and stop trying.
+{
+  const scheduler = makeFakeScheduler()
+  let startCalls = 0
+  let giveUpMessage: string | null = null
+  const deps: RoutingProxySupervisorDeps = {
+    // Every attempt "fails" — the process never comes up.
+    startProxy: async () => {
+      startCalls++
+    },
+    killProxy: () => {},
+    isRunning: () => false,
+    isRestarting: () => false,
+    isEnabled: () => true,
+    checkHealth: async () => ({ healthy: true }),
+    onGiveUp: (message) => {
+      giveUpMessage = message
+    },
+    logger: silentLogger(),
+    ...scheduler.deps
+  }
+  const supervisor = new RoutingProxySupervisor(deps)
+
+  supervisor.markStarted()
+  supervisor.onUnexpectedExit(1, null)
+  // Drain every backoff tier (1s,2s,4s,8s,16s) — 5 failed attempts total.
+  // Each advance() fires a timer synchronously, but the supervisor's own
+  // respawn handling awaits startProxy() before scheduling the NEXT backoff
+  // timer — flush microtasks after every tier so that next timer actually
+  // exists before the following advance() call.
+  for (const tier of [1000, 2000, 4000, 8000, 16000]) {
+    scheduler.advance(tier)
+    await flushMicrotasks()
+  }
+
+  assert.equal(startCalls, 5, 'must have attempted exactly 5 respawns before giving up')
+  assert.ok(giveUpMessage !== null, 'onGiveUp must fire once the 5th consecutive attempt fails')
+  assert.ok(
+    (giveUpMessage as unknown as string).includes('5'),
+    'the give-up message should be clear about the failure count'
+  )
+  assert.ok(supervisor.hasGivenUp(), 'hasGivenUp() must report true after giving up')
+
+  // A 6th window must NOT trigger yet another respawn attempt.
+  scheduler.advance(30_000)
+  await flushMicrotasks()
+  assert.equal(
+    startCalls,
+    5,
+    'once given up, the supervisor must stop trying — no further respawn attempts'
+  )
+  console.log(
+    '✓ RoutingProxySupervisor gives up after exactly 5 consecutive failed respawn attempts and stops trying'
+  )
+
+  // 16d. Counter reset (manual restart / enable-toggle) brings it back.
+  supervisor.resetFailureCount()
+  assert.equal(supervisor.hasGivenUp(), false, 'resetFailureCount() must clear the given-up state')
+  supervisor.markStarted()
+  supervisor.onUnexpectedExit(1, null)
+  scheduler.advance(1000)
+  await flushMicrotasks()
+  assert.equal(
+    startCalls,
+    6,
+    'after a counter reset, respawn attempts must resume normally from a fresh 1s backoff'
+  )
+  console.log(
+    '✓ resetFailureCount() (manual restart / enable-toggle) resets the failure counter and respawn attempts resume'
+  )
+}
+
+// 16e. Watchdog restarting an unhealthy-but-running proxy: a stubbed health
+// probe reporting unhealthy must trigger killProxy() (which — in the real
+// wiring — leads to a real child exit routed back through onUnexpectedExit;
+// this unit only asserts the watchdog's own trigger).
+{
+  const scheduler = makeFakeScheduler()
+  let killCalls = 0
+  const deps: RoutingProxySupervisorDeps = {
+    startProxy: async () => {},
+    killProxy: () => {
+      killCalls++
+    },
+    isRunning: () => true,
+    isRestarting: () => false,
+    isEnabled: () => true,
+    checkHealth: async () => ({ healthy: false, reason: 'stubbed unhealthy' }),
+    onGiveUp: () => {},
+    logger: silentLogger(),
+    ...scheduler.deps
+  }
+  const supervisor = new RoutingProxySupervisor(deps)
+  supervisor.startWatchdog()
+  scheduler.advance(30_000)
+  // Allow the async checkHealth() promise inside the tick to settle.
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.ok(
+    killCalls >= 1,
+    'the watchdog must kill a running-but-unhealthy process on its first 30s tick'
+  )
+  supervisor.dispose()
+  console.log(
+    '✓ RoutingProxySupervisor: the 30s health watchdog kills-and-lets-respawn an unhealthy-but-running proxy'
+  )
+}
+
+// 16f. Single-flight: two overlapping watchdog ticks must not stack/
+// duplicate probes — a slow checkHealth() call must not be invoked a second
+// time while the first is still outstanding.
+{
+  const scheduler = makeFakeScheduler()
+  let probeCalls = 0
+  let resolveFirstProbe: (() => void) | null = null
+  const firstProbeGate = new Promise<void>((resolve) => {
+    resolveFirstProbe = resolve
+  })
+  const deps: RoutingProxySupervisorDeps = {
+    startProxy: async () => {},
+    killProxy: () => {},
+    isRunning: () => true,
+    isRestarting: () => false,
+    isEnabled: () => true,
+    checkHealth: async () => {
+      probeCalls++
+      if (probeCalls === 1) await firstProbeGate
+      return { healthy: true }
+    },
+    onGiveUp: () => {},
+    logger: silentLogger(),
+    ...scheduler.deps
+  }
+  const supervisor = new RoutingProxySupervisor(deps)
+  supervisor.startWatchdog()
+
+  // First tick fires and its probe is deliberately left outstanding.
+  scheduler.advance(30_000)
+  await Promise.resolve()
+  assert.equal(probeCalls, 1, 'first watchdog tick must start exactly one probe')
+
+  // A second tick fires while the first probe is still outstanding — must
+  // NOT start a second overlapping probe (single-flight).
+  scheduler.advance(30_000)
+  await Promise.resolve()
+  assert.equal(
+    probeCalls,
+    1,
+    'a second overlapping watchdog tick must not stack a second probe while one is in flight'
+  )
+
+  // Release the first probe — now the NEXT tick is free to probe again.
+  resolveFirstProbe?.()
+  await Promise.resolve()
+  await Promise.resolve()
+  scheduler.advance(30_000)
+  await Promise.resolve()
+  assert.equal(
+    probeCalls,
+    2,
+    'once the outstanding probe settles, a subsequent tick must be able to probe again'
+  )
+  supervisor.dispose()
+  console.log(
+    '✓ RoutingProxySupervisor: overlapping watchdog ticks are single-flight — no stacked/duplicate probes'
+  )
+}
+
+// 16g. dispose() clears both the backoff-respawn timer and the health-
+// watchdog interval — mirrors shutdownRoutingProxySync()'s requirement.
+{
+  const scheduler = makeFakeScheduler()
+  let startCalls = 0
+  let probeCalls = 0
+  const deps: RoutingProxySupervisorDeps = {
+    startProxy: async () => {
+      startCalls++
+    },
+    killProxy: () => {},
+    isRunning: () => false,
+    isRestarting: () => false,
+    isEnabled: () => true,
+    checkHealth: async () => {
+      probeCalls++
+      return { healthy: true }
+    },
+    onGiveUp: () => {},
+    logger: silentLogger(),
+    ...scheduler.deps
+  }
+  const supervisor = new RoutingProxySupervisor(deps)
+  supervisor.startWatchdog()
+  supervisor.markStarted()
+  supervisor.onUnexpectedExit(1, null) // schedules a 1s backoff respawn timer
+
+  supervisor.dispose()
+  scheduler.advance(120_000)
+  assert.equal(startCalls, 0, 'dispose() must clear the pending backoff-respawn timer')
+  assert.equal(probeCalls, 0, 'dispose() must clear the health-watchdog interval')
+  assert.equal(scheduler.pendingCount(), 0, 'no timers should remain scheduled after dispose()')
+  console.log(
+    '✓ RoutingProxySupervisor.dispose() clears both the backoff-respawn timer and the health-watchdog interval'
+  )
 }
 
 await cleanup()

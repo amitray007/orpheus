@@ -17,6 +17,7 @@ export type SectionId =
   | 'orpheus-window'
   | 'orpheus-notifications'
   | 'orpheus-workspaces'
+  | 'orpheus-privacy'
   | 'orpheus-updates'
   | 'orpheus-model-routing'
   | 'orpheus-status'
@@ -1793,6 +1794,48 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
       'teardown',
       'close workspace'
     ]
+  },
+
+  // ---------------------------------------------------------------------------
+  // Orpheus › Privacy
+  // ---------------------------------------------------------------------------
+  {
+    sectionId: 'orpheus-privacy',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Privacy',
+    settingId: 'privacy-mode',
+    label: 'Privacy Mode',
+    description: "Redact classified projects in the sidebar so they don't leak in screenshots.",
+    mapsTo: [],
+    keywords: [
+      'privacy mode',
+      'redact',
+      'screenshot',
+      'screen share',
+      'blur',
+      'hide project names',
+      'cmd shift h'
+    ]
+  },
+  {
+    sectionId: 'orpheus-privacy',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Privacy',
+    settingId: 'classified-projects',
+    label: 'Classified projects',
+    description: 'Mark projects to redact while Privacy Mode is on.',
+    mapsTo: [],
+    keywords: ['classified', 'redact project', 'sensitive project', 'confidential', 'lock project']
+  },
+  {
+    sectionId: 'orpheus-privacy',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Privacy',
+    settingId: 'hidden-projects',
+    label: 'Hidden projects',
+    description: 'Projects removed from the sidebar and Workspaces view. Unhide them here.',
+    mapsTo: [],
+    keywords: ['hidden project', 'unhide', 'declutter', 'hide project']
   },
 
   // ---------------------------------------------------------------------------

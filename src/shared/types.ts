@@ -99,6 +99,9 @@ export type ProjectRecord = {
   githubRepo: string | null
   githubAvatarUrl: string | null
   githubCheckedAt: number | null
+  // v66
+  classified: boolean
+  hidden: boolean
 }
 
 export type WorkspaceRecord = {
@@ -362,6 +365,9 @@ export type AppUiState = {
   // Master switch for whether any stored routing_proxy_model_aliases row is
   // folded into the generated config.yaml. See src/main/routingProxy/aliases.ts.
   modelAliasesEnabled: boolean
+  // Privacy mode (v66) — when on, projects/workspaces flagged classified/
+  // hidden get redacted/excluded treatment in the UI.
+  privacyMode: boolean
   updatedAt: number
 }
 

@@ -80,6 +80,7 @@ import {
   composeLaunchForMount
 } from './orpheusSurfaceAdapter'
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
+import { buildAppMenu } from './appMenu'
 import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor } from '../shared/types'
@@ -2223,6 +2224,23 @@ if (!app.requestSingleInstanceLock()) {
       startDiagnostics()
       syncDiagFlags()
 
+      // Build the native app menu with the Privacy Mode checkbox item wired to
+      // uiState — best-effort so a menu failure never blocks boot.
+      try {
+        buildAppMenu({
+          privacyMode: getAppUiState().privacyMode,
+          onTogglePrivacyMode: (checked) => {
+            const result = updateAppUiState({ privacyMode: checked })
+            const win = getMainWindow()
+            if (win && !win.isDestroyed()) {
+              win.webContents.send(PUSH_CHANNELS.uiStateChanged, result)
+            }
+          }
+        })
+      } catch (err) {
+        console.error('[startup] failed to build application menu:', err)
+      }
+
       // Wire the workspaceResources registry's main→renderer broadcast bridge
       // once at boot (mirrors configureLoadingOverlay's injection pattern) —
       // keeps workspaceResources.ts a leaf with no import back on index.ts.
@@ -2281,6 +2299,18 @@ if (!app.requestSingleInstanceLock()) {
       if (process.platform === 'darwin') {
         powerMonitor.on('user-did-become-active', kickActiveTerminal)
       }
+
+      // Re-reconcile the managed routing proxy on the same system-wake
+      // events — a sleep/lock cycle can leave the child process wedged or
+      // silently killed by the OS without ever firing a normal 'exit' event
+      // the supervisor would see. reconcileRoutingProxy() is idempotent and
+      // self-healing (see its own doc comment): a no-op when everything is
+      // already fine, and a full reclaim-orphan+start when the proxy is
+      // enabled but not actually running. Fire-and-forget, same as every
+      // other reconcile call site (boot, enable-toggle) — never blocks the
+      // wake event itself.
+      powerMonitor.on('resume', () => void reconcileRoutingProxy())
+      powerMonitor.on('unlock-screen', () => void reconcileRoutingProxy())
 
       // Apply OS-level settings after the window exists (hotkey callback needs it)
       try {
