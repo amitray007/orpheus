@@ -849,6 +849,26 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     mapsTo: ['CLAUDE_CODE_SHELL_PREFIX'],
     keywords: ['shell prefix', 'nice', 'priority', 'command prefix', 'process priority']
   },
+  {
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
+    sectionGroup: 'Claude',
+    sectionLabel: 'Tools',
+    settingId: 'source-zshrc-before-claude',
+    label: 'Source ~/.zshrc before Claude',
+    description: 'Source your full ~/.zshrc before Claude starts.',
+    mapsTo: ['ORPHEUS_SOURCE_ZSHRC'],
+    keywords: ['zshrc', 'shell', 'rc', 'init', 'direnv', 'environment']
+  },
+  {
+    sectionId: SECTION_ID_CLAUDE_TOOLS,
+    sectionGroup: 'Claude',
+    sectionLabel: 'Tools',
+    settingId: 'custom-shell-before-claude',
+    label: 'Custom shell before Claude',
+    description: 'Arbitrary shell run right before Claude starts, e.g. direnv or nvm init.',
+    mapsTo: ['ORPHEUS_PRE_LAUNCH_SNIPPET'],
+    keywords: ['direnv', 'nvm', 'pyenv', 'shell', 'init', 'snippet', 'environment', 'eval']
+  },
 
   // ---------------------------------------------------------------------------
   // Claude › Slash commands (section-level entry only)

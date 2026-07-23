@@ -165,6 +165,9 @@ type ClaudeSettingsRow = {
   disable_mouse_clicks: number
   rewind_on_error_enabled: number
   low_power_mode: number
+  // Shell init controls (shell-init-hook)
+  source_zshrc: number
+  pre_launch_snippet: string
   updated_at: number
 }
 
@@ -316,6 +319,9 @@ function rowToRecord(row: ClaudeSettingsRow): ClaudeGlobalSettings {
     disableMouseClicks: row.disable_mouse_clicks === 1,
     rewindOnErrorEnabled: row.rewind_on_error_enabled === 1,
     lowPowerMode: row.low_power_mode === 1,
+    // Shell init controls (shell-init-hook)
+    sourceZshrc: row.source_zshrc === 1,
+    preLaunchSnippet: row.pre_launch_snippet ?? '',
     updatedAt: row.updated_at
   }
 }
@@ -400,7 +406,9 @@ const BOOLEAN_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
   // Env-var controls (v66)
   'disableMouseClicks',
   'rewindOnErrorEnabled',
-  'lowPowerMode'
+  'lowPowerMode',
+  // Shell init controls (shell-init-hook)
+  'sourceZshrc'
 ]
 
 const STRING_ARRAY_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
@@ -599,6 +607,7 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
   validateMaxWorkspaceChildren(patch)
   validatePositiveIntOrNull(patch, 'toolCallTimeoutMs', 'toolCallTimeoutMs')
   validatePositiveIntOrNull(patch, 'maxToolOutputLength', 'maxToolOutputLength')
+  validateStringKey(patch, 'preLaunchSnippet', 'preLaunchSnippet')
   if ('customEnvVars' in patch) {
     validateCustomEnvVarsValue(patch.customEnvVars, 'claudeSettings')
   }
@@ -639,17 +648,21 @@ export type ClaudeLaunch = {
   model: string
 }
 
-// Applies a scope's scalar overrides (model, permissionMode, effort) on top
-// of `s` — the exact three-key spread used for both project and workspace
-// override layers. Returns `s` unchanged (by reference) when `ov` is empty,
-// otherwise a new merged object, matching the original inline `if
-// (Object.keys(ov).length > 0) { s = {...} }` behavior exactly.
+// Applies a scope's scalar overrides (model, permissionMode, effort,
+// sourceZshrc, preLaunchSnippet) on top of `s` — the exact key spread used
+// for both project and workspace override layers. Returns `s` unchanged (by
+// reference) when `ov` is empty, otherwise a new merged object, matching the
+// original inline `if (Object.keys(ov).length > 0) { s = {...} }` behavior
+// exactly. Each key is only spread when defined, so an unset override key
+// never clobbers the value inherited from the layer below.
 function applyScalarOverrides(
   s: ClaudeGlobalSettings,
   ov: {
     model?: string
     permissionMode?: ClaudePermissionMode
     effort?: ClaudeEffort
+    sourceZshrc?: boolean
+    preLaunchSnippet?: string
   }
 ): ClaudeGlobalSettings {
   if (Object.keys(ov).length === 0) return s
@@ -657,7 +670,9 @@ function applyScalarOverrides(
     ...s,
     ...(ov.model !== undefined ? { model: ov.model } : {}),
     ...(ov.permissionMode !== undefined ? { permissionMode: ov.permissionMode } : {}),
-    ...(ov.effort !== undefined ? { effort: ov.effort } : {})
+    ...(ov.effort !== undefined ? { effort: ov.effort } : {}),
+    ...(ov.sourceZshrc !== undefined ? { sourceZshrc: ov.sourceZshrc } : {}),
+    ...(ov.preLaunchSnippet !== undefined ? { preLaunchSnippet: ov.preLaunchSnippet } : {})
   }
 }
 
@@ -1164,6 +1179,12 @@ function applyLatestLaunchEnv(env: Record<string, string>, s: ClaudeGlobalSettin
 
   // Env-var controls (v66) — General / Model behavior
   if (s.lowPowerMode) env['CLAUDE_CODE_LOW_POWER_MODE'] = '1'
+
+  // Shell init controls (shell-init-hook) — read by orpheus-claude.sh to
+  // opt into sourcing ~/.zshrc and/or running a free-text pre-launch snippet
+  // before claude starts (the wrapper skips ~/.zshrc by default for speed).
+  if (s.sourceZshrc) env['ORPHEUS_SOURCE_ZSHRC'] = '1'
+  if (s.preLaunchSnippet) env['ORPHEUS_PRE_LAUNCH_SNIPPET'] = s.preLaunchSnippet
 }
 
 // Custom env vars — merged last-wins across all three scopes (global →
@@ -1397,7 +1418,10 @@ export function updateClaudeGlobalSettings(patch: ClaudeGlobalSettingsPatch): Cl
     maxToolOutputLength: 'max_tool_output_length',
     disableMouseClicks: 'disable_mouse_clicks',
     rewindOnErrorEnabled: 'rewind_on_error_enabled',
-    lowPowerMode: 'low_power_mode'
+    lowPowerMode: 'low_power_mode',
+    // Shell init controls (shell-init-hook)
+    sourceZshrc: 'source_zshrc',
+    preLaunchSnippet: 'pre_launch_snippet'
   }
 
   const setClauses: string[] = []

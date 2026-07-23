@@ -955,6 +955,31 @@ export function ClaudeToolsSection(): React.JSX.Element {
               className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono cursor-text"
             />
           </SettingRow>
+          <SettingRow
+            label="Source ~/.zshrc before Claude"
+            description="Source your full ~/.zshrc before Claude starts. Off by default for faster launch; turn on if your shell setup (aliases, tool managers) lives in .zshrc."
+            mapsTo="ORPHEUS_SOURCE_ZSHRC"
+          >
+            <Toggle
+              ariaLabel="Source ~/.zshrc before Claude"
+              value={settings.sourceZshrc}
+              onChange={(v) => patch({ sourceZshrc: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Custom shell before Claude"
+            description='Runs as you, in your shell, right before Claude starts. Use it to load tools like direnv or nvm. Example: eval "$(direnv export zsh)"'
+            mapsTo="ORPHEUS_PRE_LAUNCH_SNIPPET"
+          >
+            <textarea
+              aria-label="Custom shell before Claude"
+              value={settings.preLaunchSnippet}
+              onChange={(e) => patch({ preLaunchSnippet: e.target.value })}
+              onBlur={(e) => patch({ preLaunchSnippet: e.target.value.trim() })}
+              placeholder='eval "$(direnv export zsh)"'
+              className="w-full min-h-[76px] px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono resize-y cursor-text"
+            />
+          </SettingRow>
         </div>
       </section>
     </div>
