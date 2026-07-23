@@ -26,7 +26,9 @@ import { installRoutingProxy, defaultInstallDeps, type InstallDeps } from './ins
 import { writeRoutingProxyConfig } from './config'
 import {
   ensureHealthyForRouting as ensureHealthyForRoutingImpl,
-  waitForRoutingProxyReady
+  waitForRoutingProxyReady,
+  checkRoutingProxyHealth,
+  defaultHealthCheckDeps as defaultHealthCheckDepsForWatchdog
 } from './health'
 import {
   startRoutingProxy,
@@ -36,6 +38,11 @@ import {
   getLastError,
   killRoutingProxySync
 } from './lifecycle'
+import {
+  RoutingProxySupervisor,
+  defaultSupervisorTimerDeps,
+  type RoutingProxySupervisorDeps
+} from './supervisor'
 import { fetchRoutingProxyAuthFiles } from './authFiles'
 import { reclaimOrphanRoutingProxyPort, defaultOrphanReclaimDeps } from './orphan'
 import { defaultHealthCheckDeps } from './health'
@@ -364,6 +371,64 @@ export async function install(deps: InstallDeps = defaultInstallDeps()): Promise
 // ---------------------------------------------------------------------------
 
 let authRefreshTimer: ReturnType<typeof setInterval> | null = null
+
+// ---------------------------------------------------------------------------
+// Auto-supervision (respawn-on-crash + health watchdog) — see supervisor.ts's
+// header comment for the full design rationale (pure/electron-free decision
+// logic, unit-tested offline by scripts/verify-routing-proxy.ts). Every side
+// effect the supervisor needs is wired here to the REAL implementations:
+// start()/killRoutingProxySync (below), isRunning/isRestarting/routingProxyEnabled,
+// and checkRoutingProxyHealth supplied with the live management secret
+// (mirrors ensureHealthyForRouting's own wrapper pattern just above).
+// Constructed once at module load, lazily "started" only once start()
+// actually reaches 'running' (startWatchdog()) — see start()'s own call site.
+// ---------------------------------------------------------------------------
+
+function watchdogHealthCheckDeps(): ReturnType<typeof defaultHealthCheckDepsForWatchdog> {
+  return defaultHealthCheckDepsForWatchdog()
+}
+
+const supervisorDeps: RoutingProxySupervisorDeps = {
+  startProxy: () => start(),
+  killProxy: () => killRoutingProxySync(),
+  isRunning,
+  isRestarting: () => restartInFlight,
+  isEnabled: () => getAppUiState().routingProxyEnabled,
+  checkHealth: async () => {
+    const result = await checkRoutingProxyHealth(
+      getRoutingProxyUrl(),
+      { managementSecret: getManagementSecret() },
+      watchdogHealthCheckDeps()
+    )
+    return result.healthy ? { healthy: true } : { healthy: false, reason: result.reason }
+  },
+  onGiveUp: (message) => {
+    if (authRefreshTimer) {
+      clearInterval(authRefreshTimer)
+      authRefreshTimer = null
+    }
+    setSnapshot({ status: 'error', error: message, authFiles: [] })
+  },
+  ...defaultSupervisorTimerDeps()
+}
+
+const routingProxySupervisor = new RoutingProxySupervisor(supervisorDeps)
+
+/**
+ * True for exactly one child-exit event when that exit was preceded by
+ * stop()/restart()/shutdownRoutingProxySync() (all three set this — and
+ * routingProxySupervisor.markExpectedShutdown() — BEFORE the underlying
+ * stopRoutingProxy()/killRoutingProxySync() call). start()'s onExit reads
+ * and immediately resets this so a LATER unexpected exit (a crash during
+ * this same run) isn't misclassified as expected too.
+ */
+let wasExpectedShutdown = false
+
+/** Bounded ring buffer of the managed child's most recent stdout/stderr
+ *  lines — dumped to console only on/near an unexpected exit (see start()'s
+ *  onExit), never spammed at steady state. */
+const RECENT_LOG_LINE_LIMIT = 20
+const recentChildLogLines: string[] = []
 
 // The cold-boot picker-staleness fix's churn-loop guard — the signature
 // (cliproxy.ts's cliProxyModelCacheSignature) of the model cache content as
@@ -724,21 +789,45 @@ export async function start(): Promise<void> {
   })
   recordAliasWrite(startResolvedAliases)
 
+  console.log(`[routing-proxy] starting (version ${version})`)
+  recentChildLogLines.length = 0
+  // markStarted() clears the expected-shutdown flag so a SUBSEQUENT
+  // unexpected exit (crash after this run) is correctly classified again —
+  // stop()/restart()/shutdownRoutingProxySync() set that flag right before
+  // killing the child; a fresh start must undo it.
+  routingProxySupervisor.markStarted()
+
   startRoutingProxy({
     binaryPath: binaryPath(version),
     configPath: configPath(version),
-    onExit: () => {
+    onExit: (code, signal) => {
       if (authRefreshTimer) {
         clearInterval(authRefreshTimer)
         authRefreshTimer = null
       }
+      routingProxySupervisor.stopWatchdog()
       const err = getLastError()
+      const expected = wasExpectedShutdown
       setSnapshot({ status: err ? 'error' : 'stopped', error: err, authFiles: [] })
+      if (!expected) {
+        if (recentChildLogLines.length > 0) {
+          console.error(
+            `[routing-proxy] recent output before unexpected exit:\n` +
+              recentChildLogLines.map((l) => `  ${l}`).join('\n')
+          )
+        }
+        routingProxySupervisor.onUnexpectedExit(code, signal)
+      }
+      wasExpectedShutdown = false
     },
-    onLog: () => {
-      // Managed process output — intentionally not surfaced to the renderer
-      // (no log viewer in scope for this unit); kept as a hook point so a
-      // future unit can wire a LogDisclosure like OrpheusUpdatesSection's.
+    onLog: (line) => {
+      // Managed process output is intentionally not surfaced to the
+      // renderer (no log viewer in scope) — but the last few lines are kept
+      // in a small bounded ring buffer and dumped to console on/near an
+      // unexpected exit (see onExit above), so a crash is diagnosable
+      // without spamming every stdout/stderr line at steady state.
+      recentChildLogLines.push(line)
+      if (recentChildLogLines.length > RECENT_LOG_LINE_LIMIT) recentChildLogLines.shift()
     }
   })
 
@@ -752,10 +841,21 @@ export async function start(): Promise<void> {
   const healthy = await waitForRoutingProxyReady(getRoutingProxyUrl())
 
   if (!healthy) {
+    // The child is left ALIVE by this failure path (waitForRoutingProxyReady
+    // just times out — it never touches the process). Kill it explicitly so
+    // it can't linger as an orphaned zombie the supervisor doesn't know
+    // about; the resulting real 'exit' event routes back through onExit
+    // above (wasExpectedShutdown is false here, so it's treated as
+    // unexpected and the supervisor's normal respawn/backoff decision
+    // applies) rather than this function silently returning with a dangling
+    // child.
+    console.error('[routing-proxy] never became reachable — killing and letting supervisor decide')
+    killRoutingProxySync()
     setSnapshot({ status: 'error', error: 'Proxy process started but never became reachable.' })
     return
   }
 
+  console.log('[routing-proxy] started and reachable')
   setSnapshot({ status: 'running', error: null, installedVersion: version })
   // Fire-and-forget: the 'running' status must be observable to the renderer
   // (via the snapshot push above) immediately, not gated on this network
@@ -765,6 +865,7 @@ export async function start(): Promise<void> {
   authRefreshTimer = setInterval(() => {
     void refreshAuthFiles()
   }, 30_000)
+  routingProxySupervisor.startWatchdog()
 }
 
 export async function stop(): Promise<void> {
@@ -772,6 +873,12 @@ export async function stop(): Promise<void> {
     clearInterval(authRefreshTimer)
     authRefreshTimer = null
   }
+  routingProxySupervisor.stopWatchdog()
+  // Mark BEFORE the underlying stopRoutingProxy() call so the ensuing child
+  // exit is classified as expected and does not trigger a respawn — see
+  // wasExpectedShutdown's own doc comment.
+  wasExpectedShutdown = true
+  routingProxySupervisor.markExpectedShutdown()
   await stopRoutingProxy()
   setSnapshot({
     ...disableTransitionPatch(snapshot.installedVersion),
@@ -830,6 +937,10 @@ export async function restart(): Promise<RoutingProxySnapshot> {
     }
     await reclaimOrphanIfPresent()
     await start()
+    // A manual restart fully resets supervision — whatever consecutive
+    // respawn-failure streak (or give-up state) existed before this no
+    // longer applies once the user has explicitly kicked the process.
+    routingProxySupervisor.resetFailureCount()
     return snapshot
   } finally {
     restartInFlight = false
@@ -896,6 +1007,12 @@ export async function reconcileRoutingProxy(): Promise<void> {
 
 export async function setEnabled(enabled: boolean): Promise<RoutingProxySnapshot> {
   updateAppUiState({ routingProxyEnabled: enabled })
+  if (enabled) {
+    // An intentional enable-toggle fully resets supervision, same rationale
+    // as a manual restart() — never fight a previous give-up state once the
+    // user has explicitly turned the feature back on.
+    routingProxySupervisor.resetFailureCount()
+  }
   await reconcileRoutingProxy()
   return snapshot
 }
@@ -906,6 +1023,13 @@ export function shutdownRoutingProxySync(): void {
     clearInterval(authRefreshTimer)
     authRefreshTimer = null
   }
+  // Mark BEFORE the kill so the resulting child exit (if any) is classified
+  // as expected — the app is quitting, never respawn. dispose() clears both
+  // the backoff-respawn timer and the health-watchdog interval, exactly like
+  // authRefreshTimer above.
+  wasExpectedShutdown = true
+  routingProxySupervisor.markExpectedShutdown()
+  routingProxySupervisor.dispose()
   killRoutingProxySync()
 }
 
