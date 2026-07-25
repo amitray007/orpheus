@@ -46,7 +46,9 @@ function EmptyState({ unavailable }: { unavailable: boolean }): React.JSX.Elemen
         {unavailable ? 'GitHub is unavailable' : 'No open PRs'}
       </div>
       <div className="text-[11px] text-text-muted">
-        {unavailable ? 'Check that gh is installed and authenticated, then retry.' : 'Nothing needs review.'}
+        {unavailable
+          ? 'Check that gh is installed and authenticated, then retry.'
+          : 'Nothing needs review.'}
       </div>
     </div>
   )

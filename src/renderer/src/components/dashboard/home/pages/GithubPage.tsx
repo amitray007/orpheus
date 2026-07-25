@@ -5,7 +5,11 @@ import { formatCompact } from '../../dashboard-home/dashboardHome.helpers'
 import { refreshHomeSource } from '../homeStore'
 import type { HomePageProps } from '../home.types'
 
-function freshnessLabel(fetchedAt: number | undefined, refreshing: boolean, stale: boolean): string {
+function freshnessLabel(
+  fetchedAt: number | undefined,
+  refreshing: boolean,
+  stale: boolean
+): string {
   if (refreshing) return 'Refreshing…'
   if (fetchedAt === undefined) return 'Not refreshed yet'
   if (stale) return 'Showing cached results'
@@ -76,7 +80,9 @@ export function GithubPage({ snapshot }: HomePageProps): React.JSX.Element {
         <>
           {unavailable ? (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border-default bg-surface-raised px-4 py-3 text-sm text-text-secondary">
-              <span>{source.error ?? 'GitHub is unavailable. Showing the last available results.'}</span>
+              <span>
+                {source.error ?? 'GitHub is unavailable. Showing the last available results.'}
+              </span>
               <RetryButton />
             </div>
           ) : null}

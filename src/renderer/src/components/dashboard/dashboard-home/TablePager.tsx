@@ -10,7 +10,12 @@ export interface TablePagerProps {
 }
 
 /** Presentation-only pager; row tables own page bounds and state. */
-export function TablePager({ page, pageCount, onPrev, onNext }: TablePagerProps): React.JSX.Element {
+export function TablePager({
+  page,
+  pageCount,
+  onPrev,
+  onNext
+}: TablePagerProps): React.JSX.Element {
   return (
     <nav className="mt-auto flex items-center justify-end gap-2 pt-3" aria-label="Table pagination">
       <span className="font-mono text-[11px] text-text-muted tabular-nums" aria-live="polite">
