@@ -347,9 +347,8 @@ export class RoutingProxySupervisor {
       if (decision.action === 'skip') return
       this.deps.logger.warn(`health watchdog: ${decision.reason} — killing and respawning`)
       // Explicitly kill first: a hung-but-bound process must not linger as
-      // an orphan the supervisor doesn't know about (waitForRoutingProxyReady
-      // failing in start() leaves the child alive — see manager.ts's start()
-      // doc comment). killProxy() triggers lifecycle.ts's real child 'exit'
+      // an orphan the supervisor doesn't know about. killProxy() triggers
+      // lifecycle.ts's real child 'exit'
       // event, which manager.ts's onExit wires back to onUnexpectedExit()
       // above — so the normal respawn/backoff path picks it up from there;
       // this call only needs to ensure the kill actually happens.

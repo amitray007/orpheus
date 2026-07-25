@@ -55,10 +55,14 @@ import {
 import {
   checkRoutingProxyHealth,
   ensureHealthyForRouting,
-  waitForRoutingProxyReady,
+  probeRoutingProxyTcpReachability,
+  waitForManagedRoutingProxyReady,
+  waitForRoutingProxyTcpDiagnostic,
   type HealthCheckDeps,
+  type ManagedReadinessDeps,
   type RoutingProxyReadyDeps
 } from '../src/main/routingProxy/health.ts'
+import type { RoutingProxySpawnAttempt } from '../src/main/routingProxy/lifecycle.ts'
 import {
   checkRoutingProxyUpdate,
   type UpdateCheckDeps
@@ -530,75 +534,167 @@ async function cleanup(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Health check — unhealthy when nothing listens; healthy when a stub
-//    responds. All I/O injected via HealthCheckDeps (no real socket/HTTP).
+// 6. Strict managed health and readiness. A routing proxy is healthy only
+//    when its live spawned child is the sole listener and its authenticated
+//    management endpoint returns 2xx. TCP remains diagnostic-only.
 // ---------------------------------------------------------------------------
 
 {
-  const unreachableDeps: HealthCheckDeps = {
-    tcpProbe: async () => false,
+  const runtime = {
+    source: 'automatic' as const,
+    url: 'http://127.0.0.1:18765',
+    host: '127.0.0.1',
+    port: 18765,
+    portConfigurationLocked: false
+  }
+  const spawnedAttempt: RoutingProxySpawnAttempt = {
+    pid: 123,
+    managementSecret: 'x'.repeat(48),
+    isAlive: () => true,
+    terminate: () => {}
+  }
+  const listener = { pid: spawnedAttempt.pid, executablePath: '/proxy', argv: [] }
+  const managedDeps = (
+    managementProbe: () => Promise<unknown>,
+    listeners = [listener]
+  ): ManagedReadinessDeps => ({
+    inspectListeners: async () => listeners,
+    managementProbe: async () => (await managementProbe()) === true,
+    sleep: async () => {},
+    now: () => 0
+  })
+
+  const ready = await waitForManagedRoutingProxyReady(
+    runtime,
+    spawnedAttempt,
+    {},
+    managedDeps(async () => true)
+  )
+  assert.deepEqual(
+    ready,
+    { healthy: true },
+    'only owned sole listener plus authenticated 2xx is ready'
+  )
+
+  const cases: Array<
+    [string, RoutingProxySpawnAttempt, ListeningProcess[], () => Promise<unknown>, string]
+  > = [
+    [
+      'exited child',
+      { ...spawnedAttempt, isAlive: () => false },
+      [listener],
+      async () => true,
+      'spawned child exited'
+    ],
+    ['missing owner', spawnedAttempt, [], async () => true, 'listener is not the spawned child'],
+    [
+      'foreign owner',
+      spawnedAttempt,
+      [{ ...listener, pid: 999 }],
+      async () => true,
+      'listener is not the spawned child'
+    ],
+    [
+      'two owner PIDs',
+      spawnedAttempt,
+      [listener, { ...listener, pid: 124 }],
+      async () => true,
+      'listener ownership is ambiguous'
+    ],
+    [
+      '401',
+      spawnedAttempt,
+      [listener],
+      async () => false,
+      'management API did not return authenticated 2xx'
+    ],
+    [
+      '403',
+      spawnedAttempt,
+      [listener],
+      async () => false,
+      'management API did not return authenticated 2xx'
+    ],
+    [
+      '404',
+      spawnedAttempt,
+      [listener],
+      async () => false,
+      'management API did not return authenticated 2xx'
+    ],
+    [
+      '500',
+      spawnedAttempt,
+      [listener],
+      async () => false,
+      'management API did not return authenticated 2xx'
+    ],
+    [
+      'timeout',
+      spawnedAttempt,
+      [listener],
+      async () => false,
+      'management API did not return authenticated 2xx'
+    ],
+    [
+      'malformed result',
+      spawnedAttempt,
+      [listener],
+      async () => 'not-a-boolean',
+      'management API did not return authenticated 2xx'
+    ]
+  ]
+  for (const [name, attempt, listeners, managementProbe, reason] of cases) {
+    const result = await waitForManagedRoutingProxyReady(
+      runtime,
+      attempt,
+      { deadlineMs: 0 },
+      managedDeps(managementProbe, listeners)
+    )
+    assert.deepEqual(
+      result,
+      { healthy: false, reason },
+      `${name} must never count as managed healthy`
+    )
+  }
+
+  const tcpOnly = await probeRoutingProxyTcpReachability('http://127.0.0.1:18765', {
+    tcpProbe: async () => true,
     managementProbe: async () => false
-  }
-  const unhealthy = await checkRoutingProxyHealth(
-    'http://127.0.0.1:18765',
-    { managementSecret: 'x'.repeat(48) },
-    unreachableDeps
-  )
-  assert.equal(unhealthy.healthy, false, 'must report unhealthy when nothing responds')
-  console.log('✓ checkRoutingProxyHealth reports unhealthy when nothing is listening')
-
-  const reachableDeps: HealthCheckDeps = {
-    tcpProbe: async () => true,
-    managementProbe: async () => true
-  }
-  const healthy = await checkRoutingProxyHealth(
-    'http://127.0.0.1:18765',
-    { managementSecret: 'x'.repeat(48) },
-    reachableDeps
-  )
-  assert.equal(healthy.healthy, true, 'must report healthy when the management probe responds')
-  console.log('✓ checkRoutingProxyHealth reports healthy when a stub responds')
-
-  // TCP-only fallback path (no management secret supplied yet).
-  const tcpOnlyDeps: HealthCheckDeps = {
-    tcpProbe: async () => true,
-    managementProbe: async () => {
-      throw new Error('managementProbe must not be called without a secret')
-    }
-  }
-  const tcpHealthy = await checkRoutingProxyHealth('http://127.0.0.1:18765', {}, tcpOnlyDeps)
+  })
   assert.equal(
-    tcpHealthy.healthy,
+    tcpOnly,
     true,
-    'bare TCP reachability must count as healthy when no secret is set'
+    'TCP reachability is retained as a separately named diagnostic helper'
   )
-  console.log('✓ checkRoutingProxyHealth falls back to a bare TCP probe with no management secret')
-}
 
-// ---------------------------------------------------------------------------
-// 7. Fail-closed gate — ensureHealthyForRouting() throws a clear error when
-//    unhealthy, so a caller (the terminal:mount handler) can refuse to mount
-//    a routed workspace instead of hanging ~44-128s against a dead proxy.
-// ---------------------------------------------------------------------------
-
-{
-  const unreachableDeps: HealthCheckDeps = {
-    tcpProbe: async () => false,
-    managementProbe: async () => false
-  }
+  const health = await checkRoutingProxyHealth(
+    runtime,
+    spawnedAttempt,
+    {},
+    managedDeps(async () => true)
+  )
+  assert.deepEqual(health, { healthy: true })
+  await ensureHealthyForRouting(
+    runtime,
+    spawnedAttempt,
+    {},
+    managedDeps(async () => true)
+  )
   await assert.rejects(
-    () => ensureHealthyForRouting('http://127.0.0.1:18765', {}, unreachableDeps),
-    /not reachable/,
-    'ensureHealthyForRouting must throw a clear, immediate error when unhealthy'
+    () =>
+      ensureHealthyForRouting(
+        runtime,
+        spawnedAttempt,
+        { deadlineMs: 0 },
+        managedDeps(async () => false)
+      ),
+    /not healthy/,
+    'routing gate must fail closed when management authentication fails'
   )
-  console.log('✓ ensureHealthyForRouting REJECTS (fail-closed) when the proxy is unreachable')
-
-  const reachableDeps: HealthCheckDeps = {
-    tcpProbe: async () => true,
-    managementProbe: async () => true
-  }
-  await ensureHealthyForRouting('http://127.0.0.1:18765', {}, reachableDeps) // must resolve, not throw
-  console.log('✓ ensureHealthyForRouting resolves (allows mount) when the proxy is healthy')
+  console.log(
+    '✓ managed health requires owned sole listener and authenticated 2xx; TCP is diagnostic-only'
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -770,7 +866,7 @@ async function cleanup(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// 10. Readiness polling (waitForRoutingProxyReady) — the perf fix. A fake
+// 10. TCP diagnostic polling (waitForRoutingProxyTcpDiagnostic). A fake
 //    clock + fake sleep so every assertion is deterministic and instant: real
 //    time never advances, `now()` is driven purely by how many times `sleep`
 //    has been "awaited", and `sleep` itself resolves synchronously (no real
@@ -809,7 +905,7 @@ async function cleanup(): Promise<void> {
   // with ZERO sleeps recorded.
   {
     const { deps, sleepCalls, probeCallCount } = makeFakeClockDeps(async () => true)
-    const ready = await waitForRoutingProxyReady('http://127.0.0.1:18765', {}, deps)
+    const ready = await waitForRoutingProxyTcpDiagnostic('http://127.0.0.1:18765', {}, deps)
     assert.equal(ready, true, 'must report ready when the very first probe succeeds')
     assert.equal(probeCallCount(), 1, 'exactly one probe when the first one succeeds')
     assert.equal(
@@ -818,7 +914,7 @@ async function cleanup(): Promise<void> {
       'no sleep must occur before the first probe (or after success)'
     )
     console.log(
-      '✓ waitForRoutingProxyReady probes immediately (no initial sleep) and returns on first success'
+      '✓ waitForRoutingProxyTcpDiagnostic probes immediately (no initial sleep) and returns on first success'
     )
   }
 
@@ -832,7 +928,7 @@ async function cleanup(): Promise<void> {
       calls++
       return calls >= successOnProbe
     })
-    const ready = await waitForRoutingProxyReady('http://127.0.0.1:18765', {}, deps)
+    const ready = await waitForRoutingProxyTcpDiagnostic('http://127.0.0.1:18765', {}, deps)
     assert.equal(ready, true, 'must eventually report ready once a later probe succeeds')
     assert.equal(probeCallCount(), successOnProbe, `must probe exactly ${successOnProbe} times`)
 
@@ -853,7 +949,7 @@ async function cleanup(): Promise<void> {
       )
     }
     console.log(
-      `✓ waitForRoutingProxyReady detects an Nth-probe success promptly (total simulated wait ${totalSimulatedWaitMs}ms ` +
+      `✓ waitForRoutingProxyTcpDiagnostic detects an Nth-probe success promptly (total simulated wait ${totalSimulatedWaitMs}ms ` +
         `vs old flat behaviour ${oldFlatBehaviourMs}ms for N=${successOnProbe})`
     )
   }
@@ -868,7 +964,7 @@ async function cleanup(): Promise<void> {
       calls++
       return calls >= 20 // never succeeds within the deadline below
     })
-    await waitForRoutingProxyReady(
+    await waitForRoutingProxyTcpDiagnostic(
       'http://127.0.0.1:18765',
       { deadlineMs: 5000, initialDelayMs: 50, maxDelayMs, backoffFactor: 2 },
       deps
@@ -884,7 +980,9 @@ async function cleanup(): Promise<void> {
       sleepCalls[sleepCalls.length - 1]! === maxDelayMs,
       'backoff must actually reach the cap when retried enough times'
     )
-    console.log('✓ waitForRoutingProxyReady backoff is bounded by maxDelayMs and reaches the cap')
+    console.log(
+      '✓ waitForRoutingProxyTcpDiagnostic backoff is bounded by maxDelayMs and reaches the cap'
+    )
   }
 
   // 10d. The overall deadline still terminates a never-reachable proxy —
@@ -894,7 +992,11 @@ async function cleanup(): Promise<void> {
   {
     const deadlineMs = 15_000
     const { deps, sleepCalls } = makeFakeClockDeps(async () => false)
-    const ready = await waitForRoutingProxyReady('http://127.0.0.1:18765', { deadlineMs }, deps)
+    const ready = await waitForRoutingProxyTcpDiagnostic(
+      'http://127.0.0.1:18765',
+      { deadlineMs },
+      deps
+    )
     assert.equal(ready, false, 'must report NOT ready once the deadline elapses with no success')
     const totalSimulatedWaitMs = sleepCalls.reduce((a, b) => a + b, 0)
     assert.ok(
@@ -902,13 +1004,13 @@ async function cleanup(): Promise<void> {
       'must have waited at least the full deadline before giving up'
     )
     console.log(
-      `✓ waitForRoutingProxyReady still terminates a never-reachable proxy at the ${deadlineMs}ms deadline (simulated)`
+      `✓ waitForRoutingProxyTcpDiagnostic still terminates a never-reachable proxy at the ${deadlineMs}ms deadline (simulated)`
     )
   }
 
   // 10e. Readiness uses the cheap/TCP signal only — the expensive
   // management-API round trip must never be invoked for readiness. Prove it
-  // by asserting waitForRoutingProxyReady's deps shape has no
+  // by asserting waitForRoutingProxyTcpDiagnostic's deps shape has no
   // managementProbe at all (a compile-time guarantee) AND that a tcpProbe
   // returning true is sufficient on its own with no management secret
   // involved anywhere in the call.
@@ -923,7 +1025,7 @@ async function cleanup(): Promise<void> {
         managementProbeCalled = true // would only flip if we ever slept, i.e. tcp failed first
       }
     }
-    const ready = await waitForRoutingProxyReady('http://127.0.0.1:18765', {}, readyDeps)
+    const ready = await waitForRoutingProxyTcpDiagnostic('http://127.0.0.1:18765', {}, readyDeps)
     assert.equal(ready, true)
     assert.equal(
       managementProbeCalled,
@@ -931,16 +1033,18 @@ async function cleanup(): Promise<void> {
       'a bare TCP-accept must be sufficient for readiness — no management round trip required'
     )
     console.log(
-      '✓ waitForRoutingProxyReady is satisfied by the cheap TCP signal alone — no management-API round trip required for readiness'
+      '✓ waitForRoutingProxyTcpDiagnostic is satisfied by the cheap TCP signal alone — no management-API round trip required for readiness'
     )
   }
 
   // 10f. Invalid URL never throws — resolves false.
   {
     const { deps } = makeFakeClockDeps(async () => true)
-    const ready = await waitForRoutingProxyReady('not a url', {}, deps)
+    const ready = await waitForRoutingProxyTcpDiagnostic('not a url', {}, deps)
     assert.equal(ready, false, 'an invalid base URL must resolve false, never throw')
-    console.log('✓ waitForRoutingProxyReady resolves false (never throws) for an invalid URL')
+    console.log(
+      '✓ waitForRoutingProxyTcpDiagnostic resolves false (never throws) for an invalid URL'
+    )
   }
 }
 
@@ -953,18 +1057,31 @@ async function cleanup(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 {
-  const unreachableDeps: HealthCheckDeps = {
-    tcpProbe: async () => false,
-    managementProbe: async () => false
+  const runtime = {
+    source: 'automatic' as const,
+    url: 'http://127.0.0.1:18765',
+    host: '127.0.0.1',
+    port: 18765,
+    portConfigurationLocked: false
+  }
+  const ownedAttempt: RoutingProxySpawnAttempt = {
+    pid: 123,
+    managementSecret: 'x'.repeat(48),
+    isAlive: () => true,
+    terminate: () => {}
+  }
+  const foreignDeps: ManagedReadinessDeps = {
+    inspectListeners: async () => [{ pid: 999, executablePath: '/foreign', argv: [] }],
+    managementProbe: async () => true,
+    sleep: async () => {},
+    now: () => 0
   }
   await assert.rejects(
-    () => ensureHealthyForRouting('http://127.0.0.1:18765', {}, unreachableDeps),
-    /not reachable/,
-    'ensureHealthyForRouting must still reject an unreachable proxy after the readiness-polling change'
+    () => ensureHealthyForRouting(runtime, ownedAttempt, { deadlineMs: 0 }, foreignDeps),
+    /not healthy/,
+    'routing gate must reject a foreign listener even when its TCP port and management API respond'
   )
-  console.log(
-    '✓ (no-regression) ensureHealthyForRouting remains fail-closed after the readiness-polling perf change'
-  )
+  console.log('✓ (no-regression) routing gate remains fail-closed for foreign/unowned listeners')
 }
 
 // ---------------------------------------------------------------------------

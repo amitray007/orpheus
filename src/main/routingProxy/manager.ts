@@ -26,9 +26,8 @@ import { installRoutingProxy, defaultInstallDeps, type InstallDeps } from './ins
 import { writeRoutingProxyConfig } from './config'
 import {
   ensureHealthyForRouting as ensureHealthyForRoutingImpl,
-  waitForRoutingProxyReady,
-  checkRoutingProxyHealth,
-  defaultHealthCheckDeps as defaultHealthCheckDepsForWatchdog
+  waitForManagedRoutingProxyReady,
+  checkRoutingProxyHealth
 } from './health'
 import {
   startRoutingProxy,
@@ -36,6 +35,7 @@ import {
   isRunning,
   getManagementSecret,
   getLastError,
+  type RoutingProxySpawnAttempt,
   killRoutingProxySync
 } from './lifecycle'
 import {
@@ -377,6 +377,7 @@ export async function install(deps: InstallDeps = defaultInstallDeps()): Promise
 // ---------------------------------------------------------------------------
 
 let authRefreshTimer: ReturnType<typeof setInterval> | null = null
+let currentSpawnAttempt: RoutingProxySpawnAttempt | null = null
 
 // ---------------------------------------------------------------------------
 // Auto-supervision (respawn-on-crash + health watchdog) — see supervisor.ts's
@@ -390,10 +391,6 @@ let authRefreshTimer: ReturnType<typeof setInterval> | null = null
 // actually reaches 'running' (startWatchdog()) — see start()'s own call site.
 // ---------------------------------------------------------------------------
 
-function watchdogHealthCheckDeps(): ReturnType<typeof defaultHealthCheckDepsForWatchdog> {
-  return defaultHealthCheckDepsForWatchdog()
-}
-
 const supervisorDeps: RoutingProxySupervisorDeps = {
   startProxy: () => start(),
   killProxy: () => killRoutingProxySync(),
@@ -401,11 +398,9 @@ const supervisorDeps: RoutingProxySupervisorDeps = {
   isRestarting: () => restartInFlight,
   isEnabled: () => getAppUiState().routingProxyEnabled,
   checkHealth: async () => {
-    const result = await checkRoutingProxyHealth(
-      getRoutingProxyUrl(),
-      { managementSecret: getManagementSecret() },
-      watchdogHealthCheckDeps()
-    )
+    const attempt = currentSpawnAttempt
+    if (!attempt) return { healthy: false, reason: 'no owned routing proxy spawn attempt' }
+    const result = await checkRoutingProxyHealth(getRoutingProxyRuntime(), attempt)
     return result.healthy ? { healthy: true } : { healthy: false, reason: result.reason }
   },
   onGiveUp: (message) => {
@@ -803,7 +798,7 @@ export async function start(): Promise<void> {
   // killing the child; a fresh start must undo it.
   routingProxySupervisor.markStarted()
 
-  startRoutingProxy({
+  const attempt = startRoutingProxy({
     binaryPath: binaryPath(version),
     configPath: configPath(version),
     onExit: (code, signal) => {
@@ -812,6 +807,7 @@ export async function start(): Promise<void> {
         authRefreshTimer = null
       }
       routingProxySupervisor.stopWatchdog()
+      if (currentSpawnAttempt?.pid === attempt.pid) currentSpawnAttempt = null
       const err = getLastError()
       const expected = wasExpectedShutdown
       setSnapshot({ status: err ? 'error' : 'stopped', error: err, authFiles: [] })
@@ -836,32 +832,23 @@ export async function start(): Promise<void> {
       if (recentChildLogLines.length > RECENT_LOG_LINE_LIMIT) recentChildLogLines.shift()
     }
   })
+  currentSpawnAttempt = attempt
 
-  // Poll readiness until the port is listening (bounded), then flip to
-  // running and start polling auth-files. Uses the cheap TCP-only probe with
-  // a fast, backing-off cadence (immediate first probe, short probe timeout)
-  // rather than the management-API round trip used elsewhere — readiness
-  // only needs "something is listening on the port", and a local process
-  // either accepts a loopback connection almost instantly or isn't up yet.
-  // Still bounded overall so a broken binary can't spin forever.
-  const healthy = await waitForRoutingProxyReady(getRoutingProxyUrl())
+  // Readiness is proof of this child only: the spawned PID must be alive and
+  // the sole listener, then its authenticated management endpoint must be 2xx.
+  const readiness = await waitForManagedRoutingProxyReady(getRoutingProxyRuntime(), attempt)
 
-  if (!healthy) {
-    // The child is left ALIVE by this failure path (waitForRoutingProxyReady
-    // just times out — it never touches the process). Kill it explicitly so
-    // it can't linger as an orphaned zombie the supervisor doesn't know
-    // about; the resulting real 'exit' event routes back through onExit
-    // above (wasExpectedShutdown is false here, so it's treated as
-    // unexpected and the supervisor's normal respawn/backoff decision
-    // applies) rather than this function silently returning with a dangling
-    // child.
-    console.error('[routing-proxy] never became reachable — killing and letting supervisor decide')
-    killRoutingProxySync()
-    setSnapshot({ status: 'error', error: 'Proxy process started but never became reachable.' })
+  if (!readiness.healthy) {
+    // Terminate only the captured child for this failed attempt; never signal a
+    // PID discovered through listener inspection.
+    console.error(`[routing-proxy] failed managed readiness: ${readiness.reason}`)
+    attempt.terminate()
+    if (currentSpawnAttempt === attempt) currentSpawnAttempt = null
+    setSnapshot({ status: 'error', error: `Proxy process failed readiness: ${readiness.reason}` })
     return
   }
 
-  console.log('[routing-proxy] started and reachable')
+  console.log('[routing-proxy] started and authenticated')
   setSnapshot({ status: 'running', error: null, installedVersion: version })
   // Fire-and-forget: the 'running' status must be observable to the renderer
   // (via the snapshot push above) immediately, not gated on this network
@@ -1207,9 +1194,10 @@ export async function forceRegenerateConfig(): Promise<RoutingProxyMaintenanceRe
 // ---------------------------------------------------------------------------
 
 export async function ensureHealthyForRouting(): Promise<void> {
-  await ensureHealthyForRoutingImpl(getRoutingProxyUrl(), {
-    managementSecret: getManagementSecret()
-  })
+  const attempt = currentSpawnAttempt
+  if (!attempt)
+    throw new Error('Routing proxy is not healthy (no owned routing proxy spawn attempt).')
+  await ensureHealthyForRoutingImpl(getRoutingProxyRuntime(), attempt)
 }
 
 // ---------------------------------------------------------------------------

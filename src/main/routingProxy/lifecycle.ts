@@ -41,6 +41,13 @@ export interface StartOptions {
   onLog?: (line: string) => void
 }
 
+export interface RoutingProxySpawnAttempt {
+  pid: number
+  managementSecret: string
+  isAlive: () => boolean
+  terminate: () => void
+}
+
 /**
  * Start the managed proxy child process, if not already running. Sets
  * MANAGEMENT_PASSWORD (freshly generated, per-run) in the child's env so the
@@ -49,9 +56,19 @@ export interface StartOptions {
  * onLog(line) callbacks for the child's own stdout/stderr, which CLIProxyAPI
  * does not echo the secret back into.
  */
-export function startRoutingProxy(options: StartOptions): { managementSecret: string } {
-  if (isRunning()) {
-    return { managementSecret: managementSecret ?? '' }
+export function startRoutingProxy(options: StartOptions): RoutingProxySpawnAttempt {
+  if (isRunning() && child?.pid !== undefined && managementSecret) {
+    const currentChild = child
+    const currentPid = currentChild.pid
+    if (currentPid === undefined) throw new Error('running routing proxy has no PID')
+    return {
+      pid: currentPid,
+      managementSecret,
+      isAlive: () => currentChild.exitCode === null && !currentChild.killed,
+      terminate: () => {
+        if (currentChild.exitCode === null && !currentChild.killed) currentChild.kill('SIGTERM')
+      }
+    }
   }
   lastError = null
   managementSecret = crypto.randomBytes(24).toString('hex')
@@ -84,8 +101,10 @@ export function startRoutingProxy(options: StartOptions): { managementSecret: st
     lastError = err.message
   })
   proc.on('exit', (code, signal) => {
-    child = null
-    setRuntimeRoutingAuthToken(null)
+    if (child === proc) {
+      child = null
+      setRuntimeRoutingAuthToken(null)
+    }
     if (code !== 0 && code !== null) {
       lastError = `CLIProxyAPI exited with code ${code}`
     }
@@ -93,7 +112,14 @@ export function startRoutingProxy(options: StartOptions): { managementSecret: st
   })
 
   child = proc
-  return { managementSecret }
+  return {
+    pid: proc.pid ?? -1,
+    managementSecret,
+    isAlive: () => proc.exitCode === null && !proc.killed,
+    terminate: () => {
+      if (proc.exitCode === null && !proc.killed) proc.kill('SIGTERM')
+    }
+  }
 }
 
 /** Stop the managed proxy, if running. SIGTERM first, SIGKILL after a grace period. */
