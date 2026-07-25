@@ -3,9 +3,11 @@ import type React from 'react'
 import type {
   RoutingProxyAssetInfo,
   RoutingProxyMaintenanceResult,
+  RoutingProxyPortConfiguration,
+  RoutingProxyPortMode,
   RoutingProxySnapshot
 } from '@shared/types'
-import { SettingRow, Toggle, SectionTitle, Eyebrow } from './primitives'
+import { SettingRow, Toggle, SectionTitle, Eyebrow, NumberInput } from './primitives'
 import { ProvidersSection } from './ProvidersSection'
 import { AliasesSection } from './AliasesSection'
 import { SettingsSectionSkeleton } from '../../Skeleton'
@@ -69,6 +71,15 @@ function healthDotClass(health: 'ok' | 'error' | 'unknown'): string {
   if (health === 'ok') return 'bg-green-500'
   if (health === 'error') return 'bg-red-500'
   return 'bg-zinc-400'
+}
+
+function portConfigurationRequest(
+  mode: RoutingProxyPortMode,
+  customPort: number | null
+): RoutingProxyPortConfiguration | null {
+  if (mode === 'automatic') return { mode: 'automatic' }
+  if (customPort === null) return null
+  return { mode: 'custom', port: customPort }
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +164,8 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
   const [updateLatest, setUpdateLatest] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [restarting, setRestarting] = useState(false)
+  const [portBusy, setPortBusy] = useState(false)
+  const [customPortInput, setCustomPortInput] = useState<number | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -160,7 +173,10 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
     window.api.routingProxy
       .getState()
       .then((s) => {
-        if (!cancelled) setSnapshot(s)
+        if (!cancelled) {
+          setSnapshot(s)
+          setCustomPortInput(s.customPort)
+        }
       })
       .catch(console.error)
 
@@ -172,7 +188,10 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
       .catch(console.error)
 
     const off = window.api.routingProxy.onSnapshot((s) => {
-      if (!cancelled) setSnapshot(s)
+      if (!cancelled) {
+        setSnapshot(s)
+        setCustomPortInput(s.customPort)
+      }
     })
 
     return () => {
@@ -180,6 +199,30 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
       off()
     }
   }, [])
+
+  async function applyPortMode(mode: RoutingProxyPortMode): Promise<void> {
+    if (portBusy) return
+    const configuration = portConfigurationRequest(mode, customPortInput)
+    if (!configuration) return
+
+    setPortBusy(true)
+    try {
+      const nextSnapshot = await window.api.routingProxy.setPortConfiguration(configuration)
+      setSnapshot(nextSnapshot)
+      setCustomPortInput(nextSnapshot.customPort)
+    } catch (err) {
+      console.error('[routingProxy] setPortConfiguration failed', err)
+      try {
+        const currentSnapshot = await window.api.routingProxy.getState()
+        setSnapshot(currentSnapshot)
+        setCustomPortInput(currentSnapshot.customPort)
+      } catch (refreshErr) {
+        console.error('[routingProxy] getState after setPortConfiguration failed', refreshErr)
+      }
+    } finally {
+      setPortBusy(false)
+    }
+  }
 
   function toggleEnabled(v: boolean): void {
     if (!snapshot) return
@@ -316,6 +359,83 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
               ariaLabel="Enable managed routing proxy"
             />
           </SettingRow>
+        </div>
+      </section>
+
+      {/* Port configuration */}
+      <section className="flex flex-col">
+        <Eyebrow className="mb-3">Port</Eyebrow>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          {snapshot.portConfigurationLocked ? (
+            <div className="py-4 flex flex-col gap-1.5">
+              <p className="text-xs font-medium text-text-primary">
+                Port controlled by ORPHEUS_ROUTING_PROXY_URL
+              </p>
+              <p className="text-xs font-mono text-text-secondary break-all">
+                {snapshot.effectiveUrl ?? 'No effective port allocated'}
+              </p>
+              <p className="text-xs text-text-muted">
+                The environment supplies the URL, host, and port binding while Orpheus still manages
+                the proxy lifecycle.
+              </p>
+            </div>
+          ) : (
+            <>
+              <SettingRow
+                label="Port mode"
+                description="Choose an automatic managed port or bind the proxy to a custom port."
+              >
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={portBusy}
+                    onClick={() => void applyPortMode('automatic')}
+                    className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                      snapshot.portMode === 'automatic'
+                        ? 'bg-accent text-black border-accent'
+                        : 'text-text-muted border-border-default hover:text-text-secondary'
+                    }`}
+                  >
+                    Automatic
+                  </button>
+                  <button
+                    type="button"
+                    disabled={portBusy || customPortInput === null}
+                    onClick={() => void applyPortMode('custom')}
+                    className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                      snapshot.portMode === 'custom'
+                        ? 'bg-accent text-black border-accent'
+                        : 'text-text-muted border-border-default hover:text-text-secondary'
+                    }`}
+                  >
+                    Custom
+                  </button>
+                </div>
+              </SettingRow>
+              <SettingRow
+                label="Custom port"
+                description="Enter a port from 1024 to 65535, then select Custom."
+              >
+                <NumberInput
+                  value={customPortInput}
+                  onChange={setCustomPortInput}
+                  disabled={portBusy}
+                  placeholder="18777"
+                  ariaLabel="Custom routing proxy port"
+                />
+              </SettingRow>
+            </>
+          )}
+        </div>
+        <div className="mt-1.5 flex flex-col gap-0.5 text-xs text-text-muted">
+          <span className="font-mono break-all">
+            {snapshot.effectiveUrl ?? 'No effective port allocated'}
+          </span>
+          {snapshot.effectivePort === null ? (
+            <span>No effective port allocated</span>
+          ) : (
+            <span>Port {snapshot.effectivePort}</span>
+          )}
         </div>
       </section>
 

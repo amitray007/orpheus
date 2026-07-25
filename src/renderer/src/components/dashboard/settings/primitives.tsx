@@ -493,6 +493,7 @@ export interface NumberInputProps {
   placeholder?: string
   className?: string
   ariaLabel?: string
+  disabled?: boolean
 }
 
 export function NumberInput({
@@ -500,7 +501,8 @@ export function NumberInput({
   onChange,
   placeholder,
   className,
-  ariaLabel
+  ariaLabel,
+  disabled
 }: NumberInputProps): React.JSX.Element {
   const [local, setLocal] = useState(value === null ? '' : String(value))
   // Track whether we have focus to avoid overwriting user's in-progress edits
@@ -531,6 +533,7 @@ export function NumberInput({
       type="text"
       inputMode="numeric"
       aria-label={ariaLabel}
+      disabled={disabled}
       value={displayValue}
       onChange={(e) => setLocal(e.target.value)}
       onFocus={() => {
@@ -546,7 +549,7 @@ export function NumberInput({
       placeholder={placeholder}
       className={
         className ??
-        'w-32 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono text-right cursor-text'
+        'w-32 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono text-right cursor-text disabled:opacity-40 disabled:cursor-not-allowed'
       }
     />
   )

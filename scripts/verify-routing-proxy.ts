@@ -90,6 +90,7 @@ import {
   type RoutingProxyVariantContext
 } from '../src/main/routingProxy/runtime.ts'
 import { startAtResolvedRoutingProxyPort } from '../src/main/routingProxy/allocator.ts'
+import type { RoutingProxyPortConfiguration } from '../src/shared/types.ts'
 import {
   RoutingProxyLifecycleCoordinator,
   START_SUPERSEDED
@@ -387,6 +388,90 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
   console.log(
     '✓ lifecycle coordinator blocks poisoned cleanup until exact exit and listener release'
   )
+}
+
+// ---------------------------------------------------------------------------
+// 0e. Typed port-configuration IPC and snapshot-driven Settings UI. These
+// static contracts protect the Electron boundary without loading Electron or
+// mounting React in this fully-offline harness.
+// ---------------------------------------------------------------------------
+
+{
+  const customRequest: RoutingProxyPortConfiguration = { mode: 'custom', port: 18777 }
+  const automaticRequest: RoutingProxyPortConfiguration = { mode: 'automatic' }
+  assert.deepEqual(customRequest, { mode: 'custom', port: 18777 })
+  assert.deepEqual(automaticRequest, { mode: 'automatic' })
+
+  const repoRoot = path.resolve(import.meta.dirname, '..')
+  const [ipcSource, routingProxyIpcSource, preloadSource, sectionSource] = await Promise.all([
+    fs.readFile(path.join(repoRoot, 'src/shared/ipc.ts'), 'utf8'),
+    fs.readFile(path.join(repoRoot, 'src/main/ipc/routingProxy.ts'), 'utf8'),
+    fs.readFile(path.join(repoRoot, 'src/preload/index.ts'), 'utf8'),
+    fs.readFile(
+      path.join(
+        repoRoot,
+        'src/renderer/src/components/dashboard/settings/OrpheusModelRoutingSection.tsx'
+      ),
+      'utf8'
+    )
+  ])
+
+  assert.match(
+    ipcSource,
+    /'routingProxy:setPortConfiguration':\s*\{\s*req:\s*\[\{ mode: 'automatic' } \| \{ mode: 'custom'; port: number }\]\s*res: RoutingProxySnapshot/s,
+    'the typed invoke map must define the exact port-configuration request and snapshot response'
+  )
+  assert.match(
+    routingProxyIpcSource,
+    /import \{[\s\S]*\bsetPortConfiguration\b[\s\S]*\} from '..\/routingProxy\/manager'/,
+    'the routing-proxy IPC module must import the manager mutation'
+  )
+  assert.match(
+    routingProxyIpcSource,
+    /handle\('routingProxy:setPortConfiguration', async \(_e, configuration\) =>\s*setPortConfiguration\(configuration\)\s*\)/s,
+    'the handler must use the typed handle wrapper and pass the typed request through'
+  )
+  assert.match(
+    preloadSource,
+    /setPortConfiguration:\s*\(\s*configuration: RoutingProxyPortConfiguration\s*\): Promise<RoutingProxySnapshot> =>\s*invoke\('routingProxy:setPortConfiguration', configuration\)/s,
+    'preload must expose the typed generic-invoke port-configuration method'
+  )
+  assert.match(
+    sectionSource,
+    /snapshot\.portConfigurationLocked/,
+    'the Model Routing section must render from the lock state supplied by the snapshot'
+  )
+  assert.match(
+    sectionSource,
+    /snapshot\.effectiveUrl/,
+    'the Model Routing section must render the exact effective URL supplied by the snapshot'
+  )
+  assert.match(
+    sectionSource,
+    /snapshot\.effectivePort/,
+    'the Model Routing section must render the exact effective port supplied by the snapshot'
+  )
+  assert.match(
+    sectionSource,
+    /Port controlled by ORPHEUS_ROUTING_PROXY_URL/,
+    'the locked-mode notice must use the exact environment-variable copy'
+  )
+  assert.match(
+    sectionSource,
+    /portConfigurationRequest\(mode, customPortInput\)/,
+    'the port controls must build their request from the selected mode and custom input'
+  )
+  assert.match(
+    sectionSource,
+    /setPortConfiguration\(configuration\)/,
+    'the port controls must submit their typed request through the preload API'
+  )
+  assert.match(
+    sectionSource,
+    /<NumberInput\s+[\s\S]*disabled=\{portBusy\}/,
+    'the custom-port input must be disabled while a port request is in flight'
+  )
+  console.log('✓ typed port-configuration IPC and snapshot-driven routing settings contracts')
 }
 
 async function cleanup(): Promise<void> {

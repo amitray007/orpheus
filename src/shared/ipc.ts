@@ -636,6 +636,10 @@ export interface InvokeChannelMap {
   // Managed routing proxy (model-routing unit 04) — see src/main/routingProxy/.
   'routingProxy:getState': { req: []; res: RoutingProxySnapshot }
   'routingProxy:setEnabled': { req: [{ enabled: boolean }]; res: RoutingProxySnapshot }
+  'routingProxy:setPortConfiguration': {
+    req: [{ mode: 'automatic' } | { mode: 'custom'; port: number }]
+    res: RoutingProxySnapshot
+  }
   'routingProxy:install': { req: []; res: RoutingProxySnapshot }
   'routingProxy:getAssetInfo': { req: []; res: RoutingProxyAssetInfo | null }
   'routingProxy:checkForUpdate': { req: []; res: RoutingProxyUpdateCheckResult }

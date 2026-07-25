@@ -67,6 +67,7 @@ import type {
   UpdateProgress,
   UpdateSnapshot,
   RoutingProxySnapshot,
+  RoutingProxyPortConfiguration,
   RoutingProxyRefreshProgress,
   RoutingProxyAssetInfo,
   RoutingProxyUpdateCheckResult,
@@ -844,6 +845,9 @@ const api = {
     getState: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:getState'),
     setEnabled: (enabled: boolean): Promise<RoutingProxySnapshot> =>
       invoke('routingProxy:setEnabled', { enabled }),
+    setPortConfiguration: (
+      configuration: RoutingProxyPortConfiguration
+    ): Promise<RoutingProxySnapshot> => invoke('routingProxy:setPortConfiguration', configuration),
     install: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:install'),
     getAssetInfo: (): Promise<RoutingProxyAssetInfo | null> => invoke('routingProxy:getAssetInfo'),
     checkForUpdate: (): Promise<RoutingProxyUpdateCheckResult> =>
