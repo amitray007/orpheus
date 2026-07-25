@@ -22,6 +22,7 @@ import type { WeeklyActivityDay } from './pulseData.helpers'
 import { formatCompact } from './dashboardHome.helpers'
 
 const WEEKDAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
+const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
 // Today's weekday, Mon=0..Sun=6 — matches computeWeeklyActivity's ordering.
 function todayWeekdayMonFirst(): number {
@@ -31,11 +32,13 @@ function todayWeekdayMonFirst(): number {
 function MiniBarChart({
   values,
   barClassName,
-  todayIndex
+  todayIndex,
+  metricLabel
 }: {
   values: number[]
   barClassName: string
   todayIndex: number
+  metricLabel: string
 }): React.JSX.Element {
   const max = Math.max(1, ...values)
   return (
@@ -46,7 +49,8 @@ function MiniBarChart({
         return (
           <div key={i} className="flex h-full flex-1 flex-col items-center justify-end gap-1.5">
             <div
-              title={`${v}`}
+              role="img"
+              aria-label={`${WEEKDAY_NAMES[i]}: ${v} ${metricLabel}`}
               className={cn('w-full rounded-t-[3px]', isZero ? 'bg-surface-overlay' : barClassName)}
               style={{ height: `${heightPct}%` }}
             />
@@ -112,7 +116,12 @@ export function ActivityChart({
             {formatCompact(sessionsTotal)}
           </span>
         </div>
-        <MiniBarChart values={sessionsValues} barClassName="bg-accent" todayIndex={todayIndex} />
+        <MiniBarChart
+          values={sessionsValues}
+          barClassName="bg-accent"
+          todayIndex={todayIndex}
+          metricLabel="sessions"
+        />
       </div>
       <div>
         <div className="mb-2.5 flex items-baseline justify-between font-mono text-[11px] text-text-secondary">
@@ -125,6 +134,7 @@ export function ActivityChart({
           values={messagesValues}
           barClassName="bg-[color:var(--color-chart-2)]"
           todayIndex={todayIndex}
+          metricLabel="messages"
         />
       </div>
     </div>

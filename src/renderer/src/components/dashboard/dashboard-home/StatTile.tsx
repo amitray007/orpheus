@@ -36,7 +36,11 @@ export function StatTile({
   loading?: boolean
 }): React.JSX.Element {
   return (
-    <div className="flex flex-col items-center gap-px text-center whitespace-nowrap">
+    <div
+      role="group"
+      aria-label={loading ? `${label}: loading` : `${label}: ${value}${unit ? ` ${unit}` : ''}`}
+      className="flex flex-col items-center gap-px text-center whitespace-nowrap"
+    >
       {loading ? (
         <div className="h-[21px] w-12 animate-pulse rounded bg-surface-overlay" />
       ) : (
