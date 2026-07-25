@@ -89,6 +89,7 @@ import {
   getRoutingProxyRuntime,
   type RoutingProxyVariantContext
 } from '../src/main/routingProxy/runtime.ts'
+import { startAtResolvedRoutingProxyPort } from '../src/main/routingProxy/allocator.ts'
 import {
   respawnBackoffDelayMs,
   decideRespawnAction,
@@ -196,6 +197,75 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
     /Custom routing proxy port must be an integer between 1024 and 65535/
   )
   console.log('✓ routing-proxy port runtime resolves variants, candidates, and strict precedence')
+}
+
+// ---------------------------------------------------------------------------
+// 0b. Allocation policy. Automatic walks candidates and only reports the
+// proven candidate; Custom/environment are intentionally one-shot.
+// ---------------------------------------------------------------------------
+
+{
+  const attemptedPorts: number[] = []
+  const inspectionDeps: ListenerInspectionDeps = {
+    listListeners: async () => [],
+    signalProcess: () => {},
+    sleep: async () => {}
+  }
+  const automatic = await startAtResolvedRoutingProxyPort({
+    runtime: () => ({
+      source: 'automatic',
+      url: 'http://127.0.0.1:18770',
+      host: '127.0.0.1',
+      port: 18770,
+      portConfigurationLocked: false
+    }),
+    candidates: () => [18770, 18766, 18765],
+    inspect: inspectionDeps,
+    startCandidate: async (runtime) => {
+      attemptedPorts.push(runtime.port!)
+      return runtime.port === 18765
+        ? { ok: true, effectivePort: runtime.port }
+        : { ok: false, reason: 'bind EADDRINUSE' }
+    }
+  })
+  assert.deepEqual(attemptedPorts, [18770, 18766, 18765])
+  assert.deepEqual(automatic, { ok: true, effectivePort: 18765 })
+
+  const strictAttempts: number[] = []
+  const custom = await startAtResolvedRoutingProxyPort({
+    runtime: () => ({
+      source: 'custom',
+      url: 'http://127.0.0.1:4567',
+      host: '127.0.0.1',
+      port: 4567,
+      portConfigurationLocked: false
+    }),
+    candidates: () => {
+      throw new Error('strict custom mode must not request automatic candidates')
+    },
+    inspect: inspectionDeps,
+    startCandidate: async (runtime) => {
+      strictAttempts.push(runtime.port!)
+      return { ok: false, reason: 'bind EADDRINUSE' }
+    }
+  })
+  assert.deepEqual(strictAttempts, [4567])
+  assert.deepEqual(custom, { ok: false, reason: 'bind EADDRINUSE' })
+
+  const exhausted = await startAtResolvedRoutingProxyPort({
+    runtime: () => ({
+      source: 'automatic',
+      url: 'http://127.0.0.1:18765',
+      host: '127.0.0.1',
+      port: 18765,
+      portConfigurationLocked: false
+    }),
+    candidates: () => [18765, 18766],
+    inspect: inspectionDeps,
+    startCandidate: async () => ({ ok: false, reason: 'bind EADDRINUSE on 18766' })
+  })
+  assert.match(exhausted.reason ?? '', /18765–18799.*bind EADDRINUSE on 18766/)
+  console.log('✓ allocator retries automatic candidates while custom mode remains strict')
 }
 
 async function cleanup(): Promise<void> {

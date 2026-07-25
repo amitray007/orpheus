@@ -18,7 +18,9 @@ type RoutingProxyPortState = Pick<
 >
 
 function defaultVariantContext(): RoutingProxyVariantContext {
-  return { mode: __ORPHEUS_MODE__ }
+  // The Electron/Vite build replaces this constant. Keep the offline assertion
+  // harness importable without fabricating a second environment mechanism.
+  return { mode: typeof __ORPHEUS_MODE__ === 'undefined' ? 'development' : __ORPHEUS_MODE__ }
 }
 
 export function getPreferredRoutingProxyPort(context: RoutingProxyVariantContext): number {
