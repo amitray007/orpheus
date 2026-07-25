@@ -548,6 +548,20 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
     'skip',
     'an exit at the failed-candidate transition must never schedule supervisor respawn'
   )
+
+  const alreadyConsumedExpectedPids = new Set<number>()
+  const alreadyConsumedActivePids = new Set([5103])
+  assert.equal(
+    consumeExpectedCandidateExit(alreadyConsumedExpectedPids, alreadyConsumedActivePids, 5103),
+    true,
+    'the exit handler consumes the active-start marker when it wins the transition race'
+  )
+  markFailedCandidateTermination(alreadyConsumedExpectedPids, alreadyConsumedActivePids, 5103)
+  assert.deepEqual(
+    [...alreadyConsumedExpectedPids],
+    [],
+    'a readiness failure after exit consumption must not leave a stale expected-exit marker'
+  )
   console.log(
     '✓ failed-candidate expected exit is marked before active-start removal and suppresses respawn'
   )

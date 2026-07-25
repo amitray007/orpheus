@@ -9,6 +9,9 @@ export function markFailedCandidateTermination(
   activeStartingCandidatePids: Set<number>,
   pid: number
 ): void {
+  if (!activeStartingCandidatePids.has(pid)) {
+    return
+  }
   expectedTerminationPids.add(pid)
   activeStartingCandidatePids.delete(pid)
 }
