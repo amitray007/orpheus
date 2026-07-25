@@ -74,6 +74,14 @@ import {
   type OrphanReclaimDeps
 } from '../src/main/routingProxy/orphan.ts'
 import {
+  AUTOMATIC_PORT_MAX,
+  AUTOMATIC_PORT_MIN,
+  automaticPortCandidates,
+  getPreferredRoutingProxyPort,
+  getRoutingProxyRuntime,
+  type RoutingProxyVariantContext
+} from '../src/main/routingProxy/runtime.ts'
+import {
   respawnBackoffDelayMs,
   decideRespawnAction,
   decideWatchdogAction,
@@ -91,6 +99,72 @@ import {
 // ---------------------------------------------------------------------------
 
 const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-proxy-test-'))
+
+// ---------------------------------------------------------------------------
+// 0. Persistent port runtime resolution — pure, current-state contracts.
+// ---------------------------------------------------------------------------
+
+{
+  const production: RoutingProxyVariantContext = { mode: 'production' }
+  const development: RoutingProxyVariantContext = { mode: 'development' }
+  const worktree: RoutingProxyVariantContext = { mode: 'worktree' }
+  assert.equal(getPreferredRoutingProxyPort(production), 18765)
+  assert.equal(getPreferredRoutingProxyPort(development), 18766)
+  assert.equal(getPreferredRoutingProxyPort(worktree), 18767)
+  assert.equal(AUTOMATIC_PORT_MIN, 18765)
+  assert.equal(AUTOMATIC_PORT_MAX, 18799)
+  assert.deepEqual(automaticPortCandidates(18770, 18766).slice(0, 3), [18770, 18766, 18765])
+  assert.equal(
+    new Set(automaticPortCandidates(18766, 18766)).size,
+    AUTOMATIC_PORT_MAX - AUTOMATIC_PORT_MIN + 1
+  )
+
+  const originalOverride = process.env.ORPHEUS_ROUTING_PROXY_URL
+  try {
+    process.env.ORPHEUS_ROUTING_PROXY_URL = 'https://proxy.example.test/path?keep=exact'
+    assert.deepEqual(
+      getRoutingProxyRuntime({
+        routingProxyPortMode: 'custom',
+        routingProxyCustomPort: 4567,
+        routingProxyEffectivePort: 18770
+      }),
+      {
+        source: 'environment',
+        url: 'https://proxy.example.test/path?keep=exact',
+        host: 'proxy.example.test',
+        port: 443,
+        portConfigurationLocked: true
+      }
+    )
+  } finally {
+    if (originalOverride === undefined) delete process.env.ORPHEUS_ROUTING_PROXY_URL
+    else process.env.ORPHEUS_ROUTING_PROXY_URL = originalOverride
+  }
+
+  assert.deepEqual(
+    getRoutingProxyRuntime({
+      routingProxyPortMode: 'custom',
+      routingProxyCustomPort: 4567,
+      routingProxyEffectivePort: null
+    }),
+    {
+      source: 'custom',
+      url: 'http://127.0.0.1:4567',
+      host: '127.0.0.1',
+      port: 4567,
+      portConfigurationLocked: false
+    }
+  )
+  assert.deepEqual(
+    getRoutingProxyRuntime({
+      routingProxyPortMode: 'automatic',
+      routingProxyCustomPort: null,
+      routingProxyEffectivePort: null
+    }),
+    { source: 'automatic', url: null, host: null, port: null, portConfigurationLocked: false }
+  )
+  console.log('✓ routing-proxy port runtime resolves variants, candidates, and strict precedence')
+}
 
 async function cleanup(): Promise<void> {
   await fs.rm(scratchRoot, { recursive: true, force: true })

@@ -205,6 +205,18 @@ export type SoundPack =
   | 'organic'
   | 'soft'
 
+export type RoutingProxyPortMode = 'automatic' | 'custom'
+export type RoutingProxySource = 'environment' | 'custom' | 'automatic'
+export type RoutingProxyPortConfiguration = { mode: 'automatic' } | { mode: 'custom'; port: number }
+
+export interface RoutingProxyRuntime {
+  source: RoutingProxySource
+  url: string | null
+  host: string | null
+  port: number | null
+  portConfigurationLocked: boolean
+}
+
 export type AppUiState = {
   sidebarCollapsed: boolean
   lastViewKind: AppViewKind
@@ -361,6 +373,9 @@ export type AppUiState = {
   // src/main/index.ts) starts/stops the managed CLIProxyAPI child process
   // when this flips. See src/main/routingProxy/.
   routingProxyEnabled: boolean
+  routingProxyPortMode: RoutingProxyPortMode
+  routingProxyCustomPort: number | null
+  routingProxyEffectivePort: number | null
   // Model-name aliasing (model-routing unit 08) — opt-in, off by default.
   // Master switch for whether any stored routing_proxy_model_aliases row is
   // folded into the generated config.yaml. See src/main/routingProxy/aliases.ts.
@@ -2352,6 +2367,12 @@ export interface RoutingProxyAuthFile {
 /** Rehydratable snapshot the renderer polls/subscribes to — mirrors UpdateSnapshot. */
 export interface RoutingProxySnapshot {
   enabled: boolean
+  source: RoutingProxySource
+  effectiveUrl: string | null
+  effectivePort: number | null
+  portMode: RoutingProxyPortMode
+  customPort: number | null
+  portConfigurationLocked: boolean
   status: RoutingProxyStatus
   /** Installed version (e.g. "7.2.92"), or null if never installed. */
   installedVersion: string | null

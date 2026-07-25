@@ -133,6 +133,9 @@ type AppUiStateRow = {
   github_username: string | null
   // Managed routing proxy (v70)
   routing_proxy_enabled: number | null
+  routing_proxy_port_mode: string | null
+  routing_proxy_custom_port: number | null
+  routing_proxy_effective_port: number | null
   // Model-name aliasing (model-routing unit 08)
   model_aliases_enabled: number | null
   // Privacy mode (v66)
@@ -265,6 +268,9 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     githubUsername: row.github_username ?? null,
     // Managed routing proxy (v70) — default false (off)
     routingProxyEnabled: (row.routing_proxy_enabled ?? 0) === 1,
+    routingProxyPortMode: row.routing_proxy_port_mode === 'custom' ? 'custom' : 'automatic',
+    routingProxyCustomPort: row.routing_proxy_custom_port ?? null,
+    routingProxyEffectivePort: row.routing_proxy_effective_port ?? null,
     // Model-name aliasing (model-routing unit 08) — default false (off)
     modelAliasesEnabled: (row.model_aliases_enabled ?? 0) === 1,
     // Privacy mode (v66) — default false
@@ -399,7 +405,51 @@ function validateNumericEnumField(
   }
 }
 
+function normalizeRoutingProxyPortPatch(patch: AppUiStatePatch): AppUiStatePatch {
+  if (patch.routingProxyPortMode === 'automatic') {
+    return { ...patch, routingProxyCustomPort: null }
+  }
+  return patch
+}
+
+function validateRoutingProxyPortPatch(patch: AppUiStatePatch): void {
+  const portMode =
+    patch.routingProxyPortMode ??
+    (patch.routingProxyCustomPort !== undefined ? getAppUiState().routingProxyPortMode : undefined)
+  if (
+    'routingProxyPortMode' in patch &&
+    patch.routingProxyPortMode !== 'automatic' &&
+    patch.routingProxyPortMode !== 'custom'
+  ) {
+    throw new Error('uiState: routingProxyPortMode must be automatic or custom')
+  }
+  const customPort = patch.routingProxyCustomPort
+  if (customPort !== undefined && customPort !== null) {
+    if (
+      portMode !== 'custom' ||
+      !Number.isInteger(customPort) ||
+      customPort < 1024 ||
+      customPort > 65535
+    ) {
+      throw new Error(
+        'uiState: routingProxyCustomPort must be an integer between 1024 and 65535 in custom mode'
+      )
+    }
+  }
+  const effectivePort = patch.routingProxyEffectivePort
+  if (
+    effectivePort !== undefined &&
+    effectivePort !== null &&
+    (!Number.isInteger(effectivePort) || effectivePort < 1024 || effectivePort > 65535)
+  ) {
+    throw new Error(
+      'uiState: routingProxyEffectivePort must be an integer between 1024 and 65535 or null'
+    )
+  }
+}
+
 function validatePatch(patch: AppUiStatePatch): void {
+  validateRoutingProxyPortPatch(patch)
   // lastViewKind: no `undefined` guard (differs from the enum table below).
   if ('lastViewKind' in patch) {
     if (!VALID_VIEW_KINDS.includes(patch.lastViewKind as AppViewKind)) {
@@ -518,7 +568,8 @@ export function getAppUiState(): AppUiState {
 }
 
 export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
-  validatePatch(patch)
+  const normalizedPatch = normalizeRoutingProxyPortPatch(patch)
+  validatePatch(normalizedPatch)
 
   const db = getDb()
   const now = Date.now()
@@ -628,6 +679,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     githubUsername: 'github_username',
     // Managed routing proxy (v70)
     routingProxyEnabled: 'routing_proxy_enabled',
+    routingProxyPortMode: 'routing_proxy_port_mode',
+    routingProxyCustomPort: 'routing_proxy_custom_port',
+    routingProxyEffectivePort: 'routing_proxy_effective_port',
     // Model-name aliasing (model-routing unit 08)
     modelAliasesEnabled: 'model_aliases_enabled',
     // Privacy mode (v66)
@@ -637,11 +691,11 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
   const setClauses: string[] = []
   const values: unknown[] = []
 
-  for (const key of Object.keys(patch) as (keyof AppUiStatePatch)[]) {
+  for (const key of Object.keys(normalizedPatch) as (keyof AppUiStatePatch)[]) {
     const col = columnMap[key]
     if (!col) continue
     setClauses.push(`${col} = ?`)
-    const val = patch[key]
+    const val = normalizedPatch[key]
     // Coerce booleans to integers for SQLite
     values.push(typeof val === 'boolean' ? (val ? 1 : 0) : val)
   }

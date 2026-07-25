@@ -24,17 +24,15 @@
 // ---------------------------------------------------------------------------
 
 import { isClaude } from './models/registry'
+import { getRoutingProxyRuntime } from './routingProxy/runtime'
 
-/**
- * Default local translating-proxy base URL. Override via
- * ORPHEUS_ROUTING_PROXY_URL for local testing. The managed proxy
- * (src/main/routingProxy/) always runs on this same host:port — its
- * config.yaml is generated from this exact URL (see routingProxy/manager.ts).
- */
-export const DEFAULT_ROUTING_PROXY_URL = 'http://127.0.0.1:18765'
-
+/** Compatibility accessor for consumers that require an effective proxy URL. */
 export function getRoutingProxyUrl(): string {
-  return process.env.ORPHEUS_ROUTING_PROXY_URL || DEFAULT_ROUTING_PROXY_URL
+  const runtime = getRoutingProxyRuntime()
+  if (runtime.url === null) {
+    throw new Error('Routing proxy automatic port has no effective port allocated')
+  }
+  return runtime.url
 }
 
 /**

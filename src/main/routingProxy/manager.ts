@@ -95,6 +95,12 @@ import { isSafeExternalUrl } from '../ipc/validate'
 
 let snapshot: RoutingProxySnapshot = {
   enabled: false,
+  source: 'automatic',
+  effectiveUrl: null,
+  effectivePort: null,
+  portMode: 'automatic',
+  customPort: null,
+  portConfigurationLocked: false,
   status: 'not_installed',
   installedVersion: null,
   pinnedVersion: PINNED_VERSION,
