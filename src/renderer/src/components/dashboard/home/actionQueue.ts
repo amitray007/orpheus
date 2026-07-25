@@ -24,9 +24,9 @@ const ACTION_SOURCE_RANK: Record<HomeActionSource, number> = {
 }
 
 /**
- * Orders supported actions by what can be acted on first. The index fallback
- * deliberately retains the incoming (stable id) order when timestamps tie or
- * are unavailable.
+ * Orders supported actions by what can be acted on first. IDs make ties
+ * deterministic across source refreshes; an input-order fallback only handles
+ * duplicate IDs.
  */
 export function orderHomeActions(items: readonly HomeActionItem[]): HomeActionItem[] {
   return items
@@ -40,7 +40,9 @@ export function orderHomeActions(items: readonly HomeActionItem[]): HomeActionIt
       const observedAtDifference =
         (right.item.observedAt ?? -Infinity) - (left.item.observedAt ?? -Infinity)
       if (observedAtDifference !== 0) return observedAtDifference
-      return left.index - right.index
+
+      const idOrder = left.item.id.localeCompare(right.item.id)
+      return idOrder !== 0 ? idOrder : left.index - right.index
     })
     .map(({ item }) => item)
 }
