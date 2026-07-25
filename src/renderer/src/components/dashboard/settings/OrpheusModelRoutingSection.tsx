@@ -7,7 +7,14 @@ import type {
   RoutingProxyPortMode,
   RoutingProxySnapshot
 } from '@shared/types'
-import { SettingRow, Toggle, SectionTitle, Eyebrow, NumberInput } from './primitives'
+import {
+  SettingRow,
+  Toggle,
+  SectionTitle,
+  Eyebrow,
+  NumberInput,
+  type NumberInputDraft
+} from './primitives'
 import { ProvidersSection } from './ProvidersSection'
 import { AliasesSection } from './AliasesSection'
 import { SettingsSectionSkeleton } from '../../Skeleton'
@@ -170,6 +177,10 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
   const [restarting, setRestarting] = useState(false)
   const [portBusy, setPortBusy] = useState(false)
   const [customPortInput, setCustomPortInput] = useState<number | null>(null)
+  const [customPortDraft, setCustomPortDraft] = useState<NumberInputDraft>({
+    value: null,
+    error: null
+  })
   const [portInputError, setPortInputError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -181,6 +192,7 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
         if (!cancelled) {
           setSnapshot(s)
           setCustomPortInput(s.customPort)
+          setCustomPortDraft({ value: s.customPort, error: null })
         }
       })
       .catch(console.error)
@@ -207,7 +219,7 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
 
   async function applyPortMode(mode: RoutingProxyPortMode): Promise<void> {
     if (portBusy) return
-    const configuration = portConfigurationRequest(mode, customPortInput)
+    const configuration = portConfigurationRequest(mode, customPortDraft.value)
     if (!configuration) {
       setPortInputError('Enter a whole-number port from 1024 to 65535.')
       return
@@ -219,6 +231,7 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
       const nextSnapshot = await window.api.routingProxy.setPortConfiguration(configuration)
       setSnapshot(nextSnapshot)
       setCustomPortInput(nextSnapshot.customPort)
+      setCustomPortDraft({ value: nextSnapshot.customPort, error: null })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unable to update the custom port.'
       console.error('[routingProxy] setPortConfiguration failed', err)
@@ -419,7 +432,8 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
                     aria-pressed={snapshot.portMode === 'custom'}
                     disabled={
                       portBusy ||
-                      !isValidCustomRoutingProxyPort(customPortInput) ||
+                      !isValidCustomRoutingProxyPort(customPortDraft.value) ||
+                      customPortDraft.error !== null ||
                       portInputError !== null
                     }
                     onClick={() => void applyPortMode('custom')}
@@ -440,7 +454,10 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
                 <NumberInput
                   value={customPortInput}
                   onChange={setCustomPortInput}
-                  onValidationChange={setPortInputError}
+                  onDraftChange={(draft) => {
+                    setCustomPortDraft(draft)
+                    setPortInputError(draft.error)
+                  }}
                   validation={{ min: 1024, max: 65535, step: 1 }}
                   disabled={portBusy}
                   placeholder="18777"

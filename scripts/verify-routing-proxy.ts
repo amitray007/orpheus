@@ -466,7 +466,7 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
   )
   assert.match(
     sectionSource,
-    /portConfigurationRequest\(mode, customPortInput\)/,
+    /portConfigurationRequest\(mode, customPortDraft\.value\)/,
     'the port controls must build their request from the selected mode and custom input'
   )
   assert.match(
@@ -486,7 +486,7 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
   )
   assert.match(
     sectionSource,
-    /disabled=\{\s*portBusy\s*\|\|\s*!isValidCustomRoutingProxyPort\(customPortInput\)\s*\|\|\s*portInputError !== null\s*\}/s,
+    /disabled=\{\s*portBusy\s*\|\|\s*!isValidCustomRoutingProxyPort\(customPortDraft\.value\)\s*\|\|\s*customPortDraft\.error !== null\s*\|\|\s*portInputError !== null\s*\}/s,
     'the Custom action must remain disabled for busy, invalid, or ambiguous input'
   )
   assert.match(
@@ -522,6 +522,30 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
     primitivesSource,
     /const isDigitsOnly = \/\^\\d\+\$\//,
     'strict NumberInput validation must reject ambiguous values such as 1024abc and fractions'
+  )
+  assert.match(
+    primitivesSource,
+    /onDraftChange\?: \(draft: NumberInputDraft\) => void/,
+    'NumberInput must expose a non-persisting draft callback for live validation'
+  )
+  const updateValueSource = primitivesSource.match(
+    /function updateValue\(nextValue: string\): void \{([\s\S]*?)\n {2}\}/
+  )?.[1]
+  assert.ok(updateValueSource, 'NumberInput must retain a local draft update path')
+  assert.match(
+    updateValueSource,
+    /notifyDraft\(nextValue\)/,
+    'local edits must notify only the optional draft callback'
+  )
+  assert.doesNotMatch(
+    updateValueSource,
+    /onChange\(/,
+    'NumberInput must not persist values or emit NaN on every keystroke'
+  )
+  assert.match(
+    primitivesSource,
+    /if \(draft\.error !== null\) \{[\s\S]*setLocal\(value === null \? '' : String\(value\)\)/,
+    'invalid default NumberInput drafts must revert instead of being persisted'
   )
   assert.match(
     sectionSource,

@@ -487,6 +487,11 @@ export function Toggle({ value, onChange, ariaLabel }: ToggleProps): React.JSX.E
 // NumberInput — controlled text input that commits as integer or null
 // ---------------------------------------------------------------------------
 
+export interface NumberInputDraft {
+  value: number | null
+  error: string | null
+}
+
 export interface NumberInputProps {
   value: number | null
   onChange: (v: number | null) => void
@@ -499,22 +504,36 @@ export interface NumberInputProps {
     max: number
     step: number
   }
-  onValidationChange?: (message: string | null) => void
+  onDraftChange?: (draft: NumberInputDraft) => void
 }
 
-function validationError(value: string, validation: NumberInputProps['validation']): string | null {
-  if (!validation || value === '') return null
+function numberInputDraft(
+  value: string,
+  validation: NumberInputProps['validation']
+): NumberInputDraft {
+  if (value === '') return { value: null, error: null }
   const isDigitsOnly = /^\d+$/
-  if (!isDigitsOnly.test(value)) return 'Enter a whole-number port.'
+  const isWholeNumber = validation ? isDigitsOnly.test(value) : /^-?\d+$/.test(value)
+  if (!isWholeNumber) {
+    return {
+      value: null,
+      error: validation ? 'Enter a whole-number port.' : 'Enter a whole number.'
+    }
+  }
   const number = Number(value)
-  if (!Number.isFinite(number) || !Number.isInteger(number)) return 'Enter a whole-number port.'
-  if (number < validation.min || number > validation.max) {
-    return `Enter a port from ${validation.min} to ${validation.max}.`
+  if (!Number.isFinite(number) || !Number.isInteger(number)) {
+    return {
+      value: null,
+      error: validation ? 'Enter a whole-number port.' : 'Enter a whole number.'
+    }
   }
-  if ((number - validation.min) % validation.step !== 0) {
-    return `Enter a port in steps of ${validation.step}.`
+  if (validation && (number < validation.min || number > validation.max)) {
+    return { value: null, error: `Enter a port from ${validation.min} to ${validation.max}.` }
   }
-  return null
+  if (validation && (number - validation.min) % validation.step !== 0) {
+    return { value: null, error: `Enter a port in steps of ${validation.step}.` }
+  }
+  return { value: number, error: null }
 }
 
 export function NumberInput({
@@ -525,7 +544,7 @@ export function NumberInput({
   ariaLabel,
   disabled,
   validation,
-  onValidationChange
+  onDraftChange
 }: NumberInputProps): React.JSX.Element {
   const [local, setLocal] = useState(value === null ? '' : String(value))
   // Track whether we have focus to avoid overwriting user's in-progress edits
@@ -535,28 +554,33 @@ export function NumberInput({
   // eslint-disable-next-line react-hooks/refs -- read-only ref check to derive display value; focus tracking avoids wiping user input
   const displayValue = hasFocus.current ? local : value === null ? '' : String(value)
 
+  function notifyDraft(nextValue: string): NumberInputDraft {
+    const draft = numberInputDraft(nextValue.trim(), validation)
+    onDraftChange?.(draft)
+    return draft
+  }
+
   function updateValue(nextValue: string): void {
     setLocal(nextValue)
-    const trimmed = nextValue.trim()
-    const error = validationError(trimmed, validation)
-    onValidationChange?.(error)
-    if (trimmed === '') {
-      onChange(null)
-    } else if (error === null) {
-      onChange(Number(trimmed))
-    }
+    notifyDraft(nextValue)
+  }
+
+  function revert(): void {
+    const externalValue = value === null ? '' : String(value)
+    hasFocus.current = false
+    setLocal(externalValue)
+    notifyDraft(externalValue)
   }
 
   function commit(): void {
+    const draft = notifyDraft(local)
     hasFocus.current = false
-    const trimmed = local.trim()
-    const error = validationError(trimmed, validation)
-    onValidationChange?.(error)
-    if (trimmed === '') {
-      onChange(null)
+    if (draft.error !== null) {
+      setLocal(value === null ? '' : String(value))
+      notifyDraft(value === null ? '' : String(value))
       return
     }
-    if (error === null) onChange(Number(trimmed))
+    onChange(draft.value)
   }
 
   return (
@@ -564,17 +588,24 @@ export function NumberInput({
       type="text"
       inputMode="numeric"
       aria-label={ariaLabel}
-      aria-invalid={validationError(displayValue.trim(), validation) !== null}
+      aria-invalid={numberInputDraft(displayValue.trim(), validation).error !== null}
       disabled={disabled}
       value={displayValue}
       onChange={(e) => updateValue(e.target.value)}
       onFocus={() => {
         hasFocus.current = true
-        setLocal(value === null ? '' : String(value))
+        const externalValue = value === null ? '' : String(value)
+        setLocal(externalValue)
+        notifyDraft(externalValue)
       }}
       onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === 'Enter') {
+          ;(e.currentTarget as HTMLInputElement).blur()
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          revert()
           ;(e.currentTarget as HTMLInputElement).blur()
         }
       }}
