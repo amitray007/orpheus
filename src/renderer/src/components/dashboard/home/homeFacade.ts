@@ -51,6 +51,10 @@ let privacyMode = false
 let liveAgentRows: LiveAgentRow[] = []
 let latestUsage: ClaudeUsageResult | null = null
 let latestActivitySummary: ClaudeActivitySummary | null = null
+const modelLabelCache = new Map<string, string>()
+let modelLabelsInFlight: Promise<void> | null = null
+let pendingModelIds = new Set<string>()
+let modelLabelsGeneration = 0
 const inFlight: Partial<Record<HomeSourceName, Promise<void>>> = {}
 let agentInputs: {
   projects: ProjectRecord[]
@@ -296,6 +300,45 @@ export function normalizeStats(summary: ClaudeActivitySummary): HomeStatsSnapsho
   ]
 }
 
+function getModelLabel(modelId: string | null): string {
+  if (!modelId) return '—'
+  return modelLabelCache.get(modelId) ?? '—'
+}
+
+function resolvePendingModelLabels(): void {
+  if (modelLabelsInFlight || pendingModelIds.size === 0) return
+  const generation = modelLabelsGeneration
+  const request = (async (): Promise<void> => {
+    while (started && generation === modelLabelsGeneration && pendingModelIds.size > 0) {
+      const modelIds = Array.from(pendingModelIds)
+      pendingModelIds = new Set()
+      try {
+        const labels = await window.api.models.resolveLabels(modelIds)
+        if (!started || generation !== modelLabelsGeneration) return
+        for (const [modelId, label] of Object.entries(labels)) {
+          modelLabelCache.set(modelId, label)
+        }
+        publishAgentsFromInputs()
+      } catch {
+        // Leave labels unresolved so a later agent projection can retry.
+      }
+    }
+  })()
+  modelLabelsInFlight = request
+  void request.finally(() => {
+    if (modelLabelsInFlight !== request) return
+    modelLabelsInFlight = null
+    if (started && pendingModelIds.size > 0) resolvePendingModelLabels()
+  })
+}
+
+function queueModelLabelResolution(rows: readonly LiveAgentRow[]): void {
+  for (const row of rows) {
+    if (row.model && !modelLabelCache.has(row.model)) pendingModelIds.add(row.model)
+  }
+  resolvePendingModelLabels()
+}
+
 function publishAgentsFromInputs(): void {
   if (!agentInputs) return
   const visibleProjects = agentInputs.projects.filter(
@@ -309,7 +352,8 @@ function publishAgentsFromInputs(): void {
     projectNameById,
     sessionById,
     getActivitySnapshot(),
-    getActivityTimeSnapshot()
+    getActivityTimeSnapshot(),
+    getModelLabel
   )
   const agents = normalizeHomeAgents(liveAgentRows, Date.now())
   const current = snapshot.agents
@@ -335,6 +379,7 @@ function publishAgentsFromInputs(): void {
       stale: false
     }
   })
+  queueModelLabelResolution(liveAgentRows)
 }
 
 function refreshAgentsAfterActivityPush(updates: Array<{ workspaceId: string }>): void {
@@ -343,7 +388,9 @@ function refreshAgentsAfterActivityPush(updates: Array<{ workspaceId: string }>)
   if (!updates.some((update) => workspaceIds.has(update.workspaceId))) return
   // Dashboard updates activityStore from the same main-process push. Queue after
   // its subscriber so this facade reads the completed batch, not an intermediate map.
-  queueMicrotask(publishAgentsFromInputs)
+  queueMicrotask(() => {
+    if (started) publishAgentsFromInputs()
+  })
 }
 
 async function loadAgentsOnce(): Promise<void> {
@@ -559,6 +606,15 @@ function start(): void {
   void loadActivity()
   pushUnsubscribes = [
     window.api.workspaces.onActivityBatch(refreshAgentsAfterActivityPush),
+    window.api.workspaces.onCreated(() => {
+      void loadAgents()
+    }),
+    window.api.workspaces.onChanged(() => {
+      void loadAgents()
+    }),
+    window.api.workspaces.onArchived(() => {
+      void loadAgents()
+    }),
     window.api.projects.onChanged((project) => {
       if (!agentInputs) return
       agentInputs = {
@@ -597,6 +653,8 @@ function stop(): void {
   started = false
   for (const unsubscribe of pushUnsubscribes) unsubscribe()
   pushUnsubscribes = []
+  modelLabelsGeneration++
+  pendingModelIds = new Set()
   for (const source of Object.keys(generations) as HomeSourceName[]) {
     generations[source]++
     delete inFlight[source]
