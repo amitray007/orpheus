@@ -163,6 +163,15 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
     }),
     { source: 'automatic', url: null, host: null, port: null, portConfigurationLocked: false }
   )
+  assert.throws(
+    () =>
+      getRoutingProxyRuntime({
+        routingProxyPortMode: 'custom',
+        routingProxyCustomPort: null,
+        routingProxyEffectivePort: 18770
+      }),
+    /Custom routing proxy port must be an integer between 1024 and 65535/
+  )
   console.log('✓ routing-proxy port runtime resolves variants, candidates, and strict precedence')
 }
 

@@ -413,9 +413,10 @@ function normalizeRoutingProxyPortPatch(patch: AppUiStatePatch): AppUiStatePatch
 }
 
 function validateRoutingProxyPortPatch(patch: AppUiStatePatch): void {
-  const portMode =
-    patch.routingProxyPortMode ??
-    (patch.routingProxyCustomPort !== undefined ? getAppUiState().routingProxyPortMode : undefined)
+  const needsExistingPortState =
+    patch.routingProxyPortMode === 'custom' || patch.routingProxyCustomPort !== undefined
+  const existingState = needsExistingPortState ? getAppUiState() : null
+  const portMode = patch.routingProxyPortMode ?? existingState?.routingProxyPortMode
   if (
     'routingProxyPortMode' in patch &&
     patch.routingProxyPortMode !== 'automatic' &&
@@ -424,6 +425,19 @@ function validateRoutingProxyPortPatch(patch: AppUiStatePatch): void {
     throw new Error('uiState: routingProxyPortMode must be automatic or custom')
   }
   const customPort = patch.routingProxyCustomPort
+  const resolvedCustomPort =
+    customPort === undefined ? existingState?.routingProxyCustomPort : customPort
+  if (
+    portMode === 'custom' &&
+    (typeof resolvedCustomPort !== 'number' ||
+      !Number.isInteger(resolvedCustomPort) ||
+      resolvedCustomPort < 1024 ||
+      resolvedCustomPort > 65535)
+  ) {
+    throw new Error(
+      'uiState: routingProxyCustomPort must be an integer between 1024 and 65535 in custom mode'
+    )
+  }
   if (customPort !== undefined && customPort !== null) {
     if (
       portMode !== 'custom' ||

@@ -76,8 +76,17 @@ export function getRoutingProxyRuntime(state?: RoutingProxyPortState): RoutingPr
 
   const current: RoutingProxyPortState =
     state ?? (require('../uiState') as { getAppUiState: () => AppUiState }).getAppUiState()
-  if (current.routingProxyPortMode === 'custom' && current.routingProxyCustomPort !== null) {
-    return runtimeForPort('custom', current.routingProxyCustomPort)
+  if (current.routingProxyPortMode === 'custom') {
+    const customPort = current.routingProxyCustomPort
+    if (
+      typeof customPort !== 'number' ||
+      !Number.isInteger(customPort) ||
+      customPort < 1024 ||
+      customPort > 65535
+    ) {
+      throw new Error('Custom routing proxy port must be an integer between 1024 and 65535')
+    }
+    return runtimeForPort('custom', customPort)
   }
   if (current.routingProxyEffectivePort !== null) {
     return runtimeForPort('automatic', current.routingProxyEffectivePort)
