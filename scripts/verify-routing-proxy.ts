@@ -113,6 +113,13 @@ function isStrictPortTextForTest(value: string): boolean {
   return /^\d+$/.test(value)
 }
 
+function shouldSyncCustomPortSnapshotForTest(
+  isEditing: boolean,
+  snapshot: { portMode: 'automatic' | 'custom'; portConfigurationLocked: boolean }
+): boolean {
+  return !isEditing || snapshot.portConfigurationLocked || snapshot.portMode !== 'custom'
+}
+
 // ---------------------------------------------------------------------------
 // Test scratch dir — everything this harness writes lives here, never under
 // a real userData path (paths.ts is intentionally NOT exercised by this
@@ -527,6 +534,91 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
     primitivesSource,
     /onDraftChange\?: \(draft: NumberInputDraft\) => void/,
     'NumberInput must expose a non-persisting draft callback for live validation'
+  )
+  assert.match(
+    primitivesSource,
+    /onEditingChange\?: \(isEditing: boolean\) => void/,
+    'NumberInput must expose editing state so snapshot consumers can preserve active drafts'
+  )
+  assert.match(
+    primitivesSource,
+    /onEditingChange\?\.\(true\)/,
+    'NumberInput must report the start of an active edit'
+  )
+  assert.match(
+    primitivesSource,
+    /onEditingChange\?\.\(false\)/,
+    'NumberInput must report when an active edit finishes'
+  )
+  assert.match(
+    sectionSource,
+    /const customPortEditingRef = useRef\(false\)/,
+    'routing port state must distinguish an active draft from a snapshot value'
+  )
+  assert.match(
+    sectionSource,
+    /const syncCustomPortSnapshot = useCallback\(\(nextSnapshot: RoutingProxySnapshot\): void => \{[\s\S]*if \(customPortEditingRef\.current\) return[\s\S]*setCustomPortInput\(nextSnapshot\.customPort\)[\s\S]*setCustomPortDraft\(\{ value: nextSnapshot\.customPort, error: null \}\)/,
+    'non-editing snapshot updates must synchronize the visible, submitted, and validation port state'
+  )
+  assert.match(
+    sectionSource,
+    /onSnapshot\(\(s\) => \{[\s\S]*syncCustomPortSnapshot\(s\)/,
+    'pushed snapshots must reconcile the custom port state'
+  )
+  assert.match(
+    sectionSource,
+    /setPortConfiguration\(configuration\)[\s\S]*syncCustomPortSnapshot\(nextSnapshot\)/,
+    'returned port-configuration snapshots must reconcile the custom port state'
+  )
+  assert.match(
+    sectionSource,
+    /getState\(\)[\s\S]*syncCustomPortSnapshot\(currentSnapshot\)/,
+    'catch refresh snapshots must reconcile the custom port state'
+  )
+  assert.match(
+    sectionSource,
+    /nextSnapshot\.portConfigurationLocked \|\| nextSnapshot\.portMode !== 'custom'[\s\S]*setCustomPortInputKey/,
+    'mode changes and environment locks must discard a stale active port field'
+  )
+  assert.equal(
+    shouldSyncCustomPortSnapshotForTest(false, {
+      portMode: 'custom',
+      portConfigurationLocked: false
+    }),
+    true,
+    'automatic/null state followed by pushed custom 18777 must synchronize before Custom submits'
+  )
+  assert.equal(
+    shouldSyncCustomPortSnapshotForTest(false, {
+      portMode: 'custom',
+      portConfigurationLocked: false
+    }),
+    true,
+    'a non-editing old draft such as 18000 must synchronize to pushed custom 18777'
+  )
+  assert.equal(
+    shouldSyncCustomPortSnapshotForTest(true, {
+      portMode: 'custom',
+      portConfigurationLocked: false
+    }),
+    false,
+    'a pushed custom snapshot must preserve an active port edit'
+  )
+  assert.equal(
+    shouldSyncCustomPortSnapshotForTest(true, {
+      portMode: 'automatic',
+      portConfigurationLocked: false
+    }),
+    true,
+    'mode changes must synchronize even if a port field was actively edited'
+  )
+  assert.equal(
+    shouldSyncCustomPortSnapshotForTest(true, {
+      portMode: 'custom',
+      portConfigurationLocked: true
+    }),
+    true,
+    'environment locks must synchronize even if a port field was actively edited'
   )
   const updateValueSource = primitivesSource.match(
     /function updateValue\(nextValue: string\): void \{([\s\S]*?)\n {2}\}/

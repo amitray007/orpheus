@@ -505,6 +505,7 @@ export interface NumberInputProps {
     step: number
   }
   onDraftChange?: (draft: NumberInputDraft) => void
+  onEditingChange?: (isEditing: boolean) => void
 }
 
 function numberInputDraft(
@@ -544,7 +545,8 @@ export function NumberInput({
   ariaLabel,
   disabled,
   validation,
-  onDraftChange
+  onDraftChange,
+  onEditingChange
 }: NumberInputProps): React.JSX.Element {
   const [local, setLocal] = useState(value === null ? '' : String(value))
   // Track whether we have focus to avoid overwriting user's in-progress edits
@@ -568,6 +570,7 @@ export function NumberInput({
   function revert(): void {
     const externalValue = value === null ? '' : String(value)
     hasFocus.current = false
+    onEditingChange?.(false)
     setLocal(externalValue)
     notifyDraft(externalValue)
   }
@@ -575,6 +578,7 @@ export function NumberInput({
   function commit(): void {
     const draft = notifyDraft(local)
     hasFocus.current = false
+    onEditingChange?.(false)
     if (draft.error !== null) {
       setLocal(value === null ? '' : String(value))
       notifyDraft(value === null ? '' : String(value))
@@ -594,6 +598,7 @@ export function NumberInput({
       onChange={(e) => updateValue(e.target.value)}
       onFocus={() => {
         hasFocus.current = true
+        onEditingChange?.(true)
         const externalValue = value === null ? '' : String(value)
         setLocal(externalValue)
         notifyDraft(externalValue)
