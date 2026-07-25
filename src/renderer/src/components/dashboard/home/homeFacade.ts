@@ -55,6 +55,7 @@ const modelLabelCache = new Map<string, string>()
 let modelLabelsInFlight: Promise<void> | null = null
 let pendingModelIds = new Set<string>()
 let modelLabelsGeneration = 0
+let agentsReloadPending = false
 const inFlight: Partial<Record<HomeSourceName, Promise<void>>> = {}
 let agentInputs: {
   projects: ProjectRecord[]
@@ -421,10 +422,23 @@ function loadAgents(): Promise<void> {
   inFlight.agents = request
   inFlight.actions = request
   void request.finally(() => {
-    if (inFlight.agents === request) delete inFlight.agents
+    if (inFlight.agents !== request) return
+    delete inFlight.agents
     if (inFlight.actions === request) delete inFlight.actions
+    if (!started || !agentsReloadPending) return
+    agentsReloadPending = false
+    void loadAgents()
   })
   return request
+}
+
+function reloadAgentsForLifecycle(): void {
+  if (!started) return
+  if (inFlight.agents) {
+    agentsReloadPending = true
+    return
+  }
+  void loadAgents()
 }
 
 async function loadGithubOnce(): Promise<void> {
@@ -606,15 +620,9 @@ function start(): void {
   void loadActivity()
   pushUnsubscribes = [
     window.api.workspaces.onActivityBatch(refreshAgentsAfterActivityPush),
-    window.api.workspaces.onCreated(() => {
-      void loadAgents()
-    }),
-    window.api.workspaces.onChanged(() => {
-      void loadAgents()
-    }),
-    window.api.workspaces.onArchived(() => {
-      void loadAgents()
-    }),
+    window.api.workspaces.onCreated(reloadAgentsForLifecycle),
+    window.api.workspaces.onChanged(reloadAgentsForLifecycle),
+    window.api.workspaces.onArchived(reloadAgentsForLifecycle),
     window.api.projects.onChanged((project) => {
       if (!agentInputs) return
       agentInputs = {
@@ -655,6 +663,7 @@ function stop(): void {
   pushUnsubscribes = []
   modelLabelsGeneration++
   pendingModelIds = new Set()
+  agentsReloadPending = false
   for (const source of Object.keys(generations) as HomeSourceName[]) {
     generations[source]++
     delete inFlight[source]
