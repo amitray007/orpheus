@@ -1,26 +1,26 @@
 import type React from 'react'
 import type { HomeSourceState } from '../home.types'
 
-interface HomePageFrameProps<T> {
+interface HomePageFrameProps {
   title: string
-  source: HomeSourceState<T>
+  source: HomeSourceState<unknown>
   emptyCopy: string
   children?: React.ReactNode
 }
 
-function sourceMessage<T>(source: HomeSourceState<T>, emptyCopy: string): string {
+function sourceMessage(source: HomeSourceState<unknown>, emptyCopy: string): string {
   if (source.loading) return 'Loading…'
   if (source.error) return source.error
   if (source.unavailable) return 'This source is unavailable.'
   return emptyCopy
 }
 
-export function HomePageFrame<T>({
+export function HomePageFrame({
   title,
   source,
   emptyCopy,
   children
-}: HomePageFrameProps<T>): React.JSX.Element {
+}: HomePageFrameProps): React.JSX.Element {
   return (
     <section
       className="mx-auto flex w-full max-w-[1180px] flex-col gap-5"

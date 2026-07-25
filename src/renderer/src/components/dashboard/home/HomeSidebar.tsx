@@ -17,13 +17,14 @@ export function HomeSidebar({
 }: HomeSidebarProps): React.JSX.Element {
   return (
     <nav className="flex flex-1 flex-col gap-1 overflow-y-auto p-2" aria-label="Home pages">
-      {HOME_NAV_ITEMS.map((item) => (
+      {HOME_NAV_ITEMS.map((item, index) => (
         <HomeNavigationButton
           key={item.id}
           active={item.id === page}
           collapsed={collapsed}
           count={item.countKey === undefined ? undefined : counts[item.countKey]}
           item={item}
+          showGroupDivider={index > 0 && item.group !== HOME_NAV_ITEMS[index - 1].group}
           onNavigate={onNavigate}
         />
       ))}
@@ -36,12 +37,14 @@ function HomeNavigationButton({
   collapsed,
   count,
   item,
+  showGroupDivider,
   onNavigate
 }: {
   active: boolean
   collapsed: boolean
   count: number | undefined
   item: (typeof HOME_NAV_ITEMS)[number]
+  showGroupDivider: boolean
   onNavigate: NavigateSurface
 }): React.JSX.Element {
   const inputRef = useRef<'pointer' | 'keyboard'>('pointer')
@@ -51,9 +54,7 @@ function HomeNavigationButton({
 
   return (
     <>
-      {item.id === 'limits' && (
-        <div className="my-1 border-t border-border-default" role="separator" />
-      )}
+      {showGroupDivider && <div className="my-1 border-t border-border-default" role="separator" />}
       <button
         type="button"
         aria-label={`${item.label}${countLabel}`}

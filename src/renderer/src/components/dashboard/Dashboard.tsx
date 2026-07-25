@@ -38,7 +38,6 @@ import {
   reorderById,
   reorderWithTail,
   deriveSurface,
-  requestedHomePage,
   resolveLandingView
 } from './dashboard.helpers'
 import type {
@@ -871,11 +870,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleNavigateSurface = useCallback<NavigateSurface>(
     (request) => {
-      const homePage = requestedHomePage(request)
       if (request.surface === 'home') {
-        if (homePage) {
-          setView({ kind: 'home', page: homePage })
-          updateUiState({ homeLastPage: homePage })
+        if (request.homePage !== undefined) {
+          setView({ kind: 'home', page: request.homePage })
+          updateUiState({ homeLastPage: request.homePage })
         } else {
           handleSelectSurface('home')
         }
