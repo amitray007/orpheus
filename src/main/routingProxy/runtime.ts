@@ -27,6 +27,15 @@ export function getPreferredRoutingProxyPort(context: RoutingProxyVariantContext
   return 18765
 }
 
+export function assertValidAutomaticRoutingProxyEffectivePort(port: number): number {
+  if (!Number.isInteger(port) || port < AUTOMATIC_PORT_MIN || port > AUTOMATIC_PORT_MAX) {
+    throw new Error(
+      `uiState: routingProxyEffectivePort must be an integer between ${AUTOMATIC_PORT_MIN} and ${AUTOMATIC_PORT_MAX} or null`
+    )
+  }
+  return port
+}
+
 export function automaticPortCandidates(
   effectivePort: number | null,
   preferredPort: number
@@ -89,16 +98,9 @@ export function getRoutingProxyRuntime(state?: RoutingProxyPortState): RoutingPr
     return runtimeForPort('custom', customPort)
   }
   if (current.routingProxyEffectivePort !== null) {
-    const effectivePort = current.routingProxyEffectivePort
-    if (
-      !Number.isInteger(effectivePort) ||
-      effectivePort < AUTOMATIC_PORT_MIN ||
-      effectivePort > AUTOMATIC_PORT_MAX
-    ) {
-      throw new Error(
-        `Automatic routing proxy port must be an integer between ${AUTOMATIC_PORT_MIN} and ${AUTOMATIC_PORT_MAX}`
-      )
-    }
+    const effectivePort = assertValidAutomaticRoutingProxyEffectivePort(
+      current.routingProxyEffectivePort
+    )
     return runtimeForPort('automatic', effectivePort)
   }
   return { source: 'automatic', url: null, host: null, port: null, portConfigurationLocked: false }

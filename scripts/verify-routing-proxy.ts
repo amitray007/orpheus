@@ -76,6 +76,7 @@ import {
 import {
   AUTOMATIC_PORT_MAX,
   AUTOMATIC_PORT_MIN,
+  assertValidAutomaticRoutingProxyEffectivePort,
   automaticPortCandidates,
   getPreferredRoutingProxyPort,
   getRoutingProxyRuntime,
@@ -170,8 +171,14 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
         routingProxyCustomPort: null,
         routingProxyEffectivePort: 4567
       }),
-    /Automatic routing proxy port must be an integer between 18765 and 18799/
+    /routingProxyEffectivePort must be an integer between 18765 and 18799 or null/
   )
+  assert.throws(
+    () => assertValidAutomaticRoutingProxyEffectivePort(4567),
+    /routingProxyEffectivePort must be an integer between 18765 and 18799 or null/
+  )
+  assert.equal(assertValidAutomaticRoutingProxyEffectivePort(18765), 18765)
+  assert.equal(assertValidAutomaticRoutingProxyEffectivePort(18799), 18799)
   assert.throws(
     () =>
       getRoutingProxyRuntime({
