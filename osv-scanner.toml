@@ -1,0 +1,4 @@
+[[IgnoredVulns]]
+id = "GHSA-mh99-v99m-4gvg"
+ignoreUntil = 2026-10-25
+reason = "Legacy brace-expansion 1.x/2.x is required by current ESLint/electron-builder tooling; the only OSV-listed fix is incompatible 5.0.8. Re-evaluate before expiry."

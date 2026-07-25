@@ -561,6 +561,14 @@ export const schema: SchemaDef = {
       // + running the managed CLIProxyAPI child process. Mirrors
       // hooks_integration_enabled exactly.
       routing_proxy_enabled: { type: 'INTEGER', notNull: true, default: '0' },
+      routing_proxy_port_mode: {
+        type: 'TEXT',
+        notNull: true,
+        default: "'automatic'",
+        check: enumCheck('routing_proxy_port_mode', ['automatic', 'custom'])
+      },
+      routing_proxy_custom_port: 'INTEGER',
+      routing_proxy_effective_port: 'INTEGER',
       // Model-name aliasing on the routing proxy (model-routing unit 08) —
       // default 0 (off), same "explicit opt-in" shape as routing_proxy_enabled.
       // Gates whether ANY stored routing_proxy_model_aliases row is folded

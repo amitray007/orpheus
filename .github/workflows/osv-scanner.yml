@@ -32,3 +32,4 @@ jobs:
     with:
       scan-args: |-
         --lockfile=bun.lock
+        --config=osv-scanner.toml

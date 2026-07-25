@@ -16,19 +16,20 @@ import type {
   RoutingProxyAssetInfo,
   RoutingProxySnapshot,
   RoutingProxyUpdateCheckResult,
-  RoutingProxyMaintenanceResult
+  RoutingProxyMaintenanceResult,
+  RoutingProxyPortConfiguration,
+  RoutingProxyRuntime
 } from '../../shared/types'
 import { getAppUiState, updateAppUiState } from '../uiState'
-import { getRoutingProxyUrl } from '../modelRouting'
 import { PINNED_VERSION, assetNameFor, downloadUrlFor, PINNED_TAG } from './constants'
 import { authDir, binaryPath, configPath, versionDir } from './paths'
 import { installRoutingProxy, defaultInstallDeps, type InstallDeps } from './install'
 import { writeRoutingProxyConfig } from './config'
 import {
+  canPublishManagedRoutingProxyRunning,
   ensureHealthyForRouting as ensureHealthyForRoutingImpl,
-  waitForRoutingProxyReady,
-  checkRoutingProxyHealth,
-  defaultHealthCheckDeps as defaultHealthCheckDepsForWatchdog
+  waitForManagedRoutingProxyReady,
+  checkRoutingProxyHealth
 } from './health'
 import {
   startRoutingProxy,
@@ -36,6 +37,7 @@ import {
   isRunning,
   getManagementSecret,
   getLastError,
+  type RoutingProxySpawnAttempt,
   killRoutingProxySync
 } from './lifecycle'
 import {
@@ -44,8 +46,24 @@ import {
   type RoutingProxySupervisorDeps
 } from './supervisor'
 import { fetchRoutingProxyAuthFiles } from './authFiles'
-import { reclaimOrphanRoutingProxyPort, defaultOrphanReclaimDeps } from './orphan'
-import { defaultHealthCheckDeps } from './health'
+import { defaultListenerInspectionDeps, reclaimProvenOrphan } from './orphan'
+import {
+  automaticPortCandidates,
+  getCurrentRoutingProxyVariantContext,
+  getPreferredRoutingProxyPort,
+  getRoutingProxyRuntime
+} from './runtime'
+import {
+  effectiveAutomaticPortToPersist,
+  startAtResolvedRoutingProxyPort,
+  type StartCandidateResult
+} from './allocator'
+import { consumeExpectedCandidateExit, markFailedCandidateTermination } from './candidateExit'
+import {
+  RoutingProxyLifecycleCoordinator,
+  START_BLOCKED_BY_UNRESOLVED_CLEANUP,
+  START_SUPERSEDED
+} from './lifecycleCoordinator'
 import { checkRoutingProxyUpdate } from './updateCheck'
 import { cleanStoppedStatus, disableTransitionPatch } from './state'
 import { PROVIDERS } from './providers/registry'
@@ -95,6 +113,12 @@ import { isSafeExternalUrl } from '../ipc/validate'
 
 let snapshot: RoutingProxySnapshot = {
   enabled: false,
+  source: 'automatic',
+  effectiveUrl: null,
+  effectivePort: null,
+  portMode: 'automatic',
+  customPort: null,
+  portConfigurationLocked: false,
   status: 'not_installed',
   installedVersion: null,
   pinnedVersion: PINNED_VERSION,
@@ -119,13 +143,76 @@ export function getRoutingProxySnapshot(): RoutingProxySnapshot {
   return snapshot
 }
 
-function proxyPort(): number {
-  const url = new URL(getRoutingProxyUrl())
-  return Number(url.port || 80)
+function resolveRuntime(): RoutingProxyRuntime | null {
+  try {
+    return getRoutingProxyRuntime()
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    setSnapshot({ status: 'error', error: `Invalid ORPHEUS_ROUTING_PROXY_URL: ${reason}` })
+    return null
+  }
 }
 
-function proxyHost(): string {
-  return new URL(getRoutingProxyUrl()).hostname
+function snapshotRuntime(
+  runtime: RoutingProxyRuntime | null = resolveRuntime()
+): Pick<
+  RoutingProxySnapshot,
+  | 'source'
+  | 'effectiveUrl'
+  | 'effectivePort'
+  | 'portMode'
+  | 'customPort'
+  | 'portConfigurationLocked'
+> {
+  const state = getAppUiState()
+  if (runtime === null) {
+    return {
+      source: 'environment',
+      effectiveUrl: null,
+      effectivePort: null,
+      portMode: state.routingProxyPortMode,
+      customPort: state.routingProxyCustomPort,
+      portConfigurationLocked: true
+    }
+  }
+  return {
+    source: runtime.source,
+    effectiveUrl: runtime.url,
+    effectivePort: runtime.port,
+    portMode: state.routingProxyPortMode,
+    customPort: state.routingProxyCustomPort,
+    portConfigurationLocked: runtime.portConfigurationLocked
+  }
+}
+
+function setRuntimeSnapshot(runtime?: RoutingProxyRuntime | null): void {
+  setSnapshot(snapshotRuntime(runtime))
+}
+
+function runtimeForConfig(runtime: RoutingProxyRuntime): RoutingProxyRuntime {
+  if (runtime.port !== null) return runtime
+  const port = getPreferredRoutingProxyPort(getCurrentRoutingProxyVariantContext())
+  return {
+    source: 'automatic',
+    url: `http://127.0.0.1:${port}`,
+    host: '127.0.0.1',
+    port,
+    portConfigurationLocked: false
+  }
+}
+
+function routingProxyUrl(): string {
+  const url = resolveRuntime()?.url
+  if (url === null || url === undefined)
+    throw new Error('No effective routing proxy URL has been allocated yet.')
+  return url
+}
+
+function requiredRuntimeEndpoint(runtime: RoutingProxyRuntime): { host: string; port: number } {
+  if (runtime.host === null || runtime.port === null) {
+    throw new Error('No effective routing proxy port has been allocated yet.')
+  }
+  return { host: runtime.host, port: runtime.port }
 }
 
 /**
@@ -344,9 +431,10 @@ export async function install(deps: InstallDeps = defaultInstallDeps()): Promise
       deps
     )
     const resolvedAliases = resolveAliasModelsByProvider()
+    const endpoint = requiredRuntimeEndpoint(runtimeForConfig(getRoutingProxyRuntime()))
     await writeRoutingProxyConfig(configPath(result.version), {
-      host: proxyHost(),
-      port: proxyPort(),
+      host: endpoint.host,
+      port: endpoint.port,
       authDir: authDir(),
       providers: listProviderConfigs(),
       aliasModelsByProvider: resolvedAliases.apiKeyModels,
@@ -371,6 +459,27 @@ export async function install(deps: InstallDeps = defaultInstallDeps()): Promise
 // ---------------------------------------------------------------------------
 
 let authRefreshTimer: ReturnType<typeof setInterval> | null = null
+let currentSpawnAttempt: RoutingProxySpawnAttempt | null = null
+// Candidate readiness failures are intentional exits, scoped to the captured
+// PID so a later replacement child is never accidentally classified as expected.
+const expectedCandidateTerminationPids = new Set<number>()
+const exitedCandidatePids = new Set<number>()
+// Every lifecycle request obtains a generation. Awaited candidate work may only
+// mutate state while it still owns that generation.
+const lifecycleCoordinator = new RoutingProxyLifecycleCoordinator()
+const activeStartingCandidatePids = new Set<number>()
+const candidateGenerationByPid = new Map<
+  number,
+  { attempt: RoutingProxySpawnAttempt; generation: number }
+>()
+
+function nextLifecycleGeneration(): number {
+  return lifecycleCoordinator.beginIntent()
+}
+
+function ownsLifecycleGeneration(generation: number): boolean {
+  return lifecycleCoordinator.owns(generation)
+}
 
 // ---------------------------------------------------------------------------
 // Auto-supervision (respawn-on-crash + health watchdog) — see supervisor.ts's
@@ -384,10 +493,6 @@ let authRefreshTimer: ReturnType<typeof setInterval> | null = null
 // actually reaches 'running' (startWatchdog()) — see start()'s own call site.
 // ---------------------------------------------------------------------------
 
-function watchdogHealthCheckDeps(): ReturnType<typeof defaultHealthCheckDepsForWatchdog> {
-  return defaultHealthCheckDepsForWatchdog()
-}
-
 const supervisorDeps: RoutingProxySupervisorDeps = {
   startProxy: () => start(),
   killProxy: () => killRoutingProxySync(),
@@ -395,11 +500,9 @@ const supervisorDeps: RoutingProxySupervisorDeps = {
   isRestarting: () => restartInFlight,
   isEnabled: () => getAppUiState().routingProxyEnabled,
   checkHealth: async () => {
-    const result = await checkRoutingProxyHealth(
-      getRoutingProxyUrl(),
-      { managementSecret: getManagementSecret() },
-      watchdogHealthCheckDeps()
-    )
+    const attempt = currentSpawnAttempt
+    if (!attempt) return { healthy: false, reason: 'no owned routing proxy spawn attempt' }
+    const result = await checkRoutingProxyHealth(getRoutingProxyRuntime(), attempt)
     return result.healthy ? { healthy: true } : { healthy: false, reason: result.reason }
   },
   onGiveUp: (message) => {
@@ -486,7 +589,7 @@ async function doRefreshAuthFiles(onProgress: RefreshProgressCallback): Promise<
     onProgress(totalSteps, totalSteps)
     return
   }
-  const files = await fetchRoutingProxyAuthFiles(getRoutingProxyUrl(), secret)
+  const files = await fetchRoutingProxyAuthFiles(routingProxyUrl(), secret)
   setSnapshot({ authFiles: files, authFilesCheckedAt: Date.now() })
   onProgress(1, totalSteps)
   // (model-routing unit 09-polish) Persist the live-healthy provider id set
@@ -508,7 +611,7 @@ async function doRefreshAuthFiles(onProgress: RefreshProgressCallback): Promise<
   // provider channel as refreshCliProxyModelCache walks PROVIDERS — see that
   // function's own doc comment for why a failed channel still counts.
   let providersDone = 0
-  await refreshCliProxyModelCache(getRoutingProxyUrl(), secret, undefined, () => {
+  await refreshCliProxyModelCache(routingProxyUrl(), secret, undefined, () => {
     providersDone += 1
     onProgress(1 + providersDone, totalSteps)
   })
@@ -591,7 +694,7 @@ let lastModelCacheRefreshAttempt = 0
 let modelCacheRefreshInFlight: Promise<void> | null = null
 
 function startModelCacheRefresh(secret: string): Promise<void> {
-  const inFlight = refreshCliProxyModelCache(getRoutingProxyUrl(), secret)
+  const inFlight = refreshCliProxyModelCache(routingProxyUrl(), secret)
     .then(async () => {
       // The renderer's selectableModelsStore only refetches on a
       // routingProxy:onSnapshot push (see that module's doc comment) — it
@@ -747,128 +850,269 @@ export async function forceRefreshCliProxyModelCache(): Promise<RoutingProxyMain
   }
 }
 
-export async function start(): Promise<void> {
-  let version = snapshot.installedVersion ?? detectInstalledVersion()
+function blockOnUnresolvedCandidateCleanup(
+  attempt: RoutingProxySpawnAttempt,
+  generation: number,
+  port: number,
+  inspect: ReturnType<typeof defaultListenerInspectionDeps>
+): void {
+  lifecycleCoordinator.blockUnresolvedCandidate({
+    pid: attempt.pid,
+    generation,
+    listenerReleased: async () => {
+      const listeners = await inspect.listListeners(port)
+      return !listeners.some((listener) => listener.pid === attempt.pid)
+    }
+  })
+  // An exact exit may have won the race with cleanup-timeout bookkeeping.
+  if (exitedCandidatePids.has(attempt.pid)) {
+    lifecycleCoordinator.recordCandidateExit(attempt.pid, generation)
+  }
+}
 
-  // Auto-install on enable: the toggle's own copy promises "When on,
-  // Orpheus installs (if needed) and runs the proxy" — so enabling while
-  // not installed must trigger the install itself rather than erroring out
-  // and telling the user to do it manually via a control that (before this
-  // fix) didn't even exist in that state. install() already sets its own
-  // 'installing'/'error' snapshot states; a thrown error here (e.g. a
-  // checksum mismatch or offline network) leaves status 'error' with
-  // installedVersion still null, which canInstallOrRetry()/isInstalled()
-  // keep reachable for a manual Retry — never a dead end.
+async function cleanupSupersededCandidate(
+  attempt: RoutingProxySpawnAttempt,
+  generation: number,
+  port: number,
+  inspect: ReturnType<typeof defaultListenerInspectionDeps>
+): Promise<StartCandidateResult> {
+  markFailedCandidateTermination(
+    expectedCandidateTerminationPids,
+    activeStartingCandidatePids,
+    attempt.pid
+  )
+  const released = await waitForFailedCandidateRelease(attempt, port, inspect)
+  if (currentSpawnAttempt === attempt) currentSpawnAttempt = null
+  if (released) return { ok: false, reason: START_SUPERSEDED }
+  blockOnUnresolvedCandidateCleanup(attempt, generation, port, inspect)
+  return { ok: false, reason: `failed candidate ${attempt.pid} did not release port ${port}` }
+}
+
+async function waitForFailedCandidateRelease(
+  attempt: RoutingProxySpawnAttempt,
+  port: number,
+  inspect: ReturnType<typeof defaultListenerInspectionDeps>
+): Promise<boolean> {
+  attempt.terminate()
+  for (let remaining = 20; remaining > 0; remaining--) {
+    const listeners = await inspect.listListeners(port)
+    if (
+      exitedCandidatePids.has(attempt.pid) &&
+      !listeners.some((listener) => listener.pid === attempt.pid)
+    ) {
+      exitedCandidatePids.delete(attempt.pid)
+      return true
+    }
+    await inspect.sleep(50)
+  }
+  return false
+}
+
+function handleCandidateExit(
+  attempt: RoutingProxySpawnAttempt,
+  code: number | null,
+  signal: NodeJS.Signals | null
+): void {
+  const registeredCandidate = candidateGenerationByPid.get(attempt.pid)
+  if (!registeredCandidate || registeredCandidate.attempt !== attempt) return
+  candidateGenerationByPid.delete(attempt.pid)
+  const generation = registeredCandidate.generation
+  lifecycleCoordinator.recordCandidateExit(attempt.pid, generation)
+  const stale = !ownsLifecycleGeneration(generation)
+  if (stale) {
+    if (currentSpawnAttempt?.pid === attempt.pid) currentSpawnAttempt = null
+    consumeExpectedCandidateExit(
+      expectedCandidateTerminationPids,
+      activeStartingCandidatePids,
+      attempt.pid
+    )
+    exitedCandidatePids.add(attempt.pid)
+    return
+  }
+  if (authRefreshTimer) {
+    clearInterval(authRefreshTimer)
+    authRefreshTimer = null
+  }
+  routingProxySupervisor.stopWatchdog()
+  if (currentSpawnAttempt?.pid === attempt.pid) currentSpawnAttempt = null
+  const error = getLastError()
+  const expectedCandidateExit = consumeExpectedCandidateExit(
+    expectedCandidateTerminationPids,
+    activeStartingCandidatePids,
+    attempt.pid
+  )
+  if (expectedCandidateExit) exitedCandidatePids.add(attempt.pid)
+  const expected = wasExpectedShutdown || expectedCandidateExit
+  setSnapshot({ ...snapshotRuntime(), status: error ? 'error' : 'stopped', error, authFiles: [] })
+  if (!expected) routingProxySupervisor.onUnexpectedExit(code, signal)
+  wasExpectedShutdown = false
+}
+
+async function prepareCandidatePort(
+  runtime: RoutingProxyRuntime,
+  version: string,
+  endpoint: { host: string; port: number },
+  inspect: ReturnType<typeof defaultListenerInspectionDeps>
+): Promise<StartCandidateResult | null> {
+  const listeners = await inspect.listListeners(endpoint.port)
+  if (listeners.length === 0) return null
+  if (runtime.source === 'custom') {
+    return { ok: false, reason: `port ${endpoint.port} is already occupied` }
+  }
+  const reclaimed = await reclaimProvenOrphan(
+    endpoint.port,
+    binaryPath(version),
+    configPath(version),
+    inspect
+  )
+  if (!reclaimed.reclaimed && (await inspect.listListeners(endpoint.port)).length > 0) {
+    return {
+      ok: false,
+      reason: `port ${endpoint.port} is occupied (${reclaimed.reason ?? 'foreign listener'})`
+    }
+  }
+  return null
+}
+
+async function startCandidate(
+  runtime: RoutingProxyRuntime,
+  version: string,
+  generation: number
+): Promise<StartCandidateResult> {
+  if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: START_SUPERSEDED }
+  const endpoint = requiredRuntimeEndpoint(runtime)
+  const inspect = defaultListenerInspectionDeps()
+  const unavailable = await prepareCandidatePort(runtime, version, endpoint, inspect)
+  if (unavailable) return unavailable
+
+  if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: START_SUPERSEDED }
+  const aliases = resolveAliasModelsByProvider()
+  await writeRoutingProxyConfig(configPath(version), {
+    ...requiredRuntimeEndpoint(runtime),
+    authDir: authDir(),
+    providers: listProviderConfigs(),
+    aliasModelsByProvider: aliases.apiKeyModels,
+    oauthAliasModelsByProvider: aliases.oauthModels
+  })
+  if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: START_SUPERSEDED }
+  recordAliasWrite(aliases)
+  recentChildLogLines.length = 0
+  routingProxySupervisor.markStarted()
+  const attempt = startRoutingProxy({
+    binaryPath: binaryPath(version),
+    configPath: configPath(version),
+    onExit: (code, signal) => handleCandidateExit(attempt, code, signal),
+    onLog: (line) => {
+      recentChildLogLines.push(line)
+      if (recentChildLogLines.length > RECENT_LOG_LINE_LIMIT) recentChildLogLines.shift()
+    }
+  })
+  currentSpawnAttempt = attempt
+  candidateGenerationByPid.set(attempt.pid, { attempt, generation })
+  // Claim the PID before the first await: a fast bind/exit belongs to this
+  // allocator candidate, never to the supervisor's independent respawn path.
+  activeStartingCandidatePids.add(attempt.pid)
+  const readiness = await waitForManagedRoutingProxyReady(runtime, attempt)
+  if (!readiness.healthy) {
+    // Record this exact attempt as expected before clearing its active-start
+    // marker: onExit may otherwise observe the transition and respawn it.
+    markFailedCandidateTermination(
+      expectedCandidateTerminationPids,
+      activeStartingCandidatePids,
+      attempt.pid
+    )
+    if (!ownsLifecycleGeneration(generation)) {
+      return cleanupSupersededCandidate(attempt, generation, endpoint.port, inspect)
+    }
+    if (currentSpawnAttempt !== attempt) {
+      if (exitedCandidatePids.delete(attempt.pid)) return { ok: false, reason: readiness.reason }
+      return { ok: false, reason: START_SUPERSEDED }
+    }
+    const released = await waitForFailedCandidateRelease(attempt, endpoint.port, inspect)
+    if (currentSpawnAttempt === attempt) currentSpawnAttempt = null
+    if (!released) {
+      blockOnUnresolvedCandidateCleanup(attempt, generation, endpoint.port, inspect)
+      return {
+        ok: false,
+        reason: `failed candidate ${attempt.pid} did not release port ${endpoint.port}`
+      }
+    }
+    return { ok: false, reason: readiness.reason }
+  }
+  activeStartingCandidatePids.delete(attempt.pid)
+  if (!ownsLifecycleGeneration(generation)) {
+    return cleanupSupersededCandidate(attempt, generation, endpoint.port, inspect)
+  }
+  if (!canPublishManagedRoutingProxyRunning(currentSpawnAttempt, attempt, readiness)) {
+    return { ok: false, reason: START_SUPERSEDED }
+  }
+  return { ok: true, effectivePort: endpoint.port }
+}
+
+async function startUnlocked(generation: number): Promise<void> {
+  let version = snapshot.installedVersion ?? detectInstalledVersion()
   if (!version) {
     try {
       await install()
     } catch {
-      // install() already recorded status: 'error' + a message; nothing
-      // further to do here — just don't fall through to starting a
-      // nonexistent binary.
       return
     }
     version = snapshot.installedVersion
     if (!version) return
   }
-
-  setSnapshot({ status: 'starting', error: null })
-
-  // Regenerate config on every start so it always reflects the current
-  // getRoutingProxyUrl() (host/port never drift from a stale prior write)
-  // AND the current stored provider configs (a provider added/edited while
-  // the proxy was stopped must take effect on the next start).
-  const startResolvedAliases = resolveAliasModelsByProvider()
-  await writeRoutingProxyConfig(configPath(version), {
-    host: proxyHost(),
-    port: proxyPort(),
-    authDir: authDir(),
-    providers: listProviderConfigs(),
-    aliasModelsByProvider: startResolvedAliases.apiKeyModels,
-    oauthAliasModelsByProvider: startResolvedAliases.oauthModels
-  })
-  recordAliasWrite(startResolvedAliases)
-
-  console.log(`[routing-proxy] starting (version ${version})`)
-  recentChildLogLines.length = 0
-  // markStarted() clears the expected-shutdown flag so a SUBSEQUENT
-  // unexpected exit (crash after this run) is correctly classified again —
-  // stop()/restart()/shutdownRoutingProxySync() set that flag right before
-  // killing the child; a fresh start must undo it.
-  routingProxySupervisor.markStarted()
-
-  startRoutingProxy({
-    binaryPath: binaryPath(version),
-    configPath: configPath(version),
-    onExit: (code, signal) => {
-      if (authRefreshTimer) {
-        clearInterval(authRefreshTimer)
-        authRefreshTimer = null
-      }
-      routingProxySupervisor.stopWatchdog()
-      const err = getLastError()
-      const expected = wasExpectedShutdown
-      setSnapshot({ status: err ? 'error' : 'stopped', error: err, authFiles: [] })
-      if (!expected) {
-        if (recentChildLogLines.length > 0) {
-          console.error(
-            `[routing-proxy] recent output before unexpected exit:\n` +
-              recentChildLogLines.map((l) => `  ${l}`).join('\n')
-          )
-        }
-        routingProxySupervisor.onUnexpectedExit(code, signal)
-      }
-      wasExpectedShutdown = false
-    },
-    onLog: (line) => {
-      // Managed process output is intentionally not surfaced to the
-      // renderer (no log viewer in scope) — but the last few lines are kept
-      // in a small bounded ring buffer and dumped to console on/near an
-      // unexpected exit (see onExit above), so a crash is diagnosable
-      // without spamming every stdout/stderr line at steady state.
-      recentChildLogLines.push(line)
-      if (recentChildLogLines.length > RECENT_LOG_LINE_LIMIT) recentChildLogLines.shift()
-    }
-  })
-
-  // Poll readiness until the port is listening (bounded), then flip to
-  // running and start polling auth-files. Uses the cheap TCP-only probe with
-  // a fast, backing-off cadence (immediate first probe, short probe timeout)
-  // rather than the management-API round trip used elsewhere — readiness
-  // only needs "something is listening on the port", and a local process
-  // either accepts a loopback connection almost instantly or isn't up yet.
-  // Still bounded overall so a broken binary can't spin forever.
-  const healthy = await waitForRoutingProxyReady(getRoutingProxyUrl())
-
-  if (!healthy) {
-    // The child is left ALIVE by this failure path (waitForRoutingProxyReady
-    // just times out — it never touches the process). Kill it explicitly so
-    // it can't linger as an orphaned zombie the supervisor doesn't know
-    // about; the resulting real 'exit' event routes back through onExit
-    // above (wasExpectedShutdown is false here, so it's treated as
-    // unexpected and the supervisor's normal respawn/backoff decision
-    // applies) rather than this function silently returning with a dangling
-    // child.
-    console.error('[routing-proxy] never became reachable — killing and letting supervisor decide')
-    killRoutingProxySync()
-    setSnapshot({ status: 'error', error: 'Proxy process started but never became reachable.' })
+  const initialRuntime = resolveRuntime()
+  if (initialRuntime === null) {
+    setRuntimeSnapshot(null)
     return
   }
-
-  console.log('[routing-proxy] started and reachable')
-  setSnapshot({ status: 'running', error: null, installedVersion: version })
-  // Fire-and-forget: the 'running' status must be observable to the renderer
-  // (via the snapshot push above) immediately, not gated on this network
-  // round trip. refreshAuthFiles is best-effort and already re-broadcasts
-  // its own result (setSnapshot) when it completes.
+  setRuntimeSnapshot(initialRuntime)
+  setSnapshot({ status: 'starting', error: null })
+  const result = await startAtResolvedRoutingProxyPort({
+    runtime: () => resolveRuntime() ?? initialRuntime,
+    candidates: automaticPortCandidates,
+    inspect: defaultListenerInspectionDeps(),
+    startCandidate: (runtime) => startCandidate(runtime, version, generation)
+  })
+  if (!result.ok) {
+    if (!ownsLifecycleGeneration(generation) || result.reason === START_SUPERSEDED) return
+    setSnapshot({
+      ...snapshotRuntime(),
+      status: 'error',
+      error: `Proxy process failed readiness: ${result.reason ?? 'unknown error'}`
+    })
+    return
+  }
+  const resolvedRuntime = resolveRuntime()
+  if (resolvedRuntime === null) return
+  const effectivePortToPersist = effectiveAutomaticPortToPersist(initialRuntime, result)
+  if (effectivePortToPersist !== null) {
+    updateAppUiState({ routingProxyEffectivePort: effectivePortToPersist })
+  }
+  const runtime = resolveRuntime()
+  if (runtime === null) return
+  setSnapshot({
+    ...snapshotRuntime(runtime),
+    status: 'running',
+    error: null,
+    installedVersion: version
+  })
   void refreshAuthFiles()
-  authRefreshTimer = setInterval(() => {
-    void refreshAuthFiles()
-  }, 30_000)
+  authRefreshTimer = setInterval(() => void refreshAuthFiles(), 30_000)
   routingProxySupervisor.startWatchdog()
 }
 
-export async function stop(): Promise<void> {
+export async function start(): Promise<void> {
+  const generation = nextLifecycleGeneration()
+  const result = await lifecycleCoordinator.run(generation, () => startUnlocked(generation))
+  if (result === START_SUPERSEDED) return
+  if (result === START_BLOCKED_BY_UNRESOLVED_CLEANUP) {
+    throw new Error(
+      'Routing proxy start blocked until the unresolved candidate exits and releases its listener'
+    )
+  }
+}
+
+async function stopUnlocked(): Promise<void> {
   if (authRefreshTimer) {
     clearInterval(authRefreshTimer)
     authRefreshTimer = null
@@ -879,12 +1123,19 @@ export async function stop(): Promise<void> {
   // wasExpectedShutdown's own doc comment.
   wasExpectedShutdown = true
   routingProxySupervisor.markExpectedShutdown()
+  currentSpawnAttempt = null
   await stopRoutingProxy()
   setSnapshot({
+    ...snapshotRuntime(),
     ...disableTransitionPatch(snapshot.installedVersion),
     authFiles: [],
     authFilesCheckedAt: null
   })
+}
+
+export async function stop(): Promise<void> {
+  const generation = nextLifecycleGeneration()
+  await lifecycleCoordinator.run(generation, stopUnlocked)
 }
 
 // ---------------------------------------------------------------------------
@@ -911,13 +1162,8 @@ export function isRestarting(): boolean {
 }
 
 /**
- * Stop the proxy (if running), reclaim the port defensively in case the OS
- * hasn't fully released it yet even though stop()'s child-exit promise has
- * already resolved (mirrors reconcileRoutingProxy's own pre-start reclaim —
- * see reclaimOrphanIfPresent's doc comment for why adoption is impossible
- * and kill-and-respawn is the only safe policy for a foreign listener), then
- * start() again on the SAME configured port (proxyPort()/proxyHost() are
- * re-read from getRoutingProxyUrl(), never cached from the pre-restart run).
+ * Stop the proxy (if running), then start it again through the same resolved
+ * candidate protocol used by every other lifecycle entry point.
  * start() itself regenerates config.yaml, rotates MANAGEMENT_PASSWORD +
  * the client auth token (lifecycle.ts's startRoutingProxy generates both
  * fresh on every call), waits for readiness, and kicks off the authFiles +
@@ -935,7 +1181,6 @@ export async function restart(): Promise<RoutingProxySnapshot> {
     if (isRunning()) {
       await stop()
     }
-    await reclaimOrphanIfPresent()
     await start()
     // A manual restart fully resets supervision — whatever consecutive
     // respawn-failure streak (or give-up state) existed before this no
@@ -948,48 +1193,15 @@ export async function restart(): Promise<RoutingProxySnapshot> {
 }
 
 /**
- * Detects a routing-proxy process left listening on our fixed loopback port
- * by a PREVIOUS app run (this run's isRunning() is false — lifecycle.ts's
- * child handle is a fresh module-level `let`, reset on every boot — but the
- * OS process can still be alive if the prior run crashed/force-quit before
- * reaching shutdownRoutingProxySync). See orphan.ts's module doc for why the
- * policy is kill-and-respawn rather than adopt: an orphan's
- * MANAGEMENT_PASSWORD was generated in a process that no longer exists in
- * memory anywhere, so this run has no credential to authenticate to it —
- * adoption is not just undesirable but impossible. Bounded to a fast TCP
- * probe (500ms) plus a short settle delay only when something is actually
- * found — a clean boot (nothing listening) returns near-instantly.
- */
-async function reclaimOrphanIfPresent(): Promise<void> {
-  const url = new URL(getRoutingProxyUrl())
-  const port = Number(url.port || 80)
-  const result = await reclaimOrphanRoutingProxyPort(
-    url.hostname,
-    port,
-    defaultOrphanReclaimDeps(defaultHealthCheckDeps().tcpProbe)
-  )
-  if (result.reclaimed) {
-    setSnapshot({ authFiles: [], authFilesCheckedAt: null })
-  }
-}
-
-/**
  * Declarative reconcile — mirrors index.ts's reconcileHooks() exactly: reads
  * routingProxyEnabled from AppUiState and starts/stops the child process to
  * match. Safe to call multiple times; idempotent against the current state.
  */
 export async function reconcileRoutingProxy(): Promise<void> {
   const enabled = getAppUiState().routingProxyEnabled
-  setSnapshot({ enabled })
+  setSnapshot({ ...snapshotRuntime(), enabled })
   if (enabled) {
     if (!isRunning()) {
-      // Reclaim a stale/orphan process holding our port BEFORE spawning —
-      // otherwise start()'s own bind attempt either fails outright or (worse)
-      // silently talks to nobody while a foreign, credential-unknown process
-      // keeps holding the port for the rest of this session (the reported
-      // bug: authFiles never populates because refreshAuthFiles()/the 30s
-      // timer are only armed inside start(), which never got called).
-      await reclaimOrphanIfPresent()
       await start()
     }
   } else if (isRunning()) {
@@ -1007,14 +1219,37 @@ export async function reconcileRoutingProxy(): Promise<void> {
 
 export async function setEnabled(enabled: boolean): Promise<RoutingProxySnapshot> {
   updateAppUiState({ routingProxyEnabled: enabled })
-  if (enabled) {
-    // An intentional enable-toggle fully resets supervision, same rationale
-    // as a manual restart() — never fight a previous give-up state once the
-    // user has explicitly turned the feature back on.
-    routingProxySupervisor.resetFailureCount()
-  }
+  if (enabled) routingProxySupervisor.resetFailureCount()
   await reconcileRoutingProxy()
   return snapshot
+}
+
+export async function setPortConfiguration(
+  request: RoutingProxyPortConfiguration
+): Promise<RoutingProxySnapshot> {
+  const generation = nextLifecycleGeneration()
+  const result = await lifecycleCoordinator.run(generation, async () => {
+    if (request.mode === 'custom') {
+      if (!Number.isInteger(request.port) || request.port < 1024 || request.port > 65535) {
+        throw new Error('Custom routing proxy port must be an integer between 1024 and 65535')
+      }
+      updateAppUiState({ routingProxyPortMode: 'custom', routingProxyCustomPort: request.port })
+    } else {
+      updateAppUiState({ routingProxyPortMode: 'automatic' })
+    }
+    setRuntimeSnapshot()
+    if (!getAppUiState().routingProxyEnabled) return snapshot
+    if (isRunning()) await stopUnlocked()
+    await startUnlocked(generation)
+    return snapshot
+  })
+  if (result === START_SUPERSEDED) return snapshot
+  if (result === START_BLOCKED_BY_UNRESOLVED_CLEANUP) {
+    throw new Error(
+      'Routing proxy port change blocked until the unresolved candidate exits and releases its listener'
+    )
+  }
+  return result
 }
 
 /** Wired into app quit — mirrors notifyServer/commandServer's will-quit cleanup in index.ts. */
@@ -1030,6 +1265,7 @@ export function shutdownRoutingProxySync(): void {
   wasExpectedShutdown = true
   routingProxySupervisor.markExpectedShutdown()
   routingProxySupervisor.dispose()
+  currentSpawnAttempt = null
   killRoutingProxySync()
 }
 
@@ -1063,6 +1299,7 @@ export function hydrateSnapshotAtBoot(): Promise<void> {
   const installedVersion = detectInstalledVersion()
   const enabled = getAppUiState().routingProxyEnabled
   setSnapshot({
+    ...snapshotRuntime(),
     installedVersion,
     enabled,
     status: cleanStoppedStatus(installedVersion)
@@ -1116,9 +1353,10 @@ export async function regenerateConfigNow(): Promise<void> {
   const version = snapshot.installedVersion
   if (!version) return
   const resolvedAliases = resolveAliasModelsByProvider()
+  const endpoint = requiredRuntimeEndpoint(runtimeForConfig(getRoutingProxyRuntime()))
   await writeRoutingProxyConfig(configPath(version), {
-    host: proxyHost(),
-    port: proxyPort(),
+    host: endpoint.host,
+    port: endpoint.port,
     authDir: authDir(),
     providers: listProviderConfigs(),
     aliasModelsByProvider: resolvedAliases.apiKeyModels,
@@ -1206,14 +1444,15 @@ export async function forceRegenerateConfig(): Promise<RoutingProxyMaintenanceRe
 // ---------------------------------------------------------------------------
 
 export async function ensureHealthyForRouting(): Promise<void> {
-  await ensureHealthyForRoutingImpl(getRoutingProxyUrl(), {
-    managementSecret: getManagementSecret()
-  })
+  const attempt = currentSpawnAttempt
+  if (!attempt)
+    throw new Error('Routing proxy is not healthy (no owned routing proxy spawn attempt).')
+  await ensureHealthyForRoutingImpl(getRoutingProxyRuntime(), attempt)
 }
 
 // ---------------------------------------------------------------------------
 // OAuth "Connect <provider>" flow (model-routing unit 07) — thin passthrough
-// to oauth.ts's pure primitives, supplying the live getRoutingProxyUrl()
+// to oauth.ts's pure primitives, supplying the live routingProxyUrl()
 // exactly like every other manager call above. Keeps oauth.ts itself free of
 // any dependency on the manager's module-level snapshot, so its own harness
 // (scripts/verify-oauth.ts) stays fully offline/Electron-free.
@@ -1229,7 +1468,7 @@ export type { StartLoginResult }
  *  from a localhost process we spawned, but the same guard costs nothing and
  *  keeps this call site consistent with the rest of the app. */
 export async function startOAuthLogin(providerId: string): Promise<StartLoginResult> {
-  const result = await startProviderLogin(providerId, getRoutingProxyUrl())
+  const result = await startProviderLogin(providerId, routingProxyUrl())
   if (isSafeExternalUrl(result.url)) {
     void shell.openExternal(result.url).catch(() => {})
   }
@@ -1254,7 +1493,7 @@ export async function startOAuthLogin(providerId: string): Promise<StartLoginRes
  */
 export async function pollOAuthLogin(state: string): Promise<PollResult> {
   try {
-    const result = await pollAuthStatus(state, getRoutingProxyUrl())
+    const result = await pollAuthStatus(state, routingProxyUrl())
     if (result.status === 'ok') {
       await refreshAuthFiles()
     }
@@ -1268,7 +1507,7 @@ export async function pollOAuthLogin(state: string): Promise<PollResult> {
 }
 
 export async function cancelOAuthLogin(state: string): Promise<void> {
-  await cancelProviderLoginImpl(state, getRoutingProxyUrl())
+  await cancelProviderLoginImpl(state, routingProxyUrl())
 }
 
 // Re-export for convenience so scripts / other main modules importing the

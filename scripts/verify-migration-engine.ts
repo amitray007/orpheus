@@ -516,14 +516,24 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
     // supplied explicitly; last_view_kind is deliberately omitted to exercise
     // its DEFAULT clause.
     adb.exec('INSERT INTO app_ui_state (id, updated_at) VALUES (1, 0)')
-    const row = adb.prepare('SELECT last_view_kind FROM app_ui_state WHERE id = 1').get() as {
+    const row = adb
+      .prepare(
+        'SELECT last_view_kind, routing_proxy_port_mode, routing_proxy_custom_port, routing_proxy_effective_port FROM app_ui_state WHERE id = 1'
+      )
+      .get() as {
       last_view_kind: string
+      routing_proxy_port_mode: string
+      routing_proxy_custom_port: number | null
+      routing_proxy_effective_port: number | null
     }
     assert.equal(
       row.last_view_kind,
       'sessions',
       `expected last_view_kind DEFAULT to be 'sessions', got '${row.last_view_kind}'`
     )
+    assert.equal(row.routing_proxy_port_mode, 'automatic')
+    assert.equal(row.routing_proxy_custom_port, null)
+    assert.equal(row.routing_proxy_effective_port, null)
 
     assert.deepEqual(
       planSync(adb, schema),
@@ -532,7 +542,53 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
     )
   }
 
-  console.log('✓ app_ui_state converges (last_view_kind defaults to sessions, idempotent)')
+  // Legacy app_ui_state rows must gain the durable port columns without
+  // losing unrelated persisted fields, and a second plan must remain empty.
+  {
+    const ldb = new Database(':memory:')
+    ldb.exec('PRAGMA foreign_keys = OFF')
+    for (const [tableName, def] of Object.entries(schema)) {
+      if (tableName === 'app_ui_state') continue
+      ldb.exec(renderCreateTable(tableName, def))
+      for (const [idxName, idxDef] of Object.entries(def.indexes ?? {})) {
+        ldb.exec(renderIndex(tableName, idxName, idxDef))
+      }
+    }
+    ldb.exec(`CREATE TABLE app_ui_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      last_view_kind TEXT NOT NULL DEFAULT 'sessions',
+      sidebar_collapsed INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    )`)
+    ldb.exec(
+      "INSERT INTO app_ui_state (id, last_view_kind, sidebar_collapsed, updated_at) VALUES (1, 'workspace', 1, 42)"
+    )
+
+    sync(ldb, schema, { dbPath: ':memory:', legacyVersion: 0 })
+    const legacy = ldb
+      .prepare(
+        'SELECT last_view_kind, sidebar_collapsed, updated_at, routing_proxy_port_mode, routing_proxy_custom_port, routing_proxy_effective_port FROM app_ui_state WHERE id = 1'
+      )
+      .get() as {
+      last_view_kind: string
+      sidebar_collapsed: number
+      updated_at: number
+      routing_proxy_port_mode: string
+      routing_proxy_custom_port: number | null
+      routing_proxy_effective_port: number | null
+    }
+    assert.deepEqual(legacy, {
+      last_view_kind: 'workspace',
+      sidebar_collapsed: 1,
+      updated_at: 42,
+      routing_proxy_port_mode: 'automatic',
+      routing_proxy_custom_port: null,
+      routing_proxy_effective_port: null
+    })
+    assert.deepEqual(planSync(ldb, schema), [], 'legacy app_ui_state migration must be idempotent')
+  }
+
+  console.log('✓ app_ui_state converges (port defaults, legacy row preservation, idempotent)')
   console.log('✓ convergence')
 }
 
