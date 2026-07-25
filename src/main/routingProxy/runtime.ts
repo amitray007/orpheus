@@ -58,14 +58,39 @@ export function automaticPortCandidates(
   return candidates
 }
 
-function runtimeForEnvironment(url: string): RoutingProxyRuntime {
-  const parsed = new URL(url)
+export interface RoutingProxyEndpoint {
+  url: string
+  host: string
+  port: number
+}
+
+/**
+ * Parses the only endpoint shapes a managed routing proxy can bind and serve.
+ * Callers retain the original URL for client routing while sharing one parsed
+ * host/port interpretation for config, health, and diagnostics.
+ */
+export function parseRoutingProxyEndpoint(url: string): RoutingProxyEndpoint {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error('must be a valid http: or https: URL')
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('must use the http: or https: scheme')
+  }
   return {
-    source: 'environment',
     url,
     host: parsed.hostname,
-    port:
-      parsed.port === '' ? Number(parsed.protocol === 'https:' ? 443 : 80) : Number(parsed.port),
+    port: parsed.port === '' ? (parsed.protocol === 'https:' ? 443 : 80) : Number(parsed.port)
+  }
+}
+
+function runtimeForEnvironment(url: string): RoutingProxyRuntime {
+  const endpoint = parseRoutingProxyEndpoint(url)
+  return {
+    source: 'environment',
+    ...endpoint,
     portConfigurationLocked: true
   }
 }

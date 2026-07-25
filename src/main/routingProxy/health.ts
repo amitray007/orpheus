@@ -2,6 +2,7 @@ import * as net from 'node:net'
 import type { RoutingProxyRuntime } from '../../shared/types'
 import { defaultListenerInspectionDeps, type ListeningProcess } from './inspection'
 import type { RoutingProxySpawnAttempt } from './lifecycle'
+import { parseRoutingProxyEndpoint } from './runtime'
 
 export type HealthCheckResult = { healthy: true } | { healthy: false; reason: string }
 
@@ -179,9 +180,8 @@ export async function probeRoutingProxyTcpReachability(
   timeoutMs = 2000
 ): Promise<boolean> {
   try {
-    const url = new URL(baseUrl)
-    const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80))
-    return await deps.tcpProbe(url.hostname, port, timeoutMs)
+    const endpoint = parseRoutingProxyEndpoint(baseUrl)
+    return await deps.tcpProbe(endpoint.host, endpoint.port, timeoutMs)
   } catch {
     return false
   }

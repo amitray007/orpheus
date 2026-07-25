@@ -92,23 +92,27 @@ export async function reclaimProvenOrphan(
   config: string,
   deps: ListenerInspectionDeps
 ): Promise<{ reclaimed: boolean; killedPids: number[]; reason?: string }> {
-  const listener = (await deps.listListeners(port)).find((process) =>
-    isSameVariantRoutingProxy(process, binary, config)
-  )
-  if (!listener) {
-    return { reclaimed: false, killedPids: [], reason: 'no proven same-variant listener' }
+  const listeners = await deps.listListeners(port)
+  const listener = listeners[0]
+  if (
+    listener === undefined ||
+    listeners.length !== 1 ||
+    !isSameVariantRoutingProxy(listener, binary, config)
+  ) {
+    return {
+      reclaimed: false,
+      killedPids: [],
+      reason: 'port is not occupied by exactly one proven same-variant listener'
+    }
   }
 
   deps.signalProcess(listener.pid, 'SIGTERM')
   await deps.sleep(150)
-  const remainsBound = (await deps.listListeners(port)).some(
-    (process) => process.pid === listener.pid
-  )
-  if (remainsBound) {
+  if ((await deps.listListeners(port)).length !== 0) {
     return {
       reclaimed: false,
       killedPids: [listener.pid],
-      reason: 'proven same-variant listener remains bound after signalling'
+      reason: 'port remains bound after signalling proven same-variant listener'
     }
   }
   return { reclaimed: true, killedPids: [listener.pid] }

@@ -20,6 +20,21 @@ export interface RoutingProxyAllocatorDeps {
   startCandidate: (runtime: RoutingProxyRuntime) => Promise<StartCandidateResult>
 }
 
+/**
+ * The persistence boundary: only a strict-ready Automatic allocation may
+ * replace the durable preferred candidate. Explicit endpoint modes and every
+ * failed/exhausted attempt intentionally retain the previous value.
+ */
+export function effectiveAutomaticPortToPersist(
+  initialRuntime: RoutingProxyRuntime,
+  result: StartCandidateResult
+): number | null {
+  if (initialRuntime.source !== 'automatic' || !result.ok || result.effectivePort === undefined) {
+    return null
+  }
+  return result.effectivePort
+}
+
 function runtimeAtAutomaticPort(port: number): RoutingProxyRuntime {
   return {
     source: 'automatic',

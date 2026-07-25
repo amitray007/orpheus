@@ -89,7 +89,14 @@ import {
   getRoutingProxyRuntime,
   type RoutingProxyVariantContext
 } from '../src/main/routingProxy/runtime.ts'
-import { startAtResolvedRoutingProxyPort } from '../src/main/routingProxy/allocator.ts'
+import {
+  effectiveAutomaticPortToPersist,
+  startAtResolvedRoutingProxyPort
+} from '../src/main/routingProxy/allocator.ts'
+import {
+  consumeExpectedCandidateExit,
+  markFailedCandidateTermination
+} from '../src/main/routingProxy/candidateExit.ts'
 import type { RoutingProxyPortConfiguration } from '../src/shared/types.ts'
 import {
   RoutingProxyLifecycleCoordinator,
@@ -169,6 +176,42 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
     if (originalOverride === undefined) delete process.env.ORPHEUS_ROUTING_PROXY_URL
     else process.env.ORPHEUS_ROUTING_PROXY_URL = originalOverride
   }
+
+  for (const [url, port] of [
+    ['http://proxy.example.test/path', 80],
+    ['https://proxy.example.test/path', 443],
+    ['http://proxy.example.test:8080/path', 8080],
+    ['https://proxy.example.test:8443/path', 8443]
+  ] as const) {
+    process.env.ORPHEUS_ROUTING_PROXY_URL = url
+    const runtime = getRoutingProxyRuntime({
+      routingProxyPortMode: 'custom',
+      routingProxyCustomPort: 4567,
+      routingProxyEffectivePort: 18770
+    })
+    assert.equal(runtime.url, url, 'valid environment URLs must be retained verbatim for clients')
+    assert.equal(
+      runtime.port,
+      port,
+      'endpoint parsing must honor implicit and explicit scheme ports'
+    )
+  }
+  for (const invalidUrl of ['not a URL', 'wss://proxy.example.test', 'ftp://proxy.example.test']) {
+    process.env.ORPHEUS_ROUTING_PROXY_URL = invalidUrl
+    assert.throws(
+      () =>
+        getRoutingProxyRuntime({
+          routingProxyPortMode: 'custom',
+          routingProxyCustomPort: 4567,
+          routingProxyEffectivePort: 18770
+        }),
+      /valid http: or https: URL|http: or https: scheme/,
+      'an invalid environment endpoint must reject before Custom or Automatic fallback'
+    )
+  }
+
+  if (originalOverride === undefined) delete process.env.ORPHEUS_ROUTING_PROXY_URL
+  else process.env.ORPHEUS_ROUTING_PROXY_URL = originalOverride
 
   assert.deepEqual(
     getRoutingProxyRuntime({
@@ -304,6 +347,73 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
   })
   assert.deepEqual(supersededAttempts, [18765])
   assert.equal(superseded.reason, 'start was superseded')
+
+  const automaticRuntime = {
+    source: 'automatic' as const,
+    url: 'http://127.0.0.1:18766',
+    host: '127.0.0.1',
+    port: 18766,
+    portConfigurationLocked: false
+  }
+  assert.equal(
+    effectiveAutomaticPortToPersist(automaticRuntime, { ok: true, effectivePort: 18766 }),
+    18766,
+    'only a strict-ready Automatic candidate may replace the effective port'
+  )
+  assert.equal(
+    effectiveAutomaticPortToPersist(automaticRuntime, { ok: false, reason: 'exhausted' }),
+    null,
+    'failed Automatic exhaustion must preserve the prior effective port'
+  )
+  for (const source of ['custom', 'environment'] as const) {
+    assert.equal(
+      effectiveAutomaticPortToPersist(
+        {
+          source,
+          url: 'http://127.0.0.1:18777',
+          host: '127.0.0.1',
+          port: 18777,
+          portConfigurationLocked: source === 'environment'
+        },
+        { ok: true, effectivePort: 18777 }
+      ),
+      null,
+      `${source} success must not persist an automatic effective port`
+    )
+  }
+  const originalOverride = process.env.ORPHEUS_ROUTING_PROXY_URL
+  let invalidEnvironmentAllocationAttempts = 0
+  try {
+    process.env.ORPHEUS_ROUTING_PROXY_URL = 'wss://proxy.example.test'
+    await assert.rejects(
+      () =>
+        startAtResolvedRoutingProxyPort({
+          runtime: () =>
+            getRoutingProxyRuntime({
+              routingProxyPortMode: 'custom',
+              routingProxyCustomPort: 18777,
+              routingProxyEffectivePort: 18766
+            }),
+          candidates: () => {
+            throw new Error('invalid environment endpoint must not request automatic candidates')
+          },
+          inspect: inspectionDeps,
+          startCandidate: async () => {
+            invalidEnvironmentAllocationAttempts++
+            return { ok: true }
+          }
+        }),
+      /http: or https: scheme/
+    )
+    assert.equal(
+      invalidEnvironmentAllocationAttempts,
+      0,
+      'an invalid environment endpoint must not start a Custom or Automatic candidate'
+    )
+  } finally {
+    if (originalOverride === undefined) delete process.env.ORPHEUS_ROUTING_PROXY_URL
+    else process.env.ORPHEUS_ROUTING_PROXY_URL = originalOverride
+  }
   console.log('✓ allocator retries automatic candidates while custom mode remains strict')
 }
 
@@ -406,9 +516,47 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
 }
 
 // ---------------------------------------------------------------------------
-// 0e. Typed port-configuration IPC and snapshot-driven Settings UI. These
-// static contracts protect the Electron boundary without loading Electron or
-// mounting React in this fully-offline harness.
+// 0e. Failed-candidate exit policy. The production manager marks the exact PID
+// expected before clearing its active-start marker, so an exit at that boundary
+// is consumed rather than handed to supervisor respawn policy.
+// ---------------------------------------------------------------------------
+
+{
+  const expectedTerminationPids = new Set<number>()
+  const activeStartingCandidatePids = new Set([5101])
+  markFailedCandidateTermination(expectedTerminationPids, activeStartingCandidatePids, 5101)
+  assert.equal(activeStartingCandidatePids.has(5101), false)
+  assert.equal(expectedTerminationPids.has(5101), true)
+  const expectedExit = consumeExpectedCandidateExit(
+    expectedTerminationPids,
+    activeStartingCandidatePids,
+    5101
+  )
+  assert.equal(expectedExit, true, 'the exact failure PID must consume its expected-exit marker')
+  assert.equal(
+    consumeExpectedCandidateExit(expectedTerminationPids, activeStartingCandidatePids, 5102),
+    false,
+    'a different PID must not consume another candidate marker'
+  )
+  assert.equal(
+    decideRespawnAction({
+      enabled: true,
+      expectedShutdown: expectedExit,
+      restarting: false,
+      consecutiveFailures: 0
+    }).action,
+    'skip',
+    'an exit at the failed-candidate transition must never schedule supervisor respawn'
+  )
+  console.log(
+    '✓ failed-candidate expected exit is marked before active-start removal and suppresses respawn'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 0f. Typed port-configuration IPC and snapshot-driven Settings UI. These
+// static source contracts protect the Electron boundary without loading
+// Electron or mounting React in this fully-offline harness.
 // ---------------------------------------------------------------------------
 
 {
@@ -1745,7 +1893,7 @@ async function cleanup(): Promise<void> {
     const result = await reclaimProvenOrphan(18766, binary, config, deps)
     assert.equal(result.reclaimed, false)
     assert.deepEqual(killedPids, [])
-    assert.match(result.reason ?? '', /no proven same-variant listener/)
+    assert.match(result.reason ?? '', /exactly one proven same-variant listener/)
   }
 
   // `ps command=` cannot safely distinguish a literal backslash from display
@@ -1759,21 +1907,22 @@ async function cleanup(): Promise<void> {
     assert.deepEqual(killedPids, [])
   }
 
-  // Multiple listeners do not widen ownership: signal only the exact matching
-  // stale process, then confirm it actually released the port.
+  // Additional listeners make the port occupied, even if one is exactly our
+  // stale process. Signal nobody: ownership proof applies to the whole port.
   {
-    const { deps, killedPids, slept } = makeInspectionDeps([[...unrelated, exact], unrelated])
+    const foreign = unrelated[0]!
+    const { deps, killedPids } = makeInspectionDeps([[exact, foreign]])
     const result = await reclaimProvenOrphan(18766, binary, config, deps)
-    assert.equal(result.reclaimed, true)
-    assert.deepEqual(result.killedPids, [41])
-    assert.deepEqual(killedPids, [41])
-    assert.deepEqual(slept, [150])
+    assert.equal(result.reclaimed, false)
+    assert.deepEqual(result.killedPids, [])
+    assert.deepEqual(killedPids, [])
   }
 
-  // A signalled listener that remains bound was not reclaimed; report that
-  // outcome rather than treating signalling as proof that the socket is free.
+  // Even after signalling one exact listener, any remaining foreign listener
+  // means the port was not reclaimed and cannot be reused.
   {
-    const { deps, killedPids } = makeInspectionDeps([[exact], [exact]])
+    const foreign = unrelated[0]!
+    const { deps, killedPids } = makeInspectionDeps([[exact], [foreign]])
     const result = await reclaimProvenOrphan(18766, binary, config, deps)
     assert.equal(result.reclaimed, false)
     assert.deepEqual(result.killedPids, [41])
@@ -1781,8 +1930,19 @@ async function cleanup(): Promise<void> {
     assert.match(result.reason ?? '', /remains bound/)
   }
 
+  // A sole exact listener is reclaimable only after the complete listener list
+  // becomes empty.
+  {
+    const { deps, killedPids, slept } = makeInspectionDeps([[exact], []])
+    const result = await reclaimProvenOrphan(18766, binary, config, deps)
+    assert.equal(result.reclaimed, true)
+    assert.deepEqual(result.killedPids, [41])
+    assert.deepEqual(killedPids, [41])
+    assert.deepEqual(slept, [150])
+  }
+
   console.log(
-    '✓ reclaimProvenOrphan signals only one proven same-variant listener and reinspects release'
+    '✓ reclaimProvenOrphan signals only a sole proven listener and requires an empty reinspection'
   )
 }
 

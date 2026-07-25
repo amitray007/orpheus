@@ -53,7 +53,12 @@ import {
   getPreferredRoutingProxyPort,
   getRoutingProxyRuntime
 } from './runtime'
-import { startAtResolvedRoutingProxyPort, type StartCandidateResult } from './allocator'
+import {
+  effectiveAutomaticPortToPersist,
+  startAtResolvedRoutingProxyPort,
+  type StartCandidateResult
+} from './allocator'
+import { consumeExpectedCandidateExit, markFailedCandidateTermination } from './candidateExit'
 import {
   RoutingProxyLifecycleCoordinator,
   START_BLOCKED_BY_UNRESOLVED_CLEANUP,
@@ -871,7 +876,11 @@ async function cleanupSupersededCandidate(
   port: number,
   inspect: ReturnType<typeof defaultListenerInspectionDeps>
 ): Promise<StartCandidateResult> {
-  expectedCandidateTerminationPids.add(attempt.pid)
+  markFailedCandidateTermination(
+    expectedCandidateTerminationPids,
+    activeStartingCandidatePids,
+    attempt.pid
+  )
   const released = await waitForFailedCandidateRelease(attempt, port, inspect)
   if (currentSpawnAttempt === attempt) currentSpawnAttempt = null
   if (released) return { ok: false, reason: START_SUPERSEDED }
@@ -912,8 +921,11 @@ function handleCandidateExit(
   const stale = !ownsLifecycleGeneration(generation)
   if (stale) {
     if (currentSpawnAttempt?.pid === attempt.pid) currentSpawnAttempt = null
-    activeStartingCandidatePids.delete(attempt.pid)
-    expectedCandidateTerminationPids.delete(attempt.pid)
+    consumeExpectedCandidateExit(
+      expectedCandidateTerminationPids,
+      activeStartingCandidatePids,
+      attempt.pid
+    )
     exitedCandidatePids.add(attempt.pid)
     return
   }
@@ -924,10 +936,13 @@ function handleCandidateExit(
   routingProxySupervisor.stopWatchdog()
   if (currentSpawnAttempt?.pid === attempt.pid) currentSpawnAttempt = null
   const error = getLastError()
-  const candidateTermination = expectedCandidateTerminationPids.delete(attempt.pid)
-  const startingCandidate = activeStartingCandidatePids.delete(attempt.pid)
-  if (candidateTermination || startingCandidate) exitedCandidatePids.add(attempt.pid)
-  const expected = wasExpectedShutdown || candidateTermination || startingCandidate
+  const expectedCandidateExit = consumeExpectedCandidateExit(
+    expectedCandidateTerminationPids,
+    activeStartingCandidatePids,
+    attempt.pid
+  )
+  if (expectedCandidateExit) exitedCandidatePids.add(attempt.pid)
+  const expected = wasExpectedShutdown || expectedCandidateExit
   setSnapshot({ ...snapshotRuntime(), status: error ? 'error' : 'stopped', error, authFiles: [] })
   if (!expected) routingProxySupervisor.onUnexpectedExit(code, signal)
   wasExpectedShutdown = false
@@ -999,7 +1014,13 @@ async function startCandidate(
   activeStartingCandidatePids.add(attempt.pid)
   const readiness = await waitForManagedRoutingProxyReady(runtime, attempt)
   if (!readiness.healthy) {
-    activeStartingCandidatePids.delete(attempt.pid)
+    // Record this exact attempt as expected before clearing its active-start
+    // marker: onExit may otherwise observe the transition and respawn it.
+    markFailedCandidateTermination(
+      expectedCandidateTerminationPids,
+      activeStartingCandidatePids,
+      attempt.pid
+    )
     if (!ownsLifecycleGeneration(generation)) {
       return cleanupSupersededCandidate(attempt, generation, endpoint.port, inspect)
     }
@@ -1007,7 +1028,6 @@ async function startCandidate(
       if (exitedCandidatePids.delete(attempt.pid)) return { ok: false, reason: readiness.reason }
       return { ok: false, reason: START_SUPERSEDED }
     }
-    expectedCandidateTerminationPids.add(attempt.pid)
     const released = await waitForFailedCandidateRelease(attempt, endpoint.port, inspect)
     if (currentSpawnAttempt === attempt) currentSpawnAttempt = null
     if (!released) {
@@ -1064,8 +1084,9 @@ async function startUnlocked(generation: number): Promise<void> {
   }
   const resolvedRuntime = resolveRuntime()
   if (resolvedRuntime === null) return
-  if (resolvedRuntime.source === 'automatic' && result.effectivePort !== undefined) {
-    updateAppUiState({ routingProxyEffectivePort: result.effectivePort })
+  const effectivePortToPersist = effectiveAutomaticPortToPersist(initialRuntime, result)
+  if (effectivePortToPersist !== null) {
+    updateAppUiState({ routingProxyEffectivePort: effectivePortToPersist })
   }
   const runtime = resolveRuntime()
   if (runtime === null) return
