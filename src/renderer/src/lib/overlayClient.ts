@@ -758,10 +758,9 @@ export function chipTooltipId(actionId: string): string {
  * (hideOverlayCard) on its own timer/mouseleave, same as the chassis-free
  * `ChipTooltip` component's setTimeout-driven hide.
  *
- * `preferredSide` defaults to 'top' (the footer ActionChip/DropdownChip
- * origin usage, opening upward off a bottom-anchored chip). Callers anchored
- * elsewhere — e.g. the far-left ActivityRail, which only has room to open
- * rightward like showProjectCard/showHoverCard above — can override it.
+ * `preferredSide` defaults to 'top' for footer ActionChip/DropdownChip
+ * usage, opening upward off a bottom-anchored chip. Other callers can choose
+ * the side that fits their available space.
  */
 export function showChipTooltip(
   id: string,

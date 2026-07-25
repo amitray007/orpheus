@@ -18,11 +18,10 @@ const PULSE_BAR = 'animate-pulse rounded bg-surface-overlay'
 
 /**
  * N shimmer rows shaped like a dashboard table row (two-line: a wider title
- * bar + a narrower meta bar underneath), sized to roughly match the fixed
- * column widths PrTable/IssuesTable/LiveAgentsTable already use. `cols`
- * controls how many extra trailing meta bars render (e.g. LiveAgentsTable's
- * State/Model/Since columns) — defaults to the common Pr/Issues shape
- * (just # + title, no extra trailing columns beyond the two-line stack).
+ * bar + a narrower meta bar underneath), sized to work with the compact
+ * Home tables. `cols` controls how many extra trailing meta bars render and
+ * defaults to the common Pr/Issues shape (just # + title, no extra trailing
+ * columns beyond the two-line stack).
  */
 export function TableRowsSkeleton({
   rows,
@@ -31,8 +30,7 @@ export function TableRowsSkeleton({
   /** Row count — pass the table's page size (or a smaller fixed count) so
    *  the skeleton isn't a huge block. */
   rows: number
-  /** Extra trailing column bars per row (beyond the two-line title/meta
-   *  stack), e.g. LiveAgentsTable's Project/Model/Since. */
+  /** Extra trailing column bars per row beyond the two-line title/meta stack. */
   cols?: number
 }): React.JSX.Element {
   return (

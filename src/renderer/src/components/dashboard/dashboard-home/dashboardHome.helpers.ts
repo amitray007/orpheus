@@ -1,31 +1,4 @@
-/**
- * Pure (non-React) helpers for the dashboard-home components. Kept in a
- * dedicated file (rather than alongside DashboardTopBar.tsx) so that file
- * only exports the component — required for Fast Refresh
- * (react-refresh/only-export-components).
- */
-
-export type DashboardRange = 'all' | '30d' | '7d'
-
-/** "Good morning" <12, "Good afternoon" <18, else "Good evening". */
-export function greetingForHour(hour: number): string {
-  if (hour < 12) return 'Good morning'
-  if (hour < 18) return 'Good afternoon'
-  return 'Good evening'
-}
-
-/**
- * Named variant of greetingForHour (D4) — appends ", {firstName}" when a name
- * is available (the user's GitHub display name/login, refreshed via
- * `gh api user`), else falls back to the bare greeting with no trailing comma.
- * Only the FIRST name is shown (per user preference) — the full name stays
- * persisted in the DB; this is display-only. Null/empty-safe.
- */
-export function greetingWithName(hour: number, name: string | null): string {
-  const greeting = greetingForHour(hour)
-  const first = name?.trim().split(/\s+/)[0]
-  return first ? `${greeting}, ${first}` : greeting
-}
+/** Pure (non-React) display helpers shared by Home page components. */
 
 /**
  * Compact relative-time label ("2m"/"3h"/"5d") for an ISO timestamp — used by

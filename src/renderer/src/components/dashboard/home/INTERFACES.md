@@ -6,13 +6,13 @@ changes an interface without stopping and re-planning.
 
 ## Ownership
 
-| Contract | Owner |
-| --- | --- |
-| `HomePageId`, `AppUiState.homeLastPage` | `src/shared/types.ts` |
-| `UI_STATE_DEFAULTS.homeLastPage`, `VALID_HOME_PAGES` | `src/shared/uiStateDefaults.ts` |
-| `home_last_page` schema, read mapping, validation, persistence | `src/main/db/schema.ts`, `src/main/uiState.ts` |
-| `SurfaceId`, `PersistedSurfaceId`, `AppView` | `home.types.ts` |
-| Provider, agent, action, limits, activity, stats, snapshot, navigation, and page contracts | `home.types.ts` |
+| Contract                                                                                   | Owner                                          |
+| ------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| `HomePageId`, `AppUiState.homeLastPage`                                                    | `src/shared/types.ts`                          |
+| `UI_STATE_DEFAULTS.homeLastPage`, `VALID_HOME_PAGES`                                       | `src/shared/uiStateDefaults.ts`                |
+| `home_last_page` schema, read mapping, validation, persistence                             | `src/main/db/schema.ts`, `src/main/uiState.ts` |
+| `SurfaceId`, `PersistedSurfaceId`, `AppView`                                               | `home.types.ts`                                |
+| Provider, agent, action, limits, activity, stats, snapshot, navigation, and page contracts | `home.types.ts`                                |
 
 `AppView` is:
 

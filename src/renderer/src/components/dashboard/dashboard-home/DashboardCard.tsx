@@ -1,18 +1,4 @@
-// ---------------------------------------------------------------------------
-// DashboardCard — the shared card shell used by every Dashboard section card
-// (Usage, Activity, Live agents, Open PRs, Issues). Matches the v3 mockup's
-// `.panel`: tight padding, token border/surface, a title + small muted
-// count/meta on the right, SHARP corners (`rounded-none`) — the hybrid-
-// corner rule is that only TriageTile stays rounded, every other container
-// (this one included) is sharp. Hand-rolled rather than shadcn's <Card />
-// because the mockup's density (15px padding, 12.5px title) is tighter than
-// shadcn's default card spacing.
-//
-// `variant="primary"` is the focal treatment for the ONE emphasized panel
-// per row (currently Usage): an accent-tinted border plus a faint top-down
-// accent gradient, both built from `color-mix(... var(--color-accent) ...)`
-// so they stay theme-aware — matches the mockup's `.panel.primary`.
-// ---------------------------------------------------------------------------
+// Shared card shell for Home page sections.
 
 import { cn } from '@/lib/utils'
 
@@ -30,9 +16,7 @@ export function DashboardCard({
   contentClassName,
   children
 }: {
-  /** ReactNode (not just string) so a card can pair its title with an inline
-   *  icon (e.g. GithubLogo on Open PRs / Issues assigned) — see PrTable /
-   *  IssuesTable. Plain string usages keep working unchanged. */
+  /** A title may include an inline icon as well as text. */
   title: React.ReactNode
   meta?: string
   /** 'primary' = the focal/emphasized panel in a row (accent-tinted border +

@@ -1,22 +1,4 @@
-// ---------------------------------------------------------------------------
-// StatTile — one of the hero row's inline stats (Sessions / Tokens / Current
-// streak / Peak hour). V1 REBUILD: this used to be a bordered box
-// (rounded-[10px] border + bg-surface-raised card); per dashboard-v3.html's
-// `.hero .stats .stat`, it's now a BARE inline stack — no border, no
-// background, no padding-box — value on top (`.v`: tabular-nums, ~21px,
-// semibold) with an optional small trailing unit (`.v small`), a tiny muted
-// key label below (`.k`). The critique that drove this rebuild flagged the
-// old boxed tiles as "huge half-empty hero-metric cards"; the inline
-// treatment sits directly in DashboardTopBar's hero row instead of its own
-// card grid. The value + unit + key label are CENTER-aligned within each
-// stat block (items-center + text-center) so the number reads centered over
-// its label rather than left-hugging it. `dim` renders the value in the
-// muted `.v.dim` tone (for any
-// stat whose value is a placeholder rather than real data — no current
-// caller uses this, all four hero stats are wired to real data as of V3).
-// `loading` shows a bare skeleton bar (no card wrapper to skeleton) instead
-// of flashing a stale/zero value.
-// ---------------------------------------------------------------------------
+// Compact stat display shared by Home pages.
 
 export function StatTile({
   label,

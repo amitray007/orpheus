@@ -1,9 +1,4 @@
-// ---------------------------------------------------------------------------
-// liveAgents.helpers — pure (non-React) helpers for useLiveAgents.ts. Kept in
-// its own file (mirrors pulseData.helpers.ts) so the join/filter/sort/display
-// logic is independently readable and testable, separate from the fetch +
-// subscription plumbing in the hook itself.
-// ---------------------------------------------------------------------------
+// Pure live-agent row helpers used by the Home facade.
 
 import type { SessionRecord, WorkspaceActivityDetail, WorkspaceRecord } from '@shared/types'
 
@@ -121,8 +116,7 @@ const defaultModelLabelResolver = (model: string | null): string => (model ? mod
 /**
  * Join workspaces + sessions + the activity snapshot into live-agent rows.
  * `liveActivityTimes` is a lookup of workspaceId -> epoch ms sourced from
- * activityTimeStore (see useLiveAgents.ts) — the "(a) preferred" elapsed
- * source per the unit spec, avoiding a new IPC surface.
+ * the activity-time store, avoiding a new IPC surface.
  * `getModelLabel` resolves a raw model id to the registry's canonical label
  * (see useModelLabels.ts) — defaults to an identity/'—' fallback when the
  * caller doesn't supply one (e.g. tests).

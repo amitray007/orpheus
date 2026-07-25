@@ -1,11 +1,9 @@
 import { useState } from 'react'
-import { GithubLogo } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
 import type { GhSearchPr } from '@shared/types'
 import { DashboardCard } from './DashboardCard'
 import { TablePager } from './TablePager'
 import { TableRowsSkeleton } from './DashboardSkeletons'
-import { useGithubData } from './useGithubData'
 import { formatCompact, formatCompactAge } from './dashboardHome.helpers'
 
 const PR_PAGE_SIZE = 10
@@ -156,29 +154,5 @@ export function PrTableContent({
         </div>
       )}
     </DashboardCard>
-  )
-}
-
-/** Compatibility wrapper for the legacy dashboard. */
-export function PrTable(): React.JSX.Element {
-  const { loading, prs, openPrCount, draftPrCount, possiblyUnavailable } = useGithubData()
-  const title = (
-    <span className="inline-flex items-center gap-1.5">
-      <GithubLogo size={14} weight="fill" className="text-text-muted" aria-hidden="true" />
-      Open PRs
-    </span>
-  )
-  const meta = loading
-    ? 'loading…'
-    : `${formatCompact(openPrCount)} open${draftPrCount ? ` · ${formatCompact(draftPrCount)} draft` : ''} · by last push`
-
-  return (
-    <PrTableContent
-      loading={loading}
-      prs={prs}
-      unavailable={possiblyUnavailable}
-      meta={meta}
-      title={title}
-    />
   )
 }

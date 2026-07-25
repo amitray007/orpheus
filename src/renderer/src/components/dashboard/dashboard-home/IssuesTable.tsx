@@ -1,10 +1,8 @@
 import { useState } from 'react'
-import { GithubLogo } from '@phosphor-icons/react'
 import type { GhSearchIssue } from '@shared/types'
 import { DashboardCard } from './DashboardCard'
 import { TablePager } from './TablePager'
 import { TableRowsSkeleton } from './DashboardSkeletons'
-import { useGithubData } from './useGithubData'
 import { formatCompact, formatCompactAge } from './dashboardHome.helpers'
 
 const ISSUE_PAGE_SIZE = 10
@@ -134,27 +132,5 @@ export function IssuesTableContent({
         </div>
       )}
     </DashboardCard>
-  )
-}
-
-/** Compatibility wrapper for the legacy dashboard. */
-export function IssuesTable(): React.JSX.Element {
-  const { loading, issues, openIssueCount, possiblyUnavailable } = useGithubData()
-  const title = (
-    <span className="inline-flex items-center gap-1.5">
-      <GithubLogo size={14} weight="fill" className="text-text-muted" aria-hidden="true" />
-      Issues assigned
-    </span>
-  )
-  const meta = loading ? 'loading…' : `${formatCompact(openIssueCount)} · by updated`
-
-  return (
-    <IssuesTableContent
-      loading={loading}
-      issues={issues}
-      unavailable={possiblyUnavailable}
-      meta={meta}
-      title={title}
-    />
   )
 }

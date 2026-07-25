@@ -1,13 +1,4 @@
-// ---------------------------------------------------------------------------
-// pulseData.helpers — small pure helpers for the "Your pulse" section still
-// needed by the renderer after usePulseData moved to sourcing real activity
-// from the main-process transcript scanner (src/main/claudeActivity.ts,
-// exposed via `claude:activity`). The actual sessions/streak/peak-hour/
-// weekly-activity NUMBERS are now computed in claudeActivity.ts, not here —
-// this file only re-exports the shared `WeeklyActivityDay` shape (so
-// existing renderer imports don't churn) and keeps `formatHour12`, the one
-// pure display-formatting helper DashboardView still uses directly.
-// ---------------------------------------------------------------------------
+// Pure activity display helpers shared by Home pages.
 
 export type { WeeklyActivityDay } from '@shared/types'
 
@@ -19,9 +10,7 @@ export type { WeeklyActivityDay } from '@shared/types'
  *  preference. The hour is dropped into a throwaway local Date (this
  *  function only ever receives an hour-of-day integer, not a real date) and
  *  formatted with `hour: 'numeric'` only — no minute — matching the
- *  mockup's compact "11 PM" style. Kept under its original name to avoid a
- *  churny rename across its one call site (DashboardView.tsx's
- *  peakHourLabel). */
+ *  mockup's compact "11 PM" style. */
 export function formatHour12(hour: number): string {
   return new Date(2000, 0, 1, hour).toLocaleTimeString([], { hour: 'numeric' })
 }
