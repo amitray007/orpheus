@@ -37,25 +37,38 @@ function ProviderLimits({ provider }: { provider: ProviderLimitSnapshot }): Reac
 export function LimitsPage({ snapshot }: HomePageProps): React.JSX.Element {
   const { limits } = snapshot
   const hasProviders = limits.data.length > 0
+  const sourceStatus = limits.unavailable
+    ? hasProviders
+      ? 'Usage limits are unavailable. Showing saved data.'
+      : 'Usage limits are unavailable.'
+    : limits.error
+      ? hasProviders
+        ? `${limits.error} Showing saved data.`
+        : limits.error
+      : null
 
   return (
     <HomePageFrame title="Limits" source={limits} emptyCopy="No usage limits are available.">
-      {limits.loading ? (
-        <div className="h-24 animate-pulse rounded-lg bg-surface-overlay" />
-      ) : limits.unavailable ? (
-        <p role="status" aria-live="polite" className="text-sm text-text-muted">
-          Usage limits are unavailable.
-        </p>
-      ) : limits.error ? (
-        <p role="status" aria-live="polite" className="text-sm text-text-muted">
-          {limits.error}
-        </p>
+      {limits.loading && !hasProviders ? (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+          className="h-24 animate-pulse rounded-lg bg-surface-overlay"
+        >
+          <span className="sr-only">Loading usage limits</span>
+        </div>
       ) : !hasProviders ? (
         <p role="status" aria-live="polite" className="text-sm text-text-muted">
-          No usage limits are available.
+          {sourceStatus ?? 'No usage limits are available.'}
         </p>
       ) : (
         <div className="flex flex-col gap-4">
+          {sourceStatus ? (
+            <p role="status" aria-live="polite" className="text-sm text-text-muted">
+              {sourceStatus}
+            </p>
+          ) : null}
           {limits.data.map((provider) => (
             <section
               key={provider.provider.id}
