@@ -54,6 +54,7 @@ import {
   getRoutingProxyRuntime
 } from './runtime'
 import { startAtResolvedRoutingProxyPort, type StartCandidateResult } from './allocator'
+import { RoutingProxyLifecycleCoordinator, START_SUPERSEDED } from './lifecycleCoordinator'
 import { checkRoutingProxyUpdate } from './updateCheck'
 import { cleanStoppedStatus, disableTransitionPatch } from './state'
 import { PROVIDERS } from './providers/registry'
@@ -456,16 +457,15 @@ const expectedCandidateTerminationPids = new Set<number>()
 const exitedCandidatePids = new Set<number>()
 // Every lifecycle request obtains a generation. Awaited candidate work may only
 // mutate state while it still owns that generation.
-let lifecycleGeneration = 0
+const lifecycleCoordinator = new RoutingProxyLifecycleCoordinator()
 const activeStartingCandidatePids = new Set<number>()
 
 function nextLifecycleGeneration(): number {
-  lifecycleGeneration += 1
-  return lifecycleGeneration
+  return lifecycleCoordinator.beginIntent()
 }
 
 function ownsLifecycleGeneration(generation: number): boolean {
-  return generation === lifecycleGeneration
+  return lifecycleCoordinator.owns(generation)
 }
 
 // ---------------------------------------------------------------------------
@@ -857,34 +857,65 @@ async function waitForFailedCandidateRelease(
   return false
 }
 
+function handleCandidateExit(
+  attempt: RoutingProxySpawnAttempt,
+  code: number | null,
+  signal: NodeJS.Signals | null
+): void {
+  if (authRefreshTimer) {
+    clearInterval(authRefreshTimer)
+    authRefreshTimer = null
+  }
+  routingProxySupervisor.stopWatchdog()
+  if (currentSpawnAttempt?.pid === attempt.pid) currentSpawnAttempt = null
+  const error = getLastError()
+  const candidateTermination = expectedCandidateTerminationPids.delete(attempt.pid)
+  const startingCandidate = activeStartingCandidatePids.delete(attempt.pid)
+  if (candidateTermination || startingCandidate) exitedCandidatePids.add(attempt.pid)
+  const expected = wasExpectedShutdown || candidateTermination || startingCandidate
+  setSnapshot({ ...snapshotRuntime(), status: error ? 'error' : 'stopped', error, authFiles: [] })
+  if (!expected) routingProxySupervisor.onUnexpectedExit(code, signal)
+  wasExpectedShutdown = false
+}
+
+async function prepareCandidatePort(
+  runtime: RoutingProxyRuntime,
+  version: string,
+  endpoint: { host: string; port: number },
+  inspect: ReturnType<typeof defaultListenerInspectionDeps>
+): Promise<StartCandidateResult | null> {
+  const listeners = await inspect.listListeners(endpoint.port)
+  if (listeners.length === 0) return null
+  if (runtime.source === 'custom') {
+    return { ok: false, reason: `port ${endpoint.port} is already occupied` }
+  }
+  const reclaimed = await reclaimProvenOrphan(
+    endpoint.port,
+    binaryPath(version),
+    configPath(version),
+    inspect
+  )
+  if (!reclaimed.reclaimed && (await inspect.listListeners(endpoint.port)).length > 0) {
+    return {
+      ok: false,
+      reason: `port ${endpoint.port} is occupied (${reclaimed.reason ?? 'foreign listener'})`
+    }
+  }
+  return null
+}
+
 async function startCandidate(
   runtime: RoutingProxyRuntime,
   version: string,
   generation: number
 ): Promise<StartCandidateResult> {
-  if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: 'start was superseded' }
+  if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: START_SUPERSEDED }
   const endpoint = requiredRuntimeEndpoint(runtime)
   const inspect = defaultListenerInspectionDeps()
-  const listeners = await inspect.listListeners(endpoint.port)
-  if (listeners.length > 0) {
-    if (runtime.source === 'custom') {
-      return { ok: false, reason: `port ${endpoint.port} is already occupied` }
-    }
-    const reclaimed = await reclaimProvenOrphan(
-      endpoint.port,
-      binaryPath(version),
-      configPath(version),
-      inspect
-    )
-    if (!reclaimed.reclaimed && (await inspect.listListeners(endpoint.port)).length > 0) {
-      return {
-        ok: false,
-        reason: `port ${endpoint.port} is occupied (${reclaimed.reason ?? 'foreign listener'})`
-      }
-    }
-  }
+  const unavailable = await prepareCandidatePort(runtime, version, endpoint, inspect)
+  if (unavailable) return unavailable
 
-  if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: 'start was superseded' }
+  if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: START_SUPERSEDED }
   const aliases = resolveAliasModelsByProvider()
   await writeRoutingProxyConfig(configPath(version), {
     ...requiredRuntimeEndpoint(runtime),
@@ -893,34 +924,14 @@ async function startCandidate(
     aliasModelsByProvider: aliases.apiKeyModels,
     oauthAliasModelsByProvider: aliases.oauthModels
   })
-  if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: 'start was superseded' }
+  if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: START_SUPERSEDED }
   recordAliasWrite(aliases)
   recentChildLogLines.length = 0
   routingProxySupervisor.markStarted()
   const attempt = startRoutingProxy({
     binaryPath: binaryPath(version),
     configPath: configPath(version),
-    onExit: (code, signal) => {
-      if (authRefreshTimer) {
-        clearInterval(authRefreshTimer)
-        authRefreshTimer = null
-      }
-      routingProxySupervisor.stopWatchdog()
-      if (currentSpawnAttempt?.pid === attempt.pid) currentSpawnAttempt = null
-      const error = getLastError()
-      const candidateTermination = expectedCandidateTerminationPids.delete(attempt.pid)
-      const startingCandidate = activeStartingCandidatePids.delete(attempt.pid)
-      if (candidateTermination || startingCandidate) exitedCandidatePids.add(attempt.pid)
-      const expected = wasExpectedShutdown || candidateTermination || startingCandidate
-      setSnapshot({
-        ...snapshotRuntime(),
-        status: error ? 'error' : 'stopped',
-        error,
-        authFiles: []
-      })
-      if (!expected) routingProxySupervisor.onUnexpectedExit(code, signal)
-      wasExpectedShutdown = false
-    },
+    onExit: (code, signal) => handleCandidateExit(attempt, code, signal),
     onLog: (line) => {
       recentChildLogLines.push(line)
       if (recentChildLogLines.length > RECENT_LOG_LINE_LIMIT) recentChildLogLines.shift()
@@ -933,10 +944,10 @@ async function startCandidate(
   const readiness = await waitForManagedRoutingProxyReady(runtime, attempt)
   if (!readiness.healthy) {
     activeStartingCandidatePids.delete(attempt.pid)
-    if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: 'start was superseded' }
+    if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: START_SUPERSEDED }
     if (currentSpawnAttempt !== attempt) {
       if (exitedCandidatePids.delete(attempt.pid)) return { ok: false, reason: readiness.reason }
-      return { ok: false, reason: 'start was superseded' }
+      return { ok: false, reason: START_SUPERSEDED }
     }
     expectedCandidateTerminationPids.add(attempt.pid)
     const released = await waitForFailedCandidateRelease(attempt, endpoint.port, inspect)
@@ -955,13 +966,12 @@ async function startCandidate(
     !ownsLifecycleGeneration(generation) ||
     !canPublishManagedRoutingProxyRunning(currentSpawnAttempt, attempt, readiness)
   ) {
-    return { ok: false, reason: 'start was superseded' }
+    return { ok: false, reason: START_SUPERSEDED }
   }
   return { ok: true, effectivePort: endpoint.port }
 }
 
-export async function start(): Promise<void> {
-  const generation = nextLifecycleGeneration()
+async function startUnlocked(generation: number): Promise<void> {
   let version = snapshot.installedVersion ?? detectInstalledVersion()
   if (!version) {
     try {
@@ -986,7 +996,7 @@ export async function start(): Promise<void> {
     startCandidate: (runtime) => startCandidate(runtime, version, generation)
   })
   if (!result.ok) {
-    if (!ownsLifecycleGeneration(generation) || result.reason === 'start was superseded') return
+    if (!ownsLifecycleGeneration(generation) || result.reason === START_SUPERSEDED) return
     setSnapshot({
       ...snapshotRuntime(),
       status: 'error',
@@ -1012,8 +1022,13 @@ export async function start(): Promise<void> {
   routingProxySupervisor.startWatchdog()
 }
 
-export async function stop(): Promise<void> {
-  nextLifecycleGeneration()
+export async function start(): Promise<void> {
+  const generation = nextLifecycleGeneration()
+  const result = await lifecycleCoordinator.run(generation, () => startUnlocked(generation))
+  if (result === START_SUPERSEDED) return
+}
+
+async function stopUnlocked(): Promise<void> {
   if (authRefreshTimer) {
     clearInterval(authRefreshTimer)
     authRefreshTimer = null
@@ -1032,6 +1047,11 @@ export async function stop(): Promise<void> {
     authFiles: [],
     authFilesCheckedAt: null
   })
+}
+
+export async function stop(): Promise<void> {
+  const generation = nextLifecycleGeneration()
+  await lifecycleCoordinator.run(generation, stopUnlocked)
 }
 
 // ---------------------------------------------------------------------------

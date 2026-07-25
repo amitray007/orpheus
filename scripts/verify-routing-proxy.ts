@@ -91,6 +91,10 @@ import {
 } from '../src/main/routingProxy/runtime.ts'
 import { startAtResolvedRoutingProxyPort } from '../src/main/routingProxy/allocator.ts'
 import {
+  RoutingProxyLifecycleCoordinator,
+  START_SUPERSEDED
+} from '../src/main/routingProxy/lifecycleCoordinator.ts'
+import {
   respawnBackoffDelayMs,
   decideRespawnAction,
   decideWatchdogAction,
@@ -285,6 +289,41 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
   assert.deepEqual(supersededAttempts, [18765])
   assert.equal(superseded.reason, 'start was superseded')
   console.log('✓ allocator retries automatic candidates while custom mode remains strict')
+}
+
+// ---------------------------------------------------------------------------
+// 0c. Lifecycle coordinator serializes side effects while newer intent
+// invalidates paused work before it can spawn, persist, or publish.
+// ---------------------------------------------------------------------------
+
+{
+  const coordinator = new RoutingProxyLifecycleCoordinator()
+  const effects: string[] = []
+  let releaseA!: () => void
+  const pausedA = new Promise<void>((resolve) => {
+    releaseA = resolve
+  })
+  const generationA = coordinator.beginIntent()
+  const operationA = coordinator.run(generationA, async () => {
+    effects.push('A:config-start')
+    await pausedA
+    if (!coordinator.owns(generationA)) return START_SUPERSEDED
+    effects.push('A:spawn')
+    return 'A'
+  })
+  await Promise.resolve()
+  const generationB = coordinator.beginIntent()
+  const operationB = coordinator.run(generationB, async () => {
+    effects.push('B:config')
+    effects.push('B:spawn')
+    effects.push('B:publish')
+    return 'B'
+  })
+  releaseA()
+  assert.equal(await operationA, START_SUPERSEDED)
+  assert.equal(await operationB, 'B')
+  assert.deepEqual(effects, ['A:config-start', 'B:config', 'B:spawn', 'B:publish'])
+  console.log('✓ lifecycle coordinator serializes superseded config/spawn/publication effects')
 }
 
 async function cleanup(): Promise<void> {
