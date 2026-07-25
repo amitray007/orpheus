@@ -21,7 +21,6 @@ import type {
 } from '@shared/types'
 import { TRAFFIC_LIGHT_CLEARANCE } from '@shared/windowChrome'
 import { BRAILLE_FRAMES, useAnimatedFrame } from '@/lib/braille'
-import { ACTIVITY_RAIL_WIDTH } from './ActivityRail'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -745,22 +744,22 @@ export function TopBar({
   sidebarCollapsed,
   sidebarWidth
 }: TopBarProps): React.JSX.Element {
-  // Left section width spans the permanent activity rail PLUS the sidebar, so
-  // the workspace title slot (portaled into #topbar-workspace-slot) starts
-  // exactly where the content column below starts (rail + secondary sidebar +
-  // main). Without the rail term the slot sat ACTIVITY_RAIL_WIDTH px too far
-  // left — the "Claude Code" title/terminal-icon misalignment. Driven by
-  // sidebarWidth (not the collapsed flag), so toggling collapse does NOT shift
-  // the top bar; only a deliberate sidebar resize moves it. MIN_LEFT_WIDTH
-  // floors the sidebar term so the controls always fit.
-  const leftWidth = ACTIVITY_RAIL_WIDTH + Math.max(MIN_LEFT_WIDTH, sidebarWidth)
+  // A hidden sidebar contributes no layout width. The controls remain in an
+  // absolute layer, and the title slot gets internal clearance while hidden
+  // so its content stays usable without preserving an obsolete sidebar gap.
+  const sidebarSlotWidth = sidebarCollapsed ? 0 : sidebarWidth
+  const controlsWidth = Math.max(MIN_LEFT_WIDTH, sidebarSlotWidth)
+  const sidebarToggleLabel = sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'
 
   return (
     <header
-      className="h-11 flex items-stretch bg-surface-raised border-b border-border-default flex-shrink-0"
+      className="relative h-11 flex items-stretch bg-surface-raised border-b border-border-default flex-shrink-0"
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
-      <div className="flex items-center flex-shrink-0" style={{ width: leftWidth }}>
+      <div
+        className="absolute inset-y-0 left-0 z-10 flex items-center"
+        style={{ width: controlsWidth }}
+      >
         {/* Traffic-light spacer — reserves exactly TRAFFIC_LIGHT_CLEARANCE (88px) for the
             macOS window buttons. Derived from geometry in src/shared/windowChrome.ts,
             not a magic number. The lights are at a fixed window position that does not
@@ -771,12 +770,21 @@ export function TopBar({
         <button
           type="button"
           onClick={onToggleCollapsed}
-          aria-label="Toggle sidebar"
-          title="Toggle sidebar"
-          className="w-8 h-8 flex items-center justify-center rounded-md text-text-secondary hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          aria-label={sidebarToggleLabel}
+          aria-pressed={sidebarCollapsed}
+          title={sidebarToggleLabel}
+          className={[
+            'w-8 h-8 flex items-center justify-center rounded-md',
+            'transition-[color,background-color,transform] duration-150',
+            'active:scale-[0.97] motion-reduce:transform-none',
+            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+            sidebarCollapsed
+              ? 'bg-accent/15 text-accent hover:bg-accent/20'
+              : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
+          ].join(' ')}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
-          <SidebarSimple size={16} />
+          <SidebarSimple size={16} weight={sidebarCollapsed ? 'fill' : 'regular'} />
         </button>
 
         {/* Status chip — immediately after sidebar toggle */}
@@ -801,8 +809,15 @@ export function TopBar({
         <div className="flex-1" />
       </div>
 
-      {/* Workspace title bar gets portaled into here when in workspace view */}
-      <div id="topbar-workspace-slot" className="flex-1 flex items-center min-w-0" />
+      {/* Workspace title bar gets portaled into here when in workspace view. */}
+      <div
+        id="topbar-workspace-slot"
+        className="flex-1 flex items-center min-w-0"
+        style={{
+          marginLeft: sidebarSlotWidth,
+          paddingLeft: sidebarCollapsed ? controlsWidth : 0
+        }}
+      />
     </header>
   )
 }

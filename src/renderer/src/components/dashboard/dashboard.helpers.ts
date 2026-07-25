@@ -44,20 +44,23 @@ export function mainContainerClassName(viewKind: View['kind']): string {
 }
 
 // ---------------------------------------------------------------------------
-// Activity rail / surface helpers
+// Shared sidebar navigation helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Map the current view to the top-level surface the ActivityRail highlights.
- * Returns null while in Settings — the rail has no active icon in that case
- * (Settings is a bottom button, not one of the three top surfaces).
+ * Map the main-content view to the destination highlighted in the shared
+ * sidebar navigation. The sidebar tree itself is selected independently by
+ * Dashboard, so Home and Settings can keep their originating tree mounted.
  */
-export function deriveSurface(viewKind: View['kind']): 'dashboard' | 'projects' | 'panes' | null {
+export function viewToSidebarDestination(
+  viewKind: View['kind']
+): 'home' | 'workspaces' | 'panes' | 'settings' {
   if (viewKind === 'panes') return 'panes'
-  if (viewKind === 'dashboard') return 'dashboard'
+  if (viewKind === 'dashboard') return 'home'
+  if (viewKind === 'settings') return 'settings'
   if (viewKind === 'project' || viewKind === 'workspace' || viewKind === 'sessions')
-    return 'projects'
-  return null
+    return 'workspaces'
+  return 'workspaces'
 }
 
 /**

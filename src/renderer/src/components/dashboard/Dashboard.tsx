@@ -5,8 +5,8 @@ import { DIAG_EVENTS } from '@shared/diagEvents'
 import { Sidebar as SidebarBase } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
-import { ActivityRail } from './ActivityRail'
 import { PanelsSection } from './PanelsSection'
+import { SidebarNavigation, type SidebarDestination } from './SidebarNavigation'
 import { showConfirmModalReact } from '@/lib/overlayClient'
 import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/activityStore'
 import { setAuthoritativeActiveWorkspace, getActiveRemount } from '@/lib/freezeWatchdog'
@@ -19,7 +19,6 @@ import { setPr, deletePr } from '@/lib/prStore'
 import { removeWorkbenchEntry } from '@/lib/workbenchStore'
 import { removeWorkbenchTerminalsEntry } from '@/lib/workbenchTerminalsStore'
 import { removeFilesTabEntry } from '@/lib/filesTabStore'
-import { useUpdateAvailable } from '@/lib/useUpdateAvailable'
 import { useUiState, updateUiState } from '@/lib/uiStateStore'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { clearFooterActionsCache } from './footer/useFooterActions'
@@ -31,7 +30,7 @@ import {
   nextWorkspaceName,
   reorderById,
   reorderWithTail,
-  deriveSurface,
+  viewToSidebarDestination,
   resolveLandingView
 } from './dashboard.helpers'
 import type {
@@ -96,6 +95,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   // View routing
   const [view, setView] = useState<View>({ kind: 'panes' })
+  const [sidebarContext, setSidebarContext] = useState<'workspaces' | 'panes'>('panes')
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
 
@@ -537,6 +537,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           data: { fromId, toId }
         })
       }
+      setSidebarContext('workspaces')
       setSelectedProjectId(projectId)
       setSelectedWorkspaceId(workspaceId)
       setView({ kind: 'workspace', workspaceId, projectId })
@@ -728,6 +729,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     (id: string): void => {
       // Classified + redacted: left-click on a redacted row is inert.
       if (isProjectLocked(id)) return
+      setSidebarContext('workspaces')
       setSelectedProjectId(id)
       setSelectedWorkspaceId(null)
       setView({ kind: 'project', projectId: id })
@@ -751,7 +753,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // state. Reads the DEDICATED projectsLastViewKind/projectsLastProjectId/
   // projectsLastWorkspaceId fields — NOT lastViewKind/lastProjectId/
   // lastWorkspaceId — because handleSelectSurface's dashboard/panes branches
-  // (and handleSelectSettings/handleOpenUpdates) intentionally NULL/overwrite
+  // (and handleSelectSettings) intentionally NULL/overwrite
   // those shared fields for their own top-level-surface bookkeeping whenever
   // the user navigates to Home/Panes/Settings. The projectsLast* fields are
   // written ONLY by Projects navigation (handleSelectWorkspace/
@@ -796,6 +798,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // No resolvable last location — land on the empty state (ProjectsHome,
     // rendered by the 'sessions' view kind) and persist a genuinely-empty
     // selection on both the shared and Projects-scoped fields.
+    setSidebarContext('workspaces')
     setView({ kind: 'sessions' })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
@@ -809,19 +812,18 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [uiState, projects, handleSelectWorkspace, handleSelectProject])
 
-  // Switches the top-level SURFACE (dashboard | projects | panes) — wired
-  // from ActivityRail. Supersedes the old handleSelectNav/handleSelectPanes
-  // pair now that the surface switch lives in the rail instead of Sidebar's
-  // top nav.
+  // Switch the main destination when it also determines the sidebar context.
+  // Home and Settings are handled separately because they intentionally keep
+  // whichever tree the user came from mounted.
   const handleSelectSurface = useCallback(
-    (surface: 'dashboard' | 'projects' | 'panes'): void => {
-      if (surface === 'dashboard') {
+    (surface: 'home' | 'workspaces' | 'panes'): void => {
+      if (surface === 'home') {
         setView({ kind: 'dashboard' })
         setSelectedProjectId(null)
         setSelectedWorkspaceId(null)
         // NOTE: uiState read-coercion maps stored 'dashboard'→'sessions' on read (U1
-        // preserved this for legacy DB rows) — that's fine here: the rail derives the
-        // active surface from the LIVE `view` state (not from persisted lastViewKind),
+        // preserved this for legacy DB rows) — that's fine here: the shared nav derives
+        // its active destination from LIVE `view` state (not persisted lastViewKind),
         // so the dashboard surface still displays correctly during this session even
         // though a relaunch would coerce the persisted value back to sessions/Workspaces
         // (governed instead by defaultSurface, which IS 'dashboard'-aware).
@@ -831,13 +833,15 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         updateUiState({ lastViewKind: 'dashboard', lastProjectId: null, lastWorkspaceId: null })
         return
       }
-      if (surface === 'projects') {
+      if (surface === 'workspaces') {
+        setSidebarContext('workspaces')
         // Restore wherever the user last was within Projects (workspace/project/
         // empty state) instead of hardcoding the empty state and wiping the
         // persisted last-location — see restoreLastProjectsLocation above.
         restoreLastProjectsLocation()
         return
       }
+      setSidebarContext('panes')
       setView({ kind: 'panes' })
       setSelectedProjectId(null)
       setSelectedWorkspaceId(null)
@@ -1067,7 +1071,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     for (const projectId of expanded) fetchWorkspacesForProject(projectId)
 
     // Honor openAtLastView toggle — when false, ignore the saved view and start at dashboard
-    if (!uiState.openAtLastView) return
+    if (!uiState.openAtLastView) {
+      setSidebarContext('panes')
+      return
+    }
 
     // Restore view: workspace > project > sessions > panes
     //
@@ -1097,7 +1104,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // No concrete workspace/project to restore — land on the saved top-level
     // view if there is one, else fall back to the configured default surface.
     // See resolveLandingView (dashboard.helpers.ts) for the branch logic.
-    setView(resolveLandingView(uiState))
+    const landingView = resolveLandingView(uiState)
+    setSidebarContext(landingView.kind === 'panes' ? 'panes' : 'workspaces')
+    setView(landingView)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uiState, projectsLoading, projects])
   /* eslint-enable react-hooks/set-state-in-effect */
@@ -1119,8 +1128,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       .catch(console.error)
   }, [view, privacyMode, isProjectLocked])
 
-  const { available: updateAvailable, latest: updateLatest } = useUpdateAvailable()
-
   const handleSelectSettings = useCallback((): void => {
     setView({ kind: 'settings' })
     setSelectedProjectId(null)
@@ -1129,13 +1136,16 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
   }, [])
 
-  const handleOpenUpdates = useCallback((): void => {
-    setView({ kind: 'settings', section: 'orpheus-updates' })
-    setSelectedProjectId(null)
-    setSelectedWorkspaceId(null)
-    // Persist as 'sessions' — 'settings' is not in the DB enum; so on restore land on Workspaces
-    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
-  }, [])
+  const handleNavigateSidebar = useCallback(
+    (destination: SidebarDestination): void => {
+      if (destination === 'settings') {
+        handleSelectSettings()
+        return
+      }
+      handleSelectSurface(destination)
+    },
+    [handleSelectSettings, handleSelectSurface]
+  )
 
   const handleAddProject = useCallback(async (): Promise<void> => {
     setAddingProject(true)
@@ -1748,19 +1758,19 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // included, to drive the "Hidden projects" unhide list).
   const sidebarProjects = useMemo(() => projects.filter((p) => !p.hidden), [projects])
 
-  // Which top-level surface ActivityRail highlights, and which secondary
-  // sidebar column (if any) renders to its right. null while in Settings —
-  // Sidebar (Projects) is still shown behind Settings so the tree stays
-  // visible/navigable while the settings panel is open.
-  const surface = deriveSurface(view.kind)
+  // The main destination and sidebar context are intentionally separate:
+  // Home/Settings preserve the tree the user came from, while Workspaces and
+  // Panes switch both the content and the tree.
+  const activeDestination = viewToSidebarDestination(view.kind)
   const resolvedSidebarWidth = uiState?.sidebarWidth ?? UI_STATE_DEFAULTS.sidebarWidth
-  let secondaryColumn: React.JSX.Element | null = null
-  if (surface === 'panes') {
-    // Structural parity with the Projects <Sidebar> aside (Sidebar.tsx
-    // ~1463-1472) is deliberate: both asides must share the exact same
-    // non-width classes and collapsed mechanism (mounted at w-14 rather
-    // than unmounted) so switching Projects<->Panes never shifts the
-    // layout — see the "Sidebar shifts when switching surfaces" fix.
+  const sidebarNavigation = (
+    <SidebarNavigation activeDestination={activeDestination} onNavigate={handleNavigateSidebar} />
+  )
+  let secondaryColumn: React.JSX.Element
+  if (sidebarContext === 'panes') {
+    // Structural parity with the Workspaces <Sidebar> aside is deliberate:
+    // both expanded sidebars use the same width and shell classes. Dashboard
+    // unmounts the whole column below when sidebarCollapsed is true.
     secondaryColumn = (
       <aside
         className={[
@@ -1771,13 +1781,18 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         ].join(' ')}
         style={sidebarCollapsed ? undefined : { width: resolvedSidebarWidth + 'px' }}
       >
-        <PanelsSection collapsed={sidebarCollapsed} />
+        <PanelsSection
+          collapsed={sidebarCollapsed}
+          onActivate={() => handleSelectSurface('panes')}
+        />
+        {sidebarNavigation}
       </aside>
     )
-  } else if (surface !== 'dashboard') {
+  } else {
     secondaryColumn = (
       <Sidebar
         collapsed={sidebarCollapsed}
+        footer={sidebarNavigation}
         projects={sidebarProjects}
         projectsLoading={projectsLoading}
         selectedProjectId={selectedProjectId}
@@ -1824,17 +1839,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       />
 
       <div className="flex flex-1 min-h-0">
-        <ActivityRail
-          activeSurface={surface}
-          settingsActive={view.kind === 'settings'}
-          updateAvailable={updateAvailable}
-          updateLatest={updateLatest}
-          onSelectSurface={handleSelectSurface}
-          onSelectSettings={handleSelectSettings}
-          onOpenUpdates={handleOpenUpdates}
-        />
-
-        {secondaryColumn}
+        {!sidebarCollapsed && secondaryColumn}
 
         <main
           className={

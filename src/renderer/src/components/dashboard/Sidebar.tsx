@@ -1475,6 +1475,7 @@ export type SidebarActiveView =
 
 interface SidebarProps {
   collapsed: boolean
+  footer: React.ReactNode
   projects: ProjectRecord[]
   projectsLoading: boolean
   selectedProjectId: string | null
@@ -1520,6 +1521,7 @@ interface SidebarProps {
 
 export function Sidebar({
   collapsed,
+  footer,
   projects,
   projectsLoading,
   selectedProjectId,
@@ -1851,13 +1853,9 @@ export function Sidebar({
         ].join(' ')}
         style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
       >
-        {/* Sidebar is now Projects-only — the top-level surface switch lives
-            in ActivityRail, and Panes' own tree (PanelsSection) is rendered
-            by Dashboard.tsx's shell instead of swapping in here. Pinned
-            workspaces render as the first rows inside ProjectsSection, right
-            below the "Projects" heading, so the heading itself always lands
-            at the same fixed top offset as Panes' heading — pinning never
-            shifts the layout. */}
+        {/* This sidebar owns the projects/workspaces tree. The shared
+            destination strip is supplied by Dashboard so this tree and the
+            Panes tree expose the same navigation at the same bottom edge. */}
         <ProjectsSection
           collapsed={collapsed}
           pinnedItems={visiblePinnedItems}
@@ -1917,6 +1915,7 @@ export function Sidebar({
           onHideProject={onHideProject}
           onRevealProject={onRevealProject}
         />
+        {footer}
       </aside>
     </SidebarBoundsContext.Provider>
   )

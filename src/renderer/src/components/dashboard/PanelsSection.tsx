@@ -587,9 +587,16 @@ interface PanelsSectionProps {
    * icon-rail UI yet (unlike Projects' CollapsedProjectList).
    */
   collapsed?: boolean
+  /** Navigate the main content back to Panes when this retained tree is used
+   * from Home or Settings. Selection state itself stays owned by the panes
+   * selection store. */
+  onActivate: () => void
 }
 
-export function PanelsSection({ collapsed = false }: PanelsSectionProps): React.JSX.Element {
+export function PanelsSection({
+  collapsed = false,
+  onActivate
+}: PanelsSectionProps): React.JSX.Element {
   const [panels, setPanels] = useState<PanePanel[]>([])
   const [layoutsByPanel, setLayoutsByPanel] = useState<Map<string, PaneLayout[]>>(new Map())
   const [expandedPanelIds, setExpandedPanelIds] = useState<Set<string>>(new Set())
@@ -655,6 +662,7 @@ export function PanelsSection({ collapsed = false }: PanelsSectionProps): React.
   }
 
   function handleSelectPanel(panelId: string): void {
+    onActivate()
     setActivePanel(panelId)
     setExpandedPanelIds((prev) => new Set(prev).add(panelId))
     persistExpanded(panelId, true)
@@ -672,6 +680,7 @@ export function PanelsSection({ collapsed = false }: PanelsSectionProps): React.
   }
 
   function handleAddPanel(): void {
+    onActivate()
     void createPanelFlow((newPanelId) => {
       loadPanels()
       setActivePanel(newPanelId)
@@ -687,6 +696,7 @@ export function PanelsSection({ collapsed = false }: PanelsSectionProps): React.
   // AFTER setActivePanel or the fresh selection gets clobbered back to null
   // right after being set. Ordering below is deliberate — do not reorder.
   function handleAddLayout(panel: PanePanel): void {
+    onActivate()
     const existingLayouts = layoutsByPanel.get(panel.id) ?? []
     void createLayoutFlow(panel, existingLayouts, (newLayoutId) => {
       loadLayouts(panel.id)
@@ -850,6 +860,7 @@ export function PanelsSection({ collapsed = false }: PanelsSectionProps): React.
                         active={activePanelId === panel.id && activeLayoutId === layout.id}
                         renaming={renamingLayoutId === layout.id}
                         onSelect={() => {
+                          onActivate()
                           setActivePanel(panel.id)
                           setActiveLayout(layout.id)
                         }}
