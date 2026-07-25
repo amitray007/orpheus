@@ -57,7 +57,8 @@ manage a terminal surface.
 
 `home_last_page` is non-null, defaults to `'overview'`, and accepts exactly the
 seven `HomePageId` values. It is independent of project-scoped
-`projectsLast*` memory. The persisted `default_surface: 'dashboard'` and legacy
+`projectsLast*` memory. New renderer writes use canonical `'home'` values.
+The persisted legacy `default_surface: 'dashboard'` and
 `last_view_kind: 'dashboard'` spellings remain valid compatibility input and
 are normalized by renderer routing to `{ kind: 'home', page: homeLastPage }`.
 Settings is never restored as a launch surface. Projects remains the default

@@ -516,13 +516,21 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
     // supplied explicitly; last_view_kind is deliberately omitted to exercise
     // its DEFAULT clause.
     adb.exec('INSERT INTO app_ui_state (id, updated_at) VALUES (1, 0)')
-    const row = adb.prepare('SELECT last_view_kind FROM app_ui_state WHERE id = 1').get() as {
+    const row = adb
+      .prepare('SELECT last_view_kind, home_last_page FROM app_ui_state WHERE id = 1')
+      .get() as {
       last_view_kind: string
+      home_last_page: string
     }
     assert.equal(
       row.last_view_kind,
       'sessions',
       `expected last_view_kind DEFAULT to be 'sessions', got '${row.last_view_kind}'`
+    )
+    assert.equal(
+      row.home_last_page,
+      'overview',
+      `expected home_last_page DEFAULT to be 'overview', got '${row.home_last_page}'`
     )
 
     assert.deepEqual(
@@ -532,7 +540,7 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
     )
   }
 
-  console.log('✓ app_ui_state converges (last_view_kind defaults to sessions, idempotent)')
+  console.log('✓ app_ui_state converges (sessions/overview defaults, idempotent)')
   console.log('✓ convergence')
 }
 

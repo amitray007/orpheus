@@ -3,7 +3,7 @@
 //
 // The generic two-tier activity rail (VS Code / Linear pattern): a permanent
 // slim (~46px) column pinned to the far left of the app that switches the
-// top-level SURFACE (dashboard | projects | panes), with Settings + the
+// top-level surface (home | projects | panes), with Settings + the
 // update chip anchored to the bottom.
 //
 // This component is deliberately surface-agnostic — it knows nothing about
@@ -15,7 +15,7 @@
 //
 // Each top-level surface renders its own secondary sidebar column to the
 // right of this rail (Sidebar.tsx for projects, PanelsSection for panes,
-// none for dashboard) — see Dashboard.tsx's render body for that wiring.
+// none for Home) — see Dashboard.tsx's render body for that wiring.
 // ---------------------------------------------------------------------------
 
 import type React from 'react'
@@ -23,6 +23,7 @@ import { useEffect, useRef } from 'react'
 import { ArrowFatLineUp, Gear, House, Kanban, SquaresFour } from '@phosphor-icons/react'
 import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { showChipTooltip, hideOverlayCard, chipTooltipId } from '@/lib/overlayClient'
+import type { SurfaceId } from './home/home.types'
 
 // The rail's fixed width (px). Exported so the TopBar can offset its left
 // section by the SAME amount — the TopBar's left block must span rail + sidebar
@@ -31,14 +32,15 @@ import { showChipTooltip, hideOverlayCard, chipTooltipId } from '@/lib/overlayCl
 // TopBar offset from drifting from the rail's actual width.
 export const ACTIVITY_RAIL_WIDTH = 46
 
+type RailSurfaceId = Exclude<SurfaceId, 'settings'>
+
 interface ActivityRailProps {
-  /** Which top-level surface is active. null while in Settings — the rail
-   *  has no active icon in that case (Settings is a bottom button). */
-  activeSurface: 'dashboard' | 'projects' | 'panes' | null
+  /** Which top-level surface is active. Settings has its own bottom button. */
+  activeSurface: SurfaceId
   settingsActive: boolean
   updateAvailable: boolean
   updateLatest: string | null
-  onSelectSurface: (s: 'dashboard' | 'projects' | 'panes') => void
+  onSelectSurface: (surface: RailSurfaceId) => void
   onSelectSettings: () => void
   onOpenUpdates: () => void
 }
@@ -47,9 +49,7 @@ interface RailButtonProps {
   Icon: React.ComponentType<{ size?: number; weight?: 'regular' | 'fill'; className?: string }>
   label: string
   /** Tooltip title, if it should read differently from `label` (which also
-   *  drives aria-label/aria-current semantics). E.g. the "dashboard" surface
-   *  is user-facing "Home" even though the surface id/aria-label stays
-   *  "Dashboard". Defaults to `label`. */
+   *  drives aria-label/aria-current semantics). Defaults to `label`. */
   tooltipLabel?: string
   active: boolean
   onClick: () => void
@@ -228,10 +228,9 @@ export function ActivityRail({
     >
       <RailButton
         Icon={House}
-        label="Dashboard"
-        tooltipLabel="Home"
-        active={activeSurface === 'dashboard'}
-        onClick={() => onSelectSurface('dashboard')}
+        label="Home"
+        active={activeSurface === 'home'}
+        onClick={() => onSelectSurface('home')}
       />
       <RailButton
         Icon={Kanban}

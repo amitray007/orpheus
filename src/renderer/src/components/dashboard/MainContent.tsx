@@ -183,17 +183,18 @@ function ProjectsSurfaceSessionsView({
 }
 
 // ---------------------------------------------------------------------------
-// View union type
+// Route contract
 // ---------------------------------------------------------------------------
 
-export type View = AppView | { kind: 'dashboard' }
+// AppView is owned by home/home.types.ts and consumed by Dashboard, helpers,
+// and this content switch.
 
 // ---------------------------------------------------------------------------
 // MainContent
 // ---------------------------------------------------------------------------
 
 interface MainContentProps {
-  view: View
+  view: AppView
   project: ProjectRecord | undefined
   workspace?: WorkspaceRecord | undefined
   // null = not yet fetched; [] = fetched, empty
@@ -290,10 +291,7 @@ export function MainContent({
     return <PanesView />
   }
 
-  if (view.kind === 'home' || view.kind === 'dashboard') {
-    // The legacy dashboard spelling remains temporarily accepted so existing
-    // in-memory callers keep rendering while routing migrates to AppView.
-    // Both forms resolve to the operational Home command center.
+  if (view.kind === 'home') {
     return <DashboardView onSelectWorkspace={onSelectWorkspace} />
   }
 

@@ -1465,13 +1465,7 @@ function ProjectsSection({
 // Sidebar
 // ---------------------------------------------------------------------------
 
-export type SidebarActiveView =
-  | 'sessions'
-  | 'project'
-  | 'workspace'
-  | 'settings'
-  | 'panes'
-  | 'dashboard'
+export type SidebarActiveView = 'sessions' | 'project' | 'workspace' | 'settings' | 'panes'
 
 interface SidebarProps {
   collapsed: boolean

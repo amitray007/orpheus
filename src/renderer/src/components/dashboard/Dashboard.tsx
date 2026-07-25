@@ -4,7 +4,8 @@ import { logDiag } from '../../lib/diag'
 import { DIAG_EVENTS } from '@shared/diagEvents'
 import { Sidebar as SidebarBase } from './Sidebar'
 import { TopBar } from './TopBar'
-import { MainContent as MainContentBase, type View } from './MainContent'
+import { MainContent as MainContentBase } from './MainContent'
+import type { AppView, SurfaceId } from './home/home.types'
 import { ActivityRail } from './ActivityRail'
 import { PanelsSection } from './PanelsSection'
 import { showConfirmModalReact } from '@/lib/overlayClient'
@@ -95,7 +96,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
 
   // View routing
-  const [view, setView] = useState<View>({ kind: 'panes' })
+  const [view, setView] = useState<AppView>({ kind: 'panes' })
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
 
@@ -750,7 +751,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // Restore the last Projects-surface location: workspace > project > empty
   // state. Reads the DEDICATED projectsLastViewKind/projectsLastProjectId/
   // projectsLastWorkspaceId fields — NOT lastViewKind/lastProjectId/
-  // lastWorkspaceId — because handleSelectSurface's dashboard/panes branches
+  // lastWorkspaceId — because handleSelectSurface's Home/Panes branches
   // (and handleSelectSettings/handleOpenUpdates) intentionally NULL/overwrite
   // those shared fields for their own top-level-surface bookkeeping whenever
   // the user navigates to Home/Panes/Settings. The projectsLast* fields are
@@ -809,43 +810,50 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [uiState, projects, handleSelectWorkspace, handleSelectProject])
 
-  // Switches the top-level SURFACE (dashboard | projects | panes) — wired
-  // from ActivityRail. Supersedes the old handleSelectNav/handleSelectPanes
-  // pair now that the surface switch lives in the rail instead of Sidebar's
-  // top nav.
+  const handleSelectSettings = useCallback((): void => {
+    setView({ kind: 'settings' })
+    setSelectedProjectId(null)
+    setSelectedWorkspaceId(null)
+    // Settings is non-restorable, so return to Projects after relaunch.
+    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
+  }, [])
+
+  const handleOpenUpdates = useCallback((): void => {
+    setView({ kind: 'settings', section: 'orpheus-updates' })
+    setSelectedProjectId(null)
+    setSelectedWorkspaceId(null)
+    // Settings is non-restorable, so return to Projects after relaunch.
+    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
+  }, [])
+
+  // Switches the top-level surface wired from ActivityRail.
   const handleSelectSurface = useCallback(
-    (surface: 'dashboard' | 'projects' | 'panes'): void => {
-      if (surface === 'dashboard') {
-        setView({ kind: 'dashboard' })
+    (surface: SurfaceId): void => {
+      if (surface === 'settings') {
+        handleSelectSettings()
+        return
+      }
+      if (surface === 'home') {
+        const page = uiState?.homeLastPage ?? UI_STATE_DEFAULTS.homeLastPage
+        setView({ kind: 'home', page })
         setSelectedProjectId(null)
         setSelectedWorkspaceId(null)
-        // NOTE: uiState read-coercion maps stored 'dashboard'→'sessions' on read (U1
-        // preserved this for legacy DB rows) — that's fine here: the rail derives the
-        // active surface from the LIVE `view` state (not from persisted lastViewKind),
-        // so the dashboard surface still displays correctly during this session even
-        // though a relaunch would coerce the persisted value back to sessions/Workspaces
-        // (governed instead by defaultSurface, which IS 'dashboard'-aware).
-        // Deliberately NOT clearing projectsLastViewKind/projectsLastProjectId/
-        // projectsLastWorkspaceId here — those are Projects-scoped memory that
-        // must survive this surface switch (see restoreLastProjectsLocation).
-        updateUiState({ lastViewKind: 'dashboard', lastProjectId: null, lastWorkspaceId: null })
+        // Projects-scoped location memory intentionally survives this switch.
+        updateUiState({ lastViewKind: 'home', lastProjectId: null, lastWorkspaceId: null })
         return
       }
       if (surface === 'projects') {
-        // Restore wherever the user last was within Projects (workspace/project/
-        // empty state) instead of hardcoding the empty state and wiping the
-        // persisted last-location — see restoreLastProjectsLocation above.
+        // Restore the last Projects location instead of wiping that scoped memory.
         restoreLastProjectsLocation()
         return
       }
       setView({ kind: 'panes' })
       setSelectedProjectId(null)
       setSelectedWorkspaceId(null)
-      // Deliberately NOT clearing projectsLastViewKind/projectsLastProjectId/
-      // projectsLastWorkspaceId here — see the dashboard branch's comment above.
+      // Projects-scoped location memory intentionally survives this switch.
       updateUiState({ lastViewKind: 'panes', lastProjectId: null, lastWorkspaceId: null })
     },
-    [restoreLastProjectsLocation]
+    [handleSelectSettings, restoreLastProjectsLocation, uiState?.homeLastPage]
   )
 
   // ---------------------------------------------------------------------------
@@ -1066,7 +1074,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // visual state matches the restored expanded state on the very first render.
     for (const projectId of expanded) fetchWorkspacesForProject(projectId)
 
-    // Honor openAtLastView toggle — when false, ignore the saved view and start at dashboard
+    // Honor openAtLastView toggle — when false, ignore the saved view.
     if (!uiState.openAtLastView) return
 
     // Restore view: workspace > project > sessions > panes
@@ -1074,7 +1082,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // This mirrors restoreLastProjectsLocation's workspace>project branch
     // order exactly (kept as ONE path conceptually — see that callback above,
     // used by the Projects-rail click), but is NOT delegated to it here: this
-    // effect's fallthrough must consider defaultSurface (dashboard/panes) via
+    // effect's fallthrough must consider defaultSurface (Home/Panes) via
     // resolveLandingView, whereas restoreLastProjectsLocation's fallthrough is
     // always the Projects empty state (correct for a rail click, wrong for
     // app-launch restore when the user's default surface isn't Projects). Any
@@ -1120,22 +1128,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   }, [view, privacyMode, isProjectLocked])
 
   const { available: updateAvailable, latest: updateLatest } = useUpdateAvailable()
-
-  const handleSelectSettings = useCallback((): void => {
-    setView({ kind: 'settings' })
-    setSelectedProjectId(null)
-    setSelectedWorkspaceId(null)
-    // Persist as 'sessions' — 'settings' is not in the DB enum; so on restore land on Workspaces
-    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
-  }, [])
-
-  const handleOpenUpdates = useCallback((): void => {
-    setView({ kind: 'settings', section: 'orpheus-updates' })
-    setSelectedProjectId(null)
-    setSelectedWorkspaceId(null)
-    // Persist as 'sessions' — 'settings' is not in the DB enum; so on restore land on Workspaces
-    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
-  }, [])
 
   const handleAddProject = useCallback(async (): Promise<void> => {
     setAddingProject(true)
@@ -1774,7 +1766,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         <PanelsSection collapsed={sidebarCollapsed} />
       </aside>
     )
-  } else if (surface !== 'dashboard') {
+  } else if (surface !== 'home') {
     secondaryColumn = (
       <Sidebar
         collapsed={sidebarCollapsed}

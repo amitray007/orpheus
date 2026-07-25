@@ -185,7 +185,9 @@ export type PinnedItem = {
 // App UI state
 // ---------------------------------------------------------------------------
 
-export type AppViewKind = 'dashboard' | 'sessions' | 'project' | 'workspace' | 'panes'
+// `dashboard` remains accepted only for legacy persisted rows. New renderer
+// writes use the canonical `home` spelling.
+export type AppViewKind = 'dashboard' | 'home' | 'sessions' | 'project' | 'workspace' | 'panes'
 
 export type HomePageId =
   | 'overview'
@@ -354,7 +356,7 @@ export type AppUiState = {
   // app lands on at startup (Settings > Navigation). Replaces the
   // deprecated showPanesView/showWorkspacesView toggles above. Independent
   // from AppViewKind/lastViewKind — do not conflate the two enums.
-  defaultSurface: 'dashboard' | 'projects' | 'panes'
+  defaultSurface: 'dashboard' | 'home' | 'projects' | 'panes'
   // Last Home command-center page. This independently restores Home context
   // while legacy `dashboard` remains an accepted persistence spelling.
   homeLastPage: HomePageId

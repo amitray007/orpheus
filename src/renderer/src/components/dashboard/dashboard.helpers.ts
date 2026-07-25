@@ -6,23 +6,20 @@
  * so that these utilities can be understood and tested in isolation.
  */
 
-import type { View } from './MainContent'
 import type { SidebarActiveView } from './Sidebar'
 import type { AppUiState } from '@shared/types'
+import type { AppView, SurfaceId } from './home/home.types'
 
 // ---------------------------------------------------------------------------
 // View helpers
 // ---------------------------------------------------------------------------
 
 /** Map the current view to the sidebar's active-view discriminant. */
-export function viewToSidebarActiveView(view: View): SidebarActiveView {
+export function viewToSidebarActiveView(view: AppView): SidebarActiveView {
   if (view.kind === 'workspace') return 'workspace'
   if (view.kind === 'project') return 'project'
   if (view.kind === 'settings') return 'settings'
   if (view.kind === 'panes') return 'panes'
-  // ActivityRail has not yet adopted canonical SurfaceId, so Home projects to
-  // its legacy dashboard active state until the shared shell migration.
-  if (view.kind === 'home' || view.kind === 'dashboard') return 'dashboard'
   return 'sessions'
 }
 
@@ -33,7 +30,7 @@ export function viewToSidebarActiveView(view: View): SidebarActiveView {
  * through. Settings and sessions each get their own scroll/padding treatment.
  * All other views (project) get the default padding.
  */
-export function mainContainerClassName(viewKind: View['kind']): string {
+export function mainContainerClassName(viewKind: AppView['kind']): string {
   if (viewKind === 'workspace') return 'flex-1 overflow-hidden min-h-0'
   // Panes will host native terminal surfaces later — flush/no-padding like workspace.
   if (viewKind === 'panes') return 'flex-1 overflow-hidden min-h-0'
@@ -41,8 +38,7 @@ export function mainContainerClassName(viewKind: View['kind']): string {
   if (viewKind === 'sessions')
     // Workspaces kanban: tight padding so the board sits close to the app edges
     return 'flex-1 overflow-y-auto px-3 py-3 bg-surface-base'
-  if (viewKind === 'home' || viewKind === 'dashboard')
-    return 'flex-1 overflow-y-auto px-6 py-5 bg-surface-base'
+  if (viewKind === 'home') return 'flex-1 overflow-y-auto px-6 py-5 bg-surface-base'
   return 'flex-1 overflow-y-auto px-6 py-5 bg-surface-base'
 }
 
@@ -55,12 +51,13 @@ export function mainContainerClassName(viewKind: View['kind']): string {
  * Returns null while in Settings — the rail has no active icon in that case
  * (Settings is a bottom button, not one of the three top surfaces).
  */
-export function deriveSurface(viewKind: View['kind']): 'dashboard' | 'projects' | 'panes' | null {
+export function deriveSurface(viewKind: AppView['kind']): SurfaceId {
   if (viewKind === 'panes') return 'panes'
-  if (viewKind === 'home' || viewKind === 'dashboard') return 'dashboard'
-  if (viewKind === 'project' || viewKind === 'workspace' || viewKind === 'sessions')
+  if (viewKind === 'home') return 'home'
+  if (viewKind === 'project' || viewKind === 'workspace' || viewKind === 'sessions') {
     return 'projects'
-  return null
+  }
+  return 'settings'
 }
 
 /**
@@ -75,16 +72,16 @@ export function deriveSurface(viewKind: View['kind']): 'dashboard' | 'projects' 
  */
 export function resolveLandingView(
   uiState: Pick<AppUiState, 'lastViewKind' | 'defaultSurface' | 'homeLastPage'>
-): View {
+): AppView {
   // The explicit "open at launch" setting wins for the top-level landing view.
   // Legacy dashboard persistence resolves to the canonical Home route.
-  if (uiState.defaultSurface === 'dashboard') {
+  if (uiState.defaultSurface === 'dashboard' || uiState.defaultSurface === 'home') {
     return { kind: 'home', page: uiState.homeLastPage }
   }
   if (uiState.defaultSurface === 'panes') return { kind: 'panes' }
   // Otherwise fall back to the saved top-level view kind.
   if (uiState.lastViewKind === 'panes') return { kind: 'panes' }
-  if (uiState.lastViewKind === 'dashboard') {
+  if (uiState.lastViewKind === 'dashboard' || uiState.lastViewKind === 'home') {
     return { kind: 'home', page: uiState.homeLastPage }
   }
   // Settings is deliberately non-restorable; default everything else to Projects.

@@ -164,9 +164,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     // Panes v2 active-panel/active-layout persistence (issue #1)
     lastPanelId: row.last_panel_id,
     lastLayoutId: row.last_layout_id,
-    // Projects-surface-scoped location memory — defensive coercion mirrors
-    // how lastViewKind coerces legacy 'dashboard' → 'sessions' on read;
-    // default to 'sessions' if the stored value is somehow invalid.
+    // Projects-surface-scoped location memory — default to 'sessions' if the
+    // stored value is somehow invalid.
     projectsLastViewKind: (['sessions', 'project', 'workspace'] as const).includes(
       row.projects_last_view_kind as 'sessions' | 'project' | 'workspace'
     )
@@ -283,7 +282,14 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
 // Validation
 // ---------------------------------------------------------------------------
 
-const VALID_VIEW_KINDS: AppViewKind[] = ['dashboard', 'sessions', 'project', 'workspace', 'panes']
+const VALID_VIEW_KINDS: AppViewKind[] = [
+  'dashboard',
+  'home',
+  'sessions',
+  'project',
+  'workspace',
+  'panes'
+]
 const VALID_PROJECTS_LAST_VIEW_KINDS: ProjectsLastViewKind[] = ['sessions', 'project', 'workspace']
 const VALID_THEMES: Theme[] = ['midnight', 'daylight', 'eclipse']
 const VALID_ACCENT_COLORS: AccentColor[] = ['gold', 'blue', 'teal', 'orange', 'pink']

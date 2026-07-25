@@ -82,7 +82,7 @@ export const VALID_FILES_SORT_ORDERS = ['default', 'name'] as const
 
 // Valid values for app_ui_state.default_surface — mirrors the SQL CHECK
 // constraint in schema.ts. Which top-level surface the app opens on launch.
-export const VALID_DEFAULT_SURFACES = ['dashboard', 'projects', 'panes'] as const
+export const VALID_DEFAULT_SURFACES = ['dashboard', 'home', 'projects', 'panes'] as const
 
 // Valid Home command-center pages. Mirrors the app_ui_state.home_last_page
 // CHECK constraint in schema.ts.

@@ -6,8 +6,8 @@ import { useUiState, updateUiState } from '../../../lib/uiStateStore'
 
 // ---------------------------------------------------------------------------
 // OrpheusNavigationSection — Open-at-launch surface preference. Controls
-// which top-level surface (Dashboard / Projects / Panes) the app opens on
-// startup (see AppUiState.defaultSurface / app_ui_state.default_surface).
+// which top-level surface (Home / Projects / Panes) the app opens on startup
+// (see AppUiState.defaultSurface / app_ui_state.default_surface).
 // ---------------------------------------------------------------------------
 
 export function OrpheusNavigationSection(): React.JSX.Element {
@@ -46,14 +46,18 @@ export function OrpheusNavigationSection(): React.JSX.Element {
             label="Open at launch"
             description="Choose which surface opens when you launch Orpheus."
           >
-            <SegmentedControl<'dashboard' | 'projects' | 'panes'>
+            <SegmentedControl<'home' | 'projects' | 'panes'>
               ariaLabel="Open at launch"
               options={[
-                { value: 'dashboard', label: 'Dashboard' },
+                { value: 'home', label: 'Home' },
                 { value: 'projects', label: 'Projects' },
                 { value: 'panes', label: 'Panes' }
               ]}
-              value={uiState.defaultSurface ?? 'projects'}
+              value={
+                uiState.defaultSurface === 'dashboard'
+                  ? 'home'
+                  : (uiState.defaultSurface ?? 'projects')
+              }
               onChange={(v) => patch({ defaultSurface: v })}
             />
           </SettingRow>

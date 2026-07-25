@@ -39,10 +39,9 @@ const LOG_LEVEL = ['debug', 'info', 'warn', 'error'] as const
 // adding a new PROVIDER never requires a schema change.
 const PROVIDER_AUTH_METHOD = ['oauth', 'apiKey', 'openaiCompatible'] as const
 
-// 'panes' added (KTD2 nav-rail work) so lastViewKind='panes' doesn't violate
-// the CHECK; 'dashboard' is kept for legacy rows and a future rail surface
-// (see AppViewKind in src/shared/types.ts).
-const LAST_VIEW_KIND = ['dashboard', 'sessions', 'project', 'workspace', 'panes'] as const
+// `dashboard` is retained only for legacy persisted rows; new renderer writes
+// use `home` (see AppViewKind in src/shared/types.ts).
+const LAST_VIEW_KIND = ['dashboard', 'home', 'sessions', 'project', 'workspace', 'panes'] as const
 // Projects-surface-scoped location memory (see projects_last_view_kind
 // column below) — narrower than LAST_VIEW_KIND since Projects can never be
 // 'dashboard' or 'panes'.
@@ -51,7 +50,7 @@ const PROJECTS_LAST_VIEW_KIND = ['sessions', 'project', 'workspace'] as const
 // src/shared/uiStateDefaults.ts / TreeOptionsPopover.tsx.
 const FILES_SORT_ORDER = ['default', 'name'] as const
 // Mirrors VALID_DEFAULT_SURFACES in src/shared/uiStateDefaults.ts.
-const DEFAULT_SURFACE = ['dashboard', 'projects', 'panes'] as const
+const DEFAULT_SURFACE = ['dashboard', 'home', 'projects', 'panes'] as const
 const HOME_PAGE = [
   'overview',
   'needs-you',
