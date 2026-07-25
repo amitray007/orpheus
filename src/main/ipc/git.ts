@@ -193,13 +193,12 @@ export function registerGitIpc(deps: GitIpcDeps): void {
   handle('github:myOpenPrs:cached', () => getCachedMyOpenPrs())
   handle('github:myIssues:cached', () => getCachedMyIssues())
 
-  // Dashboard D4 — named greeting. Fired once per app open (DashboardTopBar's
-  // background refresh); resolves via getGithubUsername, persists the
-  // resolved display name to app_ui_state, and returns it so the renderer
-  // can update its local uiState snapshot without waiting on a push (this
-  // handler has no mainWindow ref to broadcast uiState:changed with — see
-  // registerUiStateIpc for that pattern). On failure, leaves the stored
-  // value untouched and returns null.
+  // Signed-in GitHub identity refresh. The preload's optional renderer request
+  // resolves via getGithubUsername, persists the display name to app_ui_state,
+  // and returns it so the caller can update its local uiState snapshot without
+  // waiting on a push (this handler has no mainWindow ref to broadcast
+  // uiState:changed; see registerUiStateIpc for that pattern). On failure,
+  // leaves the stored value untouched and returns null.
   handle('github:refreshUsername', async () => {
     const result = await getGithubUsername()
     if (!result) return null

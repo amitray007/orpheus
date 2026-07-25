@@ -64,6 +64,14 @@ are normalized by renderer routing to `{ kind: 'home', page: homeLastPage }`.
 Settings is never restored as a launch surface. Projects remains the default
 launch surface unless the user selects another persisted surface.
 
+## Agent identity contract
+
+`HomeAgent` carries optional `projectId` and `workspaceId` solely for navigation,
+and required `projectLabel` and `workspaceLabel` for presentation. The facade
+maps those labels from the authoritative `LiveAgentRow.projectName` and
+`LiveAgentRow.agentName` fields. Pages must never display either identifier as
+a fallback label.
+
 ## Facade snapshot
 
 `HomeSnapshot` is the sole page data shape:

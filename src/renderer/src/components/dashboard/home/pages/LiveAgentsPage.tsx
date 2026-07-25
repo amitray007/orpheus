@@ -27,8 +27,8 @@ function LiveAgentRow({
       </div>
       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-secondary">
         <span>{STATE_LABEL[agent.state]}</span>
-        <span>Project {agent.projectId ?? 'Unavailable'}</span>
-        <span>Workspace {agent.workspaceId ?? 'Unavailable'}</span>
+        <span>Project {agent.projectLabel}</span>
+        <span>Workspace {agent.workspaceLabel}</span>
         <span>Last activity {agent.elapsedLabel}</span>
       </div>
     </>

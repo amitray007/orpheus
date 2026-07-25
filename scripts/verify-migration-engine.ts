@@ -499,18 +499,83 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
     assert.equal(settings.low_power_mode, 1)
   }
 
-  // --- Fixture (d): app_ui_state singleton default -------------------------
+  // --- Fixture (d): app_ui_state legacy CHECK + singleton default ----------
   // app_ui_state has no data-step seed (unlike e.g. keep-awake-seed) — the
   // singleton row is inserted by application code, not the migration engine.
-  // This fixture builds a fresh schema-synced DB, inserts the singleton row
-  // with no explicit last_view_kind (relying purely on the column's DEFAULT
-  // clause), and asserts it lands on 'sessions' (not the legacy 'dashboard'
-  // default) — plus that the DB is structurally converged + idempotent.
+  // First construct the pre-Home shape explicitly: its last_view_kind CHECK
+  // accepts the legacy dashboard value but not canonical home, and it has no
+  // home_last_page column. Reconciliation must preserve the legacy row while
+  // rebuilding the CHECK and adding the new page column.
   {
     const adb = new Database(':memory:')
+    const legacyColumns = { ...schema.app_ui_state.columns }
+    delete legacyColumns.home_last_page
+    const legacyAppUiState = {
+      ...schema.app_ui_state,
+      columns: {
+        ...legacyColumns,
+        last_view_kind: {
+          type: 'TEXT',
+          notNull: true,
+          default: "'sessions'",
+          check: enumCheck('last_view_kind', [
+            'dashboard',
+            'sessions',
+            'project',
+            'workspace',
+            'panes'
+          ])
+        }
+      }
+    }
+
+    adb.exec(renderCreateTable('app_ui_state', legacyAppUiState))
+    for (const [idxName, idxDef] of Object.entries(legacyAppUiState.indexes ?? {})) {
+      adb.exec(renderIndex('app_ui_state', idxName, idxDef))
+    }
+    for (const [tableName, def] of Object.entries(schema)) {
+      if (tableName === 'app_ui_state') continue
+      adb.exec(renderCreateTable(tableName, def))
+      for (const [idxName, idxDef] of Object.entries(def.indexes ?? {})) {
+        adb.exec(renderIndex(tableName, idxName, idxDef))
+      }
+    }
+
+    adb.exec("INSERT INTO app_ui_state (id, last_view_kind, updated_at) VALUES (1, 'dashboard', 0)")
     sync(adb, schema, { dbPath: ':memory:', legacyVersion: 0 })
 
     assert.deepEqual(normalizedShape(adb), refShape, 'app_ui_state fixture did not converge')
+    const legacyRow = adb.prepare('SELECT last_view_kind FROM app_ui_state WHERE id = 1').get() as {
+      last_view_kind: string
+    }
+    assert.equal(legacyRow.last_view_kind, 'dashboard', 'legacy dashboard row must survive rebuild')
+
+    const createSql = (
+      adb
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'app_ui_state'")
+        .get() as {
+        sql: string
+      }
+    ).sql
+    assert.match(createSql, /last_view_kind[^,]*CHECK \(last_view_kind IN \([^)]*'home'/)
+    adb.exec("UPDATE app_ui_state SET last_view_kind = 'home' WHERE id = 1")
+    const homeRow = adb.prepare('SELECT last_view_kind FROM app_ui_state WHERE id = 1').get() as {
+      last_view_kind: string
+    }
+    assert.equal(homeRow.last_view_kind, 'home', 'current app_ui_state CHECK must permit home')
+
+    assert.deepEqual(
+      planSync(adb, schema),
+      [],
+      'legacy app_ui_state fixture not idempotent after converge'
+    )
+  }
+
+  // The fresh-schema default remains sessions/overview, independent of the
+  // legacy CHECK fixture above.
+  {
+    const adb = new Database(':memory:')
+    sync(adb, schema, { dbPath: ':memory:', legacyVersion: 0 })
 
     // updated_at has no DEFAULT clause (INTEGER_NOT_NULL) so it must be
     // supplied explicitly; last_view_kind is deliberately omitted to exercise
@@ -536,11 +601,11 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
     assert.deepEqual(
       planSync(adb, schema),
       [],
-      'app_ui_state fixture not idempotent after converge'
+      'fresh app_ui_state fixture not idempotent after converge'
     )
   }
 
-  console.log('✓ app_ui_state converges (sessions/overview defaults, idempotent)')
+  console.log('✓ app_ui_state legacy Home migration and defaults converge')
   console.log('✓ convergence')
 }
 

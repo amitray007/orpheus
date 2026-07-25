@@ -337,15 +337,18 @@ export function MainContent({
 
   if (view.kind === 'home') {
     return (
-      <HomeSurface
-        page={view.page}
-        counts={homeSnapshot.counts}
-        collapsed={homeCollapsed}
-        sidebarWidth={homeSidebarWidth}
-        snapshot={homeSnapshot}
-        onNavigate={onNavigateHome}
-        onSelectWorkspace={onSelectWorkspace}
-      />
+      <>
+        {renderKeptWorkspaceViews(null)}
+        <HomeSurface
+          page={view.page}
+          counts={homeSnapshot.counts}
+          collapsed={homeCollapsed}
+          sidebarWidth={homeSidebarWidth}
+          snapshot={homeSnapshot}
+          onNavigate={onNavigateHome}
+          onSelectWorkspace={onSelectWorkspace}
+        />
+      </>
     )
   }
 

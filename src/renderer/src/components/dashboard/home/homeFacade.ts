@@ -198,6 +198,8 @@ export function normalizeHomeAgents(rows: LiveAgentRow[], nowMs: number): HomeAg
     provider: CLAUDE_PROVIDER,
     workspaceId: row.workspaceId,
     projectId: row.projectId,
+    projectLabel: row.projectName,
+    workspaceLabel: row.agentName,
     task: row.taskTitle,
     state: row.state === 'attention' ? 'waiting' : row.state,
     observedAt: row.sinceMs,

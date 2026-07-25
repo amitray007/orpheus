@@ -28,6 +28,8 @@ export interface HomeAgent {
   provider: ProviderDescriptor
   workspaceId?: string
   projectId?: string
+  projectLabel: string
+  workspaceLabel: string
   task: string
   state: HomeAgentState
   observedAt: number
