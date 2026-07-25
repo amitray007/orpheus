@@ -52,7 +52,12 @@ export async function startAtResolvedRoutingProxyPort(
   for (const port of candidates) {
     const result = await deps.startCandidate(runtimeAtAutomaticPort(port))
     if (result.ok) return { ...result, effectivePort: port }
-    if (result.reason?.includes('did not release port')) return result
+    if (
+      result.reason === 'start was superseded' ||
+      result.reason?.includes('did not release port')
+    ) {
+      return result
+    }
     lastFailure = result
   }
   return {

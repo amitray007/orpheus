@@ -265,6 +265,25 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
     startCandidate: async () => ({ ok: false, reason: 'bind EADDRINUSE on 18766' })
   })
   assert.match(exhausted.reason ?? '', /18765–18799.*bind EADDRINUSE on 18766/)
+
+  const supersededAttempts: number[] = []
+  const superseded = await startAtResolvedRoutingProxyPort({
+    runtime: () => ({
+      source: 'automatic',
+      url: 'http://127.0.0.1:18765',
+      host: '127.0.0.1',
+      port: 18765,
+      portConfigurationLocked: false
+    }),
+    candidates: () => [18765, 18766],
+    inspect: inspectionDeps,
+    startCandidate: async (runtime) => {
+      supersededAttempts.push(runtime.port!)
+      return { ok: false, reason: 'start was superseded' }
+    }
+  })
+  assert.deepEqual(supersededAttempts, [18765])
+  assert.equal(superseded.reason, 'start was superseded')
   console.log('✓ allocator retries automatic candidates while custom mode remains strict')
 }
 

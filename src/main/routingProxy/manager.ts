@@ -454,6 +454,19 @@ let currentSpawnAttempt: RoutingProxySpawnAttempt | null = null
 // PID so a later replacement child is never accidentally classified as expected.
 const expectedCandidateTerminationPids = new Set<number>()
 const exitedCandidatePids = new Set<number>()
+// Every lifecycle request obtains a generation. Awaited candidate work may only
+// mutate state while it still owns that generation.
+let lifecycleGeneration = 0
+const activeStartingCandidatePids = new Set<number>()
+
+function nextLifecycleGeneration(): number {
+  lifecycleGeneration += 1
+  return lifecycleGeneration
+}
+
+function ownsLifecycleGeneration(generation: number): boolean {
+  return generation === lifecycleGeneration
+}
 
 // ---------------------------------------------------------------------------
 // Auto-supervision (respawn-on-crash + health watchdog) — see supervisor.ts's
@@ -846,8 +859,10 @@ async function waitForFailedCandidateRelease(
 
 async function startCandidate(
   runtime: RoutingProxyRuntime,
-  version: string
+  version: string,
+  generation: number
 ): Promise<StartCandidateResult> {
+  if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: 'start was superseded' }
   const endpoint = requiredRuntimeEndpoint(runtime)
   const inspect = defaultListenerInspectionDeps()
   const listeners = await inspect.listListeners(endpoint.port)
@@ -869,6 +884,7 @@ async function startCandidate(
     }
   }
 
+  if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: 'start was superseded' }
   const aliases = resolveAliasModelsByProvider()
   await writeRoutingProxyConfig(configPath(version), {
     ...requiredRuntimeEndpoint(runtime),
@@ -877,6 +893,7 @@ async function startCandidate(
     aliasModelsByProvider: aliases.apiKeyModels,
     oauthAliasModelsByProvider: aliases.oauthModels
   })
+  if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: 'start was superseded' }
   recordAliasWrite(aliases)
   recentChildLogLines.length = 0
   routingProxySupervisor.markStarted()
@@ -892,8 +909,9 @@ async function startCandidate(
       if (currentSpawnAttempt?.pid === attempt.pid) currentSpawnAttempt = null
       const error = getLastError()
       const candidateTermination = expectedCandidateTerminationPids.delete(attempt.pid)
-      if (candidateTermination) exitedCandidatePids.add(attempt.pid)
-      const expected = wasExpectedShutdown || candidateTermination
+      const startingCandidate = activeStartingCandidatePids.delete(attempt.pid)
+      if (candidateTermination || startingCandidate) exitedCandidatePids.add(attempt.pid)
+      const expected = wasExpectedShutdown || candidateTermination || startingCandidate
       setSnapshot({
         ...snapshotRuntime(),
         status: error ? 'error' : 'stopped',
@@ -909,9 +927,17 @@ async function startCandidate(
     }
   })
   currentSpawnAttempt = attempt
+  // Claim the PID before the first await: a fast bind/exit belongs to this
+  // allocator candidate, never to the supervisor's independent respawn path.
+  activeStartingCandidatePids.add(attempt.pid)
   const readiness = await waitForManagedRoutingProxyReady(runtime, attempt)
   if (!readiness.healthy) {
-    if (currentSpawnAttempt !== attempt) return { ok: false, reason: 'start was superseded' }
+    activeStartingCandidatePids.delete(attempt.pid)
+    if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: 'start was superseded' }
+    if (currentSpawnAttempt !== attempt) {
+      if (exitedCandidatePids.delete(attempt.pid)) return { ok: false, reason: readiness.reason }
+      return { ok: false, reason: 'start was superseded' }
+    }
     expectedCandidateTerminationPids.add(attempt.pid)
     const released = await waitForFailedCandidateRelease(attempt, endpoint.port, inspect)
     if (currentSpawnAttempt === attempt) currentSpawnAttempt = null
@@ -924,13 +950,18 @@ async function startCandidate(
     }
     return { ok: false, reason: readiness.reason }
   }
-  if (!canPublishManagedRoutingProxyRunning(currentSpawnAttempt, attempt, readiness)) {
+  activeStartingCandidatePids.delete(attempt.pid)
+  if (
+    !ownsLifecycleGeneration(generation) ||
+    !canPublishManagedRoutingProxyRunning(currentSpawnAttempt, attempt, readiness)
+  ) {
     return { ok: false, reason: 'start was superseded' }
   }
   return { ok: true, effectivePort: endpoint.port }
 }
 
 export async function start(): Promise<void> {
+  const generation = nextLifecycleGeneration()
   let version = snapshot.installedVersion ?? detectInstalledVersion()
   if (!version) {
     try {
@@ -952,9 +983,10 @@ export async function start(): Promise<void> {
     runtime: () => resolveRuntime() ?? initialRuntime,
     candidates: automaticPortCandidates,
     inspect: defaultListenerInspectionDeps(),
-    startCandidate: (runtime) => startCandidate(runtime, version)
+    startCandidate: (runtime) => startCandidate(runtime, version, generation)
   })
   if (!result.ok) {
+    if (!ownsLifecycleGeneration(generation) || result.reason === 'start was superseded') return
     setSnapshot({
       ...snapshotRuntime(),
       status: 'error',
@@ -981,6 +1013,7 @@ export async function start(): Promise<void> {
 }
 
 export async function stop(): Promise<void> {
+  nextLifecycleGeneration()
   if (authRefreshTimer) {
     clearInterval(authRefreshTimer)
     authRefreshTimer = null
