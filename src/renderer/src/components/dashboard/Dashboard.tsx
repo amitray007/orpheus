@@ -872,9 +872,13 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const handleNavigateSurface = useCallback<NavigateSurface>(
     (request) => {
       const homePage = requestedHomePage(request)
-      if (homePage) {
-        setView({ kind: 'home', page: homePage })
-        updateUiState({ homeLastPage: homePage })
+      if (request.surface === 'home') {
+        if (homePage) {
+          setView({ kind: 'home', page: homePage })
+          updateUiState({ homeLastPage: homePage })
+        } else {
+          handleSelectSurface('home')
+        }
         if (request.input === 'keyboard') {
           requestAnimationFrame(() => {
             document.querySelector<HTMLHeadingElement>('#home-page-title')?.focus()
