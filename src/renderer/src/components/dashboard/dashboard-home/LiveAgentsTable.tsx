@@ -104,7 +104,7 @@ const COLUMNS: ColumnDef<LiveAgentRow, any>[] = [
   columnHelper.accessor('taskTitle', { header: 'Task' }),
   columnHelper.accessor('projectName', { header: 'Project' }),
   columnHelper.accessor('modelLabel', { header: 'Model' }),
-  columnHelper.accessor('sinceMs', { header: 'Since' })
+  columnHelper.accessor('sinceMs', { header: 'Last activity' })
 ]
 
 const HEADER_CLASS =
@@ -182,7 +182,7 @@ export function LiveAgentsTable({
                 <th className={HEADER_CLASS}>Task</th>
                 <th className={HEADER_CLASS}>Project</th>
                 <th className={HEADER_CLASS}>Model</th>
-                <th className={cn(HEADER_CLASS, 'text-right')}>Since</th>
+                <th className={cn(HEADER_CLASS, 'text-right')}>Last activity</th>
               </tr>
             </thead>
             <tbody>

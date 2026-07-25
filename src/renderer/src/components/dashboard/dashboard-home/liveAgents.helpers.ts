@@ -39,9 +39,9 @@ export function isLiveAgentDetail(detail: WorkspaceActivityDetail | undefined): 
  *  WorkspaceActivityDetail strings since the table uses human labels
  *  ("Permission" reads better than "attention" for a waiting-on-you agent). */
 export const LIVE_AGENT_STATE_LABEL: Record<LiveAgentDisplayState, string> = {
-  attention: 'Permission',
+  attention: 'Waiting',
   working: 'Working',
-  ready: 'Finished'
+  ready: 'Ready'
 }
 
 /** Sort priority — waiting-on-you first (most actionable), then actively
