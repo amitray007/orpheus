@@ -147,8 +147,8 @@ export function PrTableContent({
             <TablePager
               page={page + 1}
               pageCount={pageCount}
-              onPrev={() => setPage((current) => Math.max(0, current - 1))}
-              onNext={() => setPage((current) => Math.min(pageCount - 1, current + 1))}
+              onPrev={() => setPage(Math.max(0, page - 1))}
+              onNext={() => setPage(Math.min(pageCount - 1, page + 1))}
             />
           ) : null}
         </div>
