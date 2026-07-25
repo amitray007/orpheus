@@ -1,4 +1,5 @@
 import { getDb } from './db'
+import { AUTOMATIC_PORT_MAX, AUTOMATIC_PORT_MIN } from './routingProxy/runtime'
 import type {
   AppUiState,
   AppUiStatePatch,
@@ -454,10 +455,12 @@ function validateRoutingProxyPortPatch(patch: AppUiStatePatch): void {
   if (
     effectivePort !== undefined &&
     effectivePort !== null &&
-    (!Number.isInteger(effectivePort) || effectivePort < 1024 || effectivePort > 65535)
+    (!Number.isInteger(effectivePort) ||
+      effectivePort < AUTOMATIC_PORT_MIN ||
+      effectivePort > AUTOMATIC_PORT_MAX)
   ) {
     throw new Error(
-      'uiState: routingProxyEffectivePort must be an integer between 1024 and 65535 or null'
+      `uiState: routingProxyEffectivePort must be an integer between ${AUTOMATIC_PORT_MIN} and ${AUTOMATIC_PORT_MAX} or null`
     )
   }
 }
