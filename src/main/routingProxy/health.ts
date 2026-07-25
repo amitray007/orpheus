@@ -116,6 +116,32 @@ function ownershipFailure(
   return null
 }
 
+async function checkManagedAttemptReadiness(
+  target: { url: string; port: number },
+  attempt: RoutingProxySpawnAttempt,
+  probeTimeoutMs: number,
+  deps: ManagedReadinessDeps
+): Promise<HealthCheckResult> {
+  if (!attempt.isAlive()) return { healthy: false, reason: 'spawned child exited' }
+
+  const ownerFailure = ownershipFailure(await deps.inspectListeners(target.port), attempt)
+  if (ownerFailure) return { healthy: false, reason: ownerFailure }
+
+  const managementOk = await deps.managementProbe(
+    target.url,
+    attempt.managementSecret,
+    probeTimeoutMs
+  )
+  if (!managementOk) {
+    return { healthy: false, reason: 'management API did not return authenticated 2xx' }
+  }
+  if (!attempt.isAlive()) return { healthy: false, reason: 'spawned child exited' }
+
+  const confirmationFailure = ownershipFailure(await deps.inspectListeners(target.port), attempt)
+  if (!attempt.isAlive()) return { healthy: false, reason: 'spawned child exited' }
+  return confirmationFailure ? { healthy: false, reason: confirmationFailure } : { healthy: true }
+}
+
 export function canPublishManagedRoutingProxyRunning(
   currentAttempt: RoutingProxySpawnAttempt | null,
   attempt: RoutingProxySpawnAttempt,
@@ -147,26 +173,10 @@ export async function waitForManagedRoutingProxyReady(
 
   let lastFailure = 'management API did not return authenticated 2xx'
   while (true) {
-    if (!attempt.isAlive()) return { healthy: false, reason: 'spawned child exited' }
-    const listeners = await deps.inspectListeners(target.port)
-    const ownerFailure = ownershipFailure(listeners, attempt)
-    if (ownerFailure) {
-      lastFailure = ownerFailure
-    } else {
-      const managementOk = await deps.managementProbe(
-        target.url,
-        attempt.managementSecret,
-        probeTimeoutMs
-      )
-      if (managementOk) {
-        if (!attempt.isAlive()) return { healthy: false, reason: 'spawned child exited' }
-        const confirmedListeners = await deps.inspectListeners(target.port)
-        if (!attempt.isAlive()) return { healthy: false, reason: 'spawned child exited' }
-        const confirmationFailure = ownershipFailure(confirmedListeners, attempt)
-        if (!confirmationFailure) return { healthy: true }
-        lastFailure = confirmationFailure
-      }
-    }
+    const readiness = await checkManagedAttemptReadiness(target, attempt, probeTimeoutMs, deps)
+    if (readiness.healthy || readiness.reason === 'spawned child exited') return readiness
+
+    lastFailure = readiness.reason
     if (deps.now() >= deadline) return { healthy: false, reason: lastFailure }
     await deps.sleep(delay)
     delay = Math.min(delay * backoffFactor, maxDelayMs)
