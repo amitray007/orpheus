@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState } from 'react'
 import { Kanban, ArrowLeft } from '@phosphor-icons/react'
-import { DashboardView } from './DashboardView'
+import { HomeSurface } from './home/HomeSurface'
 import { ProjectView } from './ProjectView'
 import { WorkspacesView } from './WorkspacesView'
 import { WorkspaceView } from './WorkspaceView'
@@ -12,7 +12,7 @@ import { getPrSnapshot } from '@/lib/prStore'
 import { useUiState } from '@/lib/uiStateStore'
 import { SessionListSkeleton } from '../Skeleton'
 import type { ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
-import type { AppView } from './home/home.types'
+import type { AppView, HomeSnapshot, NavigateSurface } from './home/home.types'
 import type { SectionId } from './SettingsView'
 
 const SettingsView = lazy(() => import('./SettingsView').then((m) => ({ default: m.SettingsView })))
@@ -217,6 +217,10 @@ interface MainContentProps {
   allSessions?: SessionRecord[]
   // Privacy (v37)
   fetchGithubAvatars?: boolean
+  homeSnapshot: HomeSnapshot
+  homeCollapsed: boolean
+  homeSidebarWidth: number
+  onNavigateHome: NavigateSurface
   settingsActiveId: SectionId
   onSettingsActiveIdChange: (id: SectionId) => void
 }
@@ -237,6 +241,10 @@ export function MainContent({
   allWorkspaces,
   allSessions,
   fetchGithubAvatars = true,
+  homeSnapshot,
+  homeCollapsed,
+  homeSidebarWidth,
+  onNavigateHome,
   settingsActiveId,
   onSettingsActiveIdChange
 }: MainContentProps): React.JSX.Element {
@@ -328,7 +336,17 @@ export function MainContent({
   }
 
   if (view.kind === 'home') {
-    return <DashboardView onSelectWorkspace={onSelectWorkspace} />
+    return (
+      <HomeSurface
+        page={view.page}
+        counts={homeSnapshot.counts}
+        collapsed={homeCollapsed}
+        sidebarWidth={homeSidebarWidth}
+        snapshot={homeSnapshot}
+        onNavigate={onNavigateHome}
+        onSelectWorkspace={onSelectWorkspace}
+      />
+    )
   }
 
   if (view.kind === 'sessions') {

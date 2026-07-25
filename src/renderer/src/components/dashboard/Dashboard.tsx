@@ -11,6 +11,8 @@ import { SettingsNavigation } from './SettingsView'
 import type { SectionId } from './SettingsView'
 import { SurfaceFooter } from './sidebar/SurfaceFooter'
 import { SurfaceSidebarShell } from './sidebar/SurfaceSidebarShell'
+import { HomeSidebar } from './home/HomeSidebar'
+import { useHomeSnapshot } from './home/useHomeSnapshot'
 import { showConfirmModalReact } from '@/lib/overlayClient'
 import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/activityStore'
 import { setAuthoritativeActiveWorkspace, getActiveRemount } from '@/lib/freezeWatchdog'
@@ -36,6 +38,7 @@ import {
   reorderById,
   reorderWithTail,
   deriveSurface,
+  requestedHomePage,
   resolveLandingView
 } from './dashboard.helpers'
 import type {
@@ -65,6 +68,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // UI state — live subscription via the shared store (single get() + single
   // onChanged() for the whole renderer; see lib/uiStateStore.ts).
   const uiState = useUiState()
+  const homeSnapshot = useHomeSnapshot()
   const hydratedRef = useRef(false)
 
   // Projects state
@@ -867,6 +871,17 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleNavigateSurface = useCallback<NavigateSurface>(
     (request) => {
+      const homePage = requestedHomePage(request)
+      if (homePage) {
+        setView({ kind: 'home', page: homePage })
+        updateUiState({ homeLastPage: homePage })
+        if (request.input === 'keyboard') {
+          requestAnimationFrame(() => {
+            document.querySelector<HTMLHeadingElement>('#home-page-title')?.focus()
+          })
+        }
+        return
+      }
       handleSelectSurface(request.surface)
     },
     [handleSelectSurface]
@@ -1826,7 +1841,12 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         ariaLabel="Home navigation"
         footer={surfaceFooter}
       >
-        <div className="flex-1" />
+        <HomeSidebar
+          page={view.kind === 'home' ? view.page : UI_STATE_DEFAULTS.homeLastPage}
+          counts={homeSnapshot.counts}
+          collapsed={sidebarCollapsed}
+          onNavigate={handleNavigateSurface}
+        />
       </SurfaceSidebarShell>
     )
   } else {
@@ -1913,6 +1933,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             allWorkspaces={allWorkspaces}
             allSessions={allSessions}
             fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
+            homeSnapshot={homeSnapshot}
+            homeCollapsed={sidebarCollapsed}
+            homeSidebarWidth={resolvedSidebarWidth}
+            onNavigateHome={handleNavigateSurface}
             settingsActiveId={settingsActiveId}
             onSettingsActiveIdChange={handleSelectSettingsSection}
           />

@@ -8,7 +8,8 @@
 
 import type { SidebarActiveView } from './Sidebar'
 import type { AppUiState } from '@shared/types'
-import type { AppView, SurfaceId } from './home/home.types'
+import type { AppView, SurfaceId, SurfaceNavigationRequest } from './home/home.types'
+import type { HomePageId } from '@shared/types'
 
 // ---------------------------------------------------------------------------
 // View helpers
@@ -84,6 +85,10 @@ export function resolveLandingView(
   }
   // Settings is deliberately non-restorable; default everything else to Projects.
   return { kind: 'sessions' }
+}
+
+export function requestedHomePage(request: SurfaceNavigationRequest): HomePageId | undefined {
+  return request.surface === 'home' ? request.homePage : undefined
 }
 
 // ---------------------------------------------------------------------------
