@@ -160,6 +160,7 @@ export async function waitForManagedRoutingProxyReady(
       if (managementOk) {
         if (!attempt.isAlive()) return { healthy: false, reason: 'spawned child exited' }
         const confirmedListeners = await deps.inspectListeners(target.port)
+        if (!attempt.isAlive()) return { healthy: false, reason: 'spawned child exited' }
         const confirmationFailure = ownershipFailure(confirmedListeners, attempt)
         if (!confirmationFailure) return { healthy: true }
         lastFailure = confirmationFailure

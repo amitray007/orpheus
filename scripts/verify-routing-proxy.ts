@@ -636,6 +636,29 @@ async function cleanup(): Promise<void> {
     )
     assert.deepEqual(result, { healthy: false, reason: 'listener is not the spawned child' })
   }
+  {
+    let alive = true
+    let listenerCalls = 0
+    const exitsDuringFinalInspection: RoutingProxySpawnAttempt = {
+      ...spawnedAttempt,
+      isAlive: () => alive
+    }
+    const result = await waitForManagedRoutingProxyReady(
+      runtime,
+      exitsDuringFinalInspection,
+      { deadlineMs: 0 },
+      {
+        inspectListeners: async () => {
+          if (listenerCalls++ > 0) alive = false
+          return [listener]
+        },
+        managementProbe: async () => true,
+        sleep: async () => {},
+        now: () => 0
+      }
+    )
+    assert.deepEqual(result, { healthy: false, reason: 'spawned child exited' })
+  }
 
   // Manager startup retains an attempt identity. If stop/disable clears it
   // while readiness is pending, the old continuation cannot publish running.
