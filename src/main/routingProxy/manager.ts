@@ -25,6 +25,7 @@ import { authDir, binaryPath, configPath, versionDir } from './paths'
 import { installRoutingProxy, defaultInstallDeps, type InstallDeps } from './install'
 import { writeRoutingProxyConfig } from './config'
 import {
+  canPublishManagedRoutingProxyRunning,
   ensureHealthyForRouting as ensureHealthyForRoutingImpl,
   waitForManagedRoutingProxyReady,
   checkRoutingProxyHealth
@@ -839,15 +840,18 @@ export async function start(): Promise<void> {
   const readiness = await waitForManagedRoutingProxyReady(getRoutingProxyRuntime(), attempt)
 
   if (!readiness.healthy) {
+    // A superseded/disabled start must not alter the newer manager state.
+    if (currentSpawnAttempt !== attempt) return
     // Terminate only the captured child for this failed attempt; never signal a
     // PID discovered through listener inspection.
     console.error(`[routing-proxy] failed managed readiness: ${readiness.reason}`)
     attempt.terminate()
-    if (currentSpawnAttempt === attempt) currentSpawnAttempt = null
+    currentSpawnAttempt = null
     setSnapshot({ status: 'error', error: `Proxy process failed readiness: ${readiness.reason}` })
     return
   }
 
+  if (!canPublishManagedRoutingProxyRunning(currentSpawnAttempt, attempt, readiness)) return
   console.log('[routing-proxy] started and authenticated')
   setSnapshot({ status: 'running', error: null, installedVersion: version })
   // Fire-and-forget: the 'running' status must be observable to the renderer
@@ -872,6 +876,7 @@ export async function stop(): Promise<void> {
   // wasExpectedShutdown's own doc comment.
   wasExpectedShutdown = true
   routingProxySupervisor.markExpectedShutdown()
+  currentSpawnAttempt = null
   await stopRoutingProxy()
   setSnapshot({
     ...disableTransitionPatch(snapshot.installedVersion),
@@ -1018,6 +1023,7 @@ export function shutdownRoutingProxySync(): void {
   wasExpectedShutdown = true
   routingProxySupervisor.markExpectedShutdown()
   routingProxySupervisor.dispose()
+  currentSpawnAttempt = null
   killRoutingProxySync()
 }
 

@@ -53,6 +53,7 @@ import {
   writeRoutingProxyConfig
 } from '../src/main/routingProxy/config.ts'
 import {
+  canPublishManagedRoutingProxyRunning,
   checkRoutingProxyHealth,
   ensureHealthyForRouting,
   probeRoutingProxyTcpReachability,
@@ -574,6 +575,85 @@ async function cleanup(): Promise<void> {
     ready,
     { healthy: true },
     'only owned sole listener plus authenticated 2xx is ready'
+  )
+
+  // A child commonly has no listener during its first readiness poll. That is
+  // transient, so startup must back off and reach running once this attempt binds.
+  {
+    let listenerCalls = 0
+    let elapsed = 0
+    const delayedReady = await waitForManagedRoutingProxyReady(
+      runtime,
+      spawnedAttempt,
+      {},
+      {
+        inspectListeners: async () => (listenerCalls++ === 0 ? [] : [listener]),
+        managementProbe: async () => true,
+        sleep: async (ms) => {
+          elapsed += ms
+        },
+        now: () => elapsed
+      }
+    )
+    assert.deepEqual(delayedReady, { healthy: true })
+    assert.equal(listenerCalls, 3, 'startup must re-inspect after authenticated readiness')
+  }
+
+  // Management confirmation is not sufficient on its own: it can race a child
+  // exit or port rebind while the request is outstanding.
+  {
+    let alive = true
+    const exitsDuringProbe: RoutingProxySpawnAttempt = { ...spawnedAttempt, isAlive: () => alive }
+    const result = await waitForManagedRoutingProxyReady(
+      runtime,
+      exitsDuringProbe,
+      { deadlineMs: 0 },
+      {
+        inspectListeners: async () => [listener],
+        managementProbe: async () => {
+          alive = false
+          return true
+        },
+        sleep: async () => {},
+        now: () => 0
+      }
+    )
+    assert.deepEqual(result, { healthy: false, reason: 'spawned child exited' })
+  }
+  {
+    let listenerCalls = 0
+    const result = await waitForManagedRoutingProxyReady(
+      runtime,
+      spawnedAttempt,
+      { deadlineMs: 0 },
+      {
+        inspectListeners: async () =>
+          listenerCalls++ === 0 ? [listener] : [{ ...listener, pid: 999 }],
+        managementProbe: async () => true,
+        sleep: async () => {},
+        now: () => 0
+      }
+    )
+    assert.deepEqual(result, { healthy: false, reason: 'listener is not the spawned child' })
+  }
+
+  // Manager startup retains an attempt identity. If stop/disable clears it
+  // while readiness is pending, the old continuation cannot publish running.
+  assert.equal(
+    canPublishManagedRoutingProxyRunning(spawnedAttempt, spawnedAttempt, { healthy: true }),
+    true
+  )
+  assert.equal(
+    canPublishManagedRoutingProxyRunning(null, spawnedAttempt, { healthy: true }),
+    false,
+    'stop during readiness clears the current attempt and blocks stale running publication'
+  )
+  assert.equal(
+    canPublishManagedRoutingProxyRunning({ ...spawnedAttempt, pid: 124 }, spawnedAttempt, {
+      healthy: true
+    }),
+    false,
+    'a replacement attempt blocks the older start continuation'
   )
 
   const cases: Array<
