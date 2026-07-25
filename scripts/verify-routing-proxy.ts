@@ -329,6 +329,66 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
   console.log('✓ lifecycle coordinator serializes superseded config/spawn/publication effects')
 }
 
+// ---------------------------------------------------------------------------
+// 0d. Cleanup containment. A timed-out exact candidate cleanup poisons the
+// lifecycle queue. No later operation may reach a side effect until that exact
+// PID has exited and a fresh listener probe proves its release.
+// ---------------------------------------------------------------------------
+
+{
+  const coordinator = new RoutingProxyLifecycleCoordinator()
+  const effects: string[] = []
+  let listenerReleased = false
+  const generationA = coordinator.beginIntent()
+  coordinator.blockUnresolvedCandidate({
+    pid: 4101,
+    generation: generationA,
+    listenerReleased: async () => listenerReleased
+  })
+
+  const generationB = coordinator.beginIntent()
+  const blockedB = await coordinator.run(generationB, async () => {
+    effects.push('B:config')
+    effects.push('B:spawn')
+    effects.push('B:persist')
+    effects.push('B:publish')
+  })
+  assert.equal(blockedB, 'start blocked by unresolved candidate cleanup')
+  assert.deepEqual(effects, [])
+
+  // A stale or unrelated exit cannot release A's guard.
+  coordinator.recordCandidateExit(4102, generationA)
+  coordinator.recordCandidateExit(4101, generationB)
+  const stillBlocked = await coordinator.run(coordinator.beginIntent(), async () => {
+    effects.push('wrong-exit-side-effect')
+  })
+  assert.equal(stillBlocked, 'start blocked by unresolved candidate cleanup')
+  assert.deepEqual(effects, [])
+
+  // The exact exit alone is insufficient until its listener is demonstrably gone.
+  coordinator.recordCandidateExit(4101, generationA)
+  const listenerStillHeld = await coordinator.run(coordinator.beginIntent(), async () => {
+    effects.push('held-listener-side-effect')
+  })
+  assert.equal(listenerStillHeld, 'start blocked by unresolved candidate cleanup')
+  assert.deepEqual(effects, [])
+
+  listenerReleased = true
+  const generationC = coordinator.beginIntent()
+  const allowedC = await coordinator.run(generationC, async () => {
+    effects.push('C:config')
+    effects.push('C:spawn')
+    effects.push('C:persist')
+    effects.push('C:publish')
+    return 'C'
+  })
+  assert.equal(allowedC, 'C')
+  assert.deepEqual(effects, ['C:config', 'C:spawn', 'C:persist', 'C:publish'])
+  console.log(
+    '✓ lifecycle coordinator blocks poisoned cleanup until exact exit and listener release'
+  )
+}
+
 async function cleanup(): Promise<void> {
   await fs.rm(scratchRoot, { recursive: true, force: true })
 }

@@ -54,7 +54,11 @@ import {
   getRoutingProxyRuntime
 } from './runtime'
 import { startAtResolvedRoutingProxyPort, type StartCandidateResult } from './allocator'
-import { RoutingProxyLifecycleCoordinator, START_SUPERSEDED } from './lifecycleCoordinator'
+import {
+  RoutingProxyLifecycleCoordinator,
+  START_BLOCKED_BY_UNRESOLVED_CLEANUP,
+  START_SUPERSEDED
+} from './lifecycleCoordinator'
 import { checkRoutingProxyUpdate } from './updateCheck'
 import { cleanStoppedStatus, disableTransitionPatch } from './state'
 import { PROVIDERS } from './providers/registry'
@@ -459,7 +463,10 @@ const exitedCandidatePids = new Set<number>()
 // mutate state while it still owns that generation.
 const lifecycleCoordinator = new RoutingProxyLifecycleCoordinator()
 const activeStartingCandidatePids = new Set<number>()
-const candidateGenerationByPid = new Map<number, number>()
+const candidateGenerationByPid = new Map<
+  number,
+  { attempt: RoutingProxySpawnAttempt; generation: number }
+>()
 
 function nextLifecycleGeneration(): number {
   return lifecycleCoordinator.beginIntent()
@@ -838,17 +845,38 @@ export async function forceRefreshCliProxyModelCache(): Promise<RoutingProxyMain
   }
 }
 
+function blockOnUnresolvedCandidateCleanup(
+  attempt: RoutingProxySpawnAttempt,
+  generation: number,
+  port: number,
+  inspect: ReturnType<typeof defaultListenerInspectionDeps>
+): void {
+  lifecycleCoordinator.blockUnresolvedCandidate({
+    pid: attempt.pid,
+    generation,
+    listenerReleased: async () => {
+      const listeners = await inspect.listListeners(port)
+      return !listeners.some((listener) => listener.pid === attempt.pid)
+    }
+  })
+  // An exact exit may have won the race with cleanup-timeout bookkeeping.
+  if (exitedCandidatePids.has(attempt.pid)) {
+    lifecycleCoordinator.recordCandidateExit(attempt.pid, generation)
+  }
+}
+
 async function cleanupSupersededCandidate(
   attempt: RoutingProxySpawnAttempt,
+  generation: number,
   port: number,
   inspect: ReturnType<typeof defaultListenerInspectionDeps>
 ): Promise<StartCandidateResult> {
   expectedCandidateTerminationPids.add(attempt.pid)
   const released = await waitForFailedCandidateRelease(attempt, port, inspect)
   if (currentSpawnAttempt === attempt) currentSpawnAttempt = null
-  return released
-    ? { ok: false, reason: START_SUPERSEDED }
-    : { ok: false, reason: `failed candidate ${attempt.pid} did not release port ${port}` }
+  if (released) return { ok: false, reason: START_SUPERSEDED }
+  blockOnUnresolvedCandidateCleanup(attempt, generation, port, inspect)
+  return { ok: false, reason: `failed candidate ${attempt.pid} did not release port ${port}` }
 }
 
 async function waitForFailedCandidateRelease(
@@ -876,9 +904,12 @@ function handleCandidateExit(
   code: number | null,
   signal: NodeJS.Signals | null
 ): void {
-  const generation = candidateGenerationByPid.get(attempt.pid)
+  const registeredCandidate = candidateGenerationByPid.get(attempt.pid)
+  if (!registeredCandidate || registeredCandidate.attempt !== attempt) return
   candidateGenerationByPid.delete(attempt.pid)
-  const stale = generation !== undefined && !ownsLifecycleGeneration(generation)
+  const generation = registeredCandidate.generation
+  lifecycleCoordinator.recordCandidateExit(attempt.pid, generation)
+  const stale = !ownsLifecycleGeneration(generation)
   if (stale) {
     if (currentSpawnAttempt?.pid === attempt.pid) currentSpawnAttempt = null
     activeStartingCandidatePids.delete(attempt.pid)
@@ -962,7 +993,7 @@ async function startCandidate(
     }
   })
   currentSpawnAttempt = attempt
-  candidateGenerationByPid.set(attempt.pid, generation)
+  candidateGenerationByPid.set(attempt.pid, { attempt, generation })
   // Claim the PID before the first await: a fast bind/exit belongs to this
   // allocator candidate, never to the supervisor's independent respawn path.
   activeStartingCandidatePids.add(attempt.pid)
@@ -970,7 +1001,7 @@ async function startCandidate(
   if (!readiness.healthy) {
     activeStartingCandidatePids.delete(attempt.pid)
     if (!ownsLifecycleGeneration(generation)) {
-      return cleanupSupersededCandidate(attempt, endpoint.port, inspect)
+      return cleanupSupersededCandidate(attempt, generation, endpoint.port, inspect)
     }
     if (currentSpawnAttempt !== attempt) {
       if (exitedCandidatePids.delete(attempt.pid)) return { ok: false, reason: readiness.reason }
@@ -980,7 +1011,7 @@ async function startCandidate(
     const released = await waitForFailedCandidateRelease(attempt, endpoint.port, inspect)
     if (currentSpawnAttempt === attempt) currentSpawnAttempt = null
     if (!released) {
-      expectedCandidateTerminationPids.delete(attempt.pid)
+      blockOnUnresolvedCandidateCleanup(attempt, generation, endpoint.port, inspect)
       return {
         ok: false,
         reason: `failed candidate ${attempt.pid} did not release port ${endpoint.port}`
@@ -990,7 +1021,7 @@ async function startCandidate(
   }
   activeStartingCandidatePids.delete(attempt.pid)
   if (!ownsLifecycleGeneration(generation)) {
-    return cleanupSupersededCandidate(attempt, endpoint.port, inspect)
+    return cleanupSupersededCandidate(attempt, generation, endpoint.port, inspect)
   }
   if (!canPublishManagedRoutingProxyRunning(currentSpawnAttempt, attempt, readiness)) {
     return { ok: false, reason: START_SUPERSEDED }
@@ -1053,6 +1084,11 @@ export async function start(): Promise<void> {
   const generation = nextLifecycleGeneration()
   const result = await lifecycleCoordinator.run(generation, () => startUnlocked(generation))
   if (result === START_SUPERSEDED) return
+  if (result === START_BLOCKED_BY_UNRESOLVED_CLEANUP) {
+    throw new Error(
+      'Routing proxy start blocked until the unresolved candidate exits and releases its listener'
+    )
+  }
 }
 
 async function stopUnlocked(): Promise<void> {
@@ -1170,19 +1206,29 @@ export async function setEnabled(enabled: boolean): Promise<RoutingProxySnapshot
 export async function setPortConfiguration(
   request: RoutingProxyPortConfiguration
 ): Promise<RoutingProxySnapshot> {
-  if (request.mode === 'custom') {
-    if (!Number.isInteger(request.port) || request.port < 1024 || request.port > 65535) {
-      throw new Error('Custom routing proxy port must be an integer between 1024 and 65535')
+  const generation = nextLifecycleGeneration()
+  const result = await lifecycleCoordinator.run(generation, async () => {
+    if (request.mode === 'custom') {
+      if (!Number.isInteger(request.port) || request.port < 1024 || request.port > 65535) {
+        throw new Error('Custom routing proxy port must be an integer between 1024 and 65535')
+      }
+      updateAppUiState({ routingProxyPortMode: 'custom', routingProxyCustomPort: request.port })
+    } else {
+      updateAppUiState({ routingProxyPortMode: 'automatic' })
     }
-    updateAppUiState({ routingProxyPortMode: 'custom', routingProxyCustomPort: request.port })
-  } else {
-    updateAppUiState({ routingProxyPortMode: 'automatic' })
+    setRuntimeSnapshot()
+    if (!getAppUiState().routingProxyEnabled) return snapshot
+    if (isRunning()) await stopUnlocked()
+    await startUnlocked(generation)
+    return snapshot
+  })
+  if (result === START_SUPERSEDED) return snapshot
+  if (result === START_BLOCKED_BY_UNRESOLVED_CLEANUP) {
+    throw new Error(
+      'Routing proxy port change blocked until the unresolved candidate exits and releases its listener'
+    )
   }
-  setRuntimeSnapshot()
-  if (!getAppUiState().routingProxyEnabled) return snapshot
-  if (isRunning()) await stop()
-  await start()
-  return snapshot
+  return result
 }
 
 /** Wired into app quit — mirrors notifyServer/commandServer's will-quit cleanup in index.ts. */
