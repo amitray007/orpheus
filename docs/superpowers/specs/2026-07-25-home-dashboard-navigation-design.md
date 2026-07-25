@@ -85,7 +85,7 @@ A provider-neutral live-work list with summary state counts for **working**, **w
 - project/workspace and task derive from existing records/session preview/title;
 - elapsed is the existing real activity timestamp behavior and is labeled as relative activity when a precise start time is not available.
 
-Rows navigate through the existing workspace selection path, preserving terminal lifecycle behavior. Empty state says there are no live agents; it does not imply that no external providers exist.
+Rows navigate through the existing workspace selection path, preserving terminal lifecycle behavior. `projectId` and `workspaceId` remain navigation identities; rows display the required human `projectLabel` and `workspaceLabel` derived from authoritative project/workspace records. Raw UUIDs are never used as display fallbacks. Empty state says there are no live agents; it does not imply that no external providers exist.
 
 ### GitHub
 
@@ -122,7 +122,7 @@ Do not place a new Home monolith in `Dashboard.tsx`. Create focused page/sidebar
 The Home facade normalizes existing sources into provider-neutral view models before rendering. The following are the approved stable contract names:
 
 - `ProviderDescriptor { id, label, kind }`
-- `HomeAgent { id, provider, workspaceId?, projectId?, task, state, observedAt, elapsedLabel }`
+- `HomeAgent { id, provider, workspaceId?, projectId?, projectLabel, workspaceLabel, task, state, observedAt, elapsedLabel }`
 - `HomeActionItem { id, source, priority, title, detail?, observedAt?, target? }`
 - `ProviderLimitSnapshot { provider, fetchedAt?, stale, availability, buckets }`
 - `LimitBucket { id, label, scopes, remaining?, used?, total?, resetsAt?, modelFamily? }`
@@ -130,6 +130,8 @@ The Home facade normalizes existing sources into provider-neutral view models be
 - `HomeStatsSnapshot { provider, window, sessions?, tokens?, activeDays?, streak?, peakHour?, breakdowns? }`
 
 These are presentation/domain seams, not a claim that a generic multi-provider backend is built now. Existing `ClaudeUsageResult`, `ClaudeActivitySummary`, project/workspace/session records, `activityStore`, `activityTimeStore`, `prStore`, and current GitHub hooks remain authoritative adapters until a new source is genuinely needed.
+
+**Final correction (whole-branch review):** `HomeAgent` carries required human project/workspace labels separately from optional navigation ids so Live Agents never renders raw UUIDs as user-facing identity.
 
 ### Main/preload/shared boundaries
 

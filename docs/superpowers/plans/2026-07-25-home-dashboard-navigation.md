@@ -83,6 +83,8 @@
 
 **Plan correction:** The canonical route/surface types cannot be frozen in isolation: `Dashboard.tsx` owns the live `View`, persistence writes, hydration, and `handleSelectSurface`, while `ActivityRail`, `Sidebar`, and Navigation Settings are direct consumers of the legacy spelling. They are included here only for the minimum complete canonical caller conversion; Task 2 still owns rail deletion and shell/visual work, and Task 3 still owns the Home sidebar, page registry, and focus semantics.
 
+**Final correction (whole-branch review):** The frozen `HomeAgent` seam must carry required human project/workspace labels independently of navigation ids. The authoritative `LiveAgentRow` already supplies `projectName` and `agentName`; without preserving them, Live Agents falls back to raw UUID display.
+
 **Execution:** One fresh Sonnet builder, isolated worktree, no parallel feature builders.
 
 **Files:**
@@ -136,6 +138,8 @@ export interface HomeAgent {
   provider: ProviderDescriptor
   workspaceId?: string
   projectId?: string
+  projectLabel: string
+  workspaceLabel: string
   task: string
   state: HomeAgentState
   observedAt: number
@@ -242,6 +246,7 @@ export function useHomeSnapshot(): HomeSnapshot
 
 - Extend `AppUiState` with `homeLastPage: HomePageId`; use `UI_STATE_DEFAULTS.homeLastPage === 'overview'`.
 - `AppView` is the canonical replacement for `MainContent`'s exported `View`: define it once in `home.types.ts`, import it into `MainContent.tsx`, `Dashboard.tsx`, and `dashboard.helpers.ts`, and remove the old exported `View` union rather than retaining an alias.
+- `HomeAgent.projectLabel` and `HomeAgent.workspaceLabel` are required human display text from the authoritative project/workspace records. `projectId` and `workspaceId` remain optional navigation identities and must never be rendered as label fallbacks.
 - `INTERFACES.md` records these exact names, ownership, allowed dependency direction, navigation callbacks, facade snapshot shape, and the “no builder changes an interface without stopping and re-planning” gate.
 
 - [ ] **Step 1: Capture the current compatibility baseline**
@@ -614,7 +619,7 @@ Show only filters represented in the current queue plus All. No disabled decorat
 
 - [ ] **Step 4: Implement provider-neutral live rows and summaries**
 
-Display Claude provider, project/workspace, task, working/waiting/ready, and relative activity label. Label coarse timestamps as last activity, not precise run duration.
+Display Claude provider, human `projectLabel`/`workspaceLabel`, task, working/waiting/ready, and relative activity label. Treat `projectId`/`workspaceId` only as navigation identities; never display raw UUIDs when a label is absent. The facade adapter must populate both required labels from the authoritative `LiveAgentRow.projectName` and `LiveAgentRow.agentName` fields. Label coarse timestamps as last activity, not precise run duration.
 
 - [ ] **Step 5: Route through existing workspace selection**
 
