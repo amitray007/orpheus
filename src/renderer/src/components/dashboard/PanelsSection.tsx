@@ -577,19 +577,13 @@ function PanelRow({
 // ---------------------------------------------------------------------------
 
 interface PanelsSectionProps {
-  /**
-   * Mirrors Sidebar's ProjectsSection `collapsed` prop (Sidebar.tsx) so the
-   * two secondary-sidebar surfaces (Projects / Panes) stay structurally
-   * identical when the sidebar is collapsed — see Dashboard.tsx's
-   * `secondaryColumn` computation. When true, renders nothing (an empty
-   * w-14 rail), matching the lowest-risk parity fix: both asides mount at
-   * the same width in the collapsed state, just Panes has no collapsed
-   * icon-rail UI yet (unlike Projects' CollapsedProjectList).
-   */
+  /** Retained for the shared sidebar shell call site. The tree stays mounted
+   * while collapsed so switching surfaces never discards its local state. */
   collapsed?: boolean
 }
 
-export function PanelsSection({ collapsed = false }: PanelsSectionProps): React.JSX.Element {
+export function PanelsSection(_props: PanelsSectionProps): React.JSX.Element {
+  void _props
   const [panels, setPanels] = useState<PanePanel[]>([])
   const [layoutsByPanel, setLayoutsByPanel] = useState<Map<string, PaneLayout[]>>(new Map())
   const [expandedPanelIds, setExpandedPanelIds] = useState<Set<string>>(new Set())
@@ -807,13 +801,6 @@ export function PanelsSection({ collapsed = false }: PanelsSectionProps): React.
       <Plus size={14} weight="bold" />
     </button>
   )
-
-  if (collapsed) {
-    // Empty w-14 rail — Panes has no collapsed icon-rail UI yet (unlike
-    // Projects' CollapsedProjectList). Matching width/mount is what stops
-    // the Projects<->Panes layout shift; content parity is a follow-up.
-    return <div className="mt-2 flex flex-col gap-0.5 flex-1 min-h-0" />
-  }
 
   return (
     <div className="mt-2 flex flex-col gap-0.5 flex-1 min-h-0">

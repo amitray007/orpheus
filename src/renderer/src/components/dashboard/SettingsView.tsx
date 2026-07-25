@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import type { Icon } from '@phosphor-icons/react'
 import {
@@ -199,6 +199,8 @@ interface SectionGroup {
   sections: SectionDef[]
 }
 
+const SETTINGS_SCROLL_EVENT = 'orpheus:settings-scroll'
+
 const GROUPS: SectionGroup[] = [
   {
     label: 'Orpheus',
@@ -345,54 +347,54 @@ const GROUPS: SectionGroup[] = [
 ]
 
 // ---------------------------------------------------------------------------
-// SettingsView — two-pane shell: internal nav + section content
+// SettingsView — section content; navigation lives in the shared sidebar shell
 // ---------------------------------------------------------------------------
 
-export function SettingsView({ section }: { section?: SectionId }): React.JSX.Element {
-  // Default to Orpheus → General (the first section in the first group), unless a
-  // deep-link target section was supplied (e.g. opening directly on Updates).
-  const [activeId, setActiveId] = useState<SectionId>(section ?? 'orpheus-appearance')
-  const [query, setQuery] = useState('')
+interface SettingsViewProps {
+  section?: SectionId
+  activeId?: SectionId
+  onActiveIdChange?: (id: SectionId) => void
+}
+
+export function SettingsView({
+  section,
+  activeId: controlledActiveId,
+  onActiveIdChange
+}: SettingsViewProps): React.JSX.Element {
+  const [localActiveId, setLocalActiveId] = useState<SectionId>(section ?? 'orpheus-appearance')
+  const activeId = controlledActiveId ?? localActiveId
   const [pendingScrollId, setPendingScrollId] = useState<string | null>(null)
-  const searchInputRef = useRef<HTMLInputElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
 
-  const allSections = GROUPS.flatMap((g) => g.sections)
-  const active = allSections.find((s) => s.id === activeId) ?? allSections[0]
+  const allSections = GROUPS.flatMap((group) => group.sections)
+  const active = allSections.find((item) => item.id === activeId) ?? allSections[0]
   const ActiveComponent = active.Component
 
-  const results = query.trim() ? searchSettings(query, SETTINGS_SEARCH_INDEX) : []
+  const setActiveId = useCallback(
+    (id: SectionId): void => {
+      if (controlledActiveId === undefined) setLocalActiveId(id)
+      onActiveIdChange?.(id)
+    },
+    [controlledActiveId, onActiveIdChange]
+  )
 
-  // Re-navigate when the deep-link target changes (e.g. the sidebar update
-  // control is clicked again while Settings is already open). Mirroring the
-  // incoming prop into local nav state is the intended behavior here.
   /* eslint-disable react-hooks/set-state-in-effect -- deep-link prop mirrored into local nav state */
   useEffect(() => {
     if (section) setActiveId(section)
-  }, [section])
+  }, [section, setActiveId])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
-    function onKeyDown(e: KeyboardEvent): void {
-      const isMac = navigator.platform.toUpperCase().includes('MAC')
-      const mod = isMac ? e.metaKey : e.ctrlKey
-      if (mod && e.key === 'f') {
-        e.preventDefault()
-        searchInputRef.current?.focus()
-      }
-      if (e.key === 'Escape' && document.activeElement === searchInputRef.current) {
-        setQuery('')
-        searchInputRef.current?.blur()
-      }
+    function handleSettingsScroll(event: Event): void {
+      setPendingScrollId((event as CustomEvent<string>).detail)
     }
-    window.addEventListener('keydown', onKeyDown, true)
-    return () => window.removeEventListener('keydown', onKeyDown, true)
+    window.addEventListener(SETTINGS_SCROLL_EVENT, handleSettingsScroll)
+    return () => window.removeEventListener(SETTINGS_SCROLL_EVENT, handleSettingsScroll)
   }, [])
 
   useEffect(() => {
     if (!pendingScrollId) return
     let flashTimer: ReturnType<typeof setTimeout> | null = null
-    // Defer until after the new section has rendered into the DOM
     const raf = requestAnimationFrame(() => {
       const el = document.getElementById(pendingScrollId)
       if (!el) {
@@ -412,57 +414,99 @@ export function SettingsView({ section }: { section?: SectionId }): React.JSX.El
     }
   }, [pendingScrollId, activeId])
 
-  function selectResult(result: SettingsSearchResult): void {
+  return (
+    <div ref={contentRef} className="h-full overflow-y-auto px-8 py-6 min-w-0">
+      <Suspense fallback={<SectionLoader />}>
+        <ActiveComponent />
+      </Suspense>
+    </div>
+  )
+}
+
+export interface SettingsNavigationProps {
+  activeId: SectionId
+  collapsed: boolean
+  query: string
+  onQueryChange: (query: string) => void
+  onSelect: (id: SectionId, input: 'pointer' | 'keyboard') => void
+}
+
+export function SettingsNavigation({
+  activeId,
+  collapsed,
+  query,
+  onQueryChange,
+  onSelect
+}: SettingsNavigationProps): React.JSX.Element {
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const results = query.trim() ? searchSettings(query, SETTINGS_SEARCH_INDEX) : []
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      const isMac = navigator.platform.toUpperCase().includes('MAC')
+      if ((isMac ? event.metaKey : event.ctrlKey) && event.key === 'f') {
+        event.preventDefault()
+        searchInputRef.current?.focus()
+      }
+      if (event.key === 'Escape' && document.activeElement === searchInputRef.current) {
+        onQueryChange('')
+        searchInputRef.current?.blur()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [onQueryChange])
+
+  function selectResult(result: SettingsSearchResult, input: 'pointer' | 'keyboard'): void {
     const slug = result.entry.label
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '')
-    const domId = `setting-${slug}`
-    setActiveId(result.entry.sectionId)
-    setQuery('')
-    setPendingScrollId(domId)
+    window.dispatchEvent(
+      new CustomEvent<string>(SETTINGS_SCROLL_EVENT, { detail: `setting-${slug}` })
+    )
+    onQueryChange('')
+    onSelect(result.entry.sectionId, input)
+  }
+
+  if (collapsed) {
+    return (
+      <div className="flex flex-col items-center gap-2 pt-3 text-text-muted">
+        <MagnifyingGlass size={18} aria-hidden="true" />
+        <span className="sr-only">Expand the sidebar to browse Settings</span>
+      </div>
+    )
   }
 
   return (
-    <div className="flex h-full">
-      <nav
-        className="w-56 flex-shrink-0 bg-surface-raised border-r border-border-default py-6 overflow-y-auto"
-        aria-label="Settings sections"
-      >
-        <h1 className="text-base font-semibold text-text-primary px-3 mb-3">Settings</h1>
-
-        {/* Search input */}
-        <div className="px-3 mb-4">
-          <div className="relative">
-            <MagnifyingGlass
-              size={13}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
-            />
-            <input
-              ref={searchInputRef}
-              type="text"
-              aria-label="Search settings"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search settings…"
-              className="w-full pl-7 pr-3 py-1.5 text-xs bg-surface-overlay border border-border-default rounded-md text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors cursor-text"
-            />
-          </div>
+    <nav
+      className="flex flex-col flex-1 min-h-0 py-6 overflow-y-auto"
+      aria-label="Settings sections"
+    >
+      <h1 className="text-base font-semibold text-text-primary px-3 mb-3">Settings</h1>
+      <div className="px-3 mb-4">
+        <div className="relative">
+          <MagnifyingGlass
+            size={13}
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+          />
+          <input
+            ref={searchInputRef}
+            type="text"
+            aria-label="Search settings"
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+            placeholder="Search settings…"
+            className="w-full pl-7 pr-3 py-1.5 text-xs bg-surface-overlay border border-border-default rounded-md text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors cursor-text"
+          />
         </div>
-
-        {query.trim() ? (
-          <SearchResults results={results} query={query} onSelect={selectResult} />
-        ) : (
-          <GroupedNav groups={GROUPS} activeId={activeId} onSelect={setActiveId} />
-        )}
-      </nav>
-
-      <div ref={contentRef} className="flex-1 overflow-y-auto px-8 py-6 min-w-0">
-        <Suspense fallback={<SectionLoader />}>
-          <ActiveComponent />
-        </Suspense>
       </div>
-    </div>
+      {query.trim() ? (
+        <SearchResults results={results} query={query} onSelect={selectResult} />
+      ) : (
+        <GroupedNav groups={GROUPS} activeId={activeId} onSelect={onSelect} />
+      )}
+    </nav>
   )
 }
 
@@ -487,7 +531,7 @@ function HighlightedLabel({ label, query }: { label: string; query: string }): R
 function SearchResults(props: {
   results: SettingsSearchResult[]
   query: string
-  onSelect: (r: SettingsSearchResult) => void
+  onSelect: (result: SettingsSearchResult, input: 'pointer' | 'keyboard') => void
 }): React.JSX.Element {
   if (props.results.length === 0) {
     return (
@@ -507,7 +551,12 @@ function SearchResults(props: {
           <button
             type="button"
             key={key}
-            onClick={() => props.onSelect(r)}
+            onClick={() => props.onSelect(r, 'pointer')}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return
+              event.preventDefault()
+              props.onSelect(r, 'keyboard')
+            }}
             className="w-full flex flex-col gap-0.5 px-3 py-2 text-left transition-colors duration-150 cursor-pointer hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40"
           >
             <span className="text-xs text-text-muted leading-none">
@@ -535,7 +584,7 @@ function SearchResults(props: {
 function GroupedNav(props: {
   groups: SectionGroup[]
   activeId: SectionId
-  onSelect: (id: SectionId) => void
+  onSelect: (id: SectionId, input: 'pointer' | 'keyboard') => void
 }): React.JSX.Element {
   return (
     <div className="flex flex-col gap-0.5">
@@ -555,7 +604,12 @@ function GroupedNav(props: {
               <button
                 type="button"
                 key={s.id}
-                onClick={() => props.onSelect(s.id)}
+                onClick={() => props.onSelect(s.id, 'pointer')}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return
+                  event.preventDefault()
+                  props.onSelect(s.id, 'keyboard')
+                }}
                 aria-current={isActive ? 'page' : undefined}
                 className={[
                   'w-full flex items-center gap-2.5 px-3 py-2 text-sm transition-colors duration-150 cursor-pointer',

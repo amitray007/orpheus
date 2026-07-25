@@ -22,6 +22,7 @@ import type { ContextMenuItem } from '../ContextMenu'
 import { ActivityIndicator } from './ActivityIndicator'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import { SidebarBoundsContext, useSidebarBounds } from './SidebarBoundsContext'
+import { SurfaceSidebarShell } from './sidebar/SurfaceSidebarShell'
 import { useWorkspaceActivity, useActiveIdsKey, getActivitySnapshot } from '@/lib/activityStore'
 import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
@@ -1480,6 +1481,7 @@ interface SidebarProps {
   // Sidebar behavior preferences (v12)
   workspaceCountInline: boolean
   sidebarWidth: number // px, expanded state only
+  footer: React.ReactNode
   // Privacy (v37)
   fetchGithubAvatars: boolean
   /** Global privacy-mode toggle (View menu / Settings → Privacy). Redacts classified projects when on. */
@@ -1524,6 +1526,7 @@ export function Sidebar({
   workspacesByProject,
   workspaceCountInline,
   sidebarWidth,
+  footer,
   fetchGithubAvatars,
   privacyMode,
   peeks,
@@ -1835,23 +1838,16 @@ export function Sidebar({
 
   return (
     <SidebarBoundsContext.Provider value={sidebarRef}>
-      <aside
+      <SurfaceSidebarShell
         ref={sidebarRef}
-        className={[
-          collapsed ? 'w-14' : '',
-          'transition-[width] duration-150 ease-out',
-          'bg-surface-raised border-r border-border-default',
-          'flex flex-col overflow-hidden shrink-0 h-full'
-        ].join(' ')}
-        style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
+        surface="projects"
+        collapsed={collapsed}
+        width={sidebarWidth}
+        ariaLabel="Projects"
+        footer={footer}
       >
-        {/* Sidebar is now Projects-only — the top-level surface switch lives
-            in ActivityRail, and Panes' own tree (PanelsSection) is rendered
-            by Dashboard.tsx's shell instead of swapping in here. Pinned
-            workspaces render as the first rows inside ProjectsSection, right
-            below the "Projects" heading, so the heading itself always lands
-            at the same fixed top offset as Panes' heading — pinning never
-            shifts the layout. */}
+        {/* The project tree keeps its existing behavior; the shell only owns
+            shared geometry and the persistent surface footer. */}
         <ProjectsSection
           collapsed={collapsed}
           pinnedItems={visiblePinnedItems}
@@ -1911,7 +1907,7 @@ export function Sidebar({
           onHideProject={onHideProject}
           onRevealProject={onRevealProject}
         />
-      </aside>
+      </SurfaceSidebarShell>
     </SidebarBoundsContext.Provider>
   )
 }

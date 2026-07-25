@@ -43,13 +43,11 @@ export function mainContainerClassName(viewKind: AppView['kind']): string {
 }
 
 // ---------------------------------------------------------------------------
-// Activity rail / surface helpers
+// Surface helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Map the current view to the top-level surface the ActivityRail highlights.
- * Returns null while in Settings — the rail has no active icon in that case
- * (Settings is a bottom button, not one of the three top surfaces).
+ * Map the current view to the shared sidebar surface.
  */
 export function deriveSurface(viewKind: AppView['kind']): SurfaceId {
   if (viewKind === 'panes') return 'panes'

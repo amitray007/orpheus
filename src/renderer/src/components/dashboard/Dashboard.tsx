@@ -5,9 +5,12 @@ import { DIAG_EVENTS } from '@shared/diagEvents'
 import { Sidebar as SidebarBase } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent as MainContentBase } from './MainContent'
-import type { AppView, SurfaceId } from './home/home.types'
-import { ActivityRail } from './ActivityRail'
+import type { AppView, NavigateSurface, SurfaceId } from './home/home.types'
 import { PanelsSection } from './PanelsSection'
+import { SettingsNavigation, SettingsView } from './SettingsView'
+import type { SectionId } from './SettingsView'
+import { SurfaceFooter } from './sidebar/SurfaceFooter'
+import { SurfaceSidebarShell } from './sidebar/SurfaceSidebarShell'
 import { showConfirmModalReact } from '@/lib/overlayClient'
 import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/activityStore'
 import { setAuthoritativeActiveWorkspace, getActiveRemount } from '@/lib/freezeWatchdog'
@@ -97,6 +100,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   // View routing
   const [view, setView] = useState<AppView>({ kind: 'panes' })
+  const [settingsActiveId, setSettingsActiveId] = useState<SectionId>('orpheus-appearance')
+  const [settingsQuery, setSettingsQuery] = useState('')
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
 
@@ -811,6 +816,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   }, [uiState, projects, handleSelectWorkspace, handleSelectProject])
 
   const handleSelectSettings = useCallback((): void => {
+    setSettingsActiveId('orpheus-appearance')
+    setSettingsQuery('')
     setView({ kind: 'settings' })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
@@ -819,6 +826,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   }, [])
 
   const handleOpenUpdates = useCallback((): void => {
+    setSettingsActiveId('orpheus-updates')
+    setSettingsQuery('')
     setView({ kind: 'settings', section: 'orpheus-updates' })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
@@ -826,7 +835,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
   }, [])
 
-  // Switches the top-level surface wired from ActivityRail.
+  // Switches the top-level surface from the shared sidebar footer.
   const handleSelectSurface = useCallback(
     (surface: SurfaceId): void => {
       if (surface === 'settings') {
@@ -855,6 +864,19 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     },
     [handleSelectSettings, restoreLastProjectsLocation, uiState?.homeLastPage]
   )
+
+  const handleNavigateSurface = useCallback<NavigateSurface>(
+    (request) => {
+      handleSelectSurface(request.surface)
+    },
+    [handleSelectSurface]
+  )
+
+  const handleSelectSettingsSection = useCallback((id: SectionId): void => {
+    setSettingsActiveId(id)
+    setSettingsQuery('')
+    setView({ kind: 'settings', section: id })
+  }, [])
 
   // ---------------------------------------------------------------------------
   // Effects that use the above callbacks — must come after
@@ -1740,33 +1762,74 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // included, to drive the "Hidden projects" unhide list).
   const sidebarProjects = useMemo(() => projects.filter((p) => !p.hidden), [projects])
 
-  // Which top-level surface ActivityRail highlights, and which secondary
-  // sidebar column (if any) renders to its right. null while in Settings —
-  // Sidebar (Projects) is still shown behind Settings so the tree stays
-  // visible/navigable while the settings panel is open.
   const surface = deriveSurface(view.kind)
   const resolvedSidebarWidth = uiState?.sidebarWidth ?? UI_STATE_DEFAULTS.sidebarWidth
-  let secondaryColumn: React.JSX.Element | null = null
+  const surfaceFooter = (
+    <SurfaceFooter
+      activeSurface={surface}
+      collapsed={sidebarCollapsed}
+      updateAvailable={updateAvailable}
+      updateLatest={updateLatest}
+      onNavigate={handleNavigateSurface}
+      onOpenUpdates={() => handleOpenUpdates()}
+    />
+  )
+
+  let secondaryColumn: React.JSX.Element
   if (surface === 'panes') {
-    // Structural parity with the Projects <Sidebar> aside (Sidebar.tsx
-    // ~1463-1472) is deliberate: both asides must share the exact same
-    // non-width classes and collapsed mechanism (mounted at w-14 rather
-    // than unmounted) so switching Projects<->Panes never shifts the
-    // layout — see the "Sidebar shifts when switching surfaces" fix.
     secondaryColumn = (
-      <aside
-        className={[
-          sidebarCollapsed ? 'w-14' : '',
-          'transition-[width] duration-150 ease-out',
-          'bg-surface-raised border-r border-border-default',
-          'flex flex-col overflow-hidden shrink-0 h-full'
-        ].join(' ')}
-        style={sidebarCollapsed ? undefined : { width: resolvedSidebarWidth + 'px' }}
+      <SurfaceSidebarShell
+        surface="panes"
+        collapsed={sidebarCollapsed}
+        width={resolvedSidebarWidth}
+        ariaLabel="Panes"
+        footer={surfaceFooter}
       >
         <PanelsSection collapsed={sidebarCollapsed} />
-      </aside>
+      </SurfaceSidebarShell>
     )
-  } else if (surface !== 'home') {
+  } else if (surface === 'settings') {
+    secondaryColumn = (
+      <SurfaceSidebarShell
+        surface="settings"
+        collapsed={sidebarCollapsed}
+        width={resolvedSidebarWidth}
+        ariaLabel="Settings navigation"
+        footer={surfaceFooter}
+      >
+        {sidebarCollapsed && (
+          <button
+            type="button"
+            onClick={handleToggleSidebarCollapsed}
+            className="m-2 h-9 px-2 text-xs text-text-secondary rounded-md hover:text-text-primary hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          >
+            Expand
+          </button>
+        )}
+        <SettingsNavigation
+          activeId={
+            view.kind === 'settings' ? (view.section ?? settingsActiveId) : settingsActiveId
+          }
+          collapsed={sidebarCollapsed}
+          query={settingsQuery}
+          onQueryChange={setSettingsQuery}
+          onSelect={(id) => handleSelectSettingsSection(id)}
+        />
+      </SurfaceSidebarShell>
+    )
+  } else if (surface === 'home') {
+    secondaryColumn = (
+      <SurfaceSidebarShell
+        surface="home"
+        collapsed={sidebarCollapsed}
+        width={resolvedSidebarWidth}
+        ariaLabel="Home navigation"
+        footer={surfaceFooter}
+      >
+        <div className="flex-1" />
+      </SurfaceSidebarShell>
+    )
+  } else {
     secondaryColumn = (
       <Sidebar
         collapsed={sidebarCollapsed}
@@ -1780,6 +1843,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         workspacesByProject={workspacesByProject}
         workspaceCountInline={uiState?.workspaceCountInline ?? true}
         sidebarWidth={resolvedSidebarWidth}
+        footer={surfaceFooter}
         fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
         privacyMode={privacyMode}
         peeks={peeks}
@@ -1816,16 +1880,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       />
 
       <div className="flex flex-1 min-h-0">
-        <ActivityRail
-          activeSurface={surface}
-          settingsActive={view.kind === 'settings'}
-          updateAvailable={updateAvailable}
-          updateLatest={updateLatest}
-          onSelectSurface={handleSelectSurface}
-          onSelectSettings={handleSelectSettings}
-          onOpenUpdates={handleOpenUpdates}
-        />
-
         {secondaryColumn}
 
         <main
@@ -1839,27 +1893,37 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             mainContainerClassName(view.kind)
           }
         >
-          <MainContent
-            view={view}
-            project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
-            workspace={activeWorkspace}
-            workspacesForProject={
-              view.kind === 'project' || view.kind === 'workspace'
-                ? (workspacesByProject[view.projectId] ?? null)
-                : null
-            }
-            onRequestRemoveProject={handleRequestRemoveProject}
-            onSelectWorkspace={handleSelectWorkspace}
-            onAddWorkspace={handleAddWorkspace}
-            onRenameWorkspace={handleRenameWorkspace}
-            onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
-            onToggleWorkspacePin={handleToggleWorkspacePin}
-            onResumedInWorkspace={handleResumedInWorkspace}
-            projects={projects}
-            allWorkspaces={allWorkspaces}
-            allSessions={allSessions}
-            fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
-          />
+          {view.kind === 'settings' ? (
+            <SettingsView
+              section={view.section}
+              activeId={
+                view.kind === 'settings' ? (view.section ?? settingsActiveId) : settingsActiveId
+              }
+              onActiveIdChange={handleSelectSettingsSection}
+            />
+          ) : (
+            <MainContent
+              view={view}
+              project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
+              workspace={activeWorkspace}
+              workspacesForProject={
+                view.kind === 'project' || view.kind === 'workspace'
+                  ? (workspacesByProject[view.projectId] ?? null)
+                  : null
+              }
+              onRequestRemoveProject={handleRequestRemoveProject}
+              onSelectWorkspace={handleSelectWorkspace}
+              onAddWorkspace={handleAddWorkspace}
+              onRenameWorkspace={handleRenameWorkspace}
+              onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
+              onToggleWorkspacePin={handleToggleWorkspacePin}
+              onResumedInWorkspace={handleResumedInWorkspace}
+              projects={projects}
+              allWorkspaces={allWorkspaces}
+              allSessions={allSessions}
+              fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
+            />
+          )}
         </main>
       </div>
     </div>
