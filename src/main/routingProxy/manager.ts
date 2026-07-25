@@ -459,6 +459,7 @@ const exitedCandidatePids = new Set<number>()
 // mutate state while it still owns that generation.
 const lifecycleCoordinator = new RoutingProxyLifecycleCoordinator()
 const activeStartingCandidatePids = new Set<number>()
+const candidateGenerationByPid = new Map<number, number>()
 
 function nextLifecycleGeneration(): number {
   return lifecycleCoordinator.beginIntent()
@@ -837,6 +838,19 @@ export async function forceRefreshCliProxyModelCache(): Promise<RoutingProxyMain
   }
 }
 
+async function cleanupSupersededCandidate(
+  attempt: RoutingProxySpawnAttempt,
+  port: number,
+  inspect: ReturnType<typeof defaultListenerInspectionDeps>
+): Promise<StartCandidateResult> {
+  expectedCandidateTerminationPids.add(attempt.pid)
+  const released = await waitForFailedCandidateRelease(attempt, port, inspect)
+  if (currentSpawnAttempt === attempt) currentSpawnAttempt = null
+  return released
+    ? { ok: false, reason: START_SUPERSEDED }
+    : { ok: false, reason: `failed candidate ${attempt.pid} did not release port ${port}` }
+}
+
 async function waitForFailedCandidateRelease(
   attempt: RoutingProxySpawnAttempt,
   port: number,
@@ -862,6 +876,16 @@ function handleCandidateExit(
   code: number | null,
   signal: NodeJS.Signals | null
 ): void {
+  const generation = candidateGenerationByPid.get(attempt.pid)
+  candidateGenerationByPid.delete(attempt.pid)
+  const stale = generation !== undefined && !ownsLifecycleGeneration(generation)
+  if (stale) {
+    if (currentSpawnAttempt?.pid === attempt.pid) currentSpawnAttempt = null
+    activeStartingCandidatePids.delete(attempt.pid)
+    expectedCandidateTerminationPids.delete(attempt.pid)
+    exitedCandidatePids.add(attempt.pid)
+    return
+  }
   if (authRefreshTimer) {
     clearInterval(authRefreshTimer)
     authRefreshTimer = null
@@ -938,13 +962,16 @@ async function startCandidate(
     }
   })
   currentSpawnAttempt = attempt
+  candidateGenerationByPid.set(attempt.pid, generation)
   // Claim the PID before the first await: a fast bind/exit belongs to this
   // allocator candidate, never to the supervisor's independent respawn path.
   activeStartingCandidatePids.add(attempt.pid)
   const readiness = await waitForManagedRoutingProxyReady(runtime, attempt)
   if (!readiness.healthy) {
     activeStartingCandidatePids.delete(attempt.pid)
-    if (!ownsLifecycleGeneration(generation)) return { ok: false, reason: START_SUPERSEDED }
+    if (!ownsLifecycleGeneration(generation)) {
+      return cleanupSupersededCandidate(attempt, endpoint.port, inspect)
+    }
     if (currentSpawnAttempt !== attempt) {
       if (exitedCandidatePids.delete(attempt.pid)) return { ok: false, reason: readiness.reason }
       return { ok: false, reason: START_SUPERSEDED }
@@ -962,10 +989,10 @@ async function startCandidate(
     return { ok: false, reason: readiness.reason }
   }
   activeStartingCandidatePids.delete(attempt.pid)
-  if (
-    !ownsLifecycleGeneration(generation) ||
-    !canPublishManagedRoutingProxyRunning(currentSpawnAttempt, attempt, readiness)
-  ) {
+  if (!ownsLifecycleGeneration(generation)) {
+    return cleanupSupersededCandidate(attempt, endpoint.port, inspect)
+  }
+  if (!canPublishManagedRoutingProxyRunning(currentSpawnAttempt, attempt, readiness)) {
     return { ok: false, reason: START_SUPERSEDED }
   }
   return { ok: true, effectivePort: endpoint.port }

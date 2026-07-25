@@ -307,7 +307,10 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
   const operationA = coordinator.run(generationA, async () => {
     effects.push('A:config-start')
     await pausedA
-    if (!coordinator.owns(generationA)) return START_SUPERSEDED
+    if (!coordinator.owns(generationA)) {
+      effects.push('A:cleanup')
+      return START_SUPERSEDED
+    }
     effects.push('A:spawn')
     return 'A'
   })
@@ -322,7 +325,7 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
   releaseA()
   assert.equal(await operationA, START_SUPERSEDED)
   assert.equal(await operationB, 'B')
-  assert.deepEqual(effects, ['A:config-start', 'B:config', 'B:spawn', 'B:publish'])
+  assert.deepEqual(effects, ['A:config-start', 'A:cleanup', 'B:config', 'B:spawn', 'B:publish'])
   console.log('✓ lifecycle coordinator serializes superseded config/spawn/publication effects')
 }
 
