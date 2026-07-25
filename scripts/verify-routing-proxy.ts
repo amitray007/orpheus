@@ -1026,6 +1026,16 @@ async function cleanup(): Promise<void> {
     false,
     'the config flag and its exact following token are required'
   )
+  const literalBackslashConfig = config.replace('routing-proxy', 'routing\\proxy')
+  assert.equal(
+    isSameVariantRoutingProxy(
+      { pid: 47, executablePath: binary, argv: null },
+      binary,
+      literalBackslashConfig
+    ),
+    false,
+    'a command line containing a literal backslash is uninspectable, never ownership proof'
+  )
 
   function makeInspectionDeps(listenersByCall: ListeningProcess[][]): {
     deps: ListenerInspectionDeps
@@ -1061,6 +1071,17 @@ async function cleanup(): Promise<void> {
     assert.equal(result.reclaimed, false)
     assert.deepEqual(killedPids, [])
     assert.match(result.reason ?? '', /no proven same-variant listener/)
+  }
+
+  // `ps command=` cannot safely distinguish a literal backslash from display
+  // escaping. Its argv evidence is null, so it cannot be reclaimed even if
+  // the expected config itself contains that literal character.
+  {
+    const ambiguous: ListeningProcess = { pid: 47, executablePath: binary, argv: null }
+    const { deps, killedPids } = makeInspectionDeps([[ambiguous]])
+    const result = await reclaimProvenOrphan(18766, binary, literalBackslashConfig, deps)
+    assert.equal(result.reclaimed, false)
+    assert.deepEqual(killedPids, [])
   }
 
   // Multiple listeners do not widen ownership: signal only the exact matching

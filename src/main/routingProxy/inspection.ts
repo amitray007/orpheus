@@ -27,16 +27,12 @@ function parseListenerPids(output: string): number[] {
 }
 
 function parseCommandLine(command: string): string[] | null {
-  const argv: string[] = []
-  const tokenPattern = /(?:[^\s'"\\]|\\.|'(?:[^']*)'|"(?:[^"\\]|\\.)*")+/g
-  const tokens = command.match(tokenPattern)
-  if (!tokens) return null
-
-  for (const token of tokens) {
-    if (token.includes("'") || token.includes('"')) return null
-    argv.push(token.replace(/\\(.)/g, '$1'))
-  }
-  return argv
+  // `ps command=` displays a process command line; it is not an argv API.
+  // Backslashes and quoting are ambiguous display syntax, so leave such
+  // commands uninspectable rather than normalizing them into false proof.
+  if (command.includes('\\') || command.includes("'") || command.includes('"')) return null
+  const tokens = command.split(/\s+/).filter(Boolean)
+  return tokens.length > 0 ? tokens : null
 }
 
 async function inspectListener(pid: number): Promise<ListeningProcess> {
