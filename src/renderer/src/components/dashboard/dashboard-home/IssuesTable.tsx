@@ -1,79 +1,51 @@
-// ---------------------------------------------------------------------------
-// IssuesTable — the "Issues assigned" card (Dashboard Phase 2, U5). Renders
-// REAL account-wide open issues from `useGithubData` (backed by `gh search
-// issues --assignee @me`), ordered by updatedAt desc.
-//
-// TWO-LINE rows, mockup's `.l2row` pattern:
-//   Line 1: title (truncates).
-//   Line 2: repo (mono muted, truncates, flex:0 1 auto) · ONE label chip,
-//     PINNED right (shrink-0) — the PRIMARY/first label only
-//     (`issue.labels[0]`), never the full label set: the mockup explicitly
-//     shows a single chip per row, and an issue with 5+ labels would
-//     otherwise blow the line-2 row out or force a second wrap. Rendered
-//     with the ACTUAL GitHub label color (`GhLabel.color`, hex with no
-//     leading '#') — the ONE place in this table a real external color is
-//     allowed per the THEME RULE; everything else uses Orpheus tokens.
-// Row click opens the issue's GitHub url via `window.api.shell.openExternal`.
-//
-// V4 — a subtle GithubLogo sits before the "Issues assigned" card title
-// (DashboardCard's `title` widened to ReactNode to allow it); a tasteful
-// inline mark, not loud.
-//
-// V1 REBUILD — overflow hardening: table-layout:fixed with explicit widths
-// on every column but Title, matching PrTable's hardening. Counts run
-// through formatCompact.
-// ---------------------------------------------------------------------------
-
 import { useState } from 'react'
 import { GithubLogo } from '@phosphor-icons/react'
+import type { GhSearchIssue } from '@shared/types'
 import { DashboardCard } from './DashboardCard'
 import { TablePager } from './TablePager'
 import { TableRowsSkeleton } from './DashboardSkeletons'
 import { useGithubData } from './useGithubData'
 import { formatCompact, formatCompactAge } from './dashboardHome.helpers'
 
-// Issues paginate 10/page (exact size from the design spec) — keeps the
-// card a fixed height instead of dumping every assigned issue in one table.
 const ISSUE_PAGE_SIZE = 10
 
-function EmptyState({ hint }: { hint: boolean }): React.JSX.Element {
+function EmptyState({ unavailable }: { unavailable: boolean }): React.JSX.Element {
   return (
     <div className="flex flex-col items-center justify-center gap-1 py-10 text-center">
-      <div className="text-[12.5px] font-medium text-text-primary">No assigned issues</div>
-      {hint ? (
-        <div className="text-[11px] text-text-muted">
-          GitHub unavailable — check that `gh` is installed and authenticated.
-        </div>
-      ) : null}
+      <div className="text-[12.5px] font-medium text-text-primary">
+        {unavailable ? 'GitHub is unavailable' : 'No assigned issues'}
+      </div>
+      <div className="text-[11px] text-text-muted">
+        {unavailable ? 'Check that gh is installed and authenticated, then retry.' : 'Nothing is assigned to you.'}
+      </div>
     </div>
   )
 }
 
-export function IssuesTable(): React.JSX.Element {
-  const { loading, issues, openIssueCount, possiblyUnavailable } = useGithubData()
+export interface IssuesTableContentProps {
+  loading: boolean
+  issues: GhSearchIssue[]
+  unavailable?: boolean
+  meta?: string
+  title?: React.ReactNode
+}
+
+/** Snapshot-fed table used by the home GitHub page without mounting its own data hook. */
+export function IssuesTableContent({
+  loading,
+  issues,
+  unavailable = false,
+  meta = `${formatCompact(issues.length)} assigned · by updated`,
+  title = 'Issues assigned'
+}: IssuesTableContentProps): React.JSX.Element {
   const [requestedPage, setPage] = useState(0)
-
   const pageCount = Math.max(1, Math.ceil(issues.length / ISSUE_PAGE_SIZE))
-  // Background refreshes can shrink the row count under the current page —
-  // clamp during render rather than storing out-of-range state and
-  // correcting it in an effect (avoids the extra cascading render an
-  // effect-driven setState would cause).
   const page = Math.min(requestedPage, pageCount - 1)
-
   const pagedIssues = issues.slice(page * ISSUE_PAGE_SIZE, page * ISSUE_PAGE_SIZE + ISSUE_PAGE_SIZE)
-
-  const meta = loading ? 'loading…' : `${formatCompact(openIssueCount)} · by updated`
 
   function openIssue(url: string): void {
     void window.api.shell.openExternal(url)
   }
-
-  const title = (
-    <span className="inline-flex items-center gap-1.5">
-      <GithubLogo size={14} weight="fill" className="text-text-muted" aria-hidden="true" />
-      Issues assigned
-    </span>
-  )
 
   if (loading && issues.length === 0) {
     return (
@@ -86,7 +58,7 @@ export function IssuesTable(): React.JSX.Element {
   return (
     <DashboardCard title={title} meta={meta}>
       {issues.length === 0 ? (
-        <EmptyState hint={possiblyUnavailable} />
+        <EmptyState unavailable={unavailable} />
       ) : (
         <div className="-mx-1 flex flex-1 flex-col overflow-x-auto">
           <table className="w-full table-fixed border-collapse text-xs">
@@ -110,9 +82,6 @@ export function IssuesTable(): React.JSX.Element {
             </thead>
             <tbody>
               {pagedIssues.map((issue) => {
-                // Primary/first label only — never the full label set (see
-                // header comment). Undefined when an issue has no labels,
-                // which the line-2 row below tolerates (repo alone).
                 const primaryLabel = issue.labels[0]
                 return (
                   <tr
@@ -133,12 +102,6 @@ export function IssuesTable(): React.JSX.Element {
                           <span
                             className="inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 font-mono text-[9.5px] whitespace-nowrap"
                             style={{
-                              // The ONE place a real external (non-token) color
-                              // is allowed — GitHub's own label color, per the
-                              // THEME RULE. `--lc` is the raw hex; color-mix
-                              // derives the tinted bg/border from it so the
-                              // chip still reads correctly in light + dark
-                              // without a separate per-theme hex table.
                               ['--lc' as string]: `#${primaryLabel.color}`,
                               color: 'var(--lc)',
                               background: 'color-mix(in srgb, var(--lc) 14%, transparent)',
@@ -162,12 +125,34 @@ export function IssuesTable(): React.JSX.Element {
             <TablePager
               page={page + 1}
               pageCount={pageCount}
-              onPrev={() => setPage((p) => Math.max(0, p - 1))}
-              onNext={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+              onPrev={() => setPage((current) => Math.max(0, current - 1))}
+              onNext={() => setPage((current) => Math.min(pageCount - 1, current + 1))}
             />
           ) : null}
         </div>
       )}
     </DashboardCard>
+  )
+}
+
+/** Compatibility wrapper for the legacy dashboard. */
+export function IssuesTable(): React.JSX.Element {
+  const { loading, issues, openIssueCount, possiblyUnavailable } = useGithubData()
+  const title = (
+    <span className="inline-flex items-center gap-1.5">
+      <GithubLogo size={14} weight="fill" className="text-text-muted" aria-hidden="true" />
+      Issues assigned
+    </span>
+  )
+  const meta = loading ? 'loading…' : `${formatCompact(openIssueCount)} · by updated`
+
+  return (
+    <IssuesTableContent
+      loading={loading}
+      issues={issues}
+      unavailable={possiblyUnavailable}
+      meta={meta}
+      title={title}
+    />
   )
 }
