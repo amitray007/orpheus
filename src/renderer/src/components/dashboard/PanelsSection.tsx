@@ -582,8 +582,7 @@ interface PanelsSectionProps {
   collapsed?: boolean
 }
 
-export function PanelsSection(_props: PanelsSectionProps): React.JSX.Element {
-  void _props
+export function PanelsSection({ collapsed = false }: PanelsSectionProps): React.JSX.Element {
   const [panels, setPanels] = useState<PanePanel[]>([])
   const [layoutsByPanel, setLayoutsByPanel] = useState<Map<string, PaneLayout[]>>(new Map())
   const [expandedPanelIds, setExpandedPanelIds] = useState<Set<string>>(new Set())
@@ -801,6 +800,12 @@ export function PanelsSection(_props: PanelsSectionProps): React.JSX.Element {
       <Plus size={14} weight="bold" />
     </button>
   )
+
+  if (collapsed) {
+    // Keep this component mounted to preserve fetched tree state, while
+    // excluding its full-width controls from collapsed keyboard traversal.
+    return <div className="mt-2 flex flex-col gap-0.5 flex-1 min-h-0" aria-hidden="true" />
+  }
 
   return (
     <div className="mt-2 flex flex-col gap-0.5 flex-1 min-h-0">

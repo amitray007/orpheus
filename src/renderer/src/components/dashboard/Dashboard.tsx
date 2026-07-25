@@ -7,7 +7,7 @@ import { TopBar } from './TopBar'
 import { MainContent as MainContentBase } from './MainContent'
 import type { AppView, NavigateSurface, SurfaceId } from './home/home.types'
 import { PanelsSection } from './PanelsSection'
-import { SettingsNavigation, SettingsView } from './SettingsView'
+import { SettingsNavigation } from './SettingsView'
 import type { SectionId } from './SettingsView'
 import { SurfaceFooter } from './sidebar/SurfaceFooter'
 import { SurfaceSidebarShell } from './sidebar/SurfaceSidebarShell'
@@ -1893,37 +1893,29 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             mainContainerClassName(view.kind)
           }
         >
-          {view.kind === 'settings' ? (
-            <SettingsView
-              section={view.section}
-              activeId={
-                view.kind === 'settings' ? (view.section ?? settingsActiveId) : settingsActiveId
-              }
-              onActiveIdChange={handleSelectSettingsSection}
-            />
-          ) : (
-            <MainContent
-              view={view}
-              project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
-              workspace={activeWorkspace}
-              workspacesForProject={
-                view.kind === 'project' || view.kind === 'workspace'
-                  ? (workspacesByProject[view.projectId] ?? null)
-                  : null
-              }
-              onRequestRemoveProject={handleRequestRemoveProject}
-              onSelectWorkspace={handleSelectWorkspace}
-              onAddWorkspace={handleAddWorkspace}
-              onRenameWorkspace={handleRenameWorkspace}
-              onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
-              onToggleWorkspacePin={handleToggleWorkspacePin}
-              onResumedInWorkspace={handleResumedInWorkspace}
-              projects={projects}
-              allWorkspaces={allWorkspaces}
-              allSessions={allSessions}
-              fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
-            />
-          )}
+          <MainContent
+            view={view}
+            project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
+            workspace={activeWorkspace}
+            workspacesForProject={
+              view.kind === 'project' || view.kind === 'workspace'
+                ? (workspacesByProject[view.projectId] ?? null)
+                : null
+            }
+            onRequestRemoveProject={handleRequestRemoveProject}
+            onSelectWorkspace={handleSelectWorkspace}
+            onAddWorkspace={handleAddWorkspace}
+            onRenameWorkspace={handleRenameWorkspace}
+            onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
+            onToggleWorkspacePin={handleToggleWorkspacePin}
+            onResumedInWorkspace={handleResumedInWorkspace}
+            projects={projects}
+            allWorkspaces={allWorkspaces}
+            allSessions={allSessions}
+            fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
+            settingsActiveId={settingsActiveId}
+            onSettingsActiveIdChange={handleSelectSettingsSection}
+          />
         </main>
       </div>
     </div>

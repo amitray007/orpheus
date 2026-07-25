@@ -745,17 +745,21 @@ export function TopBar({
   sidebarCollapsed,
   sidebarWidth
 }: TopBarProps): React.JSX.Element {
-  // Keep the workspace title slot aligned to the shared surface sidebar. The
-  // collapsed width is a shared geometry token; the minimum keeps traffic-light
-  // clearance and the controls readable on narrow persisted sidebar widths.
-  const leftWidth = Math.max(MIN_LEFT_WIDTH, resolveSidebarWidth(sidebarCollapsed, sidebarWidth))
+  // The workspace title slot must start exactly where the shared sidebar ends.
+  // The traffic lights and controls still need a wider hit area, so their
+  // absolute control layer is allowed to extend over the slot without shifting it.
+  const sidebarSlotWidth = resolveSidebarWidth(sidebarCollapsed, sidebarWidth)
+  const controlsWidth = Math.max(MIN_LEFT_WIDTH, sidebarSlotWidth)
 
   return (
     <header
-      className="h-11 flex items-stretch bg-surface-raised border-b border-border-default flex-shrink-0"
+      className="relative h-11 flex items-stretch bg-surface-raised border-b border-border-default flex-shrink-0"
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
-      <div className="flex items-center flex-shrink-0" style={{ width: leftWidth }}>
+      <div
+        className="absolute inset-y-0 left-0 z-10 flex items-center"
+        style={{ width: controlsWidth }}
+      >
         {/* Traffic-light spacer — reserves exactly TRAFFIC_LIGHT_CLEARANCE (88px) for the
             macOS window buttons. Derived from geometry in src/shared/windowChrome.ts,
             not a magic number. The lights are at a fixed window position that does not
@@ -796,8 +800,12 @@ export function TopBar({
         <div className="flex-1" />
       </div>
 
-      {/* Workspace title bar gets portaled into here when in workspace view */}
-      <div id="topbar-workspace-slot" className="flex-1 flex items-center min-w-0" />
+      {/* Workspace title bar gets portaled into here when in workspace view. */}
+      <div
+        id="topbar-workspace-slot"
+        className="flex-1 flex items-center min-w-0"
+        style={{ marginLeft: sidebarSlotWidth }}
+      />
     </header>
   )
 }

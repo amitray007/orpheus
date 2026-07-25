@@ -13,6 +13,7 @@ import { useUiState } from '@/lib/uiStateStore'
 import { SessionListSkeleton } from '../Skeleton'
 import type { ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
 import type { AppView } from './home/home.types'
+import type { SectionId } from './SettingsView'
 
 const SettingsView = lazy(() => import('./SettingsView').then((m) => ({ default: m.SettingsView })))
 
@@ -216,6 +217,8 @@ interface MainContentProps {
   allSessions?: SessionRecord[]
   // Privacy (v37)
   fetchGithubAvatars?: boolean
+  settingsActiveId: SectionId
+  onSettingsActiveIdChange: (id: SectionId) => void
 }
 
 export function MainContent({
@@ -233,7 +236,9 @@ export function MainContent({
   projects,
   allWorkspaces,
   allSessions,
-  fetchGithubAvatars = true
+  fetchGithubAvatars = true,
+  settingsActiveId,
+  onSettingsActiveIdChange
 }: MainContentProps): React.JSX.Element {
   // Projects surface — optional Workspaces board (kanban), U3. showBoard is
   // the persisted setting (Settings > Navigation); viewingBoard is local,
@@ -278,11 +283,42 @@ export function MainContent({
     }
   }
 
+  function renderKeptWorkspaceViews(activeWorkspaceId: string | null): React.JSX.Element {
+    return (
+      <>
+        {renderKeptState.ids.map((id) => {
+          const keptWorkspace = renderKeptState.records.get(id)
+          if (!keptWorkspace) return null
+          const isActive = id === activeWorkspaceId
+          return (
+            <div key={id} style={isActive ? { display: 'contents' } : { display: 'none' }}>
+              <WorkspaceView
+                workspace={keptWorkspace}
+                active={isActive}
+                initialDetail={getActivitySnapshot().get(id)}
+                pr={getPrSnapshot().get(id) ?? null}
+                onSelectWorkspace={onSelectWorkspace}
+                allWorkspaces={allWorkspaces}
+              />
+            </div>
+          )
+        })}
+      </>
+    )
+  }
+
   if (view.kind === 'settings') {
     return (
-      <Suspense fallback={null}>
-        <SettingsView section={view.section} />
-      </Suspense>
+      <>
+        {renderKeptWorkspaceViews(null)}
+        <Suspense fallback={null}>
+          <SettingsView
+            section={view.section}
+            activeId={view.section ?? settingsActiveId}
+            onActiveIdChange={onSettingsActiveIdChange}
+          />
+        </Suspense>
+      </>
     )
   }
 
@@ -345,27 +381,7 @@ export function MainContent({
     // and don't report a bogus 0×0 rect to the native resize path.
     // WorkspaceView drives terminal:hide / terminal:mount via the active prop
     // and suppresses its title-bar portal when inactive.
-    return (
-      <>
-        {renderKeptState.ids.map((id) => {
-          const ws = renderKeptState.records.get(id)
-          if (!ws) return null
-          const isActive = id === activeId
-          return (
-            <div key={id} style={isActive ? { display: 'contents' } : { display: 'none' }}>
-              <WorkspaceView
-                workspace={ws}
-                active={isActive}
-                initialDetail={getActivitySnapshot().get(id)}
-                pr={getPrSnapshot().get(id) ?? null}
-                onSelectWorkspace={onSelectWorkspace}
-                allWorkspaces={allWorkspaces}
-              />
-            </div>
-          )
-        })}
-      </>
-    )
+    return renderKeptWorkspaceViews(activeId)
   }
 
   // project view
