@@ -44,8 +44,8 @@ import {
   type RoutingProxySupervisorDeps
 } from './supervisor'
 import { fetchRoutingProxyAuthFiles } from './authFiles'
-import { reclaimOrphanRoutingProxyPort, defaultOrphanReclaimDeps } from './orphan'
-import { defaultHealthCheckDeps } from './health'
+import { defaultListenerInspectionDeps, reclaimProvenOrphan } from './orphan'
+import { getRoutingProxyRuntime } from './runtime'
 import { checkRoutingProxyUpdate } from './updateCheck'
 import { cleanStoppedStatus, disableTransitionPatch } from './state'
 import { PROVIDERS } from './providers/registry'
@@ -954,25 +954,20 @@ export async function restart(): Promise<RoutingProxySnapshot> {
 }
 
 /**
- * Detects a routing-proxy process left listening on our fixed loopback port
- * by a PREVIOUS app run (this run's isRunning() is false — lifecycle.ts's
- * child handle is a fresh module-level `let`, reset on every boot — but the
- * OS process can still be alive if the prior run crashed/force-quit before
- * reaching shutdownRoutingProxySync). See orphan.ts's module doc for why the
- * policy is kill-and-respawn rather than adopt: an orphan's
- * MANAGEMENT_PASSWORD was generated in a process that no longer exists in
- * memory anywhere, so this run has no credential to authenticate to it —
- * adoption is not just undesirable but impossible. Bounded to a fast TCP
- * probe (500ms) plus a short settle delay only when something is actually
- * found — a clean boot (nothing listening) returns near-instantly.
+ * Reclaims one stale proxy only after inspection proves it is this app
+ * variant's binary running with this variant's config. Custom ports are never
+ * reclaimed; unknown, foreign, and other-variant listeners remain untouched.
  */
 async function reclaimOrphanIfPresent(): Promise<void> {
-  const url = new URL(getRoutingProxyUrl())
-  const port = Number(url.port || 80)
-  const result = await reclaimOrphanRoutingProxyPort(
-    url.hostname,
-    port,
-    defaultOrphanReclaimDeps(defaultHealthCheckDeps().tcpProbe)
+  const runtime = getRoutingProxyRuntime()
+  const version = snapshot.installedVersion
+  if (runtime.source === 'custom' || runtime.port === null || !version) return
+
+  const result = await reclaimProvenOrphan(
+    runtime.port,
+    binaryPath(version),
+    configPath(version),
+    defaultListenerInspectionDeps()
   )
   if (result.reclaimed) {
     setSnapshot({ authFiles: [], authFilesCheckedAt: null })
