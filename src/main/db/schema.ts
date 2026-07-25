@@ -52,6 +52,15 @@ const PROJECTS_LAST_VIEW_KIND = ['sessions', 'project', 'workspace'] as const
 const FILES_SORT_ORDER = ['default', 'name'] as const
 // Mirrors VALID_DEFAULT_SURFACES in src/shared/uiStateDefaults.ts.
 const DEFAULT_SURFACE = ['dashboard', 'projects', 'panes'] as const
+const HOME_PAGE = [
+  'overview',
+  'needs-you',
+  'live-agents',
+  'github',
+  'limits',
+  'activity',
+  'stats'
+] as const
 const THEME = ['midnight', 'daylight', 'eclipse'] as const
 const ACCENT_COLOR = ['gold', 'blue', 'teal', 'orange', 'pink'] as const
 const UI_FONT_SCALE = ['small', 'default', 'large'] as const
@@ -655,6 +664,12 @@ export const schema: SchemaDef = {
         notNull: true,
         default: "'projects'",
         check: enumCheck('default_surface', DEFAULT_SURFACE)
+      },
+      home_last_page: {
+        type: 'TEXT',
+        notNull: true,
+        default: "'overview'",
+        check: enumCheck('home_last_page', HOME_PAGE)
       },
       // Workbench tree/code split pane width (v69) — draggable divider width,
       // SHARED between FilesTab's tree and GitTab's DiffTreePane (mirrors

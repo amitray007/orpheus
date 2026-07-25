@@ -187,6 +187,15 @@ export type PinnedItem = {
 
 export type AppViewKind = 'dashboard' | 'sessions' | 'project' | 'workspace' | 'panes'
 
+export type HomePageId =
+  | 'overview'
+  | 'needs-you'
+  | 'live-agents'
+  | 'github'
+  | 'limits'
+  | 'activity'
+  | 'stats'
+
 // Projects-surface-scoped view kind — narrower than AppViewKind because the
 // Projects surface can never be 'dashboard' or 'panes' (see
 // projectsLastViewKind on AppUiState below).
@@ -346,6 +355,9 @@ export type AppUiState = {
   // deprecated showPanesView/showWorkspacesView toggles above. Independent
   // from AppViewKind/lastViewKind — do not conflate the two enums.
   defaultSurface: 'dashboard' | 'projects' | 'panes'
+  // Last Home command-center page. This independently restores Home context
+  // while legacy `dashboard` remains an accepted persistence spelling.
+  homeLastPage: HomePageId
   // Workbench changed-files/file TREE pane width (v69) — SHARED between the
   // Files tab and the Git tab's changed-files tree (both used a fixed `w-60`
   // before this; now a draggable divider persists one shared width so long

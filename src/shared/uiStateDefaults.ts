@@ -50,6 +50,9 @@ export const UI_STATE_DEFAULTS = {
   // showPanesView/showWorkspacesView toggles above as the single "which
   // surface does the app land on at startup" preference.
   defaultSurface: 'projects' as const,
+  // Last Home command-center page — mirrors app_ui_state.home_last_page SQL
+  // DEFAULT in schema.ts.
+  homeLastPage: 'overview' as const,
   // Workbench tree/code split pane width (v69) — mirrors app_ui_state's
   // workbench_tree_width SQL DEFAULT in schema.ts. Shared by FilesTab's tree
   // and GitTab's DiffTreePane (one draggable divider width for both).
@@ -80,6 +83,18 @@ export const VALID_FILES_SORT_ORDERS = ['default', 'name'] as const
 // Valid values for app_ui_state.default_surface — mirrors the SQL CHECK
 // constraint in schema.ts. Which top-level surface the app opens on launch.
 export const VALID_DEFAULT_SURFACES = ['dashboard', 'projects', 'panes'] as const
+
+// Valid Home command-center pages. Mirrors the app_ui_state.home_last_page
+// CHECK constraint in schema.ts.
+export const VALID_HOME_PAGES = [
+  'overview',
+  'needs-you',
+  'live-agents',
+  'github',
+  'limits',
+  'activity',
+  'stats'
+] as const
 
 // Valid values for the status-poller interval (seconds). The UI Select in
 // OrpheusStatusSection.tsx must only offer values from this set, and the

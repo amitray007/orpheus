@@ -3,6 +3,7 @@ import type {
   AppUiState,
   AppUiStatePatch,
   AppViewKind,
+  HomePageId,
   ProjectsLastViewKind,
   Theme,
   AccentColor,
@@ -15,6 +16,7 @@ import {
   VALID_USAGE_POLL_INTERVALS_SEC,
   VALID_FILES_SORT_ORDERS,
   VALID_DEFAULT_SURFACES,
+  VALID_HOME_PAGES,
   SIDEBAR_WIDTH_MIN,
   SIDEBAR_WIDTH_MAX,
   WORKBENCH_TREE_WIDTH_MIN,
@@ -120,6 +122,8 @@ type AppUiStateRow = {
   show_workspaces_view: number
   // Open-at-launch surface
   default_surface: string
+  // Last Home command-center page
+  home_last_page: string
   // Workbench tree/code split pane width (v69)
   workbench_tree_width: number
   // Diagnostics capture toggles (v56)
@@ -152,10 +156,9 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
   )
   return {
     sidebarCollapsed: row.sidebar_collapsed === 1,
-    // 'dashboard' was a valid kind in older DB rows — coerce to 'sessions' on read.
-    lastViewKind: (row.last_view_kind === 'dashboard'
-      ? 'sessions'
-      : row.last_view_kind) as AppViewKind,
+    // Keep the legacy dashboard spelling through persistence; renderer routing
+    // normalizes it to the canonical Home route.
+    lastViewKind: row.last_view_kind as AppViewKind,
     lastProjectId: row.last_project_id,
     lastWorkspaceId: row.last_workspace_id,
     // Panes v2 active-panel/active-layout persistence (issue #1)
@@ -252,6 +255,9 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     defaultSurface: (VALID_DEFAULT_SURFACES as readonly string[]).includes(row.default_surface)
       ? (row.default_surface as AppUiState['defaultSurface'])
       : 'projects',
+    homeLastPage: (VALID_HOME_PAGES as readonly string[]).includes(row.home_last_page)
+      ? (row.home_last_page as HomePageId)
+      : UI_STATE_DEFAULTS.homeLastPage,
     // Workbench tree/code split pane width (v69) — shared Files+Git divider width
     workbenchTreeWidth: clampedTreeWidth,
     // Diagnostics capture toggles (v56)
@@ -457,6 +463,7 @@ function validatePatch(patch: AppUiStatePatch): void {
   }
 
   validateEnumField(patch, 'defaultSurface', VALID_DEFAULT_SURFACES, 'defaultSurface')
+  validateEnumField(patch, 'homeLastPage', VALID_HOME_PAGES, 'homeLastPage')
 
   // workbenchTreeWidth: numeric range check, one-of-a-kind shape.
   if ('workbenchTreeWidth' in patch && patch.workbenchTreeWidth !== undefined) {
@@ -615,6 +622,7 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     showWorkspacesView: 'show_workspaces_view',
     // Open-at-launch surface
     defaultSurface: 'default_surface',
+    homeLastPage: 'home_last_page',
     // Workbench tree/code split pane width (v69)
     workbenchTreeWidth: 'workbench_tree_width',
     // Diagnostics capture toggles (v56)

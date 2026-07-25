@@ -7,12 +7,12 @@ import { WorkspaceView } from './WorkspaceView'
 import { ProjectsHome } from './ProjectsHome'
 import { PanesView } from '../panes/PanesView'
 import { Eyebrow } from './settings/primitives'
-import type { SectionId as SettingsSectionId } from './SettingsView'
 import { getActivitySnapshot } from '@/lib/activityStore'
 import { getPrSnapshot } from '@/lib/prStore'
 import { useUiState } from '@/lib/uiStateStore'
 import { SessionListSkeleton } from '../Skeleton'
 import type { ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
+import type { AppView } from './home/home.types'
 
 const SettingsView = lazy(() => import('./SettingsView').then((m) => ({ default: m.SettingsView })))
 
@@ -186,13 +186,7 @@ function ProjectsSurfaceSessionsView({
 // View union type
 // ---------------------------------------------------------------------------
 
-export type View =
-  | { kind: 'project'; projectId: string }
-  | { kind: 'sessions' }
-  | { kind: 'workspace'; workspaceId: string; projectId: string }
-  | { kind: 'settings'; section?: SettingsSectionId }
-  | { kind: 'panes' }
-  | { kind: 'dashboard' }
+export type View = AppView | { kind: 'dashboard' }
 
 // ---------------------------------------------------------------------------
 // MainContent
@@ -296,11 +290,10 @@ export function MainContent({
     return <PanesView />
   }
 
-  if (view.kind === 'dashboard') {
-    // This is a NEW overview surface, not the removed home page (see
-    // CLAUDE.md) — it aggregates status and sends you to the right place,
-    // it does not re-home project/workspace navigation. onSelectWorkspace is
-    // threaded straight through so Live-agents rows can navigate (U4).
+  if (view.kind === 'home' || view.kind === 'dashboard') {
+    // The legacy dashboard spelling remains temporarily accepted so existing
+    // in-memory callers keep rendering while routing migrates to AppView.
+    // Both forms resolve to the operational Home command center.
     return <DashboardView onSelectWorkspace={onSelectWorkspace} />
   }
 

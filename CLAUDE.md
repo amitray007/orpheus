@@ -204,7 +204,7 @@ Workspaces get a live status (`in_progress` / `attention` / `awaiting_input` / `
 
 ### Renderer view kinds
 
-`AppUiState.lastViewKind` is one of `sessions | project | workspace` (also accepts the legacy string `dashboard` for older DBs — coerced to sessions on read; there is no dashboard page). The sidebar persists which view to open at launch. **Don't reintroduce a dashboard/home page** — it was deliberately removed.
+Home is an operational command center that aggregates and routes to existing work; it is not a project/workspace landing page. Projects remains the default launch surface unless user navigation settings choose otherwise.
 
 ### Distribution
 

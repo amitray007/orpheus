@@ -20,7 +20,9 @@ export function viewToSidebarActiveView(view: View): SidebarActiveView {
   if (view.kind === 'project') return 'project'
   if (view.kind === 'settings') return 'settings'
   if (view.kind === 'panes') return 'panes'
-  if (view.kind === 'dashboard') return 'dashboard'
+  // ActivityRail has not yet adopted canonical SurfaceId, so Home projects to
+  // its legacy dashboard active state until the shared shell migration.
+  if (view.kind === 'home' || view.kind === 'dashboard') return 'dashboard'
   return 'sessions'
 }
 
@@ -39,7 +41,8 @@ export function mainContainerClassName(viewKind: View['kind']): string {
   if (viewKind === 'sessions')
     // Workspaces kanban: tight padding so the board sits close to the app edges
     return 'flex-1 overflow-y-auto px-3 py-3 bg-surface-base'
-  if (viewKind === 'dashboard') return 'flex-1 overflow-y-auto px-6 py-5 bg-surface-base'
+  if (viewKind === 'home' || viewKind === 'dashboard')
+    return 'flex-1 overflow-y-auto px-6 py-5 bg-surface-base'
   return 'flex-1 overflow-y-auto px-6 py-5 bg-surface-base'
 }
 
@@ -54,7 +57,7 @@ export function mainContainerClassName(viewKind: View['kind']): string {
  */
 export function deriveSurface(viewKind: View['kind']): 'dashboard' | 'projects' | 'panes' | null {
   if (viewKind === 'panes') return 'panes'
-  if (viewKind === 'dashboard') return 'dashboard'
+  if (viewKind === 'home' || viewKind === 'dashboard') return 'dashboard'
   if (viewKind === 'project' || viewKind === 'workspace' || viewKind === 'sessions')
     return 'projects'
   return null
@@ -71,15 +74,20 @@ export function deriveSurface(viewKind: View['kind']): 'dashboard' | 'projects' 
  * surface (e.g. it was never set).
  */
 export function resolveLandingView(
-  uiState: Pick<AppUiState, 'lastViewKind' | 'defaultSurface'>
+  uiState: Pick<AppUiState, 'lastViewKind' | 'defaultSurface' | 'homeLastPage'>
 ): View {
   // The explicit "open at launch" setting wins for the top-level landing view.
-  if (uiState.defaultSurface === 'dashboard') return { kind: 'dashboard' }
+  // Legacy dashboard persistence resolves to the canonical Home route.
+  if (uiState.defaultSurface === 'dashboard') {
+    return { kind: 'home', page: uiState.homeLastPage }
+  }
   if (uiState.defaultSurface === 'panes') return { kind: 'panes' }
   // Otherwise fall back to the saved top-level view kind.
   if (uiState.lastViewKind === 'panes') return { kind: 'panes' }
-  // 'dashboard' as a lastViewKind is now a real surface again (legacy DBs coerce
-  // it to 'sessions' on read in uiState.ts); default everything else to Workspaces.
+  if (uiState.lastViewKind === 'dashboard') {
+    return { kind: 'home', page: uiState.homeLastPage }
+  }
+  // Settings is deliberately non-restorable; default everything else to Projects.
   return { kind: 'sessions' }
 }
 
