@@ -4,15 +4,15 @@ import { AccessibleActivitySummary } from '../AccessibleActivitySummary'
 import { HomePageFrame } from './HomePageFrame'
 import type { HomeActivitySnapshot, HomePageProps } from '../home.types'
 
-function activityMessage({
+function emptyActivityMessage({
   loading,
   error,
   unavailable
-}: HomePageProps['snapshot']['activity']): string | null {
+}: HomePageProps['snapshot']['activity']): string {
   if (loading) return 'Loading activity…'
   if (error) return error
   if (unavailable) return 'Activity is unavailable.'
-  return null
+  return 'No activity is available yet.'
 }
 
 function WeeklyActivity({ activity }: { activity: HomeActivitySnapshot }): React.JSX.Element {
@@ -53,10 +53,10 @@ function WeeklyActivity({ activity }: { activity: HomeActivitySnapshot }): React
 }
 
 export function ActivityPage({ snapshot }: HomePageProps): React.JSX.Element {
-  const message = activityMessage(snapshot.activity)
   const weeklyActivity = snapshot.activity.data.filter((activity) =>
     activity.supportedRanges.includes('weekly')
   )
+  const hasActivity = weeklyActivity.length > 0
 
   return (
     <HomePageFrame
@@ -64,16 +64,17 @@ export function ActivityPage({ snapshot }: HomePageProps): React.JSX.Element {
       source={snapshot.activity}
       emptyCopy="No activity is available yet."
     >
-      {message ? (
+      {!hasActivity ? (
         <div className="rounded-lg border border-border-default bg-surface-raised p-5 text-sm text-text-secondary">
-          {message}
-        </div>
-      ) : weeklyActivity.length === 0 ? (
-        <div className="rounded-lg border border-border-default bg-surface-raised p-5 text-sm text-text-secondary">
-          No activity is available yet.
+          {emptyActivityMessage(snapshot.activity)}
         </div>
       ) : (
         <div className="flex flex-col gap-6">
+          {snapshot.activity.error ? (
+            <p role="status" className="text-sm text-text-secondary">
+              Could not refresh activity: {snapshot.activity.error}. Showing the most recent data.
+            </p>
+          ) : null}
           <p className="text-sm text-text-secondary">
             Weekly activity is the only available range.
           </p>
