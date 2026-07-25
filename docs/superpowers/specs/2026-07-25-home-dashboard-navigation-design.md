@@ -1,7 +1,7 @@
 # Home Dashboard & Navigation Redesign
 
 **Date:** 2026-07-25  
-**Status:** Approved design specification  
+**Status:** Frozen design specification
 **Scope:** Renderer navigation shell and Home command center; implementation planning follows separately.
 
 ## Intent
