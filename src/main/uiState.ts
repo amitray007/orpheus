@@ -1,5 +1,5 @@
 import { getDb } from './db'
-import { assertValidAutomaticRoutingProxyEffectivePort } from './routingProxy/runtime'
+import { assertValidAutomaticRoutingProxyEffectivePort } from './routingProxy/ports'
 import type {
   AppUiState,
   AppUiStatePatch,

@@ -73,12 +73,16 @@ function healthDotClass(health: 'ok' | 'error' | 'unknown'): string {
   return 'bg-zinc-400'
 }
 
+function isValidCustomRoutingProxyPort(port: number | null): port is number {
+  return typeof port === 'number' && Number.isInteger(port) && port >= 1024 && port <= 65535
+}
+
 function portConfigurationRequest(
   mode: RoutingProxyPortMode,
   customPort: number | null
 ): RoutingProxyPortConfiguration | null {
   if (mode === 'automatic') return { mode: 'automatic' }
-  if (customPort === null) return null
+  if (!isValidCustomRoutingProxyPort(customPort)) return null
   return { mode: 'custom', port: customPort }
 }
 
@@ -166,6 +170,7 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
   const [restarting, setRestarting] = useState(false)
   const [portBusy, setPortBusy] = useState(false)
   const [customPortInput, setCustomPortInput] = useState<number | null>(null)
+  const [portInputError, setPortInputError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -203,15 +208,21 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
   async function applyPortMode(mode: RoutingProxyPortMode): Promise<void> {
     if (portBusy) return
     const configuration = portConfigurationRequest(mode, customPortInput)
-    if (!configuration) return
+    if (!configuration) {
+      setPortInputError('Enter a whole-number port from 1024 to 65535.')
+      return
+    }
 
+    setPortInputError(null)
     setPortBusy(true)
     try {
       const nextSnapshot = await window.api.routingProxy.setPortConfiguration(configuration)
       setSnapshot(nextSnapshot)
       setCustomPortInput(nextSnapshot.customPort)
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to update the custom port.'
       console.error('[routingProxy] setPortConfiguration failed', err)
+      setPortInputError(message)
       try {
         const currentSnapshot = await window.api.routingProxy.getState()
         setSnapshot(currentSnapshot)
@@ -385,9 +396,14 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
                 label="Port mode"
                 description="Choose an automatic managed port or bind the proxy to a custom port."
               >
-                <div className="flex items-center gap-2">
+                <div
+                  role="group"
+                  aria-label="Routing proxy port mode"
+                  className="flex items-center gap-2"
+                >
                   <button
                     type="button"
+                    aria-pressed={snapshot.portMode === 'automatic'}
                     disabled={portBusy}
                     onClick={() => void applyPortMode('automatic')}
                     className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
@@ -400,7 +416,12 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
                   </button>
                   <button
                     type="button"
-                    disabled={portBusy || customPortInput === null}
+                    aria-pressed={snapshot.portMode === 'custom'}
+                    disabled={
+                      portBusy ||
+                      !isValidCustomRoutingProxyPort(customPortInput) ||
+                      portInputError !== null
+                    }
                     onClick={() => void applyPortMode('custom')}
                     className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                       snapshot.portMode === 'custom'
@@ -419,11 +440,18 @@ export function OrpheusModelRoutingSection(): React.JSX.Element {
                 <NumberInput
                   value={customPortInput}
                   onChange={setCustomPortInput}
+                  onValidationChange={setPortInputError}
+                  validation={{ min: 1024, max: 65535, step: 1 }}
                   disabled={portBusy}
                   placeholder="18777"
                   ariaLabel="Custom routing proxy port"
                 />
               </SettingRow>
+              {portInputError && (
+                <p role="alert" className="pb-3 text-xs text-red-400">
+                  {portInputError}
+                </p>
+              )}
             </>
           )}
         </div>

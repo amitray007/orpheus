@@ -1,12 +1,20 @@
 import { createRequire } from 'node:module'
 import type { AppUiState, RoutingProxyPortMode, RoutingProxyRuntime } from '../../shared/types'
+import {
+  AUTOMATIC_PORT_MAX,
+  AUTOMATIC_PORT_MIN,
+  assertValidAutomaticRoutingProxyEffectivePort
+} from './ports'
+
+export {
+  AUTOMATIC_PORT_MAX,
+  AUTOMATIC_PORT_MIN,
+  assertValidAutomaticRoutingProxyEffectivePort
+} from './ports'
 
 declare const __ORPHEUS_MODE__: 'development' | 'production' | 'worktree'
 
 const require = createRequire(import.meta.url)
-
-export const AUTOMATIC_PORT_MIN = 18765
-export const AUTOMATIC_PORT_MAX = 18799
 
 export interface RoutingProxyVariantContext {
   mode: 'production' | 'development' | 'worktree'
@@ -27,15 +35,6 @@ export function getPreferredRoutingProxyPort(context: RoutingProxyVariantContext
   if (context.mode === 'worktree') return 18767
   if (context.mode === 'development') return 18766
   return 18765
-}
-
-export function assertValidAutomaticRoutingProxyEffectivePort(port: number): number {
-  if (!Number.isInteger(port) || port < AUTOMATIC_PORT_MIN || port > AUTOMATIC_PORT_MAX) {
-    throw new Error(
-      `uiState: routingProxyEffectivePort must be an integer between ${AUTOMATIC_PORT_MIN} and ${AUTOMATIC_PORT_MAX} or null`
-    )
-  }
-  return port
 }
 
 export function automaticPortCandidates(

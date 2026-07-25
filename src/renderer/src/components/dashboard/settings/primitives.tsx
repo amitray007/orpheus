@@ -494,6 +494,27 @@ export interface NumberInputProps {
   className?: string
   ariaLabel?: string
   disabled?: boolean
+  validation?: {
+    min: number
+    max: number
+    step: number
+  }
+  onValidationChange?: (message: string | null) => void
+}
+
+function validationError(value: string, validation: NumberInputProps['validation']): string | null {
+  if (!validation || value === '') return null
+  const isDigitsOnly = /^\d+$/
+  if (!isDigitsOnly.test(value)) return 'Enter a whole-number port.'
+  const number = Number(value)
+  if (!Number.isFinite(number) || !Number.isInteger(number)) return 'Enter a whole-number port.'
+  if (number < validation.min || number > validation.max) {
+    return `Enter a port from ${validation.min} to ${validation.max}.`
+  }
+  if ((number - validation.min) % validation.step !== 0) {
+    return `Enter a port in steps of ${validation.step}.`
+  }
+  return null
 }
 
 export function NumberInput({
@@ -502,7 +523,9 @@ export function NumberInput({
   placeholder,
   className,
   ariaLabel,
-  disabled
+  disabled,
+  validation,
+  onValidationChange
 }: NumberInputProps): React.JSX.Element {
   const [local, setLocal] = useState(value === null ? '' : String(value))
   // Track whether we have focus to avoid overwriting user's in-progress edits
@@ -512,20 +535,28 @@ export function NumberInput({
   // eslint-disable-next-line react-hooks/refs -- read-only ref check to derive display value; focus tracking avoids wiping user input
   const displayValue = hasFocus.current ? local : value === null ? '' : String(value)
 
+  function updateValue(nextValue: string): void {
+    setLocal(nextValue)
+    const trimmed = nextValue.trim()
+    const error = validationError(trimmed, validation)
+    onValidationChange?.(error)
+    if (trimmed === '') {
+      onChange(null)
+    } else if (error === null) {
+      onChange(Number(trimmed))
+    }
+  }
+
   function commit(): void {
     hasFocus.current = false
     const trimmed = local.trim()
+    const error = validationError(trimmed, validation)
+    onValidationChange?.(error)
     if (trimmed === '') {
       onChange(null)
       return
     }
-    const n = parseInt(trimmed, 10)
-    if (Number.isNaN(n)) {
-      // Revert to external value on bad input
-      setLocal(value === null ? '' : String(value))
-      return
-    }
-    onChange(n)
+    if (error === null) onChange(Number(trimmed))
   }
 
   return (
@@ -533,9 +564,10 @@ export function NumberInput({
       type="text"
       inputMode="numeric"
       aria-label={ariaLabel}
+      aria-invalid={validationError(displayValue.trim(), validation) !== null}
       disabled={disabled}
       value={displayValue}
-      onChange={(e) => setLocal(e.target.value)}
+      onChange={(e) => updateValue(e.target.value)}
       onFocus={() => {
         hasFocus.current = true
         setLocal(value === null ? '' : String(value))

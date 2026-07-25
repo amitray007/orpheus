@@ -105,6 +105,14 @@ import {
   type SupervisorLogger
 } from '../src/main/routingProxy/supervisor.ts'
 
+function isValidRoutingProxyCustomPortForTest(port: number | null): boolean {
+  return typeof port === 'number' && Number.isInteger(port) && port >= 1024 && port <= 65535
+}
+
+function isStrictPortTextForTest(value: string): boolean {
+  return /^\d+$/.test(value)
+}
+
 // ---------------------------------------------------------------------------
 // Test scratch dir — everything this harness writes lives here, never under
 // a real userData path (paths.ts is intentionally NOT exercised by this
@@ -468,9 +476,64 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
   )
   assert.match(
     sectionSource,
-    /<NumberInput\s+[\s\S]*disabled=\{portBusy\}/,
-    'the custom-port input must be disabled while a port request is in flight'
+    /function isValidCustomRoutingProxyPort\(port: number \| null\): port is number \{\s*return\s+typeof port === 'number' &&\s*Number\.isInteger\(port\) &&\s*port >= 1024 &&\s*port <= 65535/s,
+    'the settings UI must accept only integer custom ports in the inclusive 1024–65535 range'
   )
+  assert.match(
+    sectionSource,
+    /function portConfigurationRequest\([\s\S]*if \(!isValidCustomRoutingProxyPort\(customPort\)\) return null/s,
+    'the settings UI must not construct custom requests for invalid ports'
+  )
+  assert.match(
+    sectionSource,
+    /disabled=\{\s*portBusy\s*\|\|\s*!isValidCustomRoutingProxyPort\(customPortInput\)\s*\|\|\s*portInputError !== null\s*\}/s,
+    'the Custom action must remain disabled for busy, invalid, or ambiguous input'
+  )
+  assert.match(
+    sectionSource,
+    /role="group"\s+aria-label="Routing proxy port mode"/,
+    'the mode controls must have an accessible group label'
+  )
+  assert.match(
+    sectionSource,
+    /aria-pressed=\{snapshot\.portMode === 'automatic'\}/,
+    'the Automatic action must expose selected state'
+  )
+  assert.match(
+    sectionSource,
+    /aria-pressed=\{snapshot\.portMode === 'custom'\}/,
+    'the Custom action must expose selected state'
+  )
+  assert.match(
+    sectionSource,
+    /portInputError && \([\s\S]*role="alert"/,
+    'invalid custom-port input must render a local validation error'
+  )
+  const primitivesSource = await fs.readFile(
+    path.join(repoRoot, 'src/renderer/src/components/dashboard/settings/primitives.tsx'),
+    'utf8'
+  )
+  assert.match(
+    primitivesSource,
+    /validation\?: \{[\s\S]*min: number[\s\S]*max: number/s,
+    'NumberInput must support bounded validation for strict port entry'
+  )
+  assert.match(
+    primitivesSource,
+    /const isDigitsOnly = \/\^\\d\+\$\//,
+    'strict NumberInput validation must reject ambiguous values such as 1024abc and fractions'
+  )
+  assert.match(
+    sectionSource,
+    /min: 1024,[\s\S]*max: 65535,[\s\S]*step: 1/s,
+    'the custom-port input must enforce the 1024 and 65535 inclusive boundaries'
+  )
+  assert.equal(isValidRoutingProxyCustomPortForTest(1023), false)
+  assert.equal(isValidRoutingProxyCustomPortForTest(65536), false)
+  assert.equal(isValidRoutingProxyCustomPortForTest(1024.5), false)
+  assert.equal(isStrictPortTextForTest('1024abc'), false)
+  assert.equal(isValidRoutingProxyCustomPortForTest(1024), true)
+  assert.equal(isValidRoutingProxyCustomPortForTest(65535), true)
   console.log('✓ typed port-configuration IPC and snapshot-driven routing settings contracts')
 }
 
