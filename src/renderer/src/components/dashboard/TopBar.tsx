@@ -779,12 +779,12 @@ export function TopBar({
             'active:scale-[0.97] motion-reduce:transform-none',
             'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
             sidebarCollapsed
-              ? 'bg-accent/15 text-accent hover:bg-accent/20'
+              ? 'text-accent'
               : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
           ].join(' ')}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
-          <SidebarSimple size={16} weight={sidebarCollapsed ? 'fill' : 'regular'} />
+          <SidebarSimple size={16} weight="regular" />
         </button>
 
         {/* Status chip — immediately after sidebar toggle */}
