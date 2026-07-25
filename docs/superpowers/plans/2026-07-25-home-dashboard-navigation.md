@@ -37,6 +37,10 @@
 - Modify `src/main/uiState.ts:27-270,402-630` — map, validate, and persist `homeLastPage`; normalize legacy surface spellings without unexpected fallback.
 - Modify `src/renderer/src/components/dashboard/MainContent.tsx:185-305` — replace the dashboard-only view variant with a typed Home route.
 - Modify `src/renderer/src/components/dashboard/dashboard.helpers.ts:9-84` — canonical surface derivation and launch restoration.
+- Modify `src/renderer/src/components/dashboard/Dashboard.tsx:97-100,750-849,1052-1102,1725-1875` — convert the live route owner, surface-selection callback, hydration, and rail pass-site to canonical Home while preserving Projects-local restoration.
+- Modify `src/renderer/src/components/dashboard/ActivityRail.tsx:34-44,212-255` — minimal temporary canonical `SurfaceId` prop/callback conversion only; Task 2 still owns its visual removal.
+- Modify `src/renderer/src/components/dashboard/Sidebar.tsx:1468-1475` — remove the obsolete `dashboard` sidebar-active discriminant; Task 2 still owns shell composition.
+- Modify `src/renderer/src/components/dashboard/settings/OrpheusNavigationSection.tsx:8-58` — present and write canonical `home` for the launch-surface preference while shared/main boundaries continue accepting legacy `dashboard`.
 - Create `src/renderer/src/components/dashboard/home/home.types.ts` — renderer-facing navigation/facade contracts and stable callback signatures.
 - Create `src/renderer/src/components/dashboard/home/INTERFACES.md` — tracked frozen seam manifest for all subsequent builders. This path is adjacent to every Home consumer, survives the implementation, and avoids putting product contracts in ignored planning docs.
 - Modify `CLAUDE.md:renderer view kinds section` — reconcile the operational Home policy during implementation, not during this planning pass.
@@ -77,6 +81,8 @@
 
 ### Task 1: Freeze Navigation, Persistence, Shell, and Home Interfaces
 
+**Plan correction:** The canonical route/surface types cannot be frozen in isolation: `Dashboard.tsx` owns the live `View`, persistence writes, hydration, and `handleSelectSurface`, while `ActivityRail`, `Sidebar`, and Navigation Settings are direct consumers of the legacy spelling. They are included here only for the minimum complete canonical caller conversion; Task 2 still owns rail deletion and shell/visual work, and Task 3 still owns the Home sidebar, page registry, and focus semantics.
+
 **Execution:** One fresh Sonnet builder, isolated worktree, no parallel feature builders.
 
 **Files:**
@@ -88,11 +94,15 @@
 - Modify: `src/main/uiState.ts:27-270,402-630`
 - Modify: `src/renderer/src/components/dashboard/MainContent.tsx:185-305`
 - Modify: `src/renderer/src/components/dashboard/dashboard.helpers.ts:9-84`
+- Modify: `src/renderer/src/components/dashboard/Dashboard.tsx:97-100,750-849,1052-1102,1725-1875`
+- Modify: `src/renderer/src/components/dashboard/ActivityRail.tsx:34-44,212-255` (temporary canonical prop/callback typing only; no redesign)
+- Modify: `src/renderer/src/components/dashboard/Sidebar.tsx:1468-1475` (remove obsolete renderer-only `dashboard` active-view member only)
+- Modify: `src/renderer/src/components/dashboard/settings/OrpheusNavigationSection.tsx:8-58` (canonical Home option/write only)
 - Modify: `CLAUDE.md:Renderer view kinds`
 - Test: `scripts/verify-migration-engine.ts` through `bun run test:db`
 
 **Interfaces:**
-- Consumes: current `AppUiState`, `AppUiStatePatch`, `View`, `deriveSurface()`, `resolveLandingView()`, and declarative `app_ui_state` schema.
+- Consumes: current `AppUiState`, `AppUiStatePatch`, renderer `View`, `Dashboard` route ownership, `ActivityRail` surface props, `SidebarActiveView`, Navigation Settings `defaultSurface` control, `deriveSurface()`, `resolveLandingView()`, and declarative `app_ui_state` schema.
 - Produces exactly:
 
 ```ts
@@ -231,6 +241,7 @@ export function useHomeSnapshot(): HomeSnapshot
 ```
 
 - Extend `AppUiState` with `homeLastPage: HomePageId`; use `UI_STATE_DEFAULTS.homeLastPage === 'overview'`.
+- `AppView` is the canonical replacement for `MainContent`'s exported `View`: define it once in `home.types.ts`, import it into `MainContent.tsx`, `Dashboard.tsx`, and `dashboard.helpers.ts`, and remove the old exported `View` union rather than retaining an alias.
 - `INTERFACES.md` records these exact names, ownership, allowed dependency direction, navigation callbacks, facade snapshot shape, and the “no builder changes an interface without stopping and re-planning” gate.
 
 - [ ] **Step 1: Capture the current compatibility baseline**
@@ -264,7 +275,9 @@ Map `homeLastPage`, validate it against the seven exact ids, and add it to `colu
 
 - [ ] **Step 4: Replace the renderer view discriminant with the canonical Home route**
 
-Make Home selection explicit as `{ kind: 'home'; page }`. `deriveSurface()` returns `SurfaceId`; `resolveLandingView()` maps legacy `defaultSurface === 'dashboard'` to `{ kind: 'home', page: uiState.homeLastPage }`, keeps Projects default, and never restores Settings.
+Make Home selection explicit as `{ kind: 'home'; page }`. `deriveSurface()` returns `SurfaceId`; `resolveLandingView()` maps legacy persisted `defaultSurface === 'dashboard'` to `{ kind: 'home', page: uiState.homeLastPage }`, keeps Projects default, and never restores Settings.
+
+Complete every existing renderer caller in this task: `Dashboard` initializes and sets only canonical `AppView` values; its Home branch writes canonical `lastViewKind: 'home'` and restores `uiState.homeLastPage`; hydration consumes the normalized route; `handleSelectSurface` accepts `SurfaceId` (Settings delegates to the existing settings handler); the temporary `ActivityRail` receives canonical `home | projects | panes` values and emits canonical requests without changing its layout; `SidebarActiveView` no longer contains `dashboard`; and Navigation Settings labels the option “Home” and writes `defaultSurface: 'home'`. Do not add a renderer `dashboard` route alias or a helper adapter that translates canonical Home back to `dashboard`. Legacy `dashboard` remains accepted only in shared/main persistence validation and normalization.
 
 - [ ] **Step 5: Document the frozen interfaces**
 
@@ -281,7 +294,7 @@ Run:
 ```bash
 bun run test:db
 bun run typecheck
-bunx eslint src/shared/types.ts src/shared/uiStateDefaults.ts src/main/uiState.ts src/main/db/schema.ts src/renderer/src/components/dashboard/MainContent.tsx src/renderer/src/components/dashboard/dashboard.helpers.ts src/renderer/src/components/dashboard/home/home.types.ts
+bunx eslint src/shared/types.ts src/shared/uiStateDefaults.ts src/main/uiState.ts src/main/db/schema.ts src/renderer/src/components/dashboard/Dashboard.tsx src/renderer/src/components/dashboard/MainContent.tsx src/renderer/src/components/dashboard/ActivityRail.tsx src/renderer/src/components/dashboard/Sidebar.tsx src/renderer/src/components/dashboard/dashboard.helpers.ts src/renderer/src/components/dashboard/settings/OrpheusNavigationSection.tsx src/renderer/src/components/dashboard/home/home.types.ts
 ```
 
 Expected: DB harness passes fresh schema, upgrade, backup/rebuild, and convergence checks; both TypeScript projects pass; targeted ESLint adds no warnings/errors.
@@ -293,11 +306,11 @@ Dispatch a Sonnet code reviewer for compatibility/migration and a type-design re
 - [ ] **Step 9: Commit the foundation**
 
 ```bash
-git add CLAUDE.md src/shared/types.ts src/shared/uiStateDefaults.ts src/main/db/schema.ts src/main/uiState.ts src/renderer/src/components/dashboard/MainContent.tsx src/renderer/src/components/dashboard/dashboard.helpers.ts src/renderer/src/components/dashboard/home/home.types.ts src/renderer/src/components/dashboard/home/INTERFACES.md
+git add CLAUDE.md src/shared/types.ts src/shared/uiStateDefaults.ts src/main/db/schema.ts src/main/uiState.ts src/renderer/src/components/dashboard/Dashboard.tsx src/renderer/src/components/dashboard/MainContent.tsx src/renderer/src/components/dashboard/ActivityRail.tsx src/renderer/src/components/dashboard/Sidebar.tsx src/renderer/src/components/dashboard/dashboard.helpers.ts src/renderer/src/components/dashboard/settings/OrpheusNavigationSection.tsx src/renderer/src/components/dashboard/home/home.types.ts src/renderer/src/components/dashboard/home/INTERFACES.md
 git commit -m "feat(navigation): establish Home surface interfaces"
 ```
 
-**Acceptance:** Legacy dashboard state resolves to Home, Projects remains default, `projectsLast*` is untouched, `homeLastPage` defaults/restores independently, Settings is non-restorable, migration harness/typecheck/lint pass, and reviewers approve the stable seam.
+**Acceptance:** The renderer compiles with canonical `SurfaceId` and `{ kind: 'home'; page }` end-to-end across `Dashboard`, helpers, `MainContent`, the temporary rail, Sidebar active typing, and Navigation Settings; no renderer route/helper alias emits or consumes `kind: 'dashboard'`; new persistence writes use `home`; legacy `dashboard` is accepted and normalized only at shared/main DB boundaries; Projects remains default; `projectsLast*` is untouched; `homeLastPage` defaults/restores independently; Settings is non-restorable; migration harness/typecheck/lint pass; and reviewers approve the stable seam.
 
 ---
 
@@ -422,9 +435,9 @@ git commit -m "feat(navigation): unify surface sidebars and footer"
 - Create: `src/renderer/src/components/dashboard/home/homeFacade.ts` with pure empty/source-state constructors matching Task 1 contracts
 - Create: `src/renderer/src/components/dashboard/home/homeStore.ts` with a stable empty `HomeSnapshot` external-store shell
 - Create: `src/renderer/src/components/dashboard/home/useHomeSnapshot.ts` as the `useSyncExternalStore` consumer of that shell
-- Modify: `src/renderer/src/components/dashboard/Dashboard.tsx:812-849,1725-1875`
-- Modify: `src/renderer/src/components/dashboard/MainContent.tsx:286-305`
-- Modify: `src/renderer/src/components/dashboard/dashboard.helpers.ts:16-84`
+- Modify: `src/renderer/src/components/dashboard/Dashboard.tsx:canonical Home branch and render pass-site` — add Home page selection/request handling atop Task 1's canonical route; do not repeat the route-name migration.
+- Modify: `src/renderer/src/components/dashboard/MainContent.tsx:canonical Home render branch` — replace the Task 1 compatibility content with `HomeSurface`; do not change the `AppView` discriminant.
+- Modify: `src/renderer/src/components/dashboard/dashboard.helpers.ts:Home page routing helpers only` — Task 1 already owns canonical `deriveSurface()` and launch restoration.
 
 **Interfaces:**
 - Consumes: Task 1 route, snapshot, count, page-prop, and navigation types; Task 2 shell/footer; `updateUiState({ homeLastPage })`.
