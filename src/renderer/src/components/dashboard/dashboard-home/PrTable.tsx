@@ -34,9 +34,9 @@ import { TableRowsSkeleton } from './DashboardSkeletons'
 import { useGithubData } from './useGithubData'
 import { formatCompact, formatCompactAge } from './dashboardHome.helpers'
 
-// PRs paginate 10/page (exact size from the design spec) — keeps the card a
+// PRs paginate 5/page — keeps the card a
 // fixed height instead of dumping every open PR into one tall table.
-const PR_PAGE_SIZE = 10
+const PR_PAGE_SIZE = 5
 
 type ChecksState = GhSearchPr['checks'] // 'success' | 'failure' | 'pending' | null
 

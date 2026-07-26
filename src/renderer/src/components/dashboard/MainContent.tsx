@@ -299,9 +299,8 @@ export function MainContent({
   if (view.kind === 'dashboard') {
     // This is a NEW overview surface, not the removed home page (see
     // CLAUDE.md) — it aggregates status and sends you to the right place,
-    // it does not re-home project/workspace navigation. onSelectWorkspace is
-    // threaded straight through so Live-agents rows can navigate (U4).
-    return <DashboardView onSelectWorkspace={onSelectWorkspace} />
+    // it does not re-home project/workspace navigation.
+    return <DashboardView />
   }
 
   if (view.kind === 'sessions') {

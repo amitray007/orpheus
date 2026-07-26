@@ -32,9 +32,9 @@ import { TableRowsSkeleton } from './DashboardSkeletons'
 import { useGithubData } from './useGithubData'
 import { formatCompact, formatCompactAge } from './dashboardHome.helpers'
 
-// Issues paginate 10/page (exact size from the design spec) — keeps the
+// Issues paginate 5/page — keeps the
 // card a fixed height instead of dumping every assigned issue in one table.
-const ISSUE_PAGE_SIZE = 10
+const ISSUE_PAGE_SIZE = 5
 
 function EmptyState({ hint }: { hint: boolean }): React.JSX.Element {
   return (

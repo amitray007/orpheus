@@ -2,7 +2,7 @@
 // DashboardView — the real Dashboard PAGE SHELL (U2). This is a NEW overview
 // surface reachable from the 🏠 rail item — NOT the removed home page (see
 // CLAUDE.md: "Don't reintroduce a dashboard/home page"). It aggregates
-// status (live agents + what needs you, plus an analytics "pulse" treat) and
+// status (what needs you, plus an analytics "pulse" treat) and
 // sends you to the right place; it does not re-home project/workspace
 // navigation, which stays owned by the Projects surface.
 //
@@ -18,8 +18,7 @@
 //      to one column under 780px.
 //   c. "Needs you now" — a flex-wrap strip of compact TriageTile chips
 //      (replaces the old big-tile grid).
-//   d. Live agents (full width, unchanged position).
-//   e. Open PRs + Issues, side by side (unchanged position).
+//   d. Open PRs + Issues, side by side (unchanged position).
 // All data wiring is unchanged from U3/U4/U5 below — this unit is
 // presentation-only, no new fetches, no hook behavior changes.
 //
@@ -30,9 +29,9 @@
 // weeklyActivity/Tokens all come from real transcript files now, not just
 // the ones Orpheus happened to see.
 //
-// U4 wired the real Live-agents table + the "Agents waiting"/"Finished runs"
-// triage tiles to `useLiveAgents` (workspaces + sessions + activity snapshot
-// join — see that hook's header comment).
+// U4 wired the "Agents waiting"/"Finished runs" triage tiles to
+// `useLiveAgents` (workspaces + sessions + activity snapshot join — see that
+// hook's header comment).
 //
 // U5 (Phase 2) wires the middle two triage tiles (Open PRs / Open issues)
 // plus PrTable/IssuesTable to REAL account-wide GitHub data via
@@ -48,7 +47,6 @@ import { TriageTile } from './dashboard-home/TriageTile'
 import { DashboardCard } from './dashboard-home/DashboardCard'
 import { ActivityChart } from './dashboard-home/ActivityChart'
 import { UsageLimitsCard } from './dashboard-home/UsageLimitsCard'
-import { LiveAgentsTable } from './dashboard-home/LiveAgentsTable'
 import { PrTable } from './dashboard-home/PrTable'
 import { IssuesTable } from './dashboard-home/IssuesTable'
 import { usePulseData } from './dashboard-home/usePulseData'
@@ -58,15 +56,7 @@ import { useClaudeUsage } from './dashboard-home/useClaudeUsage'
 import { formatHour12 } from './dashboard-home/pulseData.helpers'
 import { formatCompact } from './dashboard-home/dashboardHome.helpers'
 
-export function DashboardView({
-  onSelectWorkspace
-}: {
-  /** Threaded from MainContent's onSelectWorkspace (ultimately
-   *  Dashboard.tsx's handleSelectWorkspace) so Live-agents rows can navigate
-   *  to their workspace. Optional so DashboardView still renders standalone
-   *  (e.g. in isolation/tests) without a navigation handler. */
-  onSelectWorkspace?: (workspaceId: string, projectId: string) => void
-}): React.JSX.Element {
+export function DashboardView(): React.JSX.Element {
   // The Dashboard is fixed to a rolling 7-day window (no user-facing range
   // picker — see DashboardTopBar). The heatmap still shows ~6 months (it's a
   // time view); weeklyActivity is always the trailing 7 days; the stat tiles
@@ -123,9 +113,9 @@ export function DashboardView({
         <SectionHeader label="Needs you now" dotClassName="bg-accent" />
         <div className="flex flex-wrap gap-2">
           {/* REAL — live count of workspaces with activity==='attention',
-              from the same useLiveAgents() join the table below renders
-              (see liveAgents.helpers.ts's buildLiveAgentRows). `hot` when
-              >0 since a waiting agent is the most actionable state. */}
+              from the useLiveAgents() join (see liveAgents.helpers.ts's
+              buildLiveAgentRows). `hot` when >0 since a waiting agent is the
+              most actionable state. */}
           <TriageTile
             count={liveAgents.waitingCount}
             dotClassName="bg-accent"
@@ -162,9 +152,6 @@ export function DashboardView({
           />
         </div>
       </div>
-
-      {/* ============ Live agents (full width) ============ */}
-      <LiveAgentsTable onSelectWorkspace={onSelectWorkspace} />
 
       {/* ============ Open PRs + Issues (side by side) ============ */}
       <div className="grid grid-cols-1 gap-4 min-[780px]:grid-cols-2">
