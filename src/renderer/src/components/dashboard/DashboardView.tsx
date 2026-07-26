@@ -1,163 +1,138 @@
-// ---------------------------------------------------------------------------
-// DashboardView — the real Dashboard PAGE SHELL (U2). This is a NEW overview
-// surface reachable from the 🏠 rail item — NOT the removed home page (see
-// CLAUDE.md: "Don't reintroduce a dashboard/home page"). It aggregates
-// status (what needs you, plus an analytics "pulse" treat) and
-// sends you to the right place; it does not re-home project/workspace
-// navigation, which stays owned by the Projects surface.
-//
-// V1 REBUILD (visual-only, per dashboard-v3.html "tightened" mockup) — the
-// critique was "huge half-empty hero-metric cards, flat sameness, wasted
-// space". New structure, top to bottom:
-//   a. Hero row: greeting (DashboardTopBar) + an inline stats row (Sessions/
-//      Tokens/Streak/Peak hour via the now-borderless StatTile) side by
-//      side, NOT a 4-card grid.
-//   b. Pulse row: a 0.85fr/1.25fr grid — Usage (the ONE focal/primary panel,
-//      DashboardCard variant="primary") on the left, Activity (the new
-//      weekly small-multiples chart, ActivityChart) on the right, stacking
-//      to one column under 780px.
-//   c. "Needs you now" — a flex-wrap strip of compact TriageTile chips
-//      (replaces the old big-tile grid).
-//   d. Open PRs + Issues, side by side (unchanged position).
-// All data wiring is unchanged from U3/U4/U5 below — this unit is
-// presentation-only, no new fetches, no hook behavior changes.
-//
-// U3 originally wired the "Your pulse" numbers to `sessions:listAll`
-// (Orpheus-registered workspaces only). V3 replaced that source with
-// `claude:activity` (src/main/claudeActivity.ts), which scans the REAL
-// on-disk transcript store — sessions/streak/peak-hour/active-days/
-// weeklyActivity/Tokens all come from real transcript files now, not just
-// the ones Orpheus happened to see.
-//
-// U4 wired the "Agents waiting"/"Finished runs" triage tiles to
-// `useLiveAgents` (workspaces + sessions + activity snapshot join — see that
-// hook's header comment).
-//
-// U5 (Phase 2) wires the middle two triage tiles (Open PRs / Open issues)
-// plus PrTable/IssuesTable to REAL account-wide GitHub data via
-// `useGithubData` (`gh search prs --author @me` / `gh search issues
-// --assignee @me`, new IPC in src/main/github.ts). See
-// docs/plans/2026-07-11-003-dashboard-design.md.
-// ---------------------------------------------------------------------------
-
+import { useState } from 'react'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useUiState } from '@/lib/uiStateStore'
 import { DashboardTopBar } from './dashboard-home/DashboardTopBar'
-import { SectionHeader } from './dashboard-home/SectionHeader'
-import { StatTile } from './dashboard-home/StatTile'
-import { TriageTile } from './dashboard-home/TriageTile'
-import { DashboardCard } from './dashboard-home/DashboardCard'
-import { ActivityChart } from './dashboard-home/ActivityChart'
-import { UsageLimitsCard } from './dashboard-home/UsageLimitsCard'
-import { PrTable } from './dashboard-home/PrTable'
-import { IssuesTable } from './dashboard-home/IssuesTable'
-import { usePulseData } from './dashboard-home/usePulseData'
-import { useLiveAgents } from './dashboard-home/useLiveAgents'
+import { InsightsTab } from './dashboard-home/InsightsTab'
+import { LimitsTab } from './dashboard-home/LimitsTab'
+import { OverviewTab } from './dashboard-home/OverviewTab'
 import { useGithubData } from './dashboard-home/useGithubData'
-import { useClaudeUsage } from './dashboard-home/useClaudeUsage'
-import { formatHour12 } from './dashboard-home/pulseData.helpers'
-import { formatCompact } from './dashboard-home/dashboardHome.helpers'
+import { useProviderUsage } from './dashboard-home/useProviderUsage'
+import { usePulseData } from './dashboard-home/usePulseData'
+
+function githubDestination(profileUrl: string | null | undefined, path: string): string | null {
+  if (!profileUrl) return null
+  try {
+    return new URL(path, profileUrl).toString()
+  } catch {
+    return null
+  }
+}
+
+function isFailedWorkflow(conclusion: string | null): boolean {
+  const value = conclusion?.toLowerCase()
+  return value === 'failure' || value === 'timed_out' || value === 'action_required'
+}
 
 export function DashboardView(): React.JSX.Element {
-  // The Dashboard is fixed to a rolling 7-day window (no user-facing range
-  // picker — see DashboardTopBar). The heatmap still shows ~6 months (it's a
-  // time view); weeklyActivity is always the trailing 7 days; the stat tiles
-  // reflect the last 7 days.
-  const pulse = usePulseData()
-  const liveAgents = useLiveAgents()
+  const [insightsWeekOffset, setInsightsWeekOffset] = useState(0)
   const github = useGithubData()
-  const claudeUsage = useClaudeUsage()
+  const usage = useProviderUsage()
+  const pulse = usePulseData(insightsWeekOffset)
+  const uiState = useUiState()
 
-  const peakHourLabel = pulse.peakHour === null ? '—' : formatHour12(pulse.peakHour)
+  const githubSnapshot = github.snapshot
+  const profile = githubSnapshot?.profile
+  const actions = githubSnapshot?.workflowRuns ?? []
+  const repositories = githubSnapshot?.repositories ?? []
+  const failedActions = actions.filter((action) => isFailedWorkflow(action.conclusion))
+  const failingPrs = github.prs.filter((pr) => pr.checks === 'failure')
+  const githubUnavailable =
+    githubSnapshot?.availability === 'unavailable' || github.possiblyUnavailable
+  const profileUrl = profile?.profileUrl
+
+  function openExternal(url: string): void {
+    void window.api.shell.openExternal(url)
+  }
 
   return (
-    <div className="mx-auto flex max-w-[1180px] flex-col gap-[22px]">
-      {/* ============ Hero: greeting + inline stats (no big stat cards) ============ */}
-      <div className="flex flex-wrap items-end justify-between gap-5">
-        <DashboardTopBar />
-        <div className="flex flex-wrap gap-6 gap-y-3">
-          <StatTile
-            label="Sessions"
-            value={formatCompact(pulse.sessions)}
-            loading={pulse.loading}
-          />
-          {/* Tokens: real total (input + output + cache read + cache
-              creation) summed across the last 7 days' transcripts by the
-              claudeActivity.ts scanner — computed in the same read pass as
-              the line/message count, so it's effectively free. */}
-          <StatTile
-            label="Tokens"
-            value={formatCompact(pulse.tokensLast7Days)}
-            loading={pulse.loading}
-          />
-          <StatTile
-            label="Current streak"
-            value={String(pulse.currentStreak)}
-            unit={pulse.currentStreak > 0 ? 'd' : undefined}
-            loading={pulse.loading}
-          />
-          <StatTile label="Peak hour" value={peakHourLabel} loading={pulse.loading} />
-        </div>
-      </div>
+    <div className="mx-auto flex max-w-[1180px] flex-col gap-4">
+      <DashboardTopBar
+        login={profile?.login ?? null}
+        name={uiState?.githubUsername ?? profile?.login ?? null}
+        loading={github.loading}
+        onViewProfile={profileUrl ? () => openExternal(profileUrl) : undefined}
+      />
 
-      {/* ============ Pulse row: Usage (focal) + Activity ============ */}
-      <div className="grid grid-cols-1 gap-4 min-[780px]:grid-cols-[0.85fr_1.25fr]">
-        <DashboardCard title="Usage" meta="Claude · resets shown" variant="primary">
-          <UsageLimitsCard result={claudeUsage.result} loading={claudeUsage.loading} />
-        </DashboardCard>
-        <DashboardCard title="Activity" meta="this week · Mon–Sun">
-          <ActivityChart days={pulse.weeklyActivity} loading={pulse.loading} />
-        </DashboardCard>
-      </div>
+      <Tabs defaultValue="overview" className="gap-4">
+        <TabsList
+          variant="line"
+          aria-label="Home sections"
+          className="h-10 w-full justify-start gap-1 border-b border-border-default p-0"
+        >
+          <TabsTrigger value="overview" className="h-9 flex-none px-3">
+            Overview
+          </TabsTrigger>
+          <TabsTrigger value="limits" className="h-9 flex-none px-3">
+            Limits
+          </TabsTrigger>
+          <TabsTrigger value="insights" className="h-9 flex-none px-3">
+            Insights
+          </TabsTrigger>
+        </TabsList>
 
-      {/* ============ Needs you now (triage strip) ============ */}
-      <div className="flex flex-col gap-2.5">
-        <SectionHeader label="Needs you now" dotClassName="bg-accent" />
-        <div className="flex flex-wrap gap-2">
-          {/* REAL — live count of workspaces with activity==='attention',
-              from the useLiveAgents() join (see liveAgents.helpers.ts's
-              buildLiveAgentRows). `hot` when >0 since a waiting agent is the
-              most actionable state. */}
-          <TriageTile
-            count={liveAgents.waitingCount}
-            dotClassName="bg-accent"
-            label="agents waiting"
-            actionLabel="jump"
-            hot={liveAgents.waitingCount > 0}
+        <TabsContent value="overview">
+          <OverviewTab
+            loading={github.loading}
+            refreshing={github.refreshing}
+            unavailable={githubUnavailable}
+            prs={github.prs}
+            issues={github.issues}
+            actions={actions}
+            repositories={repositories}
+            openPrCount={github.openPrCount}
+            draftPrCount={github.draftPrCount}
+            openIssueCount={github.openIssueCount}
+            reviewRequestedCount={githubSnapshot?.reviewRequestedCount ?? null}
+            failedActionCount={failedActions.length}
+            workflowScopeCount={githubSnapshot?.workflowScope.repositories.length ?? 0}
+            actionsUnavailable={githubSnapshot?.workflowRunsStatus === 'unavailable'}
+            repositoriesUnavailable={githubSnapshot?.repositoriesStatus === 'unavailable'}
+            refreshError={github.refreshError}
+            reviewRequestsUrl={githubDestination(profileUrl, '/pulls/review-requested')}
+            failingPrsUrl={
+              failingPrs[0]?.url ??
+              githubDestination(profileUrl, '/pulls?q=is%3Aopen+status%3Afailure')
+            }
+            assignedIssuesUrl={
+              github.issues[0]?.url ?? githubDestination(profileUrl, '/issues/assigned')
+            }
+            failedWorkflowsUrl={failedActions[0]?.url ?? githubDestination(profileUrl, '/actions')}
+            onRefresh={github.refresh}
+            onOpenExternal={openExternal}
           />
-          {/* REAL — account-wide open PR count (incl. drafts) + draft
-              sublabel from useGithubData (`gh search prs --author @me`, U5). */}
-          <TriageTile
-            count={github.openPrCount}
-            dotClassName="bg-[color:var(--color-chart-3)]"
-            label="open PRs"
-            sublabel={github.draftPrCount > 0 ? `· ${github.draftPrCount} draft` : undefined}
-            actionLabel="open"
-          />
-          {/* REAL — account-wide assigned open-issue count from
-              useGithubData (`gh search issues --assignee @me`, U5). */}
-          <TriageTile
-            count={github.openIssueCount}
-            dotClassName="bg-[color:var(--color-chart-2)]"
-            label="open issues"
-            actionLabel="view"
-          />
-          {/* REAL — live count of workspaces currently 'ready' (recently
-              finished), from the same join as above. This is the LIVE count
-              only; a historical "finished since you left" count needs new
-              transition tracking and is Phase 3 (see plan doc U6). */}
-          <TriageTile
-            count={liveAgents.finishedCount}
-            dotClassName="bg-[color:var(--color-chart-3)]"
-            label="finished runs"
-            actionLabel="see"
-          />
-        </div>
-      </div>
+        </TabsContent>
 
-      {/* ============ Open PRs + Issues (side by side) ============ */}
-      <div className="grid grid-cols-1 gap-4 min-[780px]:grid-cols-2">
-        <PrTable />
-        <IssuesTable />
-      </div>
+        <TabsContent value="limits">
+          <LimitsTab
+            providers={usage.snapshot?.providers ?? []}
+            loading={usage.loading}
+            refreshing={usage.refreshing}
+            refreshError={usage.refreshError}
+            onRefresh={usage.refresh}
+          />
+        </TabsContent>
+
+        <TabsContent value="insights">
+          <InsightsTab
+            weekOffset={insightsWeekOffset}
+            claudePreparing={pulse.preparing}
+            claudeRangeStart={pulse.result?.rangeStart}
+            claudeRangeEnd={pulse.result?.rangeEnd}
+            refreshing={pulse.refreshing}
+            refreshError={pulse.refreshError}
+            claudeError={pulse.error}
+            weeklyActivity={pulse.weeklyActivity}
+            peakHour={pulse.peakHour}
+            activeDays={pulse.activeDays}
+            longestStreak={pulse.longestStreak}
+            sessions={pulse.sessions}
+            recentSessions={pulse.recentSessions}
+            modelActivity={pulse.modelActivity}
+            onWeekOffsetChange={setInsightsWeekOffset}
+            onRefresh={pulse.refresh}
+          />
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

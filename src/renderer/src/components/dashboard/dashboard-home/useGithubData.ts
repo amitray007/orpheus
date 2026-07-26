@@ -27,7 +27,7 @@
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useState } from 'react'
-import type { GhSearchIssue, GhSearchPr } from '@shared/types'
+import type { GhSearchIssue, GhSearchPr, GithubAccountSnapshot } from '@shared/types'
 
 export interface GithubData {
   loading: boolean
@@ -44,6 +44,9 @@ export interface GithubData {
    *  "genuinely zero open PRs/issues" case. DashboardView uses this to show
    *  a subtle hint without blocking or erroring the rest of the page. */
   possiblyUnavailable: boolean
+  snapshot: GithubAccountSnapshot | null
+  refreshing: boolean
+  refreshError: string | null
   refresh: () => void
 }
 
@@ -55,13 +58,17 @@ const EMPTY: Omit<GithubData, 'refresh'> = {
   openPrCount: 0,
   draftPrCount: 0,
   openIssueCount: 0,
-  possiblyUnavailable: false
+  possiblyUnavailable: false,
+  snapshot: null,
+  refreshing: false,
+  refreshError: null
 }
 
 function deriveState(
   prs: GhSearchPr[],
   issues: GhSearchIssue[],
-  possiblyUnavailable: boolean
+  possiblyUnavailable: boolean,
+  snapshot: GithubAccountSnapshot | null
 ): Omit<GithubData, 'refresh'> {
   const draftPrCount = prs.filter((pr) => pr.state === 'draft').length
   return {
@@ -72,7 +79,53 @@ function deriveState(
     openPrCount: prs.length,
     draftPrCount,
     openIssueCount: issues.length,
-    possiblyUnavailable
+    possiblyUnavailable,
+    snapshot,
+    refreshing: false,
+    refreshError: null
+  }
+}
+
+function unavailableMessage(snapshot: GithubAccountSnapshot): string {
+  if (snapshot.unavailableReason === 'gh-not-found') return 'GitHub CLI is not installed'
+  if (snapshot.unavailableReason === 'not-authenticated') return 'GitHub CLI is not signed in'
+  return 'GitHub data is unavailable'
+}
+
+function mergeGithubSnapshot(
+  current: GithubAccountSnapshot | null,
+  next: GithubAccountSnapshot
+): { snapshot: GithubAccountSnapshot; retainedStaleSection: boolean } {
+  if (!current || current.availability === 'unavailable') {
+    return { snapshot: next, retainedStaleSection: false }
+  }
+  if (next.availability === 'unavailable') {
+    return { snapshot: current, retainedStaleSection: true }
+  }
+  let retainedStaleSection = false
+  const keepRepositories =
+    next.repositoriesStatus === 'unavailable' && current.repositoriesStatus === 'available'
+  const keepWorkflowRuns =
+    next.workflowRunsStatus === 'unavailable' &&
+    current.workflowRunsStatus === 'available' &&
+    next.workflowScope.repositories.length === current.workflowScope.repositories.length &&
+    next.workflowScope.repositories.every(
+      (repository, index) => repository === current.workflowScope.repositories[index]
+    )
+  const keepActivity =
+    next.activityStatus === 'unavailable' && current.activityStatus === 'available'
+  retainedStaleSection = keepRepositories || keepWorkflowRuns || keepActivity
+  return {
+    snapshot: {
+      ...next,
+      reviewRequestedCount:
+        next.reviewRequestedCount ??
+        (keepActivity ? current.reviewRequestedCount : next.reviewRequestedCount),
+      repositories: keepRepositories ? current.repositories : next.repositories,
+      workflowRuns: keepWorkflowRuns ? current.workflowRuns : next.workflowRuns,
+      activity7d: keepActivity ? current.activity7d : next.activity7d
+    },
+    retainedStaleSection
   }
 }
 
@@ -80,7 +133,10 @@ export function useGithubData(): GithubData {
   const [state, setState] = useState<Omit<GithubData, 'refresh'>>(EMPTY)
   const [nonce, setNonce] = useState(0)
 
-  const refresh = useCallback(() => setNonce((n) => n + 1), [])
+  const refresh = useCallback(() => {
+    setState((current) => ({ ...current, refreshing: true, refreshError: null }))
+    setNonce((n) => n + 1)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -94,12 +150,21 @@ export function useGithubData(): GithubData {
         try {
           const cached = await Promise.all([
             window.api.github.myOpenPrsCached(),
-            window.api.github.myIssuesCached()
+            window.api.github.myIssuesCached(),
+            window.api.github.accountSnapshotCached()
           ])
           if (cancelled) return
-          const [prsCached, issuesCached] = cached
+          const [prsCached, issuesCached, accountCached] = cached
           if (prsCached && issuesCached) {
-            setState(deriveState(prsCached.value, issuesCached.value, false))
+            setState(
+              deriveState(prsCached.value, issuesCached.value, false, accountCached?.value ?? null)
+            )
+          } else if (accountCached) {
+            setState((current) => ({
+              ...current,
+              loading: false,
+              snapshot: accountCached.value
+            }))
           }
         } catch {
           // Cached read is best-effort — the live fetch below is authoritative.
@@ -109,19 +174,36 @@ export function useGithubData(): GithubData {
 
     async function loadFresh(): Promise<void> {
       try {
-        const [prs, issues] = await Promise.all([
-          window.api.github.myOpenPrs(),
-          window.api.github.myIssues()
+        const [prs, issues, snapshot] = await Promise.all([
+          window.api.github.myOpenPrs(isRefresh),
+          window.api.github.myIssues(isRefresh),
+          window.api.github.accountSnapshot(isRefresh)
         ])
         if (cancelled) return
-        setState(deriveState(prs, issues, prs.length === 0 && issues.length === 0))
+        setState((current) => {
+          const merged = mergeGithubSnapshot(current.snapshot, snapshot)
+          const keepLastGood = snapshot.availability === 'unavailable' && current.snapshot !== null
+          const next = deriveState(
+            keepLastGood ? current.prs : prs,
+            keepLastGood ? current.issues : issues,
+            snapshot.availability === 'unavailable',
+            merged.snapshot
+          )
+          if (keepLastGood) return { ...next, refreshError: unavailableMessage(snapshot) }
+          return merged.retainedStaleSection
+            ? { ...next, refreshError: 'Some GitHub data could not be refreshed' }
+            : next
+        })
       } catch (err: unknown) {
         if (!cancelled) {
-          setState({
-            ...EMPTY,
+          const message = err instanceof Error ? err.message : 'Failed to load GitHub data'
+          setState((current) => ({
+            ...current,
             loading: false,
-            error: err instanceof Error ? err.message : 'Failed to load GitHub data'
-          })
+            refreshing: false,
+            error: current.snapshot ? current.error : message,
+            refreshError: current.snapshot ? message : null
+          }))
         }
       }
     }

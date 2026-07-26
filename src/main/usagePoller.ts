@@ -18,9 +18,10 @@
 import { BrowserWindow } from 'electron'
 import { getAppUiState } from './uiState'
 import { getClaudeUsage } from './claudeUsage'
+import { getProviderUsage } from './providerUsage'
 import { PUSH_CHANNELS } from '../shared/ipc'
 import { UI_STATE_DEFAULTS, VALID_USAGE_POLL_INTERVALS_SEC } from '../shared/uiStateDefaults'
-import type { ClaudeUsage } from '../shared/types'
+import type { ClaudeUsage, ProviderUsageSnapshot } from '../shared/types'
 
 const DEFAULT_INTERVAL_SEC = UI_STATE_DEFAULTS.usagePollIntervalSec
 const INITIAL_DELAY_MS = 5_000
@@ -45,16 +46,27 @@ function broadcast(usage: ClaudeUsage): void {
   }
 }
 
+function broadcastProviderUsage(snapshot: ProviderUsageSnapshot): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(PUSH_CHANNELS.providerUsagePushed, snapshot)
+    }
+  }
+}
+
 let pollTimer: NodeJS.Timeout | null = null
 
 async function runPoll(): Promise<void> {
   try {
-    const result = await getClaudeUsage()
+    const [result, providerSnapshot] = await Promise.all([getClaudeUsage(), getProviderUsage()])
     // getClaudeUsage() already persisted the cache on success; only push a
     // successful, non-unavailable result — failures leave the renderer on
     // its last-good cached value rather than flashing an error state.
     if (!('unavailable' in result)) {
       broadcast(result)
+    }
+    if (providerSnapshot.providers.some((provider) => provider.availability === 'available')) {
+      broadcastProviderUsage(providerSnapshot)
     }
   } catch (err) {
     // Total — never throw out of the timer callback. getClaudeUsage() is

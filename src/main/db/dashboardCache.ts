@@ -25,7 +25,9 @@ import { getDb } from './index'
 export const DASHBOARD_CACHE_KEYS = {
   githubPrs: 'github_prs',
   githubIssues: 'github_issues',
+  githubAccount: 'github_account',
   claudeUsage: 'claude_usage',
+  providerUsage: 'provider_usage',
   claudeActivity: 'claude_activity'
 } as const
 

@@ -34,7 +34,7 @@ export function DashboardCard({
    *  icon (e.g. GithubLogo on Open PRs / Issues assigned) — see PrTable /
    *  IssuesTable. Plain string usages keep working unchanged. */
   title: React.ReactNode
-  meta?: string
+  meta?: React.ReactNode
   /** 'primary' = the focal/emphasized panel in a row (accent-tinted border +
    *  gradient); 'default' = the normal flat panel. */
   variant?: 'default' | 'primary'
@@ -51,10 +51,8 @@ export function DashboardCard({
       style={variant === 'primary' ? PRIMARY_STYLE : undefined}
     >
       <div className="flex items-baseline justify-between">
-        <div className="text-[12.5px] font-semibold text-text-primary">{title}</div>
-        {meta ? (
-          <div className="font-mono text-[11px] text-text-muted tabular-nums">{meta}</div>
-        ) : null}
+        <div className="text-sm font-semibold text-text-primary">{title}</div>
+        {meta ? <div className="font-mono text-xs text-text-muted tabular-nums">{meta}</div> : null}
       </div>
       <div className={cn('flex flex-1 flex-col', contentClassName)}>{children}</div>
     </div>

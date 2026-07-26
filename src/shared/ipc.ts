@@ -63,7 +63,9 @@ import type {
   ClaudeAuthTestResult,
   ClaudeUsageResult,
   ClaudeUsage,
+  ProviderUsageSnapshot,
   ClaudeActivitySummary,
+  ClaudeActivityWindowResult,
   ClaudeProjectSettings,
   ClaudeProjectSettingsOverrides,
   ClaudeWorkspaceSettingsOverrides,
@@ -110,6 +112,8 @@ import type {
   GhReviewCommentSide,
   GhSearchPr,
   GhSearchIssue,
+  GithubAccountSnapshot,
+  GithubContributionWindowResult,
   LocalReviewComment,
   PanePanel,
   PanePanelKind,
@@ -331,6 +335,11 @@ export interface InvokeChannelMap {
   // only ever stores the success shape, so `value` is `ClaudeUsage`, never
   // `unavailable`. `null` when no cache row exists yet (cold start).
   'claude:usage:cached': { req: []; res: { value: ClaudeUsage; fetchedAt: number } | null }
+  'providers:usage': { req: [{ force?: boolean }]; res: ProviderUsageSnapshot }
+  'providers:usage:cached': {
+    req: []
+    res: { value: ProviderUsageSnapshot; fetchedAt: number } | null
+  }
   // Dashboard "Your pulse" real activity — scanned directly off the on-disk
   // ~/.claude/projects/**/*.jsonl transcript store (src/main/claudeActivity.ts),
   // NOT the Orpheus `sessions` table, so it reflects ALL Claude usage, not
@@ -340,6 +349,10 @@ export interface InvokeChannelMap {
   'claude:activity:cached': {
     req: []
     res: { value: ClaudeActivitySummary; fetchedAt: number } | null
+  }
+  'claude:activityWindow': {
+    req: [{ weekOffset: number; force?: boolean }]
+    res: ClaudeActivityWindowResult
   }
   'claudeProjectSettings:get': { req: [{ projectId: string }]; res: ClaudeProjectSettings }
   'claudeProjectSettings:update': {
@@ -426,13 +439,25 @@ export interface InvokeChannelMap {
   // getMyOpenPrs/getMyIssues for the full field-shape research + cache
   // contract. Total (never rejects) — both resolve to [] on any gh failure
   // mode; the Dashboard tables render their empty state in that case.
-  'github:myOpenPrs': { req: []; res: GhSearchPr[] }
-  'github:myIssues': { req: []; res: GhSearchIssue[] }
+  'github:myOpenPrs': { req: [{ force?: boolean }]; res: GhSearchPr[] }
+  'github:myIssues': { req: [{ force?: boolean }]; res: GhSearchIssue[] }
   // Instant, disk-backed companions to the two channels above — read the
   // last-persisted successful fetch (Dashboard D2 stale-while-revalidate).
   // `null` when no cache row exists yet (cold start).
   'github:myOpenPrs:cached': { req: []; res: { value: GhSearchPr[]; fetchedAt: number } | null }
   'github:myIssues:cached': { req: []; res: { value: GhSearchIssue[]; fetchedAt: number } | null }
+  'github:accountSnapshot': {
+    req: [{ force?: boolean }]
+    res: GithubAccountSnapshot
+  }
+  'github:accountSnapshot:cached': {
+    req: []
+    res: { value: GithubAccountSnapshot; fetchedAt: number } | null
+  }
+  'github:contributionWindow': {
+    req: [{ weekOffset: number; force?: boolean }]
+    res: GithubContributionWindowResult
+  }
   // Dashboard D4 — refresh the signed-in gh user's display name on each app
   // open. Resolves via `gh api user`, persists the result to app_ui_state's
   // github_username column, and returns the resolved display name (name ||
@@ -941,6 +966,7 @@ export interface RendererPushMap {
   // unavailable ticks are NOT pushed — the renderer keeps showing last-good
   // cached data.
   'claude:usagePushed': ClaudeUsage
+  'providers:usagePushed': ProviderUsageSnapshot
   // Dashboard "Your pulse" background poller (see src/main/claudeActivityPoller.ts)
   // — pushed on each successful scan tick so the renderer updates silently
   // in place. Same "don't push on failure" contract as claude:usagePushed.
@@ -1015,6 +1041,7 @@ export const PUSH_CHANNELS = {
   routingProxyRefreshProgress: 'routingProxy:refreshProgress',
   statusChange: 'status:change',
   claudeUsagePushed: 'claude:usagePushed',
+  providerUsagePushed: 'providers:usagePushed',
   claudeActivityPushed: 'claude:activityPushed',
   actionsSubscriptionUpdate: 'actions:subscription-update',
   diagStream: 'diag:stream',

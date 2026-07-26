@@ -1,53 +1,48 @@
-// ---------------------------------------------------------------------------
-// DashboardTopBar — V1 REBUILD: now renders ONLY the greeting (time-of-day +
-// GitHub name, D4 — "Good morning, {name}"), sized up to ~26px to match
-// dashboard-v3.html's `.hero .greet .hi` (27px). Bumped from the old 22px
-// since the greeting used to anchor its own row; now it sits alongside the
-// inline stats row inside DashboardView's `.hero` flex container, so it
-// needs the extra visual weight to stay the clear anchor of that row. The
-// inline stats themselves (Sessions/Tokens/Streak/Peak hour) moved OUT of
-// this component and into DashboardView directly — this file no longer owns
-// any layout beyond its own greeting text, so it doesn't need pulse data
-// threaded through it.
-//
-// Name resolution is unchanged: computed from the current hour and the
-// `githubUsername` persisted on app_ui_state, paints instantly from the
-// shared uiState store (no fetch-on-mount flash), and is refreshed silently
-// in the background on every app open via `github:refreshUsername`. The
-// Dashboard is fixed to a 7-day window (see DashboardView) — deliberately
-// NOT surfaced as a control here, so there's no range picker.
-// ---------------------------------------------------------------------------
-
-import { useEffect } from 'react'
-import { useUiState, updateUiState } from '@/lib/uiStateStore'
+import { ArrowSquareOut, GithubLogo } from '@phosphor-icons/react'
+import { Button } from '@/components/ui/button'
 import { greetingWithName } from './dashboardHome.helpers'
 
-export function DashboardTopBar(): React.JSX.Element {
-  const uiState = useUiState()
-  const greeting = greetingWithName(new Date().getHours(), uiState?.githubUsername ?? null)
-
-  // Fire-and-forget background refresh, once per mount (i.e. once per app
-  // open — DashboardTopBar mounts with the Dashboard). Silent: no loading
-  // state, no skeleton. updateUiState locally patches the store with the
-  // resolved name the moment it resolves, since this IPC handler has no
-  // mainWindow ref to broadcast uiState:changed with (see
-  // src/main/ipc/git.ts's github:refreshUsername handler doc comment) — a
-  // null result (gh missing/unauth/network) leaves the stored name as-is.
-  useEffect(() => {
-    window.api.github
-      .refreshUsername()
-      .then((name) => {
-        if (name) updateUiState({ githubUsername: name })
-      })
-      .catch(() => {
-        // Total on the main side already (never rejects) — this catch is
-        // just defensive against an unexpected IPC-layer failure.
-      })
-  }, [])
+export function DashboardTopBar({
+  login,
+  name,
+  loading = false,
+  onViewProfile
+}: {
+  login: string | null
+  name?: string | null
+  loading?: boolean
+  onViewProfile?: () => void
+}): React.JSX.Element {
+  const identity = login ? `@${login.replace(/^@/, '')}` : 'GitHub Not Connected'
+  const greeting = greetingWithName(new Date().getHours(), name || login)
 
   return (
-    <div className="text-[26px] leading-tight font-semibold tracking-tight text-text-primary">
-      {greeting}
-    </div>
+    <header className="flex min-h-14 flex-wrap items-center justify-between gap-4">
+      <div className="min-w-0">
+        <h1 className="text-[24px] leading-tight font-semibold tracking-tight text-text-primary">
+          {greeting}
+        </h1>
+        <div className="mt-1 flex min-h-5 items-center gap-1.5 text-sm text-text-muted">
+          <GithubLogo size={14} weight="fill" aria-hidden="true" />
+          {loading && !login ? (
+            <span className="h-3 w-28 animate-pulse rounded bg-surface-overlay" />
+          ) : (
+            <span className="font-mono text-text-secondary">{identity}</span>
+          )}
+        </div>
+      </div>
+
+      <Button
+        type="button"
+        variant="outline"
+        size="xs"
+        onClick={onViewProfile}
+        disabled={!onViewProfile}
+        className="bg-surface-raised text-text-secondary hover:border-accent hover:bg-surface-overlay hover:text-text-primary active:scale-[0.97]"
+      >
+        View Profile
+        <ArrowSquareOut weight="bold" aria-hidden="true" />
+      </Button>
+    </header>
   )
 }
