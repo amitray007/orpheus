@@ -150,6 +150,7 @@ import { registerClaudeUsageIpc } from './ipc/claudeUsage'
 import { registerClaudeActivityIpc } from './ipc/claudeActivity'
 import { registerFooterActionsIpc } from './ipc/footerActions'
 import { registerReviewsIpc } from './ipc/reviews'
+import { bootControlPlane } from './controlPlane'
 import { registerPanesIpc } from './ipc/panes'
 import { registerKeepAwakeIpc } from './ipc/keepAwake'
 import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
@@ -2248,8 +2249,9 @@ if (!app.requestSingleInstanceLock()) {
         broadcast: (channel, payload) => getMainWindow()?.webContents.send(channel, payload)
       })
 
-      // Boot Quick Actions registry — registers all action descriptors so they're
-      // available before any IPC can invoke them.
+      // Boot both internal registries before renderer IPC or the deferred command
+      // server can invoke them.
+      bootControlPlane()
       bootActions()
 
       // Seed default footer actions on first install (idempotent: no-op if rows exist).

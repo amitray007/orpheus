@@ -23,9 +23,13 @@ import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../sha
 import { onWorkspaceStatusChange } from './orpheusNotify'
 import { getWorkspaceFileInfo, getWorkspaceFileStatusSync, forceReconcile } from './sessionState'
 import {
-  listByWorkspace as listLocalReviewComments,
-  setResolved as setLocalReviewCommentResolved
-} from './reviewStore'
+  commandReviewContext,
+  invokeReviewList,
+  invokeReviewSetResolved,
+  resolveCommandReviewListInput,
+  resolveCommandReviewSetResolvedInput
+} from './reviewControlAdapter'
+import { invokeControl } from './controlPlane'
 
 // ---------------------------------------------------------------------------
 // Deps injected from index.ts (these live as locals there, so we receive them
@@ -619,11 +623,12 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     //   workspaceId — falls back to context.workspaceId (the same
     //                 caller-identity convention whoami.resolve above uses),
     //                 so a workspace-scoped agent doesn't need to pass it.
-    'reviews.list': (args, context) => {
-      const workspaceId =
-        context?.workspaceId ?? (typeof args?.workspaceId === 'string' ? args.workspaceId : null)
-      if (!workspaceId) throw new Error('workspaceId is required (no context workspace either)')
-      return listLocalReviewComments(workspaceId)
+    'reviews.list': async (args, context) => {
+      return invokeReviewList(
+        invokeControl,
+        resolveCommandReviewListInput(args, context),
+        commandReviewContext(context?.workspaceId ?? null)
+      )
     },
 
     // Resolve-back — the write-side counterpart to reviews.list, mirrored
@@ -640,10 +645,12 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // Comment ids are globally unique (randomUUID), so — unlike reviews.list —
     // there is no workspaceId to resolve/scope by here; mirrors the
     // reviews:setResolved IPC handler, which also takes only { id, resolved }.
-    'reviews.setResolved': (args) => {
-      if (typeof args.id !== 'string' || args.id === '') throw new Error(ARGS_ID_REQUIRED_ERROR)
-      if (typeof args.resolved !== 'boolean') throw new Error('args.resolved is required (boolean)')
-      return setLocalReviewCommentResolved(args.id, args.resolved)
+    'reviews.setResolved': async (args, context) => {
+      return invokeReviewSetResolved(
+        invokeControl,
+        resolveCommandReviewSetResolvedInput(args, ARGS_ID_REQUIRED_ERROR),
+        commandReviewContext(context?.workspaceId ?? null)
+      )
     }
   }
 }

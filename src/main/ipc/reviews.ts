@@ -8,16 +8,34 @@
 // ---------------------------------------------------------------------------
 
 import { handle } from './handle'
-import { listByWorkspace, add, setResolved, remove } from '../reviewStore'
+import { add, remove } from '../reviewStore'
+import {
+  invokeReviewList,
+  invokeReviewSetResolved,
+  rendererReviewContext
+} from '../reviewControlAdapter'
+import { invokeControl } from '../controlPlane'
 
 export function registerReviewsIpc(): void {
-  handle('reviews:list', (_e, { workspaceId }) => listByWorkspace(workspaceId))
+  handle('reviews:list', async (e, { workspaceId }) =>
+    invokeReviewList(
+      invokeControl,
+      { workspaceId },
+      rendererReviewContext(e.sender.id, workspaceId)
+    )
+  )
 
   handle('reviews:add', (_e, { workspaceId, prNumber, path, line, startLine, side, body }) =>
     add({ workspaceId, prNumber, path, line, startLine, side, body })
   )
 
-  handle('reviews:setResolved', (_e, { id, resolved }) => setResolved(id, resolved))
+  handle('reviews:setResolved', async (e, { id, resolved }) =>
+    invokeReviewSetResolved(
+      invokeControl,
+      { id, resolved },
+      rendererReviewContext(e.sender.id, null)
+    )
+  )
 
   handle('reviews:delete', (_e, { id }) => {
     remove(id)
