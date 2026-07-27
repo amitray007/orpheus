@@ -8,6 +8,7 @@ import type {
   ControlSurface
 } from './types'
 import { WorkspaceOrchestrationError } from '../workspaceOrchestration/errors'
+import { TerminalObservationError } from '../terminalObservation/errors'
 
 type StoredDescriptor = ControlDescriptor<unknown, unknown>
 
@@ -137,6 +138,9 @@ export class ControlRegistry {
       return { ok: true, value: value as T }
     } catch (err) {
       if (err instanceof WorkspaceOrchestrationError) {
+        return { ok: false, code: err.code, error: err.message }
+      }
+      if (err instanceof TerminalObservationError) {
         return { ok: false, code: err.code, error: err.message }
       }
       return {

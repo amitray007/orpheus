@@ -42,6 +42,7 @@ import {
   getWorkspace,
   archiveWorkspace,
   closeWorkspace,
+  listWorkspacesForProject,
   listChildWorkspaces,
   setWorkspaceLastTitle,
   getAllWorkspaceLastTitles,
@@ -189,6 +190,12 @@ import { registerOverlayIpc } from './ipc/overlay'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
 import { WorkspaceControlAdapter } from './workspaceControlAdapter'
+import {
+  createMainTerminalObservation,
+  paneSurfaceId,
+  type NativeSurfacePhase,
+  type TerminalObservationService
+} from './terminalObservation'
 
 let notifyServer: { sockPath: string; close: () => void } | null = null
 let commandServer: {
@@ -201,40 +208,37 @@ let sessionStateService: { stop: () => void } | null = null
 let powerAwakeCleanup: (() => void) | null = null
 const runtimeLeases = new RuntimeLeaseRegistry()
 let workspaceOrchestrationService: WorkspaceOrchestrationService | null = null
+let terminalObservationService: TerminalObservationService | null = null
+let terminalObservationCleanup: (() => void) | null = null
 let unmanagedMountWarningEmitted = false
 
 setRuntimeSessionObserver(({ workspaceId, claudeConversationId, session }) => {
   const binding = runtimeLeases.getBySurfaceId(workspaceId)
-  if (binding == null) return
-
-  if (
-    binding.claudeConversationId != null &&
-    binding.claudeConversationId !== claudeConversationId
-  ) {
-    runtimeLeases.revokeBySurface(workspaceId)
-    return
+  if (binding != null) {
+    if (
+      binding.claudeConversationId != null &&
+      binding.claudeConversationId !== claudeConversationId
+    ) {
+      runtimeLeases.revokeBySurface(workspaceId)
+    } else if (session != null) {
+      runtimeLeases.observeClaude({
+        workspaceId,
+        claudeConversationId,
+        pid: session.pid
+      })
+    } else if (binding.state === 'live') {
+      // A fresh pending mount legitimately has no session file during Claude
+      // startup. Preserve it until its TTL; once a runtime was observed live,
+      // disappearance means the wrapper has fallen through to an interactive
+      // shell and must no longer authenticate as the Claude agent.
+      runtimeLeases.observeClaude({
+        workspaceId,
+        claudeConversationId,
+        pid: null
+      })
+    }
   }
-
-  if (session != null) {
-    runtimeLeases.observeClaude({
-      workspaceId,
-      claudeConversationId,
-      pid: session.pid
-    })
-    return
-  }
-
-  // A fresh pending mount legitimately has no session file during Claude
-  // startup. Preserve it until its TTL; once a runtime was observed live,
-  // disappearance means the wrapper has fallen through to an interactive
-  // shell and must no longer authenticate as the Claude agent.
-  if (binding.state === 'live') {
-    runtimeLeases.observeClaude({
-      workspaceId,
-      claudeConversationId,
-      pid: null
-    })
-  }
+  terminalObservationService?.recordWorkspaceSessionFromSource(workspaceId)
 })
 
 /**
@@ -505,6 +509,7 @@ function destroyWorkspaceRuntime(id: string, knownCwd?: string | null): void {
   if (terminalAddon) {
     try {
       terminalAddon.destroy(id)
+      terminalObservationService?.recordWorkspaceLifecycle(id, getNativeSurfacePhase(id))
     } catch {
       // Surface not mounted or already destroyed — ignore.
     }
@@ -1219,6 +1224,17 @@ function loadTerminalAddon(): GhosttySurfaceAddon {
   }
 }
 
+function getNativeSurfacePhase(surfaceId: string): NativeSurfacePhase {
+  try {
+    const phase = loadTerminalAddon().getSurfacePhase(surfaceId)
+    return phase === 'hidden' || phase === 'attached' || phase === 'visible' || phase === 'freeing'
+      ? phase
+      : 'none'
+  } catch {
+    return 'none'
+  }
+}
+
 /** True if the workspace no longer exists or has been archived — the shared
  *  re-validation check run at two points in terminal:mount around await gaps
  *  where the workspace could have been archived concurrently. */
@@ -1449,6 +1465,10 @@ async function traceTerminalMount(
     }
 
     reconcileMountLeaseResult(workspaceId, addon, mountResult, leaseIssue)
+    terminalObservationService?.recordWorkspaceLifecycle(
+      workspaceId,
+      getNativeSurfacePhase(workspaceId)
+    )
     s.mark(mountResult.created ? 'surface-created' : 'surface-reattached')
     logDiagMain({
       category: 'lifecycle',
@@ -1652,6 +1672,7 @@ handle('terminal:hide', (_e, { workspaceId }): void => {
   hideLoadingOverlay(workspaceId)
   try {
     addon.hide(workspaceId)
+    terminalObservationService?.recordWorkspaceLifecycle(workspaceId, 'hidden')
   } catch (err) {
     logDiagMain({
       category: 'error',
@@ -1817,7 +1838,13 @@ function destroyWorkbenchSurfacesForWorkspace(workspaceId: string): void {
   const addon = loadTerminalAddon()
   for (const terminalId of ids) {
     try {
-      addon.destroy(workbenchSlotId(workspaceId, terminalId))
+      const surfaceId = workbenchSlotId(workspaceId, terminalId)
+      addon.destroy(surfaceId)
+      terminalObservationService?.recordWorkbenchLifecycle(
+        workspaceId,
+        terminalId,
+        getNativeSurfacePhase(surfaceId)
+      )
     } catch {
       // Surface not mounted or already destroyed — ignore.
     }
@@ -1850,6 +1877,13 @@ handle('workbench:mount', (e, { workspaceId, rect, scaleFactor, terminalId }) =>
     env: prepareTerminalLaunchEnv({})
   })
   registerWorkbenchSurface(workspaceId, terminalId)
+  if (terminalId !== undefined) {
+    terminalObservationService?.recordWorkbenchLifecycle(
+      workspaceId,
+      terminalId,
+      getNativeSurfacePhase(slotId)
+    )
+  }
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
@@ -1873,11 +1907,22 @@ handle('workbench:resize', (_e, { workspaceId, rect, scaleFactor, terminalId }):
 handle('workbench:hide', (_e, { workspaceId, terminalId }): void => {
   const addon = loadTerminalAddon()
   addon.hide(workbenchSlotId(workspaceId, terminalId))
+  if (terminalId !== undefined) {
+    terminalObservationService?.recordWorkbenchLifecycle(workspaceId, terminalId, 'hidden')
+  }
 })
 
 handle('workbench:destroy', (_e, { workspaceId, terminalId }): void => {
   const addon = loadTerminalAddon()
-  addon.destroy(workbenchSlotId(workspaceId, terminalId))
+  const surfaceId = workbenchSlotId(workspaceId, terminalId)
+  addon.destroy(surfaceId)
+  if (terminalId !== undefined) {
+    terminalObservationService?.recordWorkbenchLifecycle(
+      workspaceId,
+      terminalId,
+      getNativeSurfacePhase(surfaceId)
+    )
+  }
   unregisterWorkbenchSurface(workspaceId, terminalId)
 })
 
@@ -1973,7 +2018,13 @@ function destroyPaneSurfacesForWorkspace(workspaceId: string): void {
   const addon = loadTerminalAddon()
   for (const paneId of ids) {
     try {
-      addon.destroy(paneSlotId(workspaceId, paneId))
+      const surfaceId = paneSlotId(workspaceId, paneId)
+      addon.destroy(surfaceId)
+      terminalObservationService?.recordPaneLifecycle(
+        workspaceId,
+        paneId,
+        getNativeSurfacePhase(surfaceId)
+      )
     } catch {
       // Surface not mounted or already destroyed — ignore.
     }
@@ -2019,6 +2070,7 @@ function mountPaneBackground(
     env: prepareTerminalLaunchEnv({ ORPHEUS_PANE_CMD: command })
   })
   registerPaneSurface(layoutId, paneId)
+  terminalObservationService?.recordPaneLifecycle(layoutId, paneId, getNativeSurfacePhase(slotId))
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
@@ -2067,6 +2119,7 @@ function mountLayoutBackground(nativeHandle: Buffer, layout: PaneLayout): void {
       mountPaneBackground(nativeHandle, layout.id, paneId, rect, scaleFactor, command)
       try {
         loadTerminalAddon().hide(paneSlotId(layout.id, paneId))
+        terminalObservationService?.recordPaneLifecycle(layout.id, paneId, 'hidden')
       } catch (err) {
         console.error(
           `[panes] background hide failed for pane ${paneId} in layout ${layout.id}:`,
@@ -2136,11 +2189,18 @@ handle('pane:resize', (_e, { workspaceId, paneId, rect, scaleFactor }): void => 
 handle('pane:hide', (_e, { workspaceId, paneId }): void => {
   const addon = loadTerminalAddon()
   addon.hide(paneSlotId(workspaceId, paneId))
+  terminalObservationService?.recordPaneLifecycle(workspaceId, paneId, 'hidden')
 })
 
 handle('pane:destroy', (_e, { workspaceId, paneId }): void => {
   const addon = loadTerminalAddon()
-  addon.destroy(paneSlotId(workspaceId, paneId))
+  const surfaceId = paneSlotId(workspaceId, paneId)
+  addon.destroy(surfaceId)
+  terminalObservationService?.recordPaneLifecycle(
+    workspaceId,
+    paneId,
+    getNativeSurfacePhase(surfaceId)
+  )
   unregisterPaneSurface(workspaceId, paneId)
 })
 
@@ -2214,6 +2274,10 @@ handle('terminal:destroy', (_e, { workspaceId }): void => {
   const addon = loadTerminalAddon()
   try {
     addon.destroy(workspaceId)
+    terminalObservationService?.recordWorkspaceLifecycle(
+      workspaceId,
+      getNativeSurfacePhase(workspaceId)
+    )
   } catch (err) {
     logDiagMain({
       category: 'error',
@@ -2449,19 +2513,7 @@ if (!app.requestSingleInstanceLock()) {
       const workspaceOrchestration = createMainWorkspaceOrchestration({
         runtimeLeases,
         requestOpenWorkspace,
-        getSurfacePhase: (workspaceId) => {
-          try {
-            const phase = loadTerminalAddon().getSurfacePhase(workspaceId)
-            return phase === 'hidden' ||
-              phase === 'attached' ||
-              phase === 'visible' ||
-              phase === 'freeing'
-              ? phase
-              : 'none'
-          } catch {
-            return 'none'
-          }
-        },
+        getSurfacePhase: getNativeSurfacePhase,
         isWorkspaceSessionReady,
         canInject: terminalActions.canInject,
         sendInput: (workspaceId, text) =>
@@ -2471,6 +2523,69 @@ if (!app.requestSingleInstanceLock()) {
       })
       workspaceOrchestrationService = workspaceOrchestration.service
       const runtimeControlGrants = new RuntimeControlGrantPolicy()
+      const mainReads = createMainReadHandlers({
+        statusObservation: (workspaceId, observedAt) => {
+          const workspace = getWorkspace(workspaceId)
+          const live = getWorkspaceFileInfo(workspaceId)
+          return {
+            value:
+              workspace == null
+                ? null
+                : {
+                    persistedStatus: workspace.status,
+                    liveStatus: live.status,
+                    ...(live.waitingFor ? { waitingFor: live.waitingFor } : {})
+                  },
+            source: 'claude-session-file',
+            observedAt,
+            sourceUpdatedAt: live.statusUpdatedAt ?? null,
+            availability:
+              workspace == null || live.availability === 'unavailable'
+                ? 'unavailable'
+                : 'available',
+            stale: live.availability === 'unavailable' ? null : false,
+            ...(workspace == null
+              ? { reason: 'Workspace was not found.' }
+              : live.availability === 'unavailable'
+                ? { reason: 'Claude live session is unavailable.' }
+                : {})
+          }
+        }
+      })
+      const terminalObservation = createMainTerminalObservation({
+        runtimeLeases,
+        reads: mainReads,
+        listWorkspaces: (projectId) => listWorkspacesForProject(projectId, { scope: 'active' }),
+        getWorkspace: (workspaceId) => getWorkspace(workspaceId) ?? null,
+        listWorkbenchTerminalIds: (workspaceId) => [
+          ...(workbenchSurfacesByWorkspace.get(workspaceId) ?? [])
+        ],
+        hasWorkbenchTerminal: (workspaceId, terminalId) =>
+          workbenchSurfacesByWorkspace.get(workspaceId)?.has(terminalId) === true,
+        hasPaneSurface: (layoutId, paneId) =>
+          paneSurfacesByWorkspace.get(layoutId)?.has(paneId) === true,
+        getPaneTargetBySurfaceId: (surfaceId) => {
+          for (const [layoutId, paneIds] of paneSurfacesByWorkspace) {
+            for (const paneId of paneIds) {
+              if (paneSurfaceId(layoutId, paneId) !== surfaceId) continue
+              const layout = getLayout(layoutId)
+              const terminal = listTerminals(layoutId).find((candidate) => candidate.id === paneId)
+              if (layout == null || terminal == null) return null
+              return {
+                layoutId,
+                paneId,
+                cwd: layout.dir,
+                command: terminal.command,
+                updatedAt: Math.max(layout.updatedAt, terminal.updatedAt)
+              }
+            }
+          }
+          return null
+        },
+        getNativePhase: getNativeSurfacePhase
+      })
+      terminalObservationService = terminalObservation.service
+      terminalObservationCleanup = terminalObservation.dispose
 
       // Boot both internal registries before renderer IPC or the deferred command
       // server can invoke them.
@@ -2478,36 +2593,9 @@ if (!app.requestSingleInstanceLock()) {
         authorization: createTrustedRuntimeReadPolicy({
           getWorkspaceProjectId: (workspaceId) => getWorkspace(workspaceId)?.projectId ?? null
         }),
-        reads: createMainReadHandlers({
-          statusObservation: (workspaceId, observedAt) => {
-            const workspace = getWorkspace(workspaceId)
-            const live = getWorkspaceFileInfo(workspaceId)
-            return {
-              value:
-                workspace == null
-                  ? null
-                  : {
-                      persistedStatus: workspace.status,
-                      liveStatus: live.status,
-                      ...(live.waitingFor ? { waitingFor: live.waitingFor } : {})
-                    },
-              source: 'claude-session-file',
-              observedAt,
-              sourceUpdatedAt: live.statusUpdatedAt ?? null,
-              availability:
-                workspace == null || live.availability === 'unavailable'
-                  ? 'unavailable'
-                  : 'available',
-              stale: live.availability === 'unavailable' ? null : false,
-              ...(workspace == null
-                ? { reason: 'Workspace was not found.' }
-                : live.availability === 'unavailable'
-                  ? { reason: 'Claude live session is unavailable.' }
-                  : {})
-            }
-          }
-        }),
-        workspaceOrchestration: workspaceOrchestration.service
+        reads: mainReads,
+        workspaceOrchestration: workspaceOrchestration.service,
+        terminalObservation: terminalObservation.service
       })
       bootControlPlane()
       bootActions(workspaceControlAdapter)
@@ -3068,6 +3156,9 @@ if (!app.requestSingleInstanceLock()) {
     notifyServer?.close()
     commandServer?.close()
     sessionStateService?.stop()
+    terminalObservationCleanup?.()
+    terminalObservationCleanup = null
+    terminalObservationService = null
     powerAwakeCleanup?.()
     stopStatusPoller()
     stopUsagePoller()
