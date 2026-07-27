@@ -7,9 +7,12 @@ import type {
   ClaudeSlashCommandDraft,
   ClaudeSubagentDraft
 } from '../shared/types'
-import { listProjects } from './projects'
+import { getProject, listProjects } from './projects'
+import { resolveProjectResourcePath } from './projectResourceScope'
 
 const SLUG_RE = /^[a-z0-9_-]+$/
+const MAX_CONTROL_RESOURCE_FILE_BYTES = 1024 * 1024
+const MAX_CONTROL_RESOURCE_ENTRIES = 256
 
 // ---------------------------------------------------------------------------
 // Frontmatter parsing
@@ -139,11 +142,18 @@ function atomicWrite(filePath: string, content: string): void {
   fs.renameSync(tmp, filePath)
 }
 
-function parseFile(filePath: string): {
+function parseFile(
+  filePath: string,
+  options: { maxBytes?: number; stableError?: string } = {}
+): {
   frontmatter: Record<string, string | string[]>
   bodyPreview: string
 } {
   try {
+    if (options.maxBytes != null && fs.statSync(filePath).size > options.maxBytes) {
+      if (options.stableError != null) throw new Error(options.stableError)
+      return { frontmatter: {}, bodyPreview: '' }
+    }
     const content = fs.readFileSync(filePath, 'utf-8')
     const frontmatter = parseFrontmatter(content)
 
@@ -174,14 +184,18 @@ function parseFile(filePath: string): {
 
     return { frontmatter, bodyPreview }
   } catch {
+    if (options.stableError != null) throw new Error(options.stableError)
     return { frontmatter: {}, bodyPreview: '' }
   }
 }
 
-function listMdFiles(dir: string): string[] {
+function listMdFiles(
+  dir: string,
+  options: { maxFiles?: number; stableError?: string } = {}
+): string[] {
   if (!fs.existsSync(dir)) return []
   try {
-    return fs
+    const files = fs
       .readdirSync(dir, { withFileTypes: true })
       .flatMap((e) =>
         e.isFile() && e.name.endsWith('.md') && !e.name.startsWith('.')
@@ -189,7 +203,9 @@ function listMdFiles(dir: string): string[] {
           : []
       )
       .sort((a, b) => nodePath.basename(a).localeCompare(nodePath.basename(b)))
+    return options.maxFiles == null ? files : files.slice(0, options.maxFiles)
   } catch {
+    if (options.stableError != null) throw new Error(options.stableError)
     return []
   }
 }
@@ -263,6 +279,39 @@ export function listSlashCommands(): ClaudeSlashCommand[] {
   })
 }
 
+/** Read only one registered project's slash-command directory. */
+export function listProjectSlashCommands(projectId: string): ClaudeSlashCommand[] {
+  const project = getProject(projectId)
+  if (project == null) return []
+  const expectedDir = nodePath.join(project.path, '.claude', 'commands')
+  if (!fs.existsSync(expectedDir)) return []
+  const projectDir = resolveProjectResourcePath(project.path, ['.claude', 'commands'], 'directory')
+  if (projectDir == null) throw new Error('Project slash-command metadata is unavailable.')
+  return listMdFiles(projectDir, {
+    maxFiles: MAX_CONTROL_RESOURCE_ENTRIES,
+    stableError: 'Project slash-command metadata is unavailable.'
+  })
+    .map((filePath) => {
+      const { frontmatter: fm, bodyPreview } = parseFile(filePath, {
+        maxBytes: MAX_CONTROL_RESOURCE_FILE_BYTES,
+        stableError: 'Project slash-command metadata is unavailable.'
+      })
+      return {
+        name: stringOrNull(fm['name']) ?? nodePath.basename(filePath, '.md'),
+        path: filePath,
+        source: 'project' as const,
+        projectId: project.id,
+        projectName: project.name,
+        description: stringOrNull(fm['description']),
+        allowedTools: stringsOrNull(fm['allowed-tools']),
+        argumentHint: stringOrNull(fm['argument-hint']),
+        frontmatter: fm,
+        bodyPreview
+      }
+    })
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
 export function listSubagents(): ClaudeSubagent[] {
   const all: ClaudeSubagent[] = []
 
@@ -310,6 +359,39 @@ export function listSubagents(): ClaudeSubagent[] {
     }
     return a.name.localeCompare(b.name)
   })
+}
+
+/** Read only one registered project's subagent directory. */
+export function listProjectSubagents(projectId: string): ClaudeSubagent[] {
+  const project = getProject(projectId)
+  if (project == null) return []
+  const expectedDir = nodePath.join(project.path, '.claude', 'agents')
+  if (!fs.existsSync(expectedDir)) return []
+  const projectDir = resolveProjectResourcePath(project.path, ['.claude', 'agents'], 'directory')
+  if (projectDir == null) throw new Error('Project subagent metadata is unavailable.')
+  return listMdFiles(projectDir, {
+    maxFiles: MAX_CONTROL_RESOURCE_ENTRIES,
+    stableError: 'Project subagent metadata is unavailable.'
+  })
+    .map((filePath) => {
+      const { frontmatter: fm, bodyPreview } = parseFile(filePath, {
+        maxBytes: MAX_CONTROL_RESOURCE_FILE_BYTES,
+        stableError: 'Project subagent metadata is unavailable.'
+      })
+      return {
+        name: stringOrNull(fm['name']) ?? nodePath.basename(filePath, '.md'),
+        path: filePath,
+        source: 'project' as const,
+        projectId: project.id,
+        projectName: project.name,
+        description: stringOrNull(fm['description']),
+        tools: stringsOrNull(fm['tools']),
+        model: stringOrNull(fm['model']),
+        frontmatter: fm,
+        bodyPreview
+      }
+    })
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 // ---------------------------------------------------------------------------

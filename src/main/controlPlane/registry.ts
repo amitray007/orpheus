@@ -9,6 +9,7 @@ import type {
 } from './types'
 import { WorkspaceOrchestrationError } from '../workspaceOrchestration/errors'
 import { TerminalObservationError } from '../terminalObservation/errors'
+import { SettingsResourceError } from './settingsResourceService'
 
 type StoredDescriptor = ControlDescriptor<unknown, unknown>
 
@@ -141,6 +142,9 @@ export class ControlRegistry {
         return { ok: false, code: err.code, error: err.message }
       }
       if (err instanceof TerminalObservationError) {
+        return { ok: false, code: err.code, error: err.message }
+      }
+      if (err instanceof SettingsResourceError) {
         return { ok: false, code: err.code, error: err.message }
       }
       return {

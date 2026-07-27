@@ -1,6 +1,7 @@
 # Orpheus Agentic Control Plane
 
-**Status:** Phases 1–3 implemented and validated; Phases 4–8 planned<br>
+**Status:** Phases 1–3 implemented and validated; Phases 4–6 implemented and
+deterministically tested with batched live validation pending; Phases 7–8 planned<br>
 **Scope:** local Orpheus app, its renderer, bundled CLI, managed Claude sessions, and future durable automations
 
 The Agentic Control Plane makes Orpheus programmable through stable, semantic
@@ -21,10 +22,14 @@ tiers. Delivered phase records:
 [Phase 2: Self Identity + Read-only MCP](phase-02-self-identity-readonly-mcp.md).
 The delivered Phase 3 record is split between
 [Workspace Orchestration](phase-03-workspace-orchestration.md) and its
-[strict interfaces](phase-03-interfaces.md). Phase 5's independently reviewable
+[strict interfaces](phase-03-interfaces.md). Phase 4 is recorded in
+[Workbench and Pane Control](phase-04-workbench-pane-control.md) and its
+[strict interfaces](phase-04-interfaces.md). Phase 5's independently reviewable
 [Terminal Observability](phase-05-terminal-observability.md) slice is
 implemented and deterministically tested; packaged native and live managed MCP
-validation remains part of the batched integration pass.
+validation remains part of the batched integration pass. Phase 6 is recorded in
+[Settings and Resources](phase-06-settings-resources.md) and its
+[strict interfaces](phase-06-interfaces.md).
 
 ## Product promise
 
@@ -181,19 +186,25 @@ the native UI adapter. Automations invoke the core in-process.
    have static regressions and await the next batched live integration pass. See
    [phase-03-workspace-orchestration.md](phase-03-workspace-orchestration.md)
    and [phase-03-interfaces.md](phase-03-interfaces.md).
-4. **Self Workbench/Panes Control** — let an agent control its own workbench and
-   pane/layout state through domain commands such as open file, show diff,
-   select layout, and start/stop a configured terminal. Do not expose click
-   simulation.
+4. **Self Workbench/Panes Control — implemented and deterministically tested;
+   live-app validation pending.** An agent can control its own workbench and
+   explicitly granted pane/layout state through semantic domain commands, with
+   no click simulation. See
+   [phase-04-workbench-pane-control.md](phase-04-workbench-pane-control.md) and
+   [phase-04-interfaces.md](phase-04-interfaces.md).
 5. **Terminal Observability — implemented and deterministically tested.** Five
    Tier 0 `terminals.read` queries expose authoritative lifecycle, readiness,
    command/cwd, status, session/transcript, and bounded output-tail data where
    it exists. Current libghostty surfaces return explicit `unsupported` output
    tails because Orpheus does not receive an authoritative text stream. See
    [phase-05-terminal-observability.md](phase-05-terminal-observability.md).
-6. **Settings/Resources** — add scoped, allowlisted reads and safe writes for
-   non-secret settings and resources, preserving layered composition and
-   restart-to-apply semantics.
+6. **Settings/Resources — implemented and deterministically tested; live
+   validation pending.** MCP exposes effective model/effort provenance, a
+   self-only model/effort workspace patch, and sanitized same-project MCP
+   server/hook/slash-command/subagent metadata. Default runtime grants remain
+   fail-closed. See
+   [phase-06-settings-resources.md](phase-06-settings-resources.md) and
+   [phase-06-interfaces.md](phase-06-interfaces.md).
 7. **Durable Automations** — persist triggers, semantic invocations, policy,
    budgets, retries, idempotency keys, and run history; execute through the
    same control core.

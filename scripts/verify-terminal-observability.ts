@@ -242,6 +242,7 @@ function registryFor(service: TerminalObservationService): ControlRegistry {
     },
     undefined,
     undefined,
+    undefined,
     createTerminalObservationHandlers(service)
   )
   return registry

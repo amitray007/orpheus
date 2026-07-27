@@ -2,12 +2,14 @@ import { createReadCapabilities } from './readCapabilities'
 import { createReviewCapabilities } from './reviewCapabilities'
 import { createWorkspaceCapabilities } from './workspaceCapabilities'
 import { createTerminalObservationCapabilities } from './terminalObservationCapabilities'
+import { createSettingsResourceCapabilities } from './settingsResourceCapabilities'
 import type { ControlRegistry } from './registry'
 import type { ControlDescriptor, ReadCapabilityHandlers, ReviewCapabilityHandlers } from './types'
 import type { TerminalObservationHandlers } from '../terminalObservation/types'
 import type { WorkspaceOrchestrationService } from '../workspaceOrchestration/service'
 import type { WorkbenchControlService } from '../workbenchControl/service'
 import { createWorkbenchCapabilities } from './workbenchCapabilities'
+import type { SettingsResourceService } from './settingsResourceService'
 
 export function bootControlRegistry(
   registry: ControlRegistry,
@@ -15,7 +17,8 @@ export function bootControlRegistry(
   readHandlers?: ReadCapabilityHandlers,
   workspaceService?: WorkspaceOrchestrationService,
   workbenchService?: WorkbenchControlService,
-  terminalObservationHandlers?: TerminalObservationHandlers
+  terminalObservationHandlers?: TerminalObservationHandlers,
+  settingsResourceService?: SettingsResourceService
 ): void {
   const [listCapability, setResolvedCapability] = createReviewCapabilities(reviewHandlers, {
     mcpRead: readHandlers != null
@@ -71,5 +74,12 @@ export function bootControlRegistry(
     registry.register(getClaudeSession)
     registry.register(getOutputTail)
     registry.register(subscribe)
+  }
+  if (settingsResourceService != null) {
+    const [effective, patch, resources] =
+      createSettingsResourceCapabilities(settingsResourceService)
+    registry.register(effective)
+    registry.register(patch)
+    registry.register(resources)
   }
 }

@@ -56,6 +56,7 @@
     "test:workspace-orchestration:renderer-actions": "bun run scripts/verify-workspace-renderer-actions.ts",
     "test:workspace-orchestration": "bun run test:workspace-orchestration:foundation && bun run test:workspace-orchestration:main && bun run test:workspace-orchestration:cli && bun run test:workspace-orchestration:renderer-actions",
     "test:workbench-control": "bun run scripts/verify-workbench-pane-control.ts",
+    "test:settings-resources": "bun run scripts/verify-control-plane-phase6.ts",
     "test:mcp": "bun run build:mcp && bun run scripts/verify-mcp-bridge.ts",
     "typecheck:mcp": "tsc --noEmit -p packages/orpheus-mcp/tsconfig.json",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",

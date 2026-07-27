@@ -4,7 +4,7 @@ const SECRET_KEY =
   /(?:token|secret|password|authorization|cookie|lease|credential|api[_-]?key|access[_-]?key|private[_-]?key|environment|env|bytes|sequence|keycode)/i
 const TEXT_KEY = /(?:^|_)(?:text|task|prompt|content|input)(?:$|_)/i
 const SECRET_VALUE =
-  /(?:\bbearer\s+\S+|(?:token|secret|password|api[_-]?key)=\S+|\bsk-(?:ant-)?[A-Za-z0-9_-]+|\bgh[pousr]_[A-Za-z0-9_]+|\bgithub_pat_[A-Za-z0-9_]+|\bxox[baprs]-[A-Za-z0-9-]+)/i
+  /(?:\bbearer\s+\S+|(?:api[_-]?key|token|secret|password|authorization|cookie|lease)\s*[:=]\s*\S+|\bsk[-_](?:ant[-_])?[A-Za-z0-9_-]+|\bgh[pousr]_[A-Za-z0-9_]+|\bgithub_pat_[A-Za-z0-9_]+|\bxox[aboprs]-[A-Za-z0-9-]+)/i
 const MAX_SAFE_STRING = 512
 
 function textMetadata(value: string): Record<string, unknown> {
@@ -21,6 +21,7 @@ function redactValue(value: unknown, key: string | null, seen: WeakSet<object>):
   if (typeof value === 'string') {
     if (SECRET_VALUE.test(value)) return '[REDACTED]'
     if (key != null && TEXT_KEY.test(key)) return textMetadata(value)
+    if (SECRET_VALUE.test(value)) return '[REDACTED]'
     return value.length <= MAX_SAFE_STRING ? value : `${value.slice(0, MAX_SAFE_STRING)}…`
   }
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value

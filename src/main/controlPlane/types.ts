@@ -19,6 +19,9 @@ export type ControlPermission =
   | 'reviews.resolve'
   | 'ui.workbench.control'
   | 'terminals.control'
+  | 'settings.read'
+  | 'settings.workspace.patch'
+  | 'resources.read'
 export type ControlErrorCode =
   | 'invalid'
   | 'not_found'

@@ -1,14 +1,19 @@
 # Agentic Control Plane Roadmap
 
-**Status:** Phases 1–3 implemented and validated; Phases 4–8 planned<br>
+**Status:** Phases 1–3 implemented and validated; Phases 4–6 implemented and
+deterministically tested with batched live validation pending; Phases 7–8 planned<br>
 **Companion documents:** [README.md](README.md),
 [architecture.md](architecture.md),
 [identity-and-permissions.md](identity-and-permissions.md),
 [Phase 1](phase-01-control-foundation.md), and
 [Phase 2](phase-02-self-identity-readonly-mcp.md);
 [Phase 3 contract](phase-03-workspace-orchestration.md) and
-[Phase 3 interfaces](phase-03-interfaces.md); and
-[Phase 5](phase-05-terminal-observability.md)
+[Phase 3 interfaces](phase-03-interfaces.md);
+[Phase 4 contract](phase-04-workbench-pane-control.md) and
+[Phase 4 interfaces](phase-04-interfaces.md);
+[Phase 5](phase-05-terminal-observability.md);
+[Phase 6 contract](phase-06-settings-resources.md) and
+[Phase 6 interfaces](phase-06-interfaces.md)
 
 This roadmap delivers the Agentic Control Plane as eight additive, independently
 reviewable phases. Each phase has a narrow contract, explicit exclusions, and a
@@ -48,10 +53,10 @@ Every phase:
 | -------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | 1. Control Foundation            | Implemented and statically tested | Add a transport-neutral capability registry and prove it with the two review-comment operations | Registry contract plus preserved IPC/socket adapters      |
 | 2. Self Identity + Read-only MCP | Implemented and live-validated    | Ship managed MCP discovery with identity and read-only tools                                    | MCP bootstrap, contextual tool filtering, read schemas    |
-| 3. Workspace Orchestration       | Implemented and validated          | Add semantic workspace creation, task start, wait, and lifecycle control                        | One orchestration service, strict schemas, archive safety |
-| 4. Self Workbench/Panes Control  | Planned                           | Let an agent control its own workbench and panes semantically                                   | Self-scoped UI commands, no click simulation              |
+| 3. Workspace Orchestration       | Implemented and validated         | Add semantic workspace creation, task start, wait, and lifecycle control                        | One orchestration service, strict schemas, archive safety |
+| 4. Self Workbench/Panes Control  | Implemented and deterministically tested; live validation pending | Let an agent control its own workbench and panes semantically | Self-scoped UI commands, no click simulation              |
 | 5. Terminal Observability        | Implemented and statically tested | Add authoritative terminal/session observation                                                  | Source/freshness contract and explicit absence states     |
-| 6. Settings/Resources            | Planned                           | Expose allowlisted non-secret settings and resources                                            | Layering, validation, dirty-state, and secret boundaries  |
+| 6. Settings/Resources            | Implemented and deterministically tested; live validation pending | Expose allowlisted non-secret settings and resources                              | Layering, validation, dirty-state, and secret boundaries  |
 | 7. Durable Automations           | Planned                           | Persist bounded triggers and runs that invoke semantic operations                               | Scheduler, idempotency, budgets, retries, run history     |
 | 8. Integrated Validation         | Planned                           | Prove parity, recovery, policy, and compatibility across all adapters                           | Cross-surface contract and live validation matrix         |
 
@@ -214,18 +219,33 @@ discovery remain deferred to the batched integration pass. See
 
 ## 6. Settings/Resources
 
-Add scoped, allowlisted reads and safe writes for non-secret Orpheus/Claude
-settings and resources. Preserve global → project → workspace composition,
-effective-value inspection, validation, and restart-to-apply dirty semantics.
+The implementation adds three managed MCP operations through the canonical
+registry:
+
+- `settings.getEffective` for model/effort values and provenance plus read-only
+  Orpheus workspace guardrails and dirty state;
+- `settings.patchWorkspace` for self-only model/effort overrides through the
+  existing workspace settings store and dirty recomputation;
+- `resources.listProjectMetadata` for sanitized, same-project MCP server, hook,
+  slash-command, and subagent metadata.
+
+Default runtime grants remain fail-closed; tests inject exact Phase 6 grants.
+Global and project writes, permission/shell/environment settings, user/global
+or cross-project resources, resource contents and mutations, and memory files
+remain excluded.
 
 Auth credentials, tokens, arbitrary secret fields, and unrestricted shell
 configuration remain unavailable to MCP and automations. MCP-server, hook,
 memory, slash-command, and subagent resources are introduced only with explicit
 scope and ownership rules.
 
-Exit when effective reads match `composeClaudeLaunch`, writes use existing
-domain stores rather than raw SQL, and secret fields are absent from discovery,
-results, audit params, and errors.
+Deterministic verification now establishes `composeClaudeLaunch` parity,
+existing-store writes, restart-to-apply recomputation, exact grants,
+same-project/self policy, scoped resource reads, and secret absence from
+discovery, results, audit params, and errors. The batched live MCP/app pass is
+still pending, so live discovery and native restart behavior are not yet
+claimed. See [phase-06-settings-resources.md](phase-06-settings-resources.md)
+and [phase-06-interfaces.md](phase-06-interfaces.md).
 
 ## 7. Durable Automations
 
