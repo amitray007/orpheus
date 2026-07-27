@@ -1,6 +1,6 @@
 # Phase 3: Workspace Orchestration
 
-**Status:** contract frozen; implementation in progress; not yet implemented<br>
+**Status:** implemented and validated; final source-only fixes await batched live reconfirmation<br>
 **Roadmap:** [roadmap.md](roadmap.md)<br>
 **Interfaces:** [phase-03-interfaces.md](phase-03-interfaces.md)<br>
 **Depends on:** [Phase 2: Self Identity + Read-only MCP](phase-02-self-identity-readonly-mcp.md)
@@ -13,9 +13,10 @@ lineage, and archival. The renderer, command socket, CLI, and MCP adapters
 translate their own protocol shapes into this service; none owns workspace
 policy or reimplements its effects.
 
-This document freezes the Phase 3 contract before implementation. It does not
-claim that the operations below are currently registered, published through
-MCP, or live-validated.
+This document records the delivered Phase 3 contract. All operations below are
+registered in the canonical catalog. MCP visibility remains context-filtered by
+the runtime's server-owned grants; registration does not make a mutation
+default-visible.
 
 The frozen operation set is:
 
@@ -137,6 +138,14 @@ type Phase3WorkspacePermission =
 reversible lifecycle/presentation state. Archive has its own Tier 3 permission
 and never inherits from close.
 
+Default managed-runtime permissions are `identity.read`, `projects.read`,
+`workspaces.read`, `workspaces.wait`, and `reviews.read`. They expose exactly 11
+safe tools: the Phase 2 nine plus `workspaces.getLineage` and
+`workspaces.wait`. Create, start, open, send, close, reopen, rename, and archive
+descriptors require a server-owned grant source to add their permissions within
+the configured maximum risk tier. Phase 3 provides that grant seam but no
+persisted grant store or user-facing grant UI.
+
 ## Creation and lineage
 
 `workspaces.create` supports `local` and `worktree` modes.
@@ -253,7 +262,7 @@ receipts; it never reports total success and never hides which persisted
 workspace records remain. Retrying is safe only after the caller reads the
 partial result and current lineage.
 
-The implementation should minimize partial states, but the contract represents
+The implementation minimizes partial states, but the contract represents
 them because native process, filesystem, Git, and database effects cannot be
 truthfully collapsed into a single Boolean.
 
@@ -343,9 +352,9 @@ Phase 3 uses the existing control error codes:
 Messages remain redacted and must not reveal that a cross-project target exists.
 Adapters map these codes to their existing transport payloads and CLI exit codes.
 
-## Acceptance matrix
+## Delivery and validation record
 
-Implementation is not complete until deterministic harnesses cover:
+The deterministic harnesses cover:
 
 - strict schemas with `additionalProperties: false` and no MCP settings or
   arbitrary-key fields;
@@ -364,24 +373,36 @@ Implementation is not complete until deterministic harnesses cover:
 - auto-launch retry with stale token-cache invalidation;
 - retained CLI envelopes, output, exit codes, and offline reads.
 
-The live `Orpheus Dev.app` acceptance pass must separately exercise:
+`bun run test:workspace-orchestration` and the full `bun run check` quality gate
+passed.
 
-| Scenario | Required evidence |
-| --- | --- |
-| Managed MCP discovery | Exactly the frozen Phase 3 operations eligible for the bound runtime appear with strict schemas |
-| Local create/start | Background workspace is created at the server-derived project cwd, then receives a task |
-| Worktree create | Managed path and Git worktree are created without accepting a caller path |
-| Fork-alone | A fork is created without an initial task and lineage is readable |
-| Open/send/wait | A background workspace starts, receives input, and returns a bounded wait result |
-| Lifecycle | Another workspace closes, reopens, renames, and remains addressable |
-| Identity denial | Cross-project target and self close/archive fail without enumeration |
-| Archive guards | Nonrecursive child and dirty-worktree attempts produce no effects |
-| Recursive archive | A safe subtree is preflighted and removed children-first with receipts |
-| Retry repair | App auto-launch or reconnect invalidates stale cached authentication and succeeds once |
-| CLI compatibility | Offline read, JSON envelope, rendered output, exit code, and long wait behavior remain unchanged |
+The packaged worktree app and live acceptance pass established:
 
-Harness evidence and live evidence must be reported separately. A deterministic
-test does not establish packaged MCP discovery or native lifecycle behavior.
+- managed MCP calls for `self.get`, `workspaces.getLineage`, and a typed
+  `workspaces.wait` timeout;
+- absence of mutation tools under the default 11-tool safe grant;
+- live CLI lifecycle, fork-alone, archive, and recursively redacted audit
+  behavior;
+- live renderer create and fork flows;
+- cleanup of the live acceptance workspaces and fixtures.
+
+That packaged/live pass occurred before four final source-only fixes:
+
+1. renderer readiness now uses an open-request queue plus acknowledgement to
+   avoid the renderer-ready race;
+2. an explicit workspace name sets `nameIsAuto=false`;
+3. `ws new --no-submit` fails if staging receives a readiness warning instead
+   of silently continuing;
+4. terminal launch preparation deletes ambient inherited `NO_COLOR` at the
+   Claude, workbench, and shared pane mount boundaries while preserving an
+   explicit layered Orpheus `NO_COLOR` value exactly.
+
+The readiness, naming, `--no-submit`, and `NO_COLOR` paths have deterministic
+static regressions, but no post-fix packaged build or live run is claimed.
+`NO_COLOR` was traced to the inherited Electron process environment; an empty
+override is insufficient because Claude checks key presence. The next batched
+integration pass must reconfirm all four fixes together. This validation repair
+does not expand Phase 3 into workbench/panes control or terminal observability.
 
 ## Explicit exclusions
 

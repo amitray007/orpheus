@@ -1,6 +1,6 @@
 # Orpheus Agentic Control Plane
 
-**Status:** Phases 1–2 implemented and validated; Phase 3 contract frozen and implementation in progress; Phases 4–8 planned<br>
+**Status:** Phases 1–3 implemented and validated; Phases 4–8 planned<br>
 **Scope:** local Orpheus app, its renderer, bundled CLI, managed Claude sessions, and future durable automations
 
 The Agentic Control Plane makes Orpheus programmable through stable, semantic
@@ -19,7 +19,7 @@ runtime identity, target resolution, grants, permission capabilities, and risk
 tiers. Delivered phase records:
 [Phase 1: Control Foundation](phase-01-control-foundation.md) and
 [Phase 2: Self Identity + Read-only MCP](phase-02-self-identity-readonly-mcp.md).
-The frozen, not-yet-implemented Phase 3 contract is split between
+The delivered Phase 3 record is split between
 [Workspace Orchestration](phase-03-workspace-orchestration.md) and its
 [strict interfaces](phase-03-interfaces.md).
 
@@ -59,13 +59,14 @@ snapshot.
 | Dashboard data services | Typed renderer IPC and main-process domain modules provide GitHub account snapshots, provider-neutral usage, activity/contribution windows, persisted stale-while-revalidate caches, and background pushes | `src/shared/ipc.ts`, `src/main/githubDashboard.ts`, `providerUsage.ts`, `claudeActivityWindow.ts`, `db/dashboardCache.ts`, `usagePoller.ts` |
 | Review/workbench        | Diff viewing and local review comments exist                                                                                                                                                               | `src/main/gitDiff.ts`, `reviewStore.ts`, `ipc/reviews.ts`, `src/renderer/src/components/workbench/`                                         |
 | Panes                   | Persisted panel/layout/terminal hierarchy and native surfaces exist                                                                                                                                        | `src/main/paneStore.ts`, `ipc/panes.ts`, `src/renderer/src/components/panes/`                                                               |
-| MCP                     | A bundled stdio bridge and runtime-lease-scoped `/control` protocol are implemented, deterministically tested, and live-validated with managed Claude discovery and self-scoped reads                      | `packages/orpheus-mcp/`, `src/main/controlPlane/`, `src/main/commandServer.ts`                                                              |
+| MCP                     | A bundled stdio bridge and runtime-lease-scoped `/control` protocol are implemented. Default managed runtimes discover exactly 11 safe read/wait tools; workspace mutations require explicit server-owned grants | `packages/orpheus-mcp/`, `src/main/controlPlane/`, `src/main/commandServer.ts`                                                   |
 | Automations             | No durable control-plane automation engine exists                                                                                                                                                          | —                                                                                                                                           |
 
-The control registry is now authoritative for the Phase 1 review proof and the
-Phase 2 managed read catalog. Split authority remains for CLI dispatch, Quick
-Actions, dashboard IPC/domain modules, and later mutations; those surfaces are
-migration inputs rather than automatically published agent capabilities.
+The control registry is now authoritative for the Phase 1 review proof, the
+Phase 2 managed read catalog, and Phase 3 workspace orchestration. Split
+authority remains for Quick Actions, dashboard IPC/domain modules, and later
+domains; those surfaces are migration inputs rather than automatically
+published agent capabilities.
 The dashboard surfaces are not automatically agent-visible: Phase 2 explicitly
 defers account-wide GitHub, provider-usage, and all-history activity publication
 until their scope, freshness, refresh effects, and permissions are modeled.
@@ -163,12 +164,18 @@ the native UI adapter. Automations invoke the core in-process.
    [phase-02-self-identity-readonly-mcp.md](phase-02-self-identity-readonly-mcp.md).
    Account-wide Home dashboard reads and active source refreshes remain
    renderer-only compatibility surfaces.
-3. **Workspace Orchestration — contract frozen; implementation in progress.**
-   One main-process service will expose semantic create/start/open/send/wait/
+3. **Workspace Orchestration — implemented and validated.**
+   One main-process service exposes semantic create/start/open/send/wait/
    close/reopen/rename/archive operations plus lineage reads, with strict
    same-project runtime identity, background defaults, typed receipts, and
-   preflighted Tier 3 archive. This status does not mean the operations are
-   implemented or MCP-visible. See
+   preflighted Tier 3 archive. Default managed MCP grants expose exactly the
+   Phase 2 nine safe tools plus `workspaces.getLineage` and `workspaces.wait`;
+   mutations require explicit server-owned grants. There is no persisted grant
+   store or user grant UI yet. Deterministic checks and the full repository gate
+   passed. Packaged/live validation covered MCP reads, CLI lifecycle/fork/
+   archive/audit behavior, and renderer create/fork before the final source-only
+   readiness, naming, `--no-submit`, and terminal `NO_COLOR` fixes. Those fixes
+   have static regressions and await the next batched live integration pass. See
    [phase-03-workspace-orchestration.md](phase-03-workspace-orchestration.md)
    and [phase-03-interfaces.md](phase-03-interfaces.md).
 4. **Self Workbench/Panes Control** — let an agent control its own workbench and

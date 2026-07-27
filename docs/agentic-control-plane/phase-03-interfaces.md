@@ -1,14 +1,14 @@
 # Phase 3: Workspace Orchestration Interfaces
 
-**Status:** contract frozen; implementation in progress; not yet implemented<br>
+**Status:** implemented and validated; final source-only fixes await batched live reconfirmation<br>
 **Phase contract:** [phase-03-workspace-orchestration.md](phase-03-workspace-orchestration.md)
 
 ## Purpose
 
-This document freezes the transport-neutral Phase 3 operation interfaces. The
-JSON Schema registered in the canonical control catalog is authoritative when
-implementation lands. MCP generates `tools/list` from those descriptors; it
-does not maintain a second schema.
+This document records the delivered transport-neutral Phase 3 operation
+interfaces. The JSON Schema registered in the canonical control catalog is
+authoritative. MCP generates `tools/list` from those descriptors; it does not
+maintain a second schema.
 
 The outlines below are intentionally strict:
 
@@ -23,8 +23,8 @@ The outlines below are intentionally strict:
 
 ## Common types
 
-The implementation should publish self-contained JSON Schemas equivalent to
-these transport-neutral types:
+The implementation publishes self-contained JSON Schemas equivalent to these
+transport-neutral types:
 
 ```ts
 type WorkspaceId = string // 1..128 characters
@@ -73,22 +73,38 @@ input.
 
 ## Catalog
 
-| Operation | Kind | Permission | Tier | MCP |
-| --- | --- | --- | ---: | --- |
-| `workspaces.getLineage` | query | `workspaces.read` | 0 | yes |
-| `workspaces.create` | mutation | `workspaces.create` | 2 | yes |
-| `workspaces.startTask` | mutation | `workspaces.send` | 2 | yes |
-| `workspaces.open` | mutation | `workspaces.open` | 1 | yes |
-| `workspaces.send` | mutation | `workspaces.send` | 2 | yes |
-| `workspaces.wait` | query | `workspaces.wait` | 0 | yes |
-| `workspaces.close` | mutation | `workspaces.close` | 2 | yes |
-| `workspaces.reopen` | mutation | `workspaces.open` | 1 | yes |
-| `workspaces.rename` | mutation | `workspaces.rename` | 2 | yes |
-| `workspaces.archive` | mutation | `workspaces.archive` | 3 | yes |
+| Operation | Kind | Permission | Tier | MCP descriptor | Default runtime grant |
+| --- | --- | --- | ---: | --- | --- |
+| `workspaces.getLineage` | query | `workspaces.read` | 0 | yes | yes |
+| `workspaces.create` | mutation | `workspaces.create` | 2 | yes | no |
+| `workspaces.startTask` | mutation | `workspaces.send` | 2 | yes | no |
+| `workspaces.open` | mutation | `workspaces.open` | 1 | yes | no |
+| `workspaces.send` | mutation | `workspaces.send` | 2 | yes | no |
+| `workspaces.wait` | query | `workspaces.wait` | 0 | yes | yes |
+| `workspaces.close` | mutation | `workspaces.close` | 2 | yes | no |
+| `workspaces.reopen` | mutation | `workspaces.open` | 1 | yes | no |
+| `workspaces.rename` | mutation | `workspaces.rename` | 2 | yes | no |
+| `workspaces.archive` | mutation | `workspaces.archive` | 3 | yes | no |
 
 All descriptors are version `1`. Phase 3 does not publish a generic
 `workspaces.invoke`, settings bag, terminal key operation, or force lifecycle
 operation.
+
+The default `RuntimeControlGrantPolicy` permissions are `identity.read`,
+`projects.read`, `workspaces.read`, `workspaces.wait`, and `reviews.read`.
+Together they expose exactly these 11 safe tools:
+
+- `self.get`;
+- `projects.list` and `projects.get`;
+- `workspaces.list`, `workspaces.get`, `workspaces.getStatus`,
+  `workspaces.getTranscript`, and `workspaces.getLastTurn`;
+- `reviews.list`;
+- `workspaces.getLineage`;
+- `workspaces.wait`.
+
+Mutation descriptors are registered and eligible for MCP, but discovery and
+invocation require a server-owned grant source to add their permissions within
+`maxRiskTier`. Phase 3 has no persisted grant store or user-facing grant UI.
 
 ## `workspaces.getLineage`
 
@@ -419,6 +435,9 @@ receipt; adapters must not collapse it into an unqualified success message.
 
 - Uses only a valid runtime-scoped lease.
 - Publishes the strict catalog schemas above.
+- Exposes exactly the 11 safe read/wait tools under the default runtime grant.
+- Exposes a mutation descriptor only when an explicit server-owned grant adds
+  its permission within the configured maximum risk tier.
 - Defaults targets only from main-resolved trusted identity.
 - Caps wait and readiness work at 25 seconds per invocation.
 - Never publishes settings overlays, arbitrary keys, force archive, or a
@@ -483,9 +502,9 @@ Redaction is recursive and occurs before persistence and diagnostics. Text
 fields use hash, byte length, and safe summary. The Quick Actions audit table is
 not this interface and must not be reused as the Phase 3 control audit.
 
-## Verification contract
+## Verification record
 
-The Phase 3 deterministic harness must assert:
+The passing Phase 3 deterministic harness asserts:
 
 1. descriptor/schema parity and rejection of every unknown field;
 2. permission, tier, scope, and maximum-effect metadata;
@@ -502,7 +521,12 @@ The Phase 3 deterministic harness must assert:
 12. token-cache invalidation across auto-launch/retry;
 13. retained CLI envelopes, human output, exit codes, and offline reads.
 
-Packaged live validation uses the matrix in
+`bun run test:workspace-orchestration` and `bun run check` pass. Packaged live
+validation confirmed the default grant's mutation absence plus live
+`self.get`, lineage, wait-timeout, CLI lifecycle/fork/archive/audit, renderer
+create/fork, and cleanup behavior. That live pass predates the final
+source-only renderer-ready acknowledgement, explicit-name, CLI `--no-submit`,
+and ambient `NO_COLOR` fixes. Those four paths have static regressions only and
+await the next batched integration pass; no post-fix packaged build is claimed.
+See the detailed evidence boundary in
 [phase-03-workspace-orchestration.md](phase-03-workspace-orchestration.md).
-Until both implementation and its stated validation exist, the status remains
-“contract frozen; implementation in progress,” not implemented.

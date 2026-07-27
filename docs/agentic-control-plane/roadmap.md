@@ -1,6 +1,6 @@
 # Agentic Control Plane Roadmap
 
-**Status:** Phases 1–2 implemented and validated; Phase 3 contract frozen and implementation in progress; Phases 4–8 planned<br>
+**Status:** Phases 1–3 implemented and validated; Phases 4–8 planned<br>
 **Companion documents:** [README.md](README.md),
 [architecture.md](architecture.md),
 [identity-and-permissions.md](identity-and-permissions.md),
@@ -47,7 +47,7 @@ Every phase:
 | -------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | 1. Control Foundation            | Implemented and statically tested | Add a transport-neutral capability registry and prove it with the two review-comment operations | Registry contract plus preserved IPC/socket adapters      |
 | 2. Self Identity + Read-only MCP | Implemented and live-validated    | Ship managed MCP discovery with identity and read-only tools                                    | MCP bootstrap, contextual tool filtering, read schemas    |
-| 3. Workspace Orchestration       | Contract frozen; implementation in progress | Add semantic workspace creation, task start, wait, and lifecycle control             | One orchestration service, strict schemas, archive safety |
+| 3. Workspace Orchestration       | Implemented and validated          | Add semantic workspace creation, task start, wait, and lifecycle control                        | One orchestration service, strict schemas, archive safety |
 | 4. Self Workbench/Panes Control  | Planned                           | Let an agent control its own workbench and panes semantically                                   | Self-scoped UI commands, no click simulation              |
 | 5. Terminal Observability        | Planned                           | Add authoritative terminal/session observation                                                  | Source/freshness contract and explicit unavailable states |
 | 6. Settings/Resources            | Planned                           | Expose allowlisted non-secret settings and resources                                            | Layering, validation, dirty-state, and secret boundaries  |
@@ -118,8 +118,7 @@ lifecycle checks.
 
 ## 3. Workspace Orchestration
 
-The Phase 3 contract is frozen; implementation and validation are in progress,
-not complete. Publish one `WorkspaceOrchestrationService` behind semantic
+Phase 3 publishes one `WorkspaceOrchestrationService` behind semantic
 operations for workspace creation, task start, open/background activation,
 send, bounded wait, close, reopen, rename, and Tier 3 archive, plus a lineage
 read. Preserve existing CLI behavior while routing shared semantics through the
@@ -150,11 +149,18 @@ makes fork-alone a valid CLI creation intent.
 Review this phase as workspace-domain work only. Do not include workbench,
 panes, settings, or automation.
 
-Exit when MCP and live CLI operations produce equivalent domain outcomes and
-policy failures, archive failures cannot bypass whole-subtree preflight, typed
-receipts and audit redaction are verified, and CLI offline reads and existing
-exit codes remain unchanged. Deterministic harness evidence and packaged
-`Orpheus Dev.app` evidence must be reported separately.
+The deterministic Phase 3 suite and full repository check pass. The packaged
+live pass confirmed managed MCP `self.get`, lineage, and bounded wait behavior
+with default mutation absence; CLI lifecycle, fork, archive, and redacted audit
+behavior; renderer create/fork; and cleanup. That packaged/live evidence
+predates the final source-only renderer-readiness queue/ack, explicit-name,
+CLI `--no-submit`, and ambient `NO_COLOR` fixes. Those fixes have static
+regressions only and must be reconfirmed together in the next batched
+integration pass; no post-fix packaged build is claimed.
+
+Default runtime grants expose exactly 11 safe read/wait tools. Mutation
+descriptors require explicit server-owned grants within their risk ceiling.
+Phase 3 does not add persisted grants or a user grant UI.
 
 See
 [phase-03-workspace-orchestration.md](phase-03-workspace-orchestration.md) for
