@@ -1,15 +1,18 @@
 import { createReadCapabilities } from './readCapabilities'
 import { createReviewCapabilities } from './reviewCapabilities'
 import { createWorkspaceCapabilities } from './workspaceCapabilities'
+import { createSettingsResourceCapabilities } from './settingsResourceCapabilities'
 import type { ControlRegistry } from './registry'
 import type { ReadCapabilityHandlers, ReviewCapabilityHandlers } from './types'
 import type { WorkspaceOrchestrationService } from '../workspaceOrchestration/service'
+import type { SettingsResourceService } from './settingsResourceService'
 
 export function bootControlRegistry(
   registry: ControlRegistry,
   reviewHandlers: ReviewCapabilityHandlers,
   readHandlers?: ReadCapabilityHandlers,
-  workspaceService?: WorkspaceOrchestrationService
+  workspaceService?: WorkspaceOrchestrationService,
+  settingsResourceService?: SettingsResourceService
 ): void {
   const [listCapability, setResolvedCapability] = createReviewCapabilities(reviewHandlers, {
     mcpRead: readHandlers != null
@@ -49,5 +52,12 @@ export function bootControlRegistry(
     registry.register(reopen)
     registry.register(rename)
     registry.register(archive)
+  }
+  if (settingsResourceService != null) {
+    const [effective, patch, resources] =
+      createSettingsResourceCapabilities(settingsResourceService)
+    registry.register(effective)
+    registry.register(patch)
+    registry.register(resources)
   }
 }

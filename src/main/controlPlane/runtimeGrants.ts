@@ -30,7 +30,10 @@ const PERMISSION_RISK_TIER: Readonly<Record<ControlPermission, 0 | 1 | 2 | 3>> =
   'workspaces.rename': 2,
   'workspaces.archive': 3,
   'reviews.read': 0,
-  'reviews.resolve': 2
+  'reviews.resolve': 2,
+  'settings.read': 0,
+  'settings.workspace.patch': 2,
+  'resources.read': 0
 }
 
 /**

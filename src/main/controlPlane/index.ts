@@ -11,11 +11,13 @@ import type {
 } from './types'
 import type { WorkspaceOrchestrationService } from '../workspaceOrchestration/service'
 import { createConfiguredControlRegistry } from './configuredRegistry'
+import type { SettingsResourceService } from './settingsResourceService'
 
 export type Phase2ControlPlaneConfig = {
   authorization: ControlAuthorizationPolicy
   reads: ReadCapabilityHandlers
   workspaceOrchestration?: WorkspaceOrchestrationService
+  settingsResources?: SettingsResourceService
 }
 
 let phase2Config: Phase2ControlPlaneConfig | null = null
@@ -52,7 +54,8 @@ export function bootControlPlane(): void {
       setResolved: (id, resolved) => setResolved(id, resolved)
     },
     phase2Config?.reads,
-    phase2Config?.workspaceOrchestration
+    phase2Config?.workspaceOrchestration,
+    phase2Config?.settingsResources
   )
   booted = true
 }

@@ -16,6 +16,9 @@ export type ControlPermission =
   | 'workspaces.archive'
   | 'reviews.read'
   | 'reviews.resolve'
+  | 'settings.read'
+  | 'settings.workspace.patch'
+  | 'resources.read'
 export type ControlErrorCode =
   | 'invalid'
   | 'not_found'

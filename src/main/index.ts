@@ -162,6 +162,7 @@ import {
 } from './controlPlane'
 import { createTrustedRuntimeReadPolicy } from './controlPlane/readPolicy'
 import { createMainReadHandlers } from './controlPlane/mainReadHandlers'
+import { createMainSettingsResourceService } from './controlPlane/mainSettingsResourceService'
 import { RuntimeLeaseRegistry } from './controlPlane/runtimeLeases'
 import type { RuntimeLeaseIssue } from './controlPlane/runtimeLeases'
 import {
@@ -2507,7 +2508,8 @@ if (!app.requestSingleInstanceLock()) {
             }
           }
         }),
-        workspaceOrchestration: workspaceOrchestration.service
+        workspaceOrchestration: workspaceOrchestration.service,
+        settingsResources: createMainSettingsResourceService()
       })
       bootControlPlane()
       bootActions(workspaceControlAdapter)

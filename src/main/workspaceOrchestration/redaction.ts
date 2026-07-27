@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto'
 
 const SECRET_KEY =
-  /(?:token|secret|password|authorization|cookie|lease|environment|env|bytes|sequence|keycode)/i
+  /(?:token|secret|password|authorization|cookie|lease|credential|api[_-]?key|access[_-]?key|private[_-]?key|environment|env|bytes|sequence|keycode)/i
 const TEXT_KEY = /(?:^|_)(?:text|task|prompt|content|input)(?:$|_)/i
+const SECRET_VALUE =
+  /(?:bearer\s+\S+|(?:api[_-]?key|token|secret|password|authorization|cookie|lease)\s*[:=]\s*\S+|(?:sk|ghp|github_pat|xox[aboprs])[-_][A-Za-z0-9_-]{8,})/i
 const MAX_SAFE_STRING = 512
 
 function textMetadata(value: string): Record<string, unknown> {
@@ -18,6 +20,7 @@ function redactValue(value: unknown, key: string | null, seen: WeakSet<object>):
   if (key != null && SECRET_KEY.test(key)) return '[REDACTED]'
   if (typeof value === 'string') {
     if (key != null && TEXT_KEY.test(key)) return textMetadata(value)
+    if (SECRET_VALUE.test(value)) return '[REDACTED]'
     return value.length <= MAX_SAFE_STRING ? value : `${value.slice(0, MAX_SAFE_STRING)}…`
   }
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value

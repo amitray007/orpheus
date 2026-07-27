@@ -1,6 +1,6 @@
 # Orpheus Agentic Control Plane
 
-**Status:** Phases 1–2 implemented and validated; Phase 3 contract frozen and implementation in progress; Phases 4–8 planned<br>
+**Status:** Phases 1–2 implemented and validated; Phase 3 contract frozen and implementation in progress; Phase 6 implemented and deterministically tested with live validation pending; Phases 4–5 and 7–8 planned<br>
 **Scope:** local Orpheus app, its renderer, bundled CLI, managed Claude sessions, and future durable automations
 
 The Agentic Control Plane makes Orpheus programmable through stable, semantic
@@ -21,7 +21,9 @@ tiers. Delivered phase records:
 [Phase 2: Self Identity + Read-only MCP](phase-02-self-identity-readonly-mcp.md).
 The frozen, not-yet-implemented Phase 3 contract is split between
 [Workspace Orchestration](phase-03-workspace-orchestration.md) and its
-[strict interfaces](phase-03-interfaces.md).
+[strict interfaces](phase-03-interfaces.md). Phase 6 is recorded in
+[Settings and Resources](phase-06-settings-resources.md) and its
+[strict interfaces](phase-06-interfaces.md).
 
 ## Product promise
 
@@ -178,9 +180,13 @@ the native UI adapter. Automations invoke the core in-process.
 5. **Terminal Observability** — expose authoritative lifecycle, readiness,
    command/cwd, status, transcript, and output-tail data where it exists.
    Return explicit unsupported/unavailable states where it does not.
-6. **Settings/Resources** — add scoped, allowlisted reads and safe writes for
-   non-secret settings and resources, preserving layered composition and
-   restart-to-apply semantics.
+6. **Settings/Resources — implemented and deterministically tested; live
+   validation pending.** MCP exposes effective model/effort provenance, a
+   self-only model/effort workspace patch, and sanitized same-project MCP
+   server/hook/slash-command/subagent metadata. Default runtime grants remain
+   fail-closed. See
+   [phase-06-settings-resources.md](phase-06-settings-resources.md) and
+   [phase-06-interfaces.md](phase-06-interfaces.md).
 7. **Durable Automations** — persist triggers, semantic invocations, policy,
    budgets, retries, idempotency keys, and run history; execute through the
    same control core.
