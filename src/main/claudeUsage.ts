@@ -161,6 +161,7 @@ function parseLimit(raw: RawUsageLimit): ClaudeUsageLimit {
     kind: typeof raw.kind === 'string' ? raw.kind : '',
     group: typeof raw.group === 'string' ? raw.group : '',
     percent: typeof raw.percent === 'number' ? raw.percent : 0,
+    percentKnown: typeof raw.percent === 'number',
     severity: typeof raw.severity === 'string' ? raw.severity : 'normal',
     resetsAt: typeof raw.resets_at === 'string' ? raw.resets_at : null,
     modelName:
@@ -280,9 +281,9 @@ async function fetchClaudeUsageFromNetwork(): Promise<ClaudeUsageResult> {
  * share one in-flight fetch. See file header for the full rate-limit
  * contract. Total — never throws.
  */
-export async function getClaudeUsage(): Promise<ClaudeUsageResult> {
+export async function getClaudeUsage(force = false): Promise<ClaudeUsageResult> {
   const now = Date.now()
-  if (cachedResult && now - cachedResult.fetchedAt < USAGE_TTL_MS) {
+  if (!force && cachedResult && now - cachedResult.fetchedAt < USAGE_TTL_MS) {
     return cachedResult.value
   }
 

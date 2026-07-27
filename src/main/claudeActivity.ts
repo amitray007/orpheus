@@ -55,10 +55,25 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import { DASHBOARD_CACHE_KEYS, readDashboardCache, writeDashboardCache } from './db/dashboardCache'
-import type { ClaudeActivitySummary, WeeklyActivityDay } from '../shared/types'
+import type {
+  ClaudeActivitySummary,
+  ClaudeActivityWindowResult,
+  ClaudeModelActivityDay,
+  ClaudeRecentSession,
+  WeeklyActivityDay
+} from '../shared/types'
+import {
+  buildClaudeActivityWindow,
+  claudeActivityRangeKey,
+  parseClaudeTranscriptLine,
+  resolveClaudeActivityRange,
+  type ClaudeActivityQueryRange,
+  type ClaudeActivityWindowFile
+} from './claudeActivityWindow'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const LAST_7_DAYS_MS = 7 * DAY_MS
+const FILE_CACHE_FORMAT_VERSION = 3
 
 /** Same override `claude` itself and claudeUsage.ts respect — lets a
  *  user running Claude Code out of a non-default config dir still get
@@ -72,12 +87,30 @@ function claudeProjectsRoot(): string {
   return path.join(claudeConfigDir(), 'projects')
 }
 
+function isTopLevelTranscript(filePath: string): boolean {
+  const relative = path.relative(claudeProjectsRoot(), filePath)
+  return !relative.startsWith('..') && relative.split(path.sep).length === 2
+}
+
 // ---------------------------------------------------------------------------
 // Per-file line-count + token-total cache — keyed by absolute path,
 // invalidated by (mtimeMs, size). Persisted alongside the summary so a
 // restart only has to re-read files that actually changed.
 // ---------------------------------------------------------------------------
-type FileCacheEntry = { mtimeMs: number; size: number; lineCount: number; tokenTotal: number }
+type FileCacheEntry = {
+  formatVersion: number
+  mtimeMs: number
+  size: number
+  lineCount: number
+  tokenTotal: number
+  messageCount: number
+  turnCount: number
+  firstTimestampMs: number | null
+  lastTimestampMs: number | null
+  title: string | null
+  cwd: string | null
+  modelActivity: ClaudeModelActivityDay[]
+}
 type FileCache = Record<string, FileCacheEntry>
 
 type PersistedActivity = {
@@ -102,86 +135,92 @@ function ensureFileCacheLoaded(): void {
   }
 }
 
-/** Shape of the one `message.usage` field we care about — tolerant of the
- *  many other fields (server_tool_use, cache_creation, iterations, ...)
- *  Claude's own transcript format carries; we only read the four token
- *  counters that make up a turn's real token cost. */
-type RawUsage = {
-  input_tokens?: number
-  output_tokens?: number
-  cache_read_input_tokens?: number
-  cache_creation_input_tokens?: number
-}
-
-/** Sums the four token counters for one usage object, treating any
- *  missing/non-numeric field as 0. Never throws. */
-function sumUsageTokens(usage: RawUsage): number {
-  const n = (v: unknown): number => (typeof v === 'number' ? v : 0)
-  return (
-    n(usage.input_tokens) +
-    n(usage.output_tokens) +
-    n(usage.cache_read_input_tokens) +
-    n(usage.cache_creation_input_tokens)
-  )
-}
-
-/** Extracts the token total from one JSONL line if it carries a
- *  `message.usage` object (assistant turns only) — 0 for every other line
- *  shape (user turns, tool results, meta lines, ...). Defensive: a line
- *  that isn't valid JSON, or whose shape doesn't match, contributes 0
- *  rather than throwing. */
-function tokensForLine(line: string): number {
-  if (!line) return 0
-  try {
-    const parsed: unknown = JSON.parse(line)
-    if (typeof parsed !== 'object' || parsed === null) return 0
-    const message = (parsed as { message?: unknown }).message
-    if (typeof message !== 'object' || message === null) return 0
-    const usage = (message as { usage?: RawUsage }).usage
-    if (typeof usage !== 'object' || usage === null) return 0
-    return sumUsageTokens(usage)
-  } catch {
-    return 0
-  }
-}
-
-type LineScanResult = { lineCount: number; tokenTotal: number }
+type LineScanResult = Omit<FileCacheEntry, 'formatVersion' | 'mtimeMs' | 'size'>
 
 /** Streams a `.jsonl` file ONCE, counting lines and summing per-line token
  *  usage in the same pass (avoids buffering the whole file, and avoids a
  *  second read just for tokens). A trailing partial line (no final
  *  newline) still counts as one more message. Returns zeros on any read
  *  failure — total, never throws. */
-async function readFileStats(filePath: string): Promise<LineScanResult> {
+async function readFileStats(filePath: string): Promise<LineScanResult | null> {
   return new Promise((resolve) => {
     let lineCount = 0
     let tokenTotal = 0
+    let messageCount = 0
+    let turnCount = 0
+    let firstTimestampMs: number | null = null
+    let lastTimestampMs: number | null = null
+    let title: string | null = null
+    let cwd: string | null = null
+    const modelActivity = new Map<string, ClaudeModelActivityDay>()
     let carry = ''
     const stream = fs.createReadStream(filePath, { encoding: 'utf8' })
+    const consume = (line: string): void => {
+      lineCount++
+      const parsed = parseClaudeTranscriptLine(line)
+      if (!parsed) return
+      tokenTotal += parsed.tokens
+      if (parsed.role) messageCount++
+      if (parsed.role === 'assistant') turnCount++
+      if (parsed.timestampMs !== null) {
+        firstTimestampMs =
+          firstTimestampMs === null
+            ? parsed.timestampMs
+            : Math.min(firstTimestampMs, parsed.timestampMs)
+        lastTimestampMs =
+          lastTimestampMs === null
+            ? parsed.timestampMs
+            : Math.max(lastTimestampMs, parsed.timestampMs)
+      }
+      if (!title && parsed.titleCandidate) title = parsed.titleCandidate
+      if (!cwd && parsed.cwd) cwd = parsed.cwd
+      if (parsed.role === 'assistant' && parsed.model && parsed.timestampMs !== null) {
+        const date = dayKey(parsed.timestampMs)
+        const key = `${date}\0${parsed.model}`
+        const existing = modelActivity.get(key)
+        if (existing) {
+          existing.turns += 1
+          existing.tokens += parsed.tokens
+        } else {
+          modelActivity.set(key, {
+            date,
+            model: parsed.model,
+            turns: 1,
+            tokens: parsed.tokens
+          })
+        }
+      }
+    }
     stream.on('data', (chunk: string | Buffer) => {
       const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
       carry += text
       let newlineIdx = carry.indexOf('\n')
       while (newlineIdx !== -1) {
         const line = carry.slice(0, newlineIdx)
-        lineCount++
-        tokenTotal += tokensForLine(line)
+        consume(line)
         carry = carry.slice(newlineIdx + 1)
         newlineIdx = carry.indexOf('\n')
       }
     })
     stream.on('end', () => {
-      if (carry.length > 0) {
-        lineCount++
-        tokenTotal += tokensForLine(carry)
-      }
-      resolve({ lineCount, tokenTotal })
+      if (carry.length > 0) consume(carry)
+      resolve({
+        lineCount,
+        tokenTotal,
+        messageCount,
+        turnCount,
+        firstTimestampMs,
+        lastTimestampMs,
+        title,
+        cwd,
+        modelActivity: Array.from(modelActivity.values())
+      })
     })
-    stream.on('error', () => resolve({ lineCount: 0, tokenTotal: 0 }))
+    stream.on('error', () => resolve(null))
   })
 }
 
-type ScannedFile = { mtimeMs: number; lineCount: number; tokenTotal: number }
+type ScannedFile = FileCacheEntry & { filePath: string; topLevel: boolean }
 
 /** Resolves the line count + token total for one `.jsonl` file, re-reading
  *  only when the cached (mtime, size) no longer matches the file's current
@@ -203,16 +242,35 @@ async function scanOneFile(filePath: string): Promise<ScannedFile | null> {
   const cached = fileCache[filePath]
   if (
     cached &&
+    cached.formatVersion === FILE_CACHE_FORMAT_VERSION &&
     cached.mtimeMs === stat.mtimeMs &&
     cached.size === stat.size &&
-    typeof cached.tokenTotal === 'number'
+    typeof cached.tokenTotal === 'number' &&
+    typeof cached.messageCount === 'number' &&
+    typeof cached.turnCount === 'number' &&
+    Array.isArray(cached.modelActivity)
   ) {
-    return { mtimeMs: stat.mtimeMs, lineCount: cached.lineCount, tokenTotal: cached.tokenTotal }
+    return {
+      ...cached,
+      filePath,
+      topLevel: isTopLevelTranscript(filePath)
+    }
   }
 
-  const { lineCount, tokenTotal } = await readFileStats(filePath)
-  fileCache[filePath] = { mtimeMs: stat.mtimeMs, size: stat.size, lineCount, tokenTotal }
-  return { mtimeMs: stat.mtimeMs, lineCount, tokenTotal }
+  const stats = await readFileStats(filePath)
+  if (!stats) return null
+  const entry = {
+    formatVersion: FILE_CACHE_FORMAT_VERSION,
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    ...stats
+  }
+  fileCache[filePath] = entry
+  return {
+    ...entry,
+    filePath,
+    topLevel: isTopLevelTranscript(filePath)
+  }
 }
 
 /** Recursively collects every `.jsonl` file under `dirPath` into `out`.
@@ -363,6 +421,84 @@ function computeCurrentStreak(files: ScannedFile[], now: number): number {
   return current
 }
 
+function recentSessionForFile(file: ScannedFile): ClaudeRecentSession | null {
+  if (!file.topLevel) return null
+  const id = path.basename(file.filePath, '.jsonl')
+  const encodedProject = path.relative(claudeProjectsRoot(), file.filePath).split(path.sep)[0]
+  const projectLabel = file.cwd
+    ? path.basename(file.cwd)
+    : encodedProject.replace(/^-/, '').split('-').at(-1) || 'Unknown project'
+  const durationMs =
+    file.firstTimestampMs !== null && file.lastTimestampMs !== null
+      ? Math.max(0, file.lastTimestampMs - file.firstTimestampMs)
+      : null
+  return {
+    id,
+    title: file.title ?? `Session ${id.slice(0, 8)}`,
+    projectLabel,
+    lastActivity: new Date(file.mtimeMs).toISOString(),
+    messageCount: file.messageCount,
+    turnCount: file.turnCount,
+    tokenTotal: file.tokenTotal,
+    durationMs
+  }
+}
+
+function recentSessions(files: ScannedFile[]): ClaudeRecentSession[] {
+  return files
+    .flatMap((file) => {
+      const session = recentSessionForFile(file)
+      return session ? [session] : []
+    })
+    .sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity))
+    .slice(0, 8)
+}
+
+function toActivityWindowFile(file: ScannedFile): ClaudeActivityWindowFile {
+  return {
+    mtimeMs: file.mtimeMs,
+    lineCount: file.lineCount,
+    tokenTotal: file.tokenTotal,
+    recentSession: recentSessionForFile(file),
+    modelActivity: file.modelActivity
+  }
+}
+
+function modelActivity7d(files: ScannedFile[], now: number): ClaudeModelActivityDay[] {
+  const cutoffDate = startOfLocalDay(new Date(now))
+  cutoffDate.setDate(cutoffDate.getDate() - 6)
+  const cutoff = cutoffDate.getTime()
+  const aggregate = new Map<string, ClaudeModelActivityDay>()
+  for (const file of files) {
+    for (const activity of file.modelActivity) {
+      if (new Date(`${activity.date}T00:00:00`).getTime() < cutoff) continue
+      const key = `${activity.date}\0${activity.model}`
+      const existing = aggregate.get(key)
+      if (existing) {
+        existing.turns += activity.turns
+        existing.tokens += activity.tokens
+      } else {
+        aggregate.set(key, { ...activity })
+      }
+    }
+  }
+  return Array.from(aggregate.values()).sort(
+    (a, b) => a.date.localeCompare(b.date) || a.model.localeCompare(b.model)
+  )
+}
+
+function calendarActiveDaysLast7(files: ScannedFile[], now: number): number {
+  const start = startOfLocalDay(new Date(now))
+  start.setDate(start.getDate() - 6)
+  const end = startOfLocalDay(new Date(now))
+  end.setDate(end.getDate() + 1)
+  return new Set(
+    files
+      .filter((file) => file.mtimeMs >= start.getTime() && file.mtimeMs < end.getTime())
+      .map((file) => dayKey(file.mtimeMs))
+  ).size
+}
+
 function rollUp(allFiles: ScannedFile[], now: number): ClaudeActivitySummary {
   const cutoff = now - LAST_7_DAYS_MS
   const last7Days = allFiles.filter((f) => f.mtimeMs >= cutoff)
@@ -377,7 +513,9 @@ function rollUp(allFiles: ScannedFile[], now: number): ClaudeActivitySummary {
     allTimeTokens: allFiles.reduce((sum, f) => sum + f.tokenTotal, 0),
     peakHour: computePeakHour(last7Days),
     currentStreak: computeCurrentStreak(allFiles, now),
-    activeDays: new Set(last7Days.map((f) => dayKey(f.mtimeMs))).size
+    activeDays: calendarActiveDaysLast7(allFiles, now),
+    recentSessions: recentSessions(allFiles),
+    modelActivity7d: modelActivity7d(allFiles, now)
   }
 }
 
@@ -385,9 +523,16 @@ function rollUp(allFiles: ScannedFile[], now: number): ClaudeActivitySummary {
 // Public entry points
 // ---------------------------------------------------------------------------
 
-let inflight: Promise<ClaudeActivitySummary> | null = null
+const CURRENT_WINDOW_TTL_MS = 60 * 1000
+const HISTORICAL_WINDOW_TTL_MS = 30 * 60 * 1000
+const MAX_WINDOW_CACHE_ENTRIES = 32
 
-async function scanNow(): Promise<ClaudeActivitySummary> {
+let scanInflight: Promise<ScannedFile[]> | null = null
+let summaryInflight: Promise<ClaudeActivitySummary> | null = null
+const windowCache = new Map<string, { value: ClaudeActivityWindowResult; fetchedAt: number }>()
+const windowInflight = new Map<string, Promise<ClaudeActivityWindowResult>>()
+
+async function scanAllTranscripts(): Promise<ScannedFile[]> {
   ensureFileCacheLoaded()
 
   const paths = listAllTranscriptFiles()
@@ -404,9 +549,51 @@ async function scanNow(): Promise<ClaudeActivitySummary> {
     if (!livePaths.has(cachedPath)) delete fileCache[cachedPath]
   }
 
-  const summary = rollUp(scanned, Date.now())
+  return scanned
+}
+
+async function getScannedTranscripts(): Promise<ScannedFile[]> {
+  if (scanInflight) return scanInflight
+  const request = scanAllTranscripts()
+    .catch(() => [])
+    .finally(() => {
+      scanInflight = null
+    })
+  scanInflight = request
+  return request
+}
+
+function persistScan(scanned: ScannedFile[], now: number): ClaudeActivitySummary {
+  const summary = rollUp(scanned, now)
   writeDashboardCache(DASHBOARD_CACHE_KEYS.claudeActivity, { summary, fileCache })
   return summary
+}
+
+function windowTtl(result: ClaudeActivityWindowResult): number {
+  return result.isCurrentWeek ? CURRENT_WINDOW_TTL_MS : HISTORICAL_WINDOW_TTL_MS
+}
+
+function cacheWindow(key: string, value: ClaudeActivityWindowResult): void {
+  windowCache.delete(key)
+  windowCache.set(key, { value, fetchedAt: value.fetchedAt })
+  const now = Date.now()
+  for (const [candidateKey, entry] of windowCache) {
+    if (now - entry.fetchedAt >= windowTtl(entry.value)) windowCache.delete(candidateKey)
+  }
+  while (windowCache.size > MAX_WINDOW_CACHE_ENTRIES) {
+    const oldestKey = windowCache.keys().next().value
+    if (oldestKey === undefined) break
+    windowCache.delete(oldestKey)
+  }
+}
+
+async function fetchActivityWindow(
+  range: ClaudeActivityQueryRange
+): Promise<ClaudeActivityWindowResult> {
+  const fetchedAt = Date.now()
+  const scanned = await getScannedTranscripts()
+  persistScan(scanned, fetchedAt)
+  return buildClaudeActivityWindow(scanned.map(toActivityWindowFile), range, fetchedAt)
 }
 
 /**
@@ -420,12 +607,37 @@ async function scanNow(): Promise<ClaudeActivitySummary> {
  * any per-file failure degrades that file to "skipped", not a thrown error.
  */
 export async function getClaudeActivity(): Promise<ClaudeActivitySummary> {
-  if (inflight) return inflight
-  const promise = scanNow().finally(() => {
-    inflight = null
-  })
-  inflight = promise
+  if (summaryInflight) return summaryInflight
+  const promise = getScannedTranscripts()
+    .then((scanned) => persistScan(scanned, Date.now()))
+    .finally(() => {
+      summaryInflight = null
+    })
+  summaryInflight = promise
   return promise
+}
+
+export async function getClaudeActivityWindow(
+  weekOffset: number,
+  force = false
+): Promise<ClaudeActivityWindowResult> {
+  const range = resolveClaudeActivityRange(weekOffset)
+  const key = claudeActivityRangeKey(range)
+  const cached = windowCache.get(key)
+  if (!force && cached && Date.now() - cached.fetchedAt < windowTtl(cached.value)) {
+    return cached.value
+  }
+
+  const existing = windowInflight.get(key)
+  if (existing) return existing
+
+  const request = fetchActivityWindow(range).finally(() => {
+    windowInflight.delete(key)
+  })
+  windowInflight.set(key, request)
+  const value = await request
+  cacheWindow(key, value)
+  return value
 }
 
 /** Instant, disk-backed read of the last-persisted `getClaudeActivity()`

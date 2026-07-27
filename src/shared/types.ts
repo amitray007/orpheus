@@ -946,6 +946,9 @@ export type ClaudeUsageLimit = {
   kind: string
   group: string
   percent: number
+  /** False when the upstream response omitted percent; provider-neutral
+   *  consumers must surface that as unknown rather than as zero usage. */
+  percentKnown: boolean
   severity: string // 'normal' | 'warning' | 'critical' | ... (undocumented, tolerate any string)
   resetsAt: string | null
   modelName: string | null // scope?.model?.display_name, null when not model-scoped
@@ -966,6 +969,60 @@ export type ClaudeUsageUnavailable = { unavailable: 'no-auth' | 'error' }
 export type ClaudeUsageResult = ClaudeUsage | ClaudeUsageUnavailable
 
 // ---------------------------------------------------------------------------
+// Provider-neutral dashboard usage. Claude's existing contract above remains
+// public for compatibility; this is the normalized, multi-provider surface.
+// Providers for which Orpheus has no trustworthy usage source are represented
+// explicitly instead of receiving fabricated zeroes or made-up weekly limits.
+// ---------------------------------------------------------------------------
+
+export type ProviderUsageUnavailableReason =
+  | 'no-auth'
+  | 'not-connected'
+  | 'cli-not-found'
+  | 'protocol-unsupported'
+  | 'usage-unsupported'
+  | 'error'
+
+export type ProviderUsageWindow = {
+  id: string
+  label: string
+  utilization: number | null // 0-100; null when the provider omitted it
+  resetsAt: string | null
+  durationMinutes: number | null
+}
+
+export type ProviderUsageLimit = {
+  id: string
+  label: string
+  utilization: number | null // 0-100; null when the provider omitted it
+  resetsAt: string | null
+  modelName: string | null
+  /** Non-percent values remain explicit; no denominator is invented. */
+  valueKind?: 'percent' | 'count' | 'currency' | 'status'
+  displayValue?: string | null
+}
+
+export type ProviderUsageEntry = {
+  providerId: string
+  label: string
+  configured: boolean
+  enabled: boolean
+  /** Account/auth-file label when the provider exposes one; never inferred. */
+  identityLabel: string | null
+  availability: 'available' | 'unavailable' | 'unsupported'
+  unavailableReason: ProviderUsageUnavailableReason | null
+  windows: ProviderUsageWindow[]
+  limits: ProviderUsageLimit[]
+  /** True when a transient refresh failure retained this provider's last-good metrics. */
+  stale?: boolean
+}
+
+export type ProviderUsageSnapshot = {
+  providers: ProviderUsageEntry[]
+  fetchedAt: number
+}
+
+// ---------------------------------------------------------------------------
 // src/main/claudeActivity.ts — real Claude activity, scanned directly off
 // the on-disk transcript store (~/.claude/projects/**/*.jsonl), NOT the
 // Orpheus-registered `sessions` table (sessions:listAll only covers
@@ -983,6 +1040,27 @@ export type WeeklyActivityDay = {
   weekday: number // 0=Mon..6=Sun
   sessions: number
   messages: number
+}
+
+export type ClaudeRecentSession = {
+  id: string
+  title: string
+  projectLabel: string
+  lastActivity: string
+  /** Count of real top-level user/assistant message events. */
+  messageCount: number | null
+  /** Assistant turns carrying a message payload. */
+  turnCount: number | null
+  tokenTotal: number
+  /** Difference between first and last valid transcript timestamps. */
+  durationMs: number | null
+}
+
+export type ClaudeModelActivityDay = {
+  date: string // local YYYY-MM-DD
+  model: string
+  turns: number
+  tokens: number
 }
 
 export type ClaudeActivitySummary = {
@@ -1005,8 +1083,37 @@ export type ClaudeActivitySummary = {
    *  "alive until a full day is skipped" semantics as the renderer's
    *  original computeStreaks — see pulseData.helpers.ts). */
   currentStreak: number
-  /** Distinct calendar days with >=1 session in the last 7 days. */
+  /** Distinct calendar days with >=1 session across today + the previous 6 local days. */
   activeDays: number
+  /** The eight most recently active top-level Claude transcripts. */
+  recentSessions: ClaudeRecentSession[]
+  /** Last-7-day assistant turns/tokens grouped by transcript day + model. */
+  modelActivity7d: ClaudeModelActivityDay[]
+}
+
+export type ClaudeActivityWindowResult = {
+  /** Zero is the current local calendar week; negative values walk backward by whole weeks. */
+  weekOffset: number
+  isCurrentWeek: boolean
+  /** Logical Monday/Sunday display bounds, formatted as local YYYY-MM-DD dates. */
+  rangeStart: string
+  rangeEnd: string
+  /** Exact scan bounds. The current week ends at fetch time; completed weeks end Sunday night. */
+  queryFrom: string
+  queryTo: string
+  weeklyActivity: WeeklyActivityDay[]
+  sessions: number
+  messages: number
+  tokens: number
+  peakHour: number | null
+  activeDays: number
+  /** Maximum consecutive run of active days within this logical week. */
+  longestStreak: number
+  /** Up to 25 top-level transcripts whose mtime falls inside this window. */
+  recentSessions: ClaudeRecentSession[]
+  /** Assistant turns/tokens grouped by transcript date + model within this logical week. */
+  modelActivity: ClaudeModelActivityDay[]
+  fetchedAt: number
 }
 
 // ---------------------------------------------------------------------------
@@ -1074,6 +1181,89 @@ export type GhSearchIssue = {
   repo: string // "owner/name"
   labels: GhLabel[]
   updatedAt: string // ISO
+}
+
+// ---------------------------------------------------------------------------
+// Account-level GitHub dashboard snapshot. Each independently fetched section
+// has its own status so a genuine empty list remains distinguishable from a
+// failed `gh` request, and one degraded section does not erase the others.
+// ---------------------------------------------------------------------------
+
+export type GithubSectionStatus = 'available' | 'unavailable'
+
+export type GithubRepositorySummary = {
+  nameWithOwner: string
+  description: string | null
+  url: string
+  updatedAt: string
+  pushedAt: string | null
+  isPrivate: boolean
+  primaryLanguage: string | null
+  stargazerCount: number
+}
+
+export type GithubWorkflowRunSummary = {
+  id: number
+  repo: string
+  workflowName: string
+  status: string
+  conclusion: string | null
+  event: string
+  headBranch: string | null
+  updatedAt: string
+  url: string
+}
+
+export type GithubActivity7Day = {
+  from: string
+  to: string
+  totalContributions: number
+  commits: number
+  pullRequests: number
+  issues: number
+  reviews: number
+}
+
+export type GithubContributionActivity = {
+  totalContributions: number
+  commits: number
+  pullRequests: number
+  issues: number
+  reviews: number
+}
+
+export type GithubContributionWindowResult = {
+  /** Zero is the current local calendar week; negative values walk backward by whole weeks. */
+  weekOffset: number
+  isCurrentWeek: boolean
+  /** Logical Monday/Sunday display bounds, formatted as local YYYY-MM-DD dates. */
+  rangeStart: string
+  rangeEnd: string
+  /** Exact GraphQL bounds. The current week ends at fetch time; completed weeks end Sunday night. */
+  queryFrom: string
+  queryTo: string
+  activity: GithubContributionActivity | null
+  status: GithubSectionStatus
+  fetchedAt: number
+}
+
+export type GithubAccountSnapshot = {
+  availability: 'available' | 'degraded' | 'unavailable'
+  unavailableReason: 'gh-not-found' | 'not-authenticated' | 'error' | null
+  profile: { login: string; profileUrl: string } | null
+  /** Exact open PR count requesting review from the signed-in user. */
+  reviewRequestedCount: number | null
+  repositories: GithubRepositorySummary[]
+  repositoriesStatus: GithubSectionStatus
+  workflowRuns: GithubWorkflowRunSummary[]
+  workflowRunsStatus: GithubSectionStatus
+  workflowScope: {
+    kind: 'registered-repositories'
+    repositories: string[]
+  }
+  activity7d: GithubActivity7Day | null
+  activityStatus: GithubSectionStatus
+  fetchedAt: number
 }
 
 // ---------------------------------------------------------------------------

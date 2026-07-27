@@ -31,20 +31,30 @@ import type { GhSearchPr } from '@shared/types'
 import { DashboardCard } from './DashboardCard'
 import { TablePager } from './TablePager'
 import { TableRowsSkeleton } from './DashboardSkeletons'
-import { useGithubData } from './useGithubData'
+import { GithubCardFilters, GithubFilteredEmptyState } from './GithubCardFilters'
 import { formatCompact, formatCompactAge } from './dashboardHome.helpers'
 
 // PRs paginate 5/page — keeps the card a
 // fixed height instead of dumping every open PR into one tall table.
 const PR_PAGE_SIZE = 5
+type PrFilter = 'all' | 'passing' | 'failing' | 'pending' | 'draft' | 'none'
+
+const PR_FILTER_OPTIONS: ReadonlyArray<{ value: PrFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'passing', label: 'Passing' },
+  { value: 'failing', label: 'Failing' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'draft', label: 'Draft' },
+  { value: 'none', label: 'No checks' }
+]
 
 type ChecksState = GhSearchPr['checks'] // 'success' | 'failure' | 'pending' | null
 
 const CHECK_LABEL: Record<'success' | 'failure' | 'pending' | 'none', string> = {
-  success: '✓ passing',
-  failure: '✕ failing',
-  pending: '◷ pending',
-  none: '— none'
+  success: '✓ Passing',
+  failure: '✕ Failing',
+  pending: '◷ Pending',
+  none: '— No Checks'
 }
 
 // THEME RULE: checks chips use Orpheus tokens, not raw GitHub colors —
@@ -79,7 +89,7 @@ function CheckChip({ checks }: { checks: ChecksState }): React.JSX.Element {
 
 function EmptyState({ hint }: { hint: boolean }): React.JSX.Element {
   return (
-    <div className="flex flex-col items-center justify-center gap-1 py-10 text-center">
+    <div className="flex flex-1 flex-col items-center justify-center gap-1 py-10 text-center">
       <div className="text-[12.5px] font-medium text-text-primary">No open PRs</div>
       {hint ? (
         <div className="text-[11px] text-text-muted">
@@ -90,25 +100,70 @@ function EmptyState({ hint }: { hint: boolean }): React.JSX.Element {
   )
 }
 
-export function PrTable(): React.JSX.Element {
-  const { loading, prs, openPrCount, draftPrCount, possiblyUnavailable } = useGithubData()
-  const [requestedPage, setPage] = useState(0)
+export interface PrTableProps {
+  loading: boolean
+  prs: GhSearchPr[]
+  openPrCount: number
+  draftPrCount: number
+  possiblyUnavailable: boolean
+}
 
-  const pageCount = Math.max(1, Math.ceil(prs.length / PR_PAGE_SIZE))
+export function PrTable({
+  loading,
+  prs,
+  openPrCount,
+  draftPrCount,
+  possiblyUnavailable
+}: PrTableProps): React.JSX.Element {
+  const [requestedPage, setPage] = useState(0)
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<PrFilter>('all')
+
+  const normalizedQuery = query.trim().toLowerCase()
+  const filteredPrs = prs.filter((pr) => {
+    const matchesQuery =
+      normalizedQuery.length === 0 ||
+      `${pr.title} ${pr.repo} #${pr.number} ${pr.number}`.toLowerCase().includes(normalizedQuery)
+    const matchesFilter =
+      filter === 'all' ||
+      (filter === 'draft' && pr.state === 'draft') ||
+      (filter === 'passing' && pr.checks === 'success') ||
+      (filter === 'failing' && pr.checks === 'failure') ||
+      (filter === 'pending' && pr.checks === 'pending') ||
+      (filter === 'none' && pr.checks === null)
+    return matchesQuery && matchesFilter
+  })
+  const pageCount = Math.max(1, Math.ceil(filteredPrs.length / PR_PAGE_SIZE))
   // Background refreshes can shrink the row count under the current page
   // (e.g. a PR merged elsewhere) — clamp during render rather than storing
   // out-of-range state and correcting it in an effect (avoids the extra
   // cascading render an effect-driven setState would cause).
   const page = Math.min(requestedPage, pageCount - 1)
 
-  const pagedPrs = prs.slice(page * PR_PAGE_SIZE, page * PR_PAGE_SIZE + PR_PAGE_SIZE)
+  const pagedPrs = filteredPrs.slice(page * PR_PAGE_SIZE, page * PR_PAGE_SIZE + PR_PAGE_SIZE)
 
   const meta = loading
-    ? 'loading…'
-    : `${formatCompact(openPrCount)} open${draftPrCount ? ` · ${formatCompact(draftPrCount)} draft` : ''} · by last push`
+    ? 'Loading…'
+    : `${formatCompact(openPrCount)} Open · ${formatCompact(draftPrCount)} Draft · By Last Updated`
 
   function openPr(url: string): void {
     void window.api.shell.openExternal(url)
+  }
+
+  function updateQuery(value: string): void {
+    setQuery(value)
+    setPage(0)
+  }
+
+  function updateFilter(value: PrFilter): void {
+    setFilter(value)
+    setPage(0)
+  }
+
+  function resetFilters(): void {
+    setQuery('')
+    setFilter('all')
+    setPage(0)
   }
 
   const title = (
@@ -120,83 +175,107 @@ export function PrTable(): React.JSX.Element {
 
   if (loading && prs.length === 0) {
     return (
-      <DashboardCard title={title} meta={meta}>
+      <DashboardCard title={title} meta={meta} contentClassName="min-h-[284px]">
         <TableRowsSkeleton rows={5} />
       </DashboardCard>
     )
   }
 
   return (
-    <DashboardCard title={title} meta={meta}>
+    <DashboardCard title={title} meta={meta} contentClassName="min-h-[284px]">
       {prs.length === 0 ? (
         <EmptyState hint={possiblyUnavailable} />
       ) : (
-        <div className="-mx-1 flex flex-1 flex-col overflow-x-auto">
-          <table className="w-full table-fixed border-collapse text-xs">
-            <colgroup>
-              <col className="w-[42px]" />
-              <col />
-              <col className="w-14" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th className="border-b border-border-default px-2.5 pb-1.5 text-left font-mono text-[9.5px] tracking-wider text-text-muted uppercase">
-                  #
-                </th>
-                <th className="border-b border-border-default px-2.5 pb-1.5 text-left font-mono text-[9.5px] tracking-wider text-text-muted uppercase">
-                  Title
-                </th>
-                <th className="border-b border-border-default px-2.5 pb-1.5 text-right font-mono text-[9.5px] tracking-wider text-text-muted uppercase">
-                  Pushed
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {pagedPrs.map((pr) => (
-                <tr
-                  key={`${pr.repo}#${pr.number}`}
-                  onClick={() => openPr(pr.url)}
-                  className="cursor-pointer align-top hover:bg-surface-overlay"
-                >
-                  {/* Single <td> per logical column spans both visual lines via
+        <>
+          <GithubCardFilters<PrFilter>
+            query={query}
+            searchLabel="Search pull requests"
+            placeholder="Search PRs"
+            onQueryChange={updateQuery}
+            filter={filter}
+            defaultFilter="all"
+            filterLabel="Pull request filter"
+            filterOptions={PR_FILTER_OPTIONS}
+            onFilterChange={updateFilter}
+            onReset={resetFilters}
+          />
+          {filteredPrs.length === 0 ? (
+            <GithubFilteredEmptyState />
+          ) : (
+            <div className="-mx-1 flex flex-1 flex-col overflow-x-auto pt-2">
+              <table className="w-full table-fixed border-collapse text-xs">
+                <colgroup>
+                  <col className="w-[42px]" />
+                  <col />
+                  <col className="w-14" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th className="border-b border-border-default px-2.5 pb-1.5 text-left font-mono text-[9.5px] tracking-wider text-text-muted uppercase">
+                      #
+                    </th>
+                    <th className="border-b border-border-default px-2.5 pb-1.5 text-left font-mono text-[9.5px] tracking-wider text-text-muted uppercase">
+                      Title
+                    </th>
+                    <th className="border-b border-border-default px-2.5 pb-1.5 text-right font-mono text-[9.5px] tracking-wider text-text-muted uppercase">
+                      Updated
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pagedPrs.map((pr) => (
+                    <tr
+                      key={`${pr.repo}#${pr.number}`}
+                      onClick={() => openPr(pr.url)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') openPr(pr.url)
+                      }}
+                      role="link"
+                      tabIndex={0}
+                      aria-label={`Open pull request ${pr.repo} number ${pr.number}: ${pr.title}`}
+                      className="cursor-pointer align-top hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
+                    >
+                      {/* Single <td> per logical column spans both visual lines via
                       a flex-col wrapper. Line 1 = title (truncates); line 2 =
                       repo (truncates, min-w-0) · checks chip pinned right
                       (shrink-0), matching the mockup's .l2row pattern. */}
-                  <td className="border-b border-border-default px-2.5 py-2 align-top font-mono text-[10.5px] text-text-muted tabular-nums">
-                    #{pr.number}
-                  </td>
-                  <td className="border-b border-border-default px-2.5 py-2 align-top">
-                    <div className="flex items-center gap-1.5">
-                      <span className="min-w-0 truncate text-text-primary">{pr.title}</span>
-                      {pr.state === 'draft' ? (
-                        <span className="shrink-0 rounded border border-border-default px-1 py-px font-mono text-[9px] tracking-wide text-text-muted uppercase">
-                          draft
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="mt-0.5 flex items-center gap-1.5">
-                      <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-text-muted">
-                        {pr.repo}
-                      </span>
-                      <CheckChip checks={pr.checks} />
-                    </div>
-                  </td>
-                  <td className="border-b border-border-default px-2.5 py-2 text-right align-top font-mono text-[10.5px] whitespace-nowrap text-text-muted tabular-nums">
-                    {formatCompactAge(pr.updatedAt)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {pageCount > 1 ? (
-            <TablePager
-              page={page + 1}
-              pageCount={pageCount}
-              onPrev={() => setPage((p) => Math.max(0, p - 1))}
-              onNext={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-            />
-          ) : null}
-        </div>
+                      <td className="border-b border-border-default px-2.5 py-2 align-top font-mono text-[10.5px] text-text-muted tabular-nums">
+                        #{pr.number}
+                      </td>
+                      <td className="border-b border-border-default px-2.5 py-2 align-top">
+                        <div className="flex items-center gap-1.5">
+                          <span className="min-w-0 truncate text-text-primary">{pr.title}</span>
+                          {pr.state === 'draft' ? (
+                            <span className="shrink-0 rounded border border-border-default px-1 py-px font-mono text-[9px] tracking-wide text-text-muted uppercase">
+                              Draft
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="mt-0.5 flex items-center gap-1.5">
+                          <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-text-muted">
+                            {pr.repo}
+                          </span>
+                          <CheckChip checks={pr.checks} />
+                        </div>
+                      </td>
+                      <td className="border-b border-border-default px-2.5 py-2 text-right align-top font-mono text-[10.5px] whitespace-nowrap text-text-muted tabular-nums">
+                        {formatCompactAge(pr.updatedAt)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {pageCount > 1 ? (
+                <TablePager
+                  page={page + 1}
+                  pageCount={pageCount}
+                  onPrev={() => setPage((p) => Math.max(0, p - 1))}
+                  onNext={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                />
+              ) : null}
+            </div>
+          )}
+        </>
       )}
     </DashboardCard>
   )

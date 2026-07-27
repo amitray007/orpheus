@@ -81,17 +81,18 @@ function Meter({ label, window }: { label: string; window: ClaudeUsageWindow }):
 
 function ModelLimitRow({ limit }: { limit: ClaudeUsageLimit }): React.JSX.Element {
   const fillClass = severityFillClass(limit.severity)
+  const clampedPercent = limit.percentKnown ? Math.min(100, Math.max(0, limit.percent)) : 0
   return (
     <div className="flex items-center gap-2 text-[10.5px]">
       <span className="min-w-0 flex-1 truncate text-text-muted">{limit.modelName}</span>
       <div className="h-[4px] w-14 shrink-0 overflow-hidden rounded-full bg-surface-overlay">
         <div
           className={cn('h-full rounded-full', fillClass)}
-          style={{ width: `${Math.min(100, Math.max(0, limit.percent))}%` }}
+          style={{ width: `${clampedPercent}%` }}
         />
       </div>
       <span className="w-8 shrink-0 text-right font-mono text-text-muted tabular-nums">
-        {Math.round(limit.percent)}%
+        {limit.percentKnown ? `${Math.round(limit.percent)}%` : '—'}
       </span>
       {limit.resetsAt ? (
         <span className="w-14 shrink-0 text-right font-mono text-[9.5px] text-text-muted/70 tabular-nums">

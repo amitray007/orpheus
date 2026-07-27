@@ -53,7 +53,11 @@ import type {
   ClaudeAuthTestResult,
   ClaudeUsageResult,
   ClaudeUsage,
+  ProviderUsageSnapshot,
   ClaudeActivitySummary,
+  ClaudeActivityWindowResult,
+  GithubAccountSnapshot,
+  GithubContributionWindowResult,
   DiscoveredMcpServer,
   McpServerDraft,
   ClaudeSlashCommand,
@@ -454,11 +458,20 @@ const api = {
     // `null` when no cache row exists yet (cold start).
     activityCached: (): Promise<{ value: ClaudeActivitySummary; fetchedAt: number } | null> =>
       invoke('claude:activity:cached'),
+    activityWindow: (weekOffset: number, force = false): Promise<ClaudeActivityWindowResult> =>
+      invoke('claude:activityWindow', { weekOffset, force }),
     // Background poller push (src/main/claudeActivityPoller.ts) — fires on
     // each scan tick so the renderer can update the pulse numbers silently
     // in place, no manual refresh needed.
     onActivityPushed: (cb: (summary: ClaudeActivitySummary) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.claudeActivityPushed, cb)
+  },
+  providerUsage: {
+    get: (force = false): Promise<ProviderUsageSnapshot> => invoke('providers:usage', { force }),
+    cached: (): Promise<{ value: ProviderUsageSnapshot; fetchedAt: number } | null> =>
+      invoke('providers:usage:cached'),
+    onPushed: (cb: (snapshot: ProviderUsageSnapshot) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.providerUsagePushed, cb)
   },
   claudeProjectSettings: {
     get: (projectId: string): Promise<ClaudeProjectSettings> =>
@@ -629,8 +642,8 @@ const api = {
     // Dashboard Phase 2 (U5) — account-wide search, no workspaceId/cwd arg
     // (unlike every method above). See src/main/github.ts::getMyOpenPrs/
     // getMyIssues; total (never rejects), resolves to [] on any gh failure.
-    myOpenPrs: (): Promise<GhSearchPr[]> => invoke('github:myOpenPrs'),
-    myIssues: (): Promise<GhSearchIssue[]> => invoke('github:myIssues'),
+    myOpenPrs: (force = false): Promise<GhSearchPr[]> => invoke('github:myOpenPrs', { force }),
+    myIssues: (force = false): Promise<GhSearchIssue[]> => invoke('github:myIssues', { force }),
     // Dashboard D2 (stale-while-revalidate) — instant, disk-backed reads
     // (no network) for the initial cache-first paint. `null` when no cache
     // row exists yet (cold start).
@@ -638,6 +651,17 @@ const api = {
       invoke('github:myOpenPrs:cached'),
     myIssuesCached: (): Promise<{ value: GhSearchIssue[]; fetchedAt: number } | null> =>
       invoke('github:myIssues:cached'),
+    accountSnapshot: (force = false): Promise<GithubAccountSnapshot> =>
+      invoke('github:accountSnapshot', { force }),
+    accountSnapshotCached: (): Promise<{
+      value: GithubAccountSnapshot
+      fetchedAt: number
+    } | null> => invoke('github:accountSnapshot:cached'),
+    contributionWindow: (
+      weekOffset: number,
+      force = false
+    ): Promise<GithubContributionWindowResult> =>
+      invoke('github:contributionWindow', { weekOffset, force }),
     // Dashboard D4 — refresh the signed-in gh user's display name on each
     // app open (silent, fire-and-forget). Resolves to the resolved display
     // name (name || login), or null on any gh failure.

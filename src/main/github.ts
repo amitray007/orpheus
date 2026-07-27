@@ -142,7 +142,7 @@ async function resolveGhPathEnv(): Promise<string> {
  * site since the write sites need the full failed-execFile error object (for
  * `err.stdout`), not just a thrown Error.
  */
-async function runGh(
+export async function runGh(
   cwd: string,
   args: readonly string[],
   opts?: { timeout?: number; maxBuffer?: number }
@@ -421,10 +421,10 @@ async function fetchMyOpenPrsFromGh(): Promise<GhSearchPr[]> {
  * throws: any failure (gh missing/unauth/network) resolves to [], and the
  * caller renders the table's empty state.
  */
-export async function getMyOpenPrs(): Promise<GhSearchPr[]> {
+export async function getMyOpenPrs(force = false): Promise<GhSearchPr[]> {
   const now = Date.now()
   const hit = myOpenPrsCache.get(MY_OPEN_PRS_KEY)
-  if (hit && now - hit.fetchedAt < SEARCH_TTL_MS) return hit.value
+  if (!force && hit && now - hit.fetchedAt < SEARCH_TTL_MS) return hit.value
 
   if (myOpenPrsInflight) return myOpenPrsInflight
 
@@ -497,10 +497,10 @@ async function fetchMyIssuesFromGh(): Promise<GhSearchIssue[]> {
  * "Issues assigned" table + triage tile). Same cache/inflight/degrade
  * contract as getMyOpenPrs above. Total — never throws.
  */
-export async function getMyIssues(): Promise<GhSearchIssue[]> {
+export async function getMyIssues(force = false): Promise<GhSearchIssue[]> {
   const now = Date.now()
   const hit = myIssuesCache.get(MY_ISSUES_KEY)
-  if (hit && now - hit.fetchedAt < SEARCH_TTL_MS) return hit.value
+  if (!force && hit && now - hit.fetchedAt < SEARCH_TTL_MS) return hit.value
 
   if (myIssuesInflight) return myIssuesInflight
 
