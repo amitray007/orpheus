@@ -85,6 +85,21 @@ const store = createPerKeyStore<WorkbenchEntry>({
     prev.activeTab === next.activeTab
 })
 
+export function getWorkbenchEntry(workspaceId: string): WorkbenchEntry {
+  return store.raw.get(workspaceId) ?? DEFAULT_WORKBENCH_ENTRY
+}
+
+export function selectWorkbenchTab(workspaceId: string, tab: WorkbenchTabId): WorkbenchEntry {
+  const previous = getWorkbenchEntry(workspaceId)
+  const next: WorkbenchEntry = {
+    ...previous,
+    state: previous.state === 'dormant' ? previous.lastMode : previous.state,
+    activeTab: tab
+  }
+  setWorkbenchEntry(workspaceId, next)
+  return next
+}
+
 /** Write a workspace's entry. No-op if field-shallow-equal to the current entry. */
 export function setWorkbenchEntry(workspaceId: string, entry: WorkbenchEntry): void {
   store.set(workspaceId, entry)

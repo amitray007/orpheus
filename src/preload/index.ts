@@ -103,6 +103,7 @@ import type {
   TerminalMountResult,
   TerminalRect
 } from '../shared/types'
+import type { RendererControlAck, RendererControlRequest } from '../shared/workbenchControl'
 
 // ---------------------------------------------------------------------------
 // Generic typed IPC helpers. `invoke` and `subscribe` are typed against the
@@ -126,6 +127,13 @@ function subscribe<C extends PushChannel>(
 
 // Custom APIs for renderer
 const api = {
+  control: {
+    markRendererReady: (): Promise<void> => invoke('control:rendererReady'),
+    acknowledgeRendererCommand: (ack: RendererControlAck): Promise<boolean> =>
+      invoke('control:ackRendererCommand', ack),
+    onRendererCommand: (cb: (request: RendererControlRequest) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.controlRendererCommand, cb)
+  },
   app: {
     getVersion: (): Promise<string> => invoke('app:getVersion'),
     getPaths: (): Promise<{ userData: string; logs: string }> => invoke('app:getPaths'),

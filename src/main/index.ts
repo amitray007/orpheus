@@ -154,6 +154,12 @@ import { registerClaudeUsageIpc } from './ipc/claudeUsage'
 import { registerClaudeActivityIpc } from './ipc/claudeActivity'
 import { registerFooterActionsIpc } from './ipc/footerActions'
 import { registerReviewsIpc } from './ipc/reviews'
+import { createRendererCommandTransport, registerWorkbenchControlIpc } from './ipc/workbenchControl'
+import { RendererCommandBroker } from './workbenchControl/rendererCommandBroker'
+import { WorkbenchControlService } from './workbenchControl/service'
+import { createMainPaneControlPort } from './workbenchControl/mainPaneAdapter'
+import { isCanonicalWorkspacePath } from './workbenchControl/pathSafety'
+import { createControlAuditStore } from './controlPlane/controlAudit'
 import {
   bootControlPlane,
   configurePhase2ControlPlane,
@@ -2337,6 +2343,11 @@ registerReviewsIpc()
 
 registerPanesIpc()
 
+const rendererCommandBroker = new RendererCommandBroker(
+  createRendererCommandTransport(getMainWindow)
+)
+registerWorkbenchControlIpc({ broker: rendererCommandBroker, getMainWindow })
+
 registerKeepAwakeIpc()
 
 // ---------------------------------------------------------------------------
@@ -2471,6 +2482,84 @@ if (!app.requestSingleInstanceLock()) {
       })
       workspaceOrchestrationService = workspaceOrchestration.service
       const runtimeControlGrants = new RuntimeControlGrantPolicy()
+      const workbenchControlAudit = createControlAuditStore(getDb())
+      const workbenchControl = new WorkbenchControlService({
+        renderer: {
+          execute: (requestId, command) => rendererCommandBroker.execute(requestId, command)
+        },
+        authorization: {
+          revalidate: ({ context, permission, layoutId, terminalId }) => {
+            const trusted = context.trustedRuntime
+            if (trusted == null) return 'forbidden'
+            const binding = runtimeLeases.getByRuntimeId(trusted.runtimeId)
+            if (
+              binding == null ||
+              binding.workspaceId !== trusted.workspaceId ||
+              binding.projectId !== trusted.projectId ||
+              binding.surfaceId !== trusted.surfaceId
+            ) {
+              return 'forbidden'
+            }
+            if (!runtimeControlGrants.permissionsFor(binding).includes(permission)) {
+              return 'forbidden'
+            }
+            if (layoutId == null) return 'allow'
+            const scope = runtimeControlGrants.scopeFor(binding)
+            if (!scope?.layoutIds.includes(layoutId)) return 'not_found'
+            if (
+              terminalId != null &&
+              !scope.surfaceIds.includes(`pane:${layoutId}:${terminalId}`)
+            ) {
+              return 'not_found'
+            }
+            return 'allow'
+          }
+        },
+        paths: {
+          isSafe: (workspaceId, relativePath, options) => {
+            const workspace = getWorkspace(workspaceId)
+            return workspace == null
+              ? false
+              : isCanonicalWorkspacePath(workspace.cwd, relativePath, options)
+          }
+        },
+        panes: createMainPaneControlPort({
+          getLayout,
+          listTerminals,
+          startConfigured: (layout, terminal) => {
+            const window = getMainWindow()
+            if (window == null || window.isDestroyed()) {
+              throw new Error('Pane terminal is unavailable.')
+            }
+            const slotId = paneSlotId(layout.id, terminal.id)
+            const retained = loadTerminalAddon().getSurfacePhase(slotId) !== 'none'
+            mountPaneBackground(
+              window.getNativeWindowHandle(),
+              layout.id,
+              terminal.id,
+              { x: 0, y: 0, w: 800, h: 600 },
+              1,
+              terminal.command
+            )
+            loadTerminalAddon().hide(slotId)
+            return retained ? 'retained' : 'started'
+          },
+          stopSurface: (layoutId, terminalId) => {
+            const slotId = paneSlotId(layoutId, terminalId)
+            if (loadTerminalAddon().getSurfacePhase(slotId) === 'none') return 'absent'
+            loadTerminalAddon().destroy(slotId)
+            unregisterPaneSurface(layoutId, terminalId)
+            return 'stopped'
+          },
+          focusSurface: (layoutId, terminalId) => {
+            loadTerminalAddon().focus(paneSlotId(layoutId, terminalId))
+          }
+        }),
+        audit: workbenchControlAudit,
+        onAuditFailure: (error, record) => {
+          console.error('[controlAudit] Phase 4 append failed:', record.auditId, error)
+        }
+      })
 
       // Boot both internal registries before renderer IPC or the deferred command
       // server can invoke them.
@@ -2507,7 +2596,8 @@ if (!app.requestSingleInstanceLock()) {
             }
           }
         }),
-        workspaceOrchestration: workspaceOrchestration.service
+        workspaceOrchestration: workspaceOrchestration.service,
+        workbenchControl
       })
       bootControlPlane()
       bootActions(workspaceControlAdapter)

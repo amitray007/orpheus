@@ -2,14 +2,17 @@ import { createReadCapabilities } from './readCapabilities'
 import { createReviewCapabilities } from './reviewCapabilities'
 import { createWorkspaceCapabilities } from './workspaceCapabilities'
 import type { ControlRegistry } from './registry'
-import type { ReadCapabilityHandlers, ReviewCapabilityHandlers } from './types'
+import type { ControlDescriptor, ReadCapabilityHandlers, ReviewCapabilityHandlers } from './types'
 import type { WorkspaceOrchestrationService } from '../workspaceOrchestration/service'
+import type { WorkbenchControlService } from '../workbenchControl/service'
+import { createWorkbenchCapabilities } from './workbenchCapabilities'
 
 export function bootControlRegistry(
   registry: ControlRegistry,
   reviewHandlers: ReviewCapabilityHandlers,
   readHandlers?: ReadCapabilityHandlers,
-  workspaceService?: WorkspaceOrchestrationService
+  workspaceService?: WorkspaceOrchestrationService,
+  workbenchService?: WorkbenchControlService
 ): void {
   const [listCapability, setResolvedCapability] = createReviewCapabilities(reviewHandlers, {
     mcpRead: readHandlers != null
@@ -49,5 +52,12 @@ export function bootControlRegistry(
     registry.register(reopen)
     registry.register(rename)
     registry.register(archive)
+  }
+  if (workbenchService != null) {
+    for (const capability of createWorkbenchCapabilities(
+      workbenchService
+    ) as readonly ControlDescriptor<unknown, unknown>[]) {
+      registry.register(capability)
+    }
   }
 }

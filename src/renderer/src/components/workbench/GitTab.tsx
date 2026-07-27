@@ -102,6 +102,7 @@ import { NotARepoState, CleanState, PrDiffEmptyState } from './git/diff/diffEmpt
 import { fetchDiff, fetchPrDiff, fetchReviewComments } from './git/diff/diffFetch'
 import { useGitDiffData } from './git/diff/useGitDiffData'
 import { usePrState } from './git/diff/usePrState'
+import { useWorkbenchDiffTarget } from '../../lib/workbenchControlStore'
 
 // TREE_THEME + the host git-status/focus-ring CSS-var overrides now live in
 // ./treeConfig.ts (shared with FilesTab.tsx — see that module's doc comment
@@ -564,6 +565,7 @@ export function GitTab({
 
   const [treeOpen, setTreeOpen] = useState(true)
   const [subTab, setSubTab] = useState<GitSubTab>('diff')
+  const controlledDiffTarget = useWorkbenchDiffTarget(workspaceId)
 
   // Phase 4b: open "start a comment" composers (gutter "+"/select-to-comment)
   // — see useReviewComposers.ts's own header. Reset alongside reviewThreads
@@ -662,6 +664,20 @@ export function GitTab({
     prDetailDebounceRef,
     resetForWorkspaceChange: resetPrForWorkspaceChange
   } = usePrState(workspaceId, diffMode, closeComposer)
+
+  useEffect(() => {
+    if (controlledDiffTarget == null) return
+    const path =
+      controlledDiffTarget.kind === 'working-tree-file'
+        ? controlledDiffTarget.path
+        : localReviews.find((review) => review.id === controlledDiffTarget.reviewId)?.path
+    if (path == null) return
+    queueMicrotask(() => {
+      setDiffMode('working')
+      setSubTab('diff')
+      setSelectedPath(path)
+    })
+  }, [controlledDiffTarget, localReviews, setDiffMode, setSelectedPath])
 
   // Initial load + workspace change (spec §3.2) — THE most important effect
   // for ordering (see docs/learnings/gittab-state-machine.md §3.2/§6 point 1

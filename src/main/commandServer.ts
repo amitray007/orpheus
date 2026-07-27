@@ -752,7 +752,8 @@ function trustedRuntimeBinding(
     projectId: binding.projectId,
     claudeConversationId: binding.claudeConversationId,
     issuedAt: binding.issuedAt,
-    permissions: grants.permissionsFor(binding)
+    permissions: grants.permissionsFor(binding),
+    resourceScope: grants.scopeFor(binding)
   })
 }
 
