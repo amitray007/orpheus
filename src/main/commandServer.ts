@@ -29,7 +29,14 @@ import {
   resolveCommandReviewListInput,
   resolveCommandReviewSetResolvedInput
 } from './reviewControlAdapter'
-import { invokeControl } from './controlPlane'
+import type { ClaudeRuntimeBinding, RuntimeLeaseRegistry } from './controlPlane/runtimeLeases'
+import type {
+  ControlContext,
+  ControlDescription,
+  ControlInvoker,
+  ControlPermission,
+  TrustedRuntimeBinding
+} from './controlPlane/types'
 
 // ---------------------------------------------------------------------------
 // Deps injected from index.ts (these live as locals there, so we receive them
@@ -37,6 +44,9 @@ import { invokeControl } from './controlPlane'
 // ---------------------------------------------------------------------------
 
 export type CommandServerDeps = {
+  runtimeLeases: RuntimeLeaseRegistry
+  listControl: (context: ControlContext) => ControlDescription[]
+  invokeControl: ControlInvoker
   /** Destroy the libghostty surface for a workspace (no-op if not mounted). */
   destroySurface: (workspaceId: string) => void
   /**
@@ -126,6 +136,17 @@ type CmdBody = {
   args?: Record<string, unknown>
   context?: { workspaceId?: string }
 }
+
+type ControlRequest =
+  | { protocolVersion: 1; op: 'catalog' }
+  | { protocolVersion: 1; op: 'invoke'; id: string; input: unknown }
+
+const RUNTIME_READ_PERMISSIONS = Object.freeze([
+  'identity.read',
+  'projects.read',
+  'workspaces.read',
+  'reviews.read'
+] satisfies ControlPermission[])
 
 // The value a dispatch handler resolves to — always fed straight into
 // JSON.stringify({ ok: true, data }) by the /cmd envelope, so it's
@@ -625,7 +646,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     //                 so a workspace-scoped agent doesn't need to pass it.
     'reviews.list': async (args, context) => {
       return invokeReviewList(
-        invokeControl,
+        deps.invokeControl,
         resolveCommandReviewListInput(args, context),
         commandReviewContext(context?.workspaceId ?? null)
       )
@@ -647,7 +668,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // reviews:setResolved IPC handler, which also takes only { id, resolved }.
     'reviews.setResolved': async (args, context) => {
       return invokeReviewSetResolved(
-        invokeControl,
+        deps.invokeControl,
         resolveCommandReviewSetResolvedInput(args, ARGS_ID_REQUIRED_ERROR),
         commandReviewContext(context?.workspaceId ?? null)
       )
@@ -740,6 +761,114 @@ function readBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<
   })
 }
 
+function writeJsonResponse(res: http.ServerResponse, status: number, payload: unknown): void {
+  if (res.writableEnded) return
+  try {
+    res.writeHead(status, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(payload))
+  } catch {
+    /* client disconnected */
+  }
+}
+
+function writeControlError(
+  res: http.ServerResponse,
+  status: number,
+  code: string,
+  message: string
+): void {
+  writeJsonResponse(res, status, { ok: false, error: { code, message } })
+}
+
+function resolveRuntimeLease(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  runtimeLeases: RuntimeLeaseRegistry
+): ClaudeRuntimeBinding | null {
+  const token = req.headers['x-orpheus-runtime-lease']
+  if (typeof token !== 'string') {
+    writeControlError(res, 401, 'unauthorized', 'A valid runtime lease is required.')
+    return null
+  }
+  const binding = runtimeLeases.resolve(token)
+  if (binding == null) {
+    writeControlError(res, 401, 'unauthorized', 'A valid runtime lease is required.')
+    return null
+  }
+  return binding
+}
+
+function trustedRuntimeBinding(binding: ClaudeRuntimeBinding): TrustedRuntimeBinding {
+  return Object.freeze({
+    runtimeId: binding.runtimeId,
+    runtimeKind: binding.runtimeKind,
+    surfaceId: binding.surfaceId,
+    workspaceId: binding.workspaceId,
+    projectId: binding.projectId,
+    claudeConversationId: binding.claudeConversationId,
+    issuedAt: binding.issuedAt,
+    permissions: RUNTIME_READ_PERMISSIONS
+  })
+}
+
+function runtimeControlContext(binding: ClaudeRuntimeBinding): ControlContext {
+  const trustedRuntime = trustedRuntimeBinding(binding)
+  return {
+    principal: { type: 'workspace-agent', id: binding.runtimeId },
+    consumer: 'mcp',
+    workspaceId: binding.workspaceId,
+    projectId: binding.projectId,
+    requestId: crypto.randomUUID(),
+    trustedRuntime
+  }
+}
+
+function parseControlRequest(value: unknown): ControlRequest | null {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  if (record['protocolVersion'] !== 1) return null
+  if (record['op'] === 'catalog') {
+    return Object.keys(record).every((key) => key === 'protocolVersion' || key === 'op')
+      ? { protocolVersion: 1, op: 'catalog' }
+      : null
+  }
+  if (
+    record['op'] === 'invoke' &&
+    typeof record['id'] === 'string' &&
+    record['id'].length > 0 &&
+    Object.hasOwn(record, 'input') &&
+    Object.keys(record).every(
+      (key) => key === 'protocolVersion' || key === 'op' || key === 'id' || key === 'input'
+    )
+  ) {
+    return {
+      protocolVersion: 1,
+      op: 'invoke',
+      id: record['id'],
+      input: record['input']
+    }
+  }
+  return null
+}
+
+function publishedControlDescription(description: ControlDescription): {
+  id: string
+  version: 1
+  kind: 'query' | 'mutation'
+  description: string
+  inputSchema: Readonly<Record<string, unknown>>
+  outputSchema: Readonly<Record<string, unknown>>
+} {
+  return {
+    id: description.id,
+    version: description.version,
+    kind: description.kind,
+    description: description.description,
+    inputSchema: description.inputSchema,
+    outputSchema: description.outputSchema
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Subscription cap — prevents unbounded open /subscribe connections.
 // ---------------------------------------------------------------------------
@@ -820,22 +949,6 @@ function parseSubscribeRequestBody(raw: Buffer): SubscribeRequestParseResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Write a JSON response for /cmd, guarding against a client that already
- * disconnected (writableEnded, or writeHead/end throwing mid-flight) exactly
- * as every call site's original inline `if (!res.writableEnded) { try {...}
- * catch { /* client disconnected *\/ } }` did.
- */
-function writeCmdJsonResponse(res: http.ServerResponse, status: number, payload: unknown): void {
-  if (res.writableEnded) return
-  try {
-    res.writeHead(status, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(payload))
-  } catch {
-    /* client disconnected */
-  }
-}
-
-/**
  * Resolve the dispatch handler for `action`, mirroring the original inline
  * lookup exactly: only an own-property hit that is actually a function
  * counts as a handler (guards against action strings colliding with
@@ -868,11 +981,11 @@ async function dispatchCmdAndRespond(
 ): Promise<void> {
   try {
     const data = await handler(args, context, deps)
-    writeCmdJsonResponse(res, 200, { ok: true, data })
+    writeJsonResponse(res, 200, { ok: true, data })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error('[commandServer] handler error:', err)
-    writeCmdJsonResponse(res, 200, { ok: false, error: message })
+    writeJsonResponse(res, 200, { ok: false, error: message })
   }
 }
 
@@ -890,6 +1003,7 @@ async function dispatchCmdAndRespond(
 export function startCommandServer(deps: CommandServerDeps): {
   sockPath: string
   token: string
+  ready: Promise<void>
   close: () => void
 } {
   const userData = app.getPath('userData')
@@ -923,6 +1037,72 @@ export function startCommandServer(deps: CommandServerDeps): {
   const dispatch = makeDispatchTable(deps)
 
   let listening = false
+  let readySettled = false
+  let resolveReady!: () => void
+  let rejectReady!: (error: Error) => void
+  const ready = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve
+    rejectReady = reject
+  })
+
+  // --------------------------------------------------------------------------
+  // POST /control — runtime-lease-scoped Phase 2 MCP control protocol
+  // --------------------------------------------------------------------------
+  function handleControl(req: http.IncomingMessage, res: http.ServerResponse): void {
+    // Runtime authentication is intentionally separate from the legacy global
+    // command token. A missing, invalid, or revoked runtime lease never falls
+    // back to x-orpheus-token.
+    const binding = resolveRuntimeLease(req, res, deps.runtimeLeases)
+    if (binding == null) return
+
+    void (async () => {
+      try {
+        const raw = await readBody(req, res)
+        if (raw == null) return
+
+        let parsedJson: unknown
+        try {
+          parsedJson = JSON.parse(raw.toString('utf-8'))
+        } catch {
+          writeControlError(res, 400, 'invalid', 'Invalid JSON body.')
+          return
+        }
+
+        const request = parseControlRequest(parsedJson)
+        if (request == null) {
+          writeControlError(res, 400, 'invalid', 'Invalid or unsupported control request.')
+          return
+        }
+
+        const context = runtimeControlContext(binding)
+        if (request.op === 'catalog') {
+          const capabilities = deps.listControl(context).map(publishedControlDescription)
+          writeJsonResponse(res, 200, {
+            ok: true,
+            data: { protocolVersion: 1, capabilities }
+          })
+          return
+        }
+
+        const result = await deps.invokeControl({
+          id: request.id,
+          input: request.input,
+          context
+        })
+        if (result.ok) {
+          writeJsonResponse(res, 200, { ok: true, data: result.value })
+        } else {
+          writeControlError(res, 200, result.code, result.error)
+        }
+      } catch {
+        writeControlError(res, 500, 'failed', 'Control request failed.')
+      }
+    })()
+
+    req.on('error', () => {
+      // Connection reset or early destroy — nothing to respond to.
+    })
+  }
 
   // --------------------------------------------------------------------------
   // POST /subscribe — long-lived streaming subscription endpoint (U11)
@@ -1418,7 +1598,7 @@ export function startCommandServer(deps: CommandServerDeps): {
         try {
           body = JSON.parse(raw.toString('utf-8')) as CmdBody
         } catch {
-          writeCmdJsonResponse(res, 400, { ok: false, error: 'invalid JSON body' })
+          writeJsonResponse(res, 400, { ok: false, error: 'invalid JSON body' })
           return
         }
 
@@ -1427,7 +1607,7 @@ export function startCommandServer(deps: CommandServerDeps): {
         // --- Dispatch ---
         const handler = resolveCmdHandler(dispatch, action)
         if (!handler) {
-          writeCmdJsonResponse(res, 400, { ok: false, error: `unknown action: ${action}` })
+          writeJsonResponse(res, 400, { ok: false, error: `unknown action: ${action}` })
           return
         }
 
@@ -1450,6 +1630,11 @@ export function startCommandServer(deps: CommandServerDeps): {
   }
 
   const server = http.createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/control') {
+      handleControl(req, res)
+      return
+    }
+
     if (req.method === 'POST' && req.url === '/subscribe') {
       handleSubscribe(req, res)
       return
@@ -1473,9 +1658,23 @@ export function startCommandServer(deps: CommandServerDeps): {
     try {
       fs.chmodSync(sockPath, 0o600)
     } catch (err) {
-      console.warn('[commandServer] could not chmod cmd.sock to 0600:', err)
+      console.error('[commandServer] could not chmod cmd.sock to 0600:', err)
+      if (!readySettled) {
+        readySettled = true
+        rejectReady(new Error('Command socket permissions could not be secured.'))
+      }
+      server.close()
+      listening = false
+      try {
+        fs.unlinkSync(sockPath)
+      } catch {
+        /* ignore */
+      }
+      return
     }
     console.log('[commandServer] listening on', sockPath)
+    readySettled = true
+    resolveReady()
   })
 
   server.on('error', (err) => {
@@ -1486,11 +1685,16 @@ export function startCommandServer(deps: CommandServerDeps): {
     } catch {
       /* ignore — file may not exist if listen never bound */
     }
+    if (!readySettled) {
+      readySettled = true
+      rejectReady(err)
+    }
   })
 
   return {
     sockPath,
     token,
+    ready,
     close(): void {
       if (
         typeof (server as http.Server & { closeAllConnections?: () => void })

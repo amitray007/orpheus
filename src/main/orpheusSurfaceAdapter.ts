@@ -26,7 +26,10 @@ import { shimPath } from './orpheusNotify'
 import { getCachedShellPath } from './shellHelpers'
 import { writeGhosttyConfigFile } from './ghosttyConfig'
 import { getAppUiState } from './uiState'
-import { isDev } from './appMode'
+import { isDev, isWorktreeBuild } from './appMode'
+import { buildManagedMcpFlagsString } from './controlPlane/managedMcpLaunch'
+import type { ClaudeRuntimeBinding } from './controlPlane/runtimeLeases'
+import { FLAG_DELIMITER } from '../shared/cliFlags'
 
 // ---------------------------------------------------------------------------
 // loadOrpheusSurface
@@ -72,6 +75,11 @@ export type MountEnvResult = {
   authEnv: Record<string, string>
 }
 
+export type RuntimeMountLease = Readonly<{
+  binding: ClaudeRuntimeBinding
+  token: string | null
+}>
+
 // ---------------------------------------------------------------------------
 // buildMountEnv
 //
@@ -100,7 +108,8 @@ export function buildMountEnv(
   projectId: string | undefined,
   sockPath: string | undefined,
   cmdServer?: { sockPath: string; token: string },
-  precomposedLaunch?: ClaudeLaunch
+  precomposedLaunch?: ClaudeLaunch,
+  runtimeLease?: RuntimeMountLease
 ): MountEnvResult {
   // Compose claude settings → flags, settingsJson, base env vars. Callers on
   // the terminal:mount hot path (index.ts) already composed this once for
@@ -136,10 +145,13 @@ export function buildMountEnv(
   // in both cases, so we always derive the bin dir from there (same as shimPath()).
   const orpheusBinDir = join(process.resourcesPath, 'bin')
 
+  const managedMcpFlags = runtimeLease ? buildManagedMcpFlagsString(process.resourcesPath) : ''
+  const effectiveFlags = [launch.flags, managedMcpFlags].filter(Boolean).join(FLAG_DELIMITER)
+
   const env: Record<string, string> = {
     ...launch.env,
     ...authEnv, // auth env wins on conflict
-    ...(launch.flags ? { ORPHEUS_CLAUDE_FLAGS: launch.flags } : {}),
+    ...(effectiveFlags ? { ORPHEUS_CLAUDE_FLAGS: effectiveFlags } : {}),
     ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {}),
     ORPHEUS_WORKSPACE_ID: workspaceId, // always present — load-bearing for CLI guardrails
     ...(sockPath ? { ORPHEUS_SOCK: sockPath } : {}),
@@ -153,7 +165,7 @@ export function buildMountEnv(
     // so we set ORPHEUS_BIN_DIR separately and let the wrapper prepend it.
     ORPHEUS_BIN_DIR: orpheusBinDir,
     // Data variant — tells the CLI which data dir to target (dev or prod).
-    ORPHEUS_DATA_VARIANT: isDev ? 'dev' : 'prod',
+    ORPHEUS_DATA_VARIANT: isWorktreeBuild ? 'wt' : isDev ? 'dev' : 'prod',
     // Command server plumbing — injected when the server is running so the CLI
     // resolves sock/token zero-config from within a workspace terminal.
     // The CLI also falls back to reading cmd.token from disk, so this is a
@@ -189,6 +201,29 @@ export function buildMountEnv(
   // ClaudeCloudProvider in src/shared/types.ts), so a routed model can never
   // collide with a CLAUDE_CODE_USE_* env var from those providers either.
   Object.assign(env, computeRoutingEnv(launch.model))
+
+  // Runtime identity is server-owned launch metadata. Merge it last so neither
+  // custom Claude env nor provider-routing layers can spoof the trusted binding.
+  // The main process remains authoritative: these values are hints carried to
+  // the managed MCP bridge, while the bearer token resolves against the
+  // process-local RuntimeLeaseRegistry.
+  if (runtimeLease) {
+    const { binding, token } = runtimeLease
+    delete env.ORPHEUS_RUNTIME_LEASE_TOKEN
+    delete env.ORPHEUS_CLAUDE_CONVERSATION_ID
+    Object.assign(env, {
+      ORPHEUS_RUNTIME_CONTEXT_VERSION: '1',
+      ORPHEUS_RUNTIME_ID: binding.runtimeId,
+      ORPHEUS_RUNTIME_KIND: binding.runtimeKind,
+      ORPHEUS_SURFACE_ID: binding.surfaceId,
+      ORPHEUS_PROJECT_ID: binding.projectId,
+      ORPHEUS_WORKSPACE_ID: binding.workspaceId,
+      ...(binding.claudeConversationId
+        ? { ORPHEUS_CLAUDE_CONVERSATION_ID: binding.claudeConversationId }
+        : {}),
+      ...(token ? { ORPHEUS_RUNTIME_LEASE_TOKEN: token } : {})
+    })
+  }
 
   // Resolve the wrapper script path.
   // Packaged: Contents/Resources/orpheus-claude.sh

@@ -9,6 +9,7 @@
  *
  *   1. ORPHEUS_DATA_VARIANT env var (internal/testing override):
  *      - "dev"  → "Orpheus Dev"
+ *      - "wt"   → "Orpheus WT"
  *      - "prod" → "Orpheus" (explicit prod override)
  *      This allows test scripts to point at the dev data dir without any --mode flag.
  *      There is deliberately NO user-facing --mode flag; variant is context-only.
@@ -28,6 +29,7 @@ import * as path from 'node:path'
 export function resolveAppName(): string {
   const variant = process.env.ORPHEUS_DATA_VARIANT
   if (variant === 'dev') return 'Orpheus Dev'
+  if (variant === 'wt') return 'Orpheus WT'
   // "prod" or anything else → production name
   return 'Orpheus'
 }
@@ -45,6 +47,10 @@ export function getSqlitePath(): string {
 
 /** Path to the Unix-domain command socket (used by the CLI control protocol). */
 export function getCmdSockPath(): string {
+  const injectedPath = process.env.ORPHEUS_CMD_SOCK
+  if (typeof injectedPath === 'string' && path.isAbsolute(injectedPath)) {
+    return injectedPath
+  }
   return path.join(getUserDataDir(), 'cmd.sock')
 }
 

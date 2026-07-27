@@ -1,18 +1,38 @@
 import type {
+  ControlAuthorizationPolicy,
   ControlDescriptor,
   ControlDescription,
   ControlInvocation,
-  ControlResult
+  ControlResult,
+  ControlSurface
 } from './types'
 
 type StoredDescriptor = ControlDescriptor<unknown, unknown>
 
-function surfaceForConsumer(consumer: ControlInvocation['context']['consumer']): string {
-  return consumer === 'renderer-ipc' ? 'renderer' : consumer
+const COMPATIBILITY_POLICY: ControlAuthorizationPolicy = {
+  canDiscover: (_description, context) => context.consumer !== 'mcp',
+  authorize: (_description, _input, context) =>
+    context.consumer === 'mcp'
+      ? {
+          allowed: false,
+          code: 'forbidden',
+          error: 'MCP control requires a trusted runtime authorization policy.'
+        }
+      : { allowed: true }
+}
+
+function surfaceForConsumer(
+  consumer: ControlInvocation['context']['consumer']
+): ControlSurface | null {
+  if (consumer === 'renderer-ipc') return 'renderer'
+  if (consumer === 'command-socket' || consumer === 'mcp') return consumer
+  return null
 }
 
 export class ControlRegistry {
   private readonly descriptors = new Map<string, StoredDescriptor>()
+
+  constructor(private readonly authorization: ControlAuthorizationPolicy = COMPATIBILITY_POLICY) {}
 
   register<TInput, TOutput>(descriptor: ControlDescriptor<TInput, TOutput>): void {
     if (this.descriptors.has(descriptor.id)) {
@@ -45,6 +65,21 @@ export class ControlRegistry {
       .filter((description): description is ControlDescription => description != null)
   }
 
+  describeForContext(id: string, context: ControlInvocation['context']): ControlDescription | null {
+    const description = this.describe(id)
+    if (description == null) return null
+    const surface = surfaceForConsumer(context.consumer)
+    if (surface == null || !description.allowedSurfaces.includes(surface)) return null
+    return this.authorization.canDiscover(description, context) ? description : null
+  }
+
+  listForContext(context: ControlInvocation['context']): ControlDescription[] {
+    return [...this.descriptors.keys()]
+      .sort()
+      .map((id) => this.describeForContext(id, context))
+      .filter((description): description is ControlDescription => description != null)
+  }
+
   async invoke<T>(invocation: ControlInvocation): Promise<ControlResult<T>> {
     const descriptor = this.descriptors.get(invocation.id)
     if (descriptor == null) {
@@ -56,7 +91,7 @@ export class ControlRegistry {
     }
 
     const surface = surfaceForConsumer(invocation.context.consumer)
-    if (!descriptor.allowedSurfaces.includes(surface as 'renderer' | 'command-socket')) {
+    if (surface == null || !descriptor.allowedSurfaces.includes(surface)) {
       return {
         ok: false,
         code: 'forbidden',
@@ -64,7 +99,7 @@ export class ControlRegistry {
       }
     }
 
-    if (!descriptor.validateInput(invocation.input)) {
+    if (!descriptor.validateInput(invocation.input, invocation.context)) {
       return {
         ok: false,
         code: 'invalid',
@@ -73,6 +108,22 @@ export class ControlRegistry {
     }
 
     try {
+      const description = this.describe(invocation.id)
+      if (description == null) {
+        return {
+          ok: false,
+          code: 'not_found',
+          error: `Control capability not found: ${invocation.id}`
+        }
+      }
+      const decision = await this.authorization.authorize(
+        description,
+        invocation.input,
+        invocation.context
+      )
+      if (!decision.allowed) {
+        return { ok: false, code: decision.code, error: decision.error }
+      }
       const value = await descriptor.handler(invocation.input, invocation.context)
       return { ok: true, value: value as T }
     } catch (err) {

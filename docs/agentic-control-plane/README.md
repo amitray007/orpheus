@@ -1,6 +1,6 @@
 # Orpheus Agentic Control Plane
 
-**Status:** durable product and migration concept<br>
+**Status:** Phases 1–2 implemented and validated; Phases 3–8 planned<br>
 **Scope:** local Orpheus app, its renderer, bundled CLI, managed Claude sessions, and future durable automations
 
 The Agentic Control Plane makes Orpheus programmable through stable, semantic
@@ -16,7 +16,9 @@ See [architecture.md](architecture.md) for boundaries, adapter contracts,
 security, migration rules, and decision records;
 [identity-and-permissions.md](identity-and-permissions.md) defines trusted
 runtime identity, target resolution, grants, permission capabilities, and risk
-tiers.
+tiers. Delivered phase records:
+[Phase 1: Control Foundation](phase-01-control-foundation.md) and
+[Phase 2: Self Identity + Read-only MCP](phase-02-self-identity-readonly-mcp.md).
 
 ## Product promise
 
@@ -41,26 +43,26 @@ The control plane must:
 This inventory describes the current repository, not the June 2026 design
 snapshot.
 
-| Area | Current state | Current paths |
-| --- | --- | --- |
-| Bundled CLI | Exists, with workspace/project lifecycle, read, wait, send, reviews, and agent-facing help/schema commands | `packages/orpheus-cli/src/`, `resources/bin/orpheus` |
-| Offline reads | Exists; opens SQLite read-only and parses Claude JSONL/session files without launching the app | `packages/orpheus-cli/src/reads/db.ts`, `reads/transcript.ts`, `reads/session-status.ts` |
-| Live CLI transport | Exists; authenticated HTTP over `cmd.sock`, with request/response and status subscriptions | `src/main/commandServer.ts`, `packages/orpheus-cli/src/socket-client.ts` |
-| Quick Actions | Exists as a separate in-process registry used by renderer IPC; descriptors currently expose only id/kind externally | `src/main/actions/registry.ts`, `actions/index.ts`, `ipc/actions.ts`, `src/preload/index.ts` |
-| Audit trail | Exists for Quick Action mutators | `src/main/actions/audit.ts`, `src/main/db/schema.ts` |
-| Domain state | Projects, workspaces, lineage, worktrees, sessions, and declarative SQLite migrations exist | `src/main/projects.ts`, `workspaces.ts`, `worktrees.ts`, `sessions.ts`, `db/` |
-| Activity/transcripts | File-authoritative Claude status and JSONL-derived session reads exist | `src/main/sessionState.ts`, `sessionStatusMap.ts`, `sessions.ts`, `actions/session.ts` |
-| Home dashboard | Exists with Overview, Limits, and Insights views over account-wide GitHub work, provider usage, Claude activity windows, recent sessions, model activity, and GitHub contribution windows | `src/renderer/src/components/dashboard/DashboardView.tsx`, `dashboard/dashboard-home/` |
+| Area                    | Current state                                                                                                                                                                                              | Current paths                                                                                                                               |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bundled CLI             | Exists, with workspace/project lifecycle, read, wait, send, reviews, and agent-facing help/schema commands                                                                                                 | `packages/orpheus-cli/src/`, `resources/bin/orpheus`                                                                                        |
+| Offline reads           | Exists; opens SQLite read-only and parses Claude JSONL/session files without launching the app                                                                                                             | `packages/orpheus-cli/src/reads/db.ts`, `reads/transcript.ts`, `reads/session-status.ts`                                                    |
+| Live CLI transport      | Exists; authenticated HTTP over `cmd.sock`, with request/response and status subscriptions                                                                                                                 | `src/main/commandServer.ts`, `packages/orpheus-cli/src/socket-client.ts`                                                                    |
+| Quick Actions           | Exists as a separate in-process registry used by renderer IPC; descriptors currently expose only id/kind externally                                                                                        | `src/main/actions/registry.ts`, `actions/index.ts`, `ipc/actions.ts`, `src/preload/index.ts`                                                |
+| Audit trail             | Exists for Quick Action mutators                                                                                                                                                                           | `src/main/actions/audit.ts`, `src/main/db/schema.ts`                                                                                        |
+| Domain state            | Projects, workspaces, lineage, worktrees, sessions, and declarative SQLite migrations exist                                                                                                                | `src/main/projects.ts`, `workspaces.ts`, `worktrees.ts`, `sessions.ts`, `db/`                                                               |
+| Activity/transcripts    | File-authoritative Claude status and JSONL-derived session reads exist                                                                                                                                     | `src/main/sessionState.ts`, `sessionStatusMap.ts`, `sessions.ts`, `actions/session.ts`                                                      |
+| Home dashboard          | Exists with Overview, Limits, and Insights views over account-wide GitHub work, provider usage, Claude activity windows, recent sessions, model activity, and GitHub contribution windows                  | `src/renderer/src/components/dashboard/DashboardView.tsx`, `dashboard/dashboard-home/`                                                      |
 | Dashboard data services | Typed renderer IPC and main-process domain modules provide GitHub account snapshots, provider-neutral usage, activity/contribution windows, persisted stale-while-revalidate caches, and background pushes | `src/shared/ipc.ts`, `src/main/githubDashboard.ts`, `providerUsage.ts`, `claudeActivityWindow.ts`, `db/dashboardCache.ts`, `usagePoller.ts` |
-| Review/workbench | Diff viewing and local review comments exist | `src/main/gitDiff.ts`, `reviewStore.ts`, `ipc/reviews.ts`, `src/renderer/src/components/workbench/` |
-| Panes | Persisted panel/layout/terminal hierarchy and native surfaces exist | `src/main/paneStore.ts`, `ipc/panes.ts`, `src/renderer/src/components/panes/` |
-| MCP | Orpheus can manage Claude MCP configuration, but does not yet ship an Orpheus control MCP server | `src/main/mcp.ts`, `ipc/mcp.ts`, `ClaudeToolsSection.tsx` |
-| Automations | No durable control-plane automation engine exists | — |
+| Review/workbench        | Diff viewing and local review comments exist                                                                                                                                                               | `src/main/gitDiff.ts`, `reviewStore.ts`, `ipc/reviews.ts`, `src/renderer/src/components/workbench/`                                         |
+| Panes                   | Persisted panel/layout/terminal hierarchy and native surfaces exist                                                                                                                                        | `src/main/paneStore.ts`, `ipc/panes.ts`, `src/renderer/src/components/panes/`                                                               |
+| MCP                     | A bundled stdio bridge and runtime-lease-scoped `/control` protocol are implemented, deterministically tested, and live-validated with managed Claude discovery and self-scoped reads                      | `packages/orpheus-mcp/`, `src/main/controlPlane/`, `src/main/commandServer.ts`                                                              |
+| Automations             | No durable control-plane automation engine exists                                                                                                                                                          | —                                                                                                                                           |
 
-The principal architectural gap is split authority: the CLI command dispatch in
-`src/main/commandServer.ts`, Quick Actions in `src/main/actions/registry.ts`, and
-typed dashboard IPC/domain modules are independent surfaces. They are migration
-inputs, not yet a complete, transport-neutral, self-describing control contract.
+The control registry is now authoritative for the Phase 1 review proof and the
+Phase 2 managed read catalog. Split authority remains for CLI dispatch, Quick
+Actions, dashboard IPC/domain modules, and later mutations; those surfaces are
+migration inputs rather than automatically published agent capabilities.
 The dashboard surfaces are not automatically agent-visible: Phase 2 explicitly
 defers account-wide GitHub, provider-usage, and all-history activity publication
 until their scope, freshness, refresh effects, and permissions are modeled.
@@ -82,18 +84,18 @@ Orpheus MCP surface.
 
 ## Terminology
 
-| Term | Meaning |
-| --- | --- |
-| Control plane | The in-process authority that describes, authorizes, invokes, audits, and observes Orpheus capabilities |
-| Operation | A stable semantic invocation such as the compatibility ids `reviews.list` and `reviews.setResolved` |
+| Term                  | Meaning                                                                                                                                |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Control plane         | The in-process authority that describes, authorizes, invokes, audits, and observes Orpheus capabilities                                |
+| Operation             | A stable semantic invocation such as the compatibility ids `reviews.list` and `reviews.setResolved`                                    |
 | Permission capability | A versioned authority such as `workspaces.create`, `workspaces.wait`, or `reviews.resolve`, defined by the identity/permissions design |
-| Adapter | A consumer-specific translation layer: MCP, renderer IPC, CLI live transport, or automation |
-| Principal | The caller identity: renderer user, workspace agent, CLI process, or automation run |
-| Source account | A GitHub or provider account whose data Orpheus reads; account labels are result metadata, not caller identity or authorization |
-| Execution context | Principal plus workspace/project scope, consumer, request id, and granted policy |
-| Offline read | A read directly from SQLite or Claude-owned files that does not require the app |
-| Semantic control | Intent expressed in Orpheus domain terms, not pointer events, DOM selectors, coordinates, or generic key simulation |
-| Automation | A persisted trigger plus semantic control-plane invocation, policy, limits, and run history |
+| Adapter               | A consumer-specific translation layer: MCP, renderer IPC, CLI live transport, or automation                                            |
+| Principal             | The caller identity: renderer user, workspace agent, CLI process, or automation run                                                    |
+| Source account        | A GitHub or provider account whose data Orpheus reads; account labels are result metadata, not caller identity or authorization        |
+| Execution context     | Principal plus workspace/project scope, consumer, request id, and granted policy                                                       |
+| Offline read          | A read directly from SQLite or Claude-owned files that does not require the app                                                        |
+| Semantic control      | Intent expressed in Orpheus domain terms, not pointer events, DOM selectors, coordinates, or generic key simulation                    |
+| Automation            | A persisted trigger plus semantic control-plane invocation, policy, limits, and run history                                            |
 
 ## Goals
 
@@ -145,16 +147,19 @@ the native UI adapter. Automations invoke the core in-process.
 
 ## Additive delivery phases
 
-1. **Control Foundation** — add the canonical operation catalog, invocation
-   context, policy checks, results, events, and audit contract. Adapt existing
-   Quick Actions and command-server actions incrementally.
-2. **Self Identity + Read-only MCP** — bundle a managed MCP adapter and expose
-   `self.get` under `identity.read`, plus `projects.read`, `workspaces.read`,
-   `reviews.read`, and operation descriptions. Managed launch-time
-   `--mcp-config` is the preferred direction and must not mutate user/global
-   `.mcp.json`; the exact launch mechanism remains subject to implementation
-   verification. Account-wide Home dashboard reads and active source refreshes
-   remain renderer-only compatibility surfaces in this phase.
+1. **Control Foundation — implemented.** The canonical registry and review proof
+   slice preserve existing renderer and command-socket contracts. See
+   [phase-01-control-foundation.md](phase-01-control-foundation.md).
+2. **Self Identity + Read-only MCP — implemented and validated.**
+   The bundled adapter exposes `self.get`, project/workspace/status/transcript/
+   last-turn reads, review reads, and operation descriptions through ephemeral
+   managed `--mcp-config`. Live validation confirmed eventual discovery of all
+   nine tools, exact bound identity, non-enumerating cross-project denial, and
+   identity preservation across hide/reattach. It does not mutate user/global
+   `.mcp.json`. See
+   [phase-02-self-identity-readonly-mcp.md](phase-02-self-identity-readonly-mcp.md).
+   Account-wide Home dashboard reads and active source refreshes remain
+   renderer-only compatibility surfaces.
 3. **Workspace Orchestration** — expose semantic create/start/wait/send/close/
    archive operations with lineage, same-project defaults, self-action guards,
    background activation, and fan-out limits.

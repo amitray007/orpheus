@@ -55,6 +55,12 @@ export interface LiveSession {
   statusUpdatedAt: number
 }
 
+export type RuntimeSessionObservation = Readonly<{
+  workspaceId: string
+  claudeConversationId: string | null
+  session: LiveSession | null
+}>
+
 // ---------------------------------------------------------------------------
 // Module-level state
 // ---------------------------------------------------------------------------
@@ -108,6 +114,7 @@ const warnedVersions = new Set<string>()
 const deadPidReported = new Set<number>()
 
 let sessionReadyHandler: ((workspaceId: string) => void) | null = null
+let runtimeSessionObserver: ((observation: RuntimeSessionObservation) => void) | null = null
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -151,8 +158,10 @@ export function getWorkspaceFileStatusSync(
 
 export function getWorkspaceFileInfo(workspaceId: string): {
   status: 'busy' | 'idle' | 'waiting' | 'shell' | 'unknown'
+  availability: 'available' | 'unavailable'
   waitingFor?: string
   elapsedMs?: number
+  statusUpdatedAt?: number
 } {
   let sessionId: string | null = null
   try {
@@ -161,13 +170,13 @@ export function getWorkspaceFileInfo(workspaceId: string): {
       .get(workspaceId) as { claude_session_id: string | null } | undefined
     sessionId = row?.claude_session_id ?? null
   } catch {
-    return { status: 'unknown' }
+    return { status: 'unknown', availability: 'unavailable' }
   }
-  if (!sessionId) return { status: 'unknown' }
+  if (!sessionId) return { status: 'unknown', availability: 'unavailable' }
 
   const session = liveSessionMap.get(sessionId)
-  if (!session) return { status: 'unknown' }
-  if (!isAlive(session.pid)) return { status: 'unknown' }
+  if (!session) return { status: 'unknown', availability: 'unavailable' }
+  if (!isAlive(session.pid)) return { status: 'unknown', availability: 'unavailable' }
 
   const filePath = path.join(SESSIONS_DIR, `${session.pid}.json`)
   let fileStatus: 'busy' | 'idle' | 'waiting' | 'shell' | 'unknown' = 'unknown'
@@ -179,7 +188,7 @@ export function getWorkspaceFileInfo(workspaceId: string): {
     if (s === 'busy' || s === 'idle' || s === 'waiting' || s === 'shell') fileStatus = s
     if (parsed.waitingFor) waitingFor = parsed.waitingFor
   } catch {
-    return { status: 'unknown' }
+    return { status: 'unknown', availability: 'unavailable' }
   }
 
   const elapsed = busySince.get(workspaceId)
@@ -187,9 +196,15 @@ export function getWorkspaceFileInfo(workspaceId: string): {
     status: 'busy' | 'idle' | 'waiting' | 'shell' | 'unknown'
     waitingFor?: string
     elapsedMs?: number
-  } = { status: fileStatus }
+    availability: 'available' | 'unavailable'
+    statusUpdatedAt?: number
+  } = {
+    status: fileStatus,
+    availability: fileStatus === 'unknown' ? 'unavailable' : 'available'
+  }
   if (waitingFor !== undefined) result.waitingFor = waitingFor
   if (elapsed !== undefined) result.elapsedMs = Date.now() - elapsed
+  if (fileStatus !== 'unknown') result.statusUpdatedAt = session.statusUpdatedAt
   return result
 }
 
@@ -281,6 +296,23 @@ export async function forceReconcile(): Promise<void> {
 
 export function setSessionReadyHandler(fn: (workspaceId: string) => void): void {
   sessionReadyHandler = fn
+}
+
+export function setRuntimeSessionObserver(
+  fn: ((observation: RuntimeSessionObservation) => void) | null
+): void {
+  runtimeSessionObserver = fn
+}
+
+function emitRuntimeSessionObservation(observation: RuntimeSessionObservation): void {
+  try {
+    runtimeSessionObserver?.(observation)
+  } catch (err) {
+    console.error(
+      '[sessionState] runtime session observer failed:',
+      err instanceof Error ? err.message : String(err)
+    )
+  }
 }
 
 /**
@@ -637,9 +669,21 @@ function reconcileWorkspaces(workspaceRows: WorkspaceRow[]): Set<string> {
     // Skip archived workspaces
     if (ws.archived_at !== null) continue
     activeWorkspaceIds.add(ws.id)
-    if (!ws.claude_session_id) continue
+    if (!ws.claude_session_id) {
+      emitRuntimeSessionObservation({
+        workspaceId: ws.id,
+        claudeConversationId: null,
+        session: null
+      })
+      continue
+    }
 
     const session = liveSessionMap.get(ws.claude_session_id)
+    emitRuntimeSessionObservation({
+      workspaceId: ws.id,
+      claudeConversationId: ws.claude_session_id,
+      session: session != null && isAlive(session.pid) ? session : null
+    })
     const hookStatus = getWorkspaceActivity(ws.id)
 
     const fileStatus = computeAndLogFileStatus(ws, session, hookStatus)

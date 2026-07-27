@@ -2,7 +2,9 @@ import { APP_NAME, APP_ID, isDev } from './appMode'
 import {
   startSessionStateService,
   setSessionReadyHandler,
-  isWorkspaceSessionReady
+  setRuntimeSessionObserver,
+  isWorkspaceSessionReady,
+  getWorkspaceFileInfo
 } from './sessionState'
 import { monitorEventLoopDelay } from 'perf_hooks'
 import {
@@ -150,7 +152,16 @@ import { registerClaudeUsageIpc } from './ipc/claudeUsage'
 import { registerClaudeActivityIpc } from './ipc/claudeActivity'
 import { registerFooterActionsIpc } from './ipc/footerActions'
 import { registerReviewsIpc } from './ipc/reviews'
-import { bootControlPlane } from './controlPlane'
+import {
+  bootControlPlane,
+  configurePhase2ControlPlane,
+  invokeControl,
+  listControl
+} from './controlPlane'
+import { createTrustedRuntimeReadPolicy } from './controlPlane/readPolicy'
+import { createMainReadHandlers } from './controlPlane/mainReadHandlers'
+import { RuntimeLeaseRegistry } from './controlPlane/runtimeLeases'
+import type { RuntimeLeaseIssue } from './controlPlane/runtimeLeases'
 import { registerPanesIpc } from './ipc/panes'
 import { registerKeepAwakeIpc } from './ipc/keepAwake'
 import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
@@ -168,9 +179,50 @@ import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
 
 let notifyServer: { sockPath: string; close: () => void } | null = null
-let commandServer: { sockPath: string; token: string; close: () => void } | null = null
+let commandServer: {
+  sockPath: string
+  token: string
+  ready: Promise<void>
+  close: () => void
+} | null = null
 let sessionStateService: { stop: () => void } | null = null
 let powerAwakeCleanup: (() => void) | null = null
+const runtimeLeases = new RuntimeLeaseRegistry()
+let unmanagedMountWarningEmitted = false
+
+setRuntimeSessionObserver(({ workspaceId, claudeConversationId, session }) => {
+  const binding = runtimeLeases.getBySurfaceId(workspaceId)
+  if (binding == null) return
+
+  if (
+    binding.claudeConversationId != null &&
+    binding.claudeConversationId !== claudeConversationId
+  ) {
+    runtimeLeases.revokeBySurface(workspaceId)
+    return
+  }
+
+  if (session != null) {
+    runtimeLeases.observeClaude({
+      workspaceId,
+      claudeConversationId,
+      pid: session.pid
+    })
+    return
+  }
+
+  // A fresh pending mount legitimately has no session file during Claude
+  // startup. Preserve it until its TTL; once a runtime was observed live,
+  // disappearance means the wrapper has fallen through to an interactive
+  // shell and must no longer authenticate as the Claude agent.
+  if (binding.state === 'live') {
+    runtimeLeases.observeClaude({
+      workspaceId,
+      claudeConversationId,
+      pid: null
+    })
+  }
+})
 
 /**
  * Declarative reconcile: reads hooksIntegrationEnabled and either starts the
@@ -402,6 +454,7 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
 // Do NOT call on terminal:destroy alone, because destroy is also issued during
 // live restarts (WorkspaceView.handleRestart) where the workspace stays alive.
 function teardownWorkspaceResources(workspaceId: string, cwd: string | null): void {
+  runtimeLeases.revokeByWorkspace(workspaceId)
   // The 5-map registry slice (launchSnapshots, dirty, titles, overlay
   // fallback timers, injectLocks) lives in workspaceResources.ts, which
   // stays a leaf with no knowledge of these cross-module concerns.
@@ -1187,9 +1240,86 @@ async function reconcileWorktreeForMount(
  *  span. Mutates `launchOut` (a single-slot box) so the caller can read back the
  *  composed launch after the trace completes — mirrors the original closure's
  *  `launch` outer-scope assignment exactly. */
-async function traceTerminalMount(
+function issueRuntimeLeaseForMount(
+  workspace: WorkspaceRecord,
+  addon: GhosttySurfaceAddon
+): RuntimeLeaseIssue {
+  const existingBinding = runtimeLeases.getBySurfaceId(workspace.id)
+  if (existingBinding != null) {
+    let phase: ReturnType<GhosttySurfaceAddon['getSurfacePhase']> = 'none'
+    try {
+      phase = addon.getSurfacePhase(workspace.id)
+    } catch {
+      phase = 'none'
+    }
+    if (phase === 'none' || phase === 'freeing') {
+      runtimeLeases.revokeBySurface(workspace.id)
+    }
+  }
+
+  return runtimeLeases.issueOrReuseClaude({
+    surfaceId: workspace.id,
+    workspaceId: workspace.id,
+    projectId: workspace.projectId,
+    claudeConversationId: workspace.claudeSessionId,
+    parentWorkspaceId: workspace.parentWorkspaceId,
+    forkedFromConversationId: workspace.forkedFromSessionId
+  })
+}
+
+function prepareMountControl(
+  workspace: WorkspaceRecord,
+  addon: GhosttySurfaceAddon
+): {
+  activeCommandServer: typeof commandServer
+  leaseIssue: RuntimeLeaseIssue | null
+} {
+  const activeCommandServer = commandServer
+  if (activeCommandServer == null) {
+    if (!unmanagedMountWarningEmitted) {
+      unmanagedMountWarningEmitted = true
+      console.warn('[terminal] control server unavailable; launching Claude without managed MCP')
+    }
+    return { activeCommandServer: null, leaseIssue: null }
+  }
+  return {
+    activeCommandServer,
+    leaseIssue: issueRuntimeLeaseForMount(workspace, addon)
+  }
+}
+
+function revokeMountLeaseIfManaged(
   workspaceId: string,
-  projectId: string | undefined,
+  leaseIssue: RuntimeLeaseIssue | null
+): void {
+  if (leaseIssue != null) runtimeLeases.revokeBySurface(workspaceId)
+}
+
+function reconcileMountLeaseResult(
+  workspaceId: string,
+  addon: GhosttySurfaceAddon,
+  mountResult: { created: boolean },
+  leaseIssue: RuntimeLeaseIssue | null
+): void {
+  if (leaseIssue == null) return
+  if (mountResult.created && !leaseIssue.created) {
+    runtimeLeases.revokeBySurface(workspaceId)
+    try {
+      addon.destroy(workspaceId)
+    } catch {
+      /* surface is already tearing down */
+    }
+    throw new Error('Runtime lease generation did not match the created surface.')
+  }
+  if (!mountResult.created && leaseIssue.created) {
+    // The existing process cannot receive the newly generated token because
+    // native reattach does not relaunch its command environment.
+    runtimeLeases.revokeBySurface(workspaceId)
+  }
+}
+
+async function traceTerminalMount(
+  workspace: WorkspaceRecord,
   effectiveCwd: string | undefined,
   nativeHandle: Buffer,
   addon: GhosttySurfaceAddon,
@@ -1201,8 +1331,12 @@ async function traceTerminalMount(
   },
   precomposedLaunch: ReturnType<typeof composeLaunchForMount>
 ): Promise<{ workspaceId: string; created: boolean }> {
+  const workspaceId = workspace.id
+  const projectId = workspace.projectId
   const _mountStart = Date.now()
   return diag.trace('terminal.mount', { workspaceId }, (s) => {
+    const { activeCommandServer, leaseIssue } = prepareMountControl(workspace, addon)
+
     // Assemble the surface env as a child span nested under terminal.mount.
     // buildMountEnv is sync; use diag.span (not diag.trace). precomposedLaunch
     // was already composed once by the caller (for the isRoutedMount gate) —
@@ -1214,8 +1348,9 @@ async function traceTerminalMount(
           workspaceId,
           projectId,
           notifyServer?.sockPath,
-          commandServer ?? undefined,
-          precomposedLaunch
+          activeCommandServer ?? undefined,
+          precomposedLaunch,
+          leaseIssue == null ? undefined : { binding: leaseIssue.binding, token: leaseIssue.token }
         )
       )
     } catch (err) {
@@ -1227,6 +1362,7 @@ async function traceTerminalMount(
         workspaceId,
         data: { stack: err instanceof Error ? err.stack : null }
       })
+      revokeMountLeaseIfManaged(workspaceId, leaseIssue)
       throw err
     }
     const { command, env: surfaceEnv, launch: composedLaunch, authEnv } = buildResult
@@ -1260,8 +1396,11 @@ async function traceTerminalMount(
         workspaceId,
         data: { stack: err instanceof Error ? err.stack : null }
       })
+      revokeMountLeaseIfManaged(workspaceId, leaseIssue)
       throw err
     }
+
+    reconcileMountLeaseResult(workspaceId, addon, mountResult, leaseIssue)
     s.mark(mountResult.created ? 'surface-created' : 'surface-reattached')
     logDiagMain({
       category: 'lifecycle',
@@ -1406,9 +1545,14 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     launch?: ReturnType<typeof buildMountEnv>['launch']
     authEnv?: ReturnType<typeof buildMountEnv>['authEnv']
   } = {}
+  const runtimeWorkspace = getWorkspace(workspaceId)
+  if (runtimeWorkspace == null || runtimeWorkspace.archivedAt != null) {
+    hideLoadingOverlay(workspaceId)
+    return { workspaceId, aborted: 'gone' as const }
+  }
+
   const result = await traceTerminalMount(
-    workspaceId,
-    projectId,
+    runtimeWorkspace,
     effectiveCwd,
     nativeHandle,
     addon,
@@ -2032,6 +2176,11 @@ handle('terminal:destroy', (_e, { workspaceId }): void => {
       data: { stack: err instanceof Error ? err.stack : null }
     })
     throw err
+  } finally {
+    // Revocation is independent of native destruction completing. In
+    // particular, live restart can leave the native surface in `freeing`
+    // briefly; the next mount must receive a fresh runtime generation.
+    runtimeLeases.revokeBySurface(workspaceId)
   }
   logDiagMain({
     category: 'lifecycle',
@@ -2251,6 +2400,40 @@ if (!app.requestSingleInstanceLock()) {
 
       // Boot both internal registries before renderer IPC or the deferred command
       // server can invoke them.
+      configurePhase2ControlPlane({
+        authorization: createTrustedRuntimeReadPolicy({
+          getWorkspaceProjectId: (workspaceId) => getWorkspace(workspaceId)?.projectId ?? null
+        }),
+        reads: createMainReadHandlers({
+          statusObservation: (workspaceId, observedAt) => {
+            const workspace = getWorkspace(workspaceId)
+            const live = getWorkspaceFileInfo(workspaceId)
+            return {
+              value:
+                workspace == null
+                  ? null
+                  : {
+                      persistedStatus: workspace.status,
+                      liveStatus: live.status,
+                      ...(live.waitingFor ? { waitingFor: live.waitingFor } : {})
+                    },
+              source: 'claude-session-file',
+              observedAt,
+              sourceUpdatedAt: live.statusUpdatedAt ?? null,
+              availability:
+                workspace == null || live.availability === 'unavailable'
+                  ? 'unavailable'
+                  : 'available',
+              stale: live.availability === 'unavailable' ? null : false,
+              ...(workspace == null
+                ? { reason: 'Workspace was not found.' }
+                : live.availability === 'unavailable'
+                  ? { reason: 'Claude live session is unavailable.' }
+                  : {})
+            }
+          }
+        })
+      })
       bootControlPlane()
       bootActions()
 
@@ -2291,8 +2474,6 @@ if (!app.requestSingleInstanceLock()) {
       app.on('browser-window-created', (_, window) => {
         optimizer.watchWindowShortcuts(window)
       })
-
-      createWindow()
 
       // Kick the active terminal on system wake events so the CVDisplayLink
       // restarts after display sleep / screen lock / user-switch.
@@ -2342,9 +2523,10 @@ if (!app.requestSingleInstanceLock()) {
       // pushes fresh totals to the renderer silently on each tick.
       startClaudeActivityPoller()
 
-      // Defer notify server + hook reconcile until after the first frame — keeps
-      // createWindow() hot so the UI appears faster on launch.
-      setImmediate(() => {
+      // Defer background service composition by one event-loop turn. The
+      // command server is still created before createWindow below, so no
+      // renderer can race its first terminal mount ahead of the control socket.
+      async function startDeferredServices(): Promise<void> {
         // Wire up the activity batch channel regardless of hook integration state —
         // the batch listener is always needed for file-based status updates.
         onActivityBatch((updates) => {
@@ -2383,7 +2565,11 @@ if (!app.requestSingleInstanceLock()) {
         if (!commandServer) {
           try {
             const cmdDeps: CommandServerDeps = {
+              runtimeLeases,
+              listControl,
+              invokeControl,
               destroySurface: (workspaceId) => {
+                runtimeLeases.revokeBySurface(workspaceId)
                 if (terminalAddon) {
                   try {
                     terminalAddon.destroy(workspaceId)
@@ -2722,11 +2908,20 @@ if (!app.requestSingleInstanceLock()) {
                 return { ok: false, error: firstAttempt.error ?? 'send failed' }
               }
             }
-            commandServer = startCommandServer(cmdDeps)
+            const startedCommandServer = startCommandServer(cmdDeps)
+            try {
+              await startedCommandServer.ready
+              commandServer = startedCommandServer
+            } catch (err) {
+              startedCommandServer.close()
+              throw err
+            }
           } catch (err) {
             console.error('[commandServer] failed to start:', err)
           }
         }
+
+        createWindow()
 
         setAutoCloseHandler((workspaceId) => {
           performClose(workspaceId)
@@ -2761,11 +2956,17 @@ if (!app.requestSingleInstanceLock()) {
         } catch (err) {
           console.error('[panes] auto-start: unexpected failure:', err)
         }
-      })
 
-      app.on('activate', function () {
-        if (BrowserWindow.getAllWindows().length === 0) createWindow()
-        else kickActiveTerminal()
+        app.on('activate', function () {
+          if (BrowserWindow.getAllWindows().length === 0) createWindow()
+          else kickActiveTerminal()
+        })
+      }
+
+      setImmediate(() => {
+        void startDeferredServices().catch((err: unknown) => {
+          console.error('[startup] deferred service composition failed:', err)
+        })
       })
     })
     .catch((err: unknown) => {
@@ -2785,6 +2986,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('will-quit', () => {
     globalShortcut.unregisterAll()
+    runtimeLeases.revokeAll()
     notifyServer?.close()
     commandServer?.close()
     sessionStateService?.stop()

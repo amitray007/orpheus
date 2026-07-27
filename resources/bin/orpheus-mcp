@@ -1,0 +1,28 @@
+#!/bin/bash
+# Orpheus MCP shim — runs the bundled stdio bridge under Electron-as-Node.
+
+set -eu
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+RESOURCES_DIR="$(dirname "$SCRIPT_DIR")"
+MACOS_DIR="$(dirname "$RESOURCES_DIR")/MacOS"
+MCP_BUNDLE="$RESOURCES_DIR/mcp/mcp.cjs"
+
+if [ -x "$MACOS_DIR/Orpheus WT" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus WT"
+elif [ -x "$MACOS_DIR/Orpheus Dev" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus Dev"
+elif [ -x "$MACOS_DIR/Orpheus" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus"
+else
+  echo "orpheus-mcp: error: cannot find Orpheus binary in $MACOS_DIR" >&2
+  exit 1
+fi
+
+if [ ! -f "$MCP_BUNDLE" ]; then
+  echo "orpheus-mcp: error: MCP bundle not found at $MCP_BUNDLE" >&2
+  exit 1
+fi
+
+export ELECTRON_RUN_AS_NODE=1
+exec "$ELECTRON_BIN" "$MCP_BUNDLE"

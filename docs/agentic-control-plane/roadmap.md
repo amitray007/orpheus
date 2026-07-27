@@ -1,9 +1,11 @@
 # Agentic Control Plane Roadmap
 
-**Status:** implementation sequence<br>
+**Status:** Phases 1–2 implemented and validated; Phases 3–8 planned<br>
 **Companion documents:** [README.md](README.md),
 [architecture.md](architecture.md),
-[identity-and-permissions.md](identity-and-permissions.md)
+[identity-and-permissions.md](identity-and-permissions.md),
+[Phase 1](phase-01-control-foundation.md), and
+[Phase 2](phase-02-self-identity-readonly-mcp.md)
 
 This roadmap delivers the Agentic Control Plane as eight additive, independently
 reviewable phases. Each phase has a narrow contract, explicit exclusions, and a
@@ -39,16 +41,16 @@ Every phase:
 
 ## Phase summary
 
-| Phase | Outcome | Primary review boundary |
-| --- | --- | --- |
-| 1. Control Foundation | Add a transport-neutral capability registry and prove it with the two review-comment operations | Registry contract plus preserved IPC/socket adapters |
-| 2. Self Identity + Read-only MCP | Ship managed MCP discovery with identity and read-only tools | MCP bootstrap, contextual tool filtering, read schemas |
-| 3. Workspace Orchestration | Add semantic workspace creation, task start, wait, and lifecycle control | Existing guardrails expressed once in the control core |
-| 4. Self Workbench/Panes Control | Let an agent control its own workbench and panes semantically | Self-scoped UI commands, no click simulation |
-| 5. Terminal Observability | Add authoritative terminal/session observation | Source/freshness contract and explicit unavailable states |
-| 6. Settings/Resources | Expose allowlisted non-secret settings and resources | Layering, validation, dirty-state, and secret boundaries |
-| 7. Durable Automations | Persist bounded triggers and runs that invoke semantic operations | Scheduler, idempotency, budgets, retries, run history |
-| 8. Integrated Validation | Prove parity, recovery, policy, and compatibility across all adapters | Cross-surface contract and live validation matrix |
+| Phase                            | Delivery status                   | Outcome                                                                                         | Primary review boundary                                   |
+| -------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| 1. Control Foundation            | Implemented and statically tested | Add a transport-neutral capability registry and prove it with the two review-comment operations | Registry contract plus preserved IPC/socket adapters      |
+| 2. Self Identity + Read-only MCP | Implemented and live-validated    | Ship managed MCP discovery with identity and read-only tools                                    | MCP bootstrap, contextual tool filtering, read schemas    |
+| 3. Workspace Orchestration       | Planned                           | Add semantic workspace creation, task start, wait, and lifecycle control                        | Existing guardrails expressed once in the control core    |
+| 4. Self Workbench/Panes Control  | Planned                           | Let an agent control its own workbench and panes semantically                                   | Self-scoped UI commands, no click simulation              |
+| 5. Terminal Observability        | Planned                           | Add authoritative terminal/session observation                                                  | Source/freshness contract and explicit unavailable states |
+| 6. Settings/Resources            | Planned                           | Expose allowlisted non-secret settings and resources                                            | Layering, validation, dirty-state, and secret boundaries  |
+| 7. Durable Automations           | Planned                           | Persist bounded triggers and runs that invoke semantic operations                               | Scheduler, idempotency, budgets, retries, run history     |
+| 8. Integrated Validation         | Planned                           | Prove parity, recovery, policy, and compatibility across all adapters                           | Cross-surface contract and live validation matrix         |
 
 ## 1. Control Foundation
 
@@ -69,10 +71,9 @@ stable error mapping. See
 
 ## 2. Self Identity + Read-only MCP
 
-Bundle an Orpheus MCP stdio adapter into managed Claude launches. The preferred
-direction is a managed launch-time `--mcp-config` that does not mutate
-user/global `.mcp.json`; the exact Claude launch integration remains subject to
-implementation verification. Generate `tools/list` from the canonical catalog,
+The implementation bundles an Orpheus MCP stdio adapter into managed Claude
+launches through an ephemeral launch-time `--mcp-config` that does not mutate
+user/global `.mcp.json`. It generates `tools/list` from the canonical catalog,
 filtered by the main-resolved runtime lease and read-only grants.
 
 Initial capabilities:
@@ -102,6 +103,16 @@ Exit when a fresh managed workspace discovers the read tools without prompt
 instructions or manual configuration, schemas match the catalog, reads identify
 their source/freshness, and a caller cannot discover another project's
 restricted data.
+
+The code, deterministic checks, and live acceptance pass are complete. A fresh
+managed workspace eventually discovered all nine tools without manual
+configuration; live calls confirmed exact bound identity, non-enumerating
+cross-project denial, and retained identity after hide/reattach. Claude 2.1.220
+starts MCP servers asynchronously, so the first `/mcp` snapshot can omit the
+still-pending server; this does not change the completed exit criterion. See
+[phase-02-self-identity-readonly-mcp.md](phase-02-self-identity-readonly-mcp.md)
+for the delivered contract, validation record, and explicitly harness-only
+lifecycle checks.
 
 ## 3. Workspace Orchestration
 
