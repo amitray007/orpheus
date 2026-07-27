@@ -629,6 +629,9 @@ function loopbackJsonRequest(
         port,
         path: `/${LS_SERVICE}/${method}`,
         method: 'POST',
+        // SECURITY: This exception is confined to the hard-coded 127.0.0.1 target above. Antigravity's
+        // local language server uses an ephemeral self-signed certificate, so it has no CA to validate.
+        // codeql[js/disabling-certificate-validation]
         rejectUnauthorized: scheme === 'https' ? false : undefined,
         headers: {
           'Content-Type': 'application/json',
