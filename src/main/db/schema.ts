@@ -38,6 +38,20 @@ const LOG_LEVEL = ['debug', 'info', 'warn', 'error'] as const
 // routing_proxy_providers.provider_id, which is deliberately free-text so
 // adding a new PROVIDER never requires a schema change.
 const PROVIDER_AUTH_METHOD = ['oauth', 'apiKey', 'openaiCompatible'] as const
+const AUTOMATION_TRIGGER_KIND = ['schedule', 'event'] as const
+const AUTOMATION_SCOPE_KIND = ['app', 'project', 'workspace'] as const
+const AUTOMATION_IDEMPOTENCY = ['none', 'keyed', 'natural'] as const
+const AUTOMATION_RUN_STATUS = [
+  'queued',
+  'running',
+  'retry_wait',
+  'succeeded',
+  'failed',
+  'timed_out',
+  'interrupted',
+  'cancelled',
+  'budget_exhausted'
+] as const
 
 // 'panes' added (KTD2 nav-rail work) so lastViewKind='panes' doesn't violate
 // the CHECK; 'dashboard' is kept for legacy rows and a future rail surface
@@ -1054,6 +1068,98 @@ export const schema: SchemaDef = {
     }
   },
 
+  // Durable automation intent. Permissions and risk grants are deliberately
+  // absent: main resolves those from a server-owned grant source on create,
+  // enable, recovery, and immediately before invocation.
+  automation_definitions: {
+    columns: {
+      id: TEXT_PK,
+      name: TEXT_NOT_NULL,
+      trigger_kind: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('trigger_kind', AUTOMATION_TRIGGER_KIND)
+      },
+      trigger_json: TEXT_NOT_NULL,
+      operation_id: TEXT_NOT_NULL,
+      operation_version: INTEGER_NOT_NULL,
+      params_json: TEXT_NOT_NULL,
+      scope_kind: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('scope_kind', AUTOMATION_SCOPE_KIND)
+      },
+      project_id: 'TEXT',
+      workspace_id: 'TEXT',
+      enabled: bool('enabled', '0'),
+      idempotency_mode: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('idempotency_mode', AUTOMATION_IDEMPOTENCY)
+      },
+      timeout_ms: INTEGER_NOT_NULL,
+      concurrency_limit: INTEGER_NOT_NULL,
+      retry_max_attempts: INTEGER_NOT_NULL,
+      retry_base_delay_ms: INTEGER_NOT_NULL,
+      retry_max_delay_ms: INTEGER_NOT_NULL,
+      run_max_elapsed_ms: INTEGER_NOT_NULL,
+      rolling_window_ms: INTEGER_NOT_NULL,
+      rolling_max_starts: INTEGER_NOT_NULL,
+      next_run_at: 'INTEGER',
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL
+    },
+    indexes: {
+      idx_automation_definitions_due: ['enabled', 'trigger_kind', 'next_run_at'],
+      idx_automation_definitions_operation: ['operation_id']
+    }
+  },
+
+  // One row per logical trigger occurrence. Attempts update the same row and
+  // retain one stable idempotency key across retry/restart.
+  automation_runs: {
+    columns: {
+      id: TEXT_PK,
+      automation_id: TEXT_NOT_NULL,
+      trigger_kind: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('trigger_kind', AUTOMATION_TRIGGER_KIND)
+      },
+      trigger_key: TEXT_NOT_NULL,
+      trigger_occurred_at: INTEGER_NOT_NULL,
+      idempotency_key: TEXT_NOT_NULL,
+      status: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('status', AUTOMATION_RUN_STATUS)
+      },
+      attempt: INTEGER_NOT_NULL,
+      queued_at: INTEGER_NOT_NULL,
+      started_at: 'INTEGER',
+      finished_at: 'INTEGER',
+      next_attempt_at: 'INTEGER',
+      result_code: 'TEXT',
+      result_json: 'TEXT',
+      error_json: 'TEXT',
+      request_id: 'TEXT',
+      audit_id: 'TEXT'
+    },
+    foreignKeys: [
+      { columns: ['automation_id'], ref: 'automation_definitions(id)', onDelete: 'CASCADE' }
+    ],
+    indexes: {
+      idx_automation_runs_automation_queued: ['automation_id', 'queued_at DESC'],
+      idx_automation_runs_runnable: ['status', 'next_attempt_at', 'queued_at'],
+      idx_automation_runs_request: ['request_id'],
+      idx_automation_runs_audit: ['audit_id'],
+      idx_automation_runs_idempotency: {
+        columns: ['automation_id', 'idempotency_key'],
+        unique: true
+      }
+    }
+  },
+
   // ---------------------------------------------------------------------
   // routing_proxy_providers — model-routing unit 05 (provider framework).
   // One row per provider a user has configured (codex, xai, antigravity,
@@ -1165,6 +1271,10 @@ export {
   CLOUD_PROVIDER,
   LOG_LEVEL,
   PROVIDER_AUTH_METHOD,
+  AUTOMATION_TRIGGER_KIND,
+  AUTOMATION_SCOPE_KIND,
+  AUTOMATION_IDEMPOTENCY,
+  AUTOMATION_RUN_STATUS,
   LAST_VIEW_KIND,
   PROJECTS_LAST_VIEW_KIND,
   THEME,

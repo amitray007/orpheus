@@ -16,6 +16,7 @@ import {
   type SettingsResourceService
 } from './settingsResourceService'
 import { withSettingsResourcePolicy } from './settingsResourcePolicy'
+import { withAutomationPolicy } from './automationPolicy'
 
 const SETTINGS_RESOURCE_OPERATIONS = new Set<string>(SETTINGS_RESOURCE_OPERATION_IDS)
 
@@ -38,7 +39,7 @@ export function createConfiguredControlRegistry(config: {
     settingsService == null
       ? workspacePolicy
       : withSettingsResourcePolicy(workspacePolicy, settingsService)
-  const authorization = withWorkbenchControlPolicy(settingsPolicy)
+  const authorization = withAutomationPolicy(withWorkbenchControlPolicy(settingsPolicy))
 
   const workspaceAuditor =
     workspaceService == null ? null : createWorkspaceRejectionAuditor(workspaceService)

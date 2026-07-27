@@ -1,7 +1,7 @@
 import type { LocalReviewComment } from '../../shared/types'
 
 export type ControlConsumer = 'renderer-ipc' | 'command-socket' | 'mcp' | 'automation'
-export type ControlSurface = 'renderer' | 'command-socket' | 'mcp'
+export type ControlSurface = 'renderer' | 'command-socket' | 'mcp' | 'automation'
 export type ControlKind = 'query' | 'mutation'
 export type ControlPermission =
   | 'identity.read'
@@ -48,6 +48,18 @@ export type TrustedRuntimeBinding = Readonly<{
   }>
 }>
 
+export type AutomationScopeBinding =
+  | Readonly<{ kind: 'app' }>
+  | Readonly<{ kind: 'project'; projectId: string }>
+  | Readonly<{ kind: 'workspace'; projectId: string; workspaceId: string }>
+
+export type TrustedAutomationBinding = Readonly<{
+  automationId: string
+  scope: AutomationScopeBinding
+  permissions: readonly ControlPermission[]
+  maxRiskTier: 0 | 1 | 2 | 3
+}>
+
 export type ControlContext = {
   principal: {
     type: 'renderer-user' | 'workspace-agent' | 'cli' | 'automation'
@@ -62,6 +74,12 @@ export type ControlContext = {
    * fields above remain compatibility target hints and never populate this value.
    */
   trustedRuntime?: TrustedRuntimeBinding | null
+  /** Server-resolved automation authority. Definitions never populate grants. */
+  trustedAutomation?: TrustedAutomationBinding | null
+  automationRunId?: string
+  idempotencyKey?: string
+  deadlineAt?: number
+  signal?: AbortSignal
 }
 
 export type ControlResult<T> =
@@ -89,6 +107,11 @@ export type ControlDescriptor<TInput, TOutput> = {
   risk: Readonly<{ tier: 0 | 1 | 2 | 3; label: string }>
   /** Maximum effects possible for validated input. Empty for pure queries. */
   declaredEffects?: readonly string[]
+  /**
+   * Required when `automation` is an allowed surface. Keyed handlers must
+   * honor context.idempotencyKey; natural handlers must converge on replay.
+   */
+  idempotency?: 'none' | 'keyed' | 'natural'
   validateInput: (input: unknown, context: ControlContext) => input is TInput
   handler: (input: TInput, context: ControlContext) => TOutput | Promise<TOutput>
 }

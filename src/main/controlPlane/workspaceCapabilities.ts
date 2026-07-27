@@ -253,6 +253,7 @@ export function workspaceActorFromContext(
   permission: ControlPermission
 ): WorkspaceOperationActor {
   const binding = context.trustedRuntime ?? null
+  const automation = context.trustedAutomation ?? null
   if (context.consumer === 'mcp' && binding == null) {
     throw new Error('Trusted runtime binding missing after authorization.')
   }
@@ -263,9 +264,24 @@ export function workspaceActorFromContext(
       kind: binding == null ? context.principal.type : 'orpheus_runtime',
       runtimeId: binding?.runtimeId ?? null
     },
-    boundProjectId: binding?.projectId ?? context.projectId,
-    boundWorkspaceId: binding?.workspaceId ?? context.workspaceId,
-    permissions: binding?.permissions ?? [permission]
+    boundProjectId:
+      binding?.projectId ??
+      (automation?.scope.kind === 'app' ? null : automation?.scope.projectId) ??
+      context.projectId,
+    boundWorkspaceId:
+      binding?.workspaceId ??
+      (automation?.scope.kind === 'workspace' ? automation.scope.workspaceId : null) ??
+      context.workspaceId,
+    permissions: binding?.permissions ?? automation?.permissions ?? [permission],
+    ...(automation != null && context.automationRunId != null && context.idempotencyKey != null
+      ? {
+          correlation: {
+            automationId: automation.automationId,
+            runId: context.automationRunId,
+            idempotencyKey: context.idempotencyKey
+          }
+        }
+      : {})
   }
 }
 

@@ -164,9 +164,12 @@ import { createControlAuditStore } from './controlPlane/controlAudit'
 import {
   bootControlPlane,
   configurePhase2ControlPlane,
+  describeRegisteredControl,
   invokeControl,
-  listControl
+  listControl,
+  validateRegisteredControlInput
 } from './controlPlane'
+import { createAutomationRuntime, type AutomationScheduler } from './automations'
 import { createTrustedRuntimeReadPolicy } from './controlPlane/readPolicy'
 import { createMainReadHandlers } from './controlPlane/mainReadHandlers'
 import { createMainSettingsResourceService } from './controlPlane/mainSettingsResourceService'
@@ -217,6 +220,7 @@ const runtimeLeases = new RuntimeLeaseRegistry()
 let workspaceOrchestrationService: WorkspaceOrchestrationService | null = null
 let terminalObservationService: TerminalObservationService | null = null
 let terminalObservationCleanup: (() => void) | null = null
+let automationScheduler: AutomationScheduler | null = null
 let unmanagedMountWarningEmitted = false
 
 setRuntimeSessionObserver(({ workspaceId, claudeConversationId, session }) => {
@@ -2690,6 +2694,18 @@ if (!app.requestSingleInstanceLock()) {
         settingsResources: createMainSettingsResourceService()
       })
       bootControlPlane()
+      const automations = createAutomationRuntime({
+        db: getDb(),
+        registry: {
+          describe: describeRegisteredControl,
+          validateInput: validateRegisteredControlInput,
+          invoke: invokeControl
+        }
+      })
+      automationScheduler = automations.scheduler
+      void automationScheduler.start().catch(() => {
+        console.error('[automations] startup reconciliation failed')
+      })
       bootActions(workspaceControlAdapter)
 
       // Seed default footer actions on first install (idempotent: no-op if rows exist).
@@ -3243,6 +3259,7 @@ if (!app.requestSingleInstanceLock()) {
     })
 
   app.on('will-quit', () => {
+    automationScheduler?.stop()
     globalShortcut.unregisterAll()
     runtimeLeases.revokeAll()
     notifyServer?.close()
