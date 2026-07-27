@@ -1,8 +1,10 @@
 import { createReadCapabilities } from './readCapabilities'
 import { createReviewCapabilities } from './reviewCapabilities'
 import { createWorkspaceCapabilities } from './workspaceCapabilities'
+import { createTerminalObservationCapabilities } from './terminalObservationCapabilities'
 import type { ControlRegistry } from './registry'
 import type { ControlDescriptor, ReadCapabilityHandlers, ReviewCapabilityHandlers } from './types'
+import type { TerminalObservationHandlers } from '../terminalObservation/types'
 import type { WorkspaceOrchestrationService } from '../workspaceOrchestration/service'
 import type { WorkbenchControlService } from '../workbenchControl/service'
 import { createWorkbenchCapabilities } from './workbenchCapabilities'
@@ -12,7 +14,8 @@ export function bootControlRegistry(
   reviewHandlers: ReviewCapabilityHandlers,
   readHandlers?: ReadCapabilityHandlers,
   workspaceService?: WorkspaceOrchestrationService,
-  workbenchService?: WorkbenchControlService
+  workbenchService?: WorkbenchControlService,
+  terminalObservationHandlers?: TerminalObservationHandlers
 ): void {
   const [listCapability, setResolvedCapability] = createReviewCapabilities(reviewHandlers, {
     mcpRead: readHandlers != null
@@ -59,5 +62,14 @@ export function bootControlRegistry(
     ) as readonly ControlDescriptor<unknown, unknown>[]) {
       registry.register(capability)
     }
+  }
+  if (terminalObservationHandlers != null) {
+    const [list, get, getClaudeSession, getOutputTail, subscribe] =
+      createTerminalObservationCapabilities(terminalObservationHandlers)
+    registry.register(list)
+    registry.register(get)
+    registry.register(getClaudeSession)
+    registry.register(getOutputTail)
+    registry.register(subscribe)
   }
 }

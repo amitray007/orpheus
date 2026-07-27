@@ -207,6 +207,7 @@ const SELF_OUTPUT_SCHEMA = {
               'identity.read',
               'projects.read',
               'workspaces.read',
+              'terminals.read',
               'reviews.read',
               'reviews.resolve'
             ]

@@ -21,7 +21,10 @@ tiers. Delivered phase records:
 [Phase 2: Self Identity + Read-only MCP](phase-02-self-identity-readonly-mcp.md).
 The delivered Phase 3 record is split between
 [Workspace Orchestration](phase-03-workspace-orchestration.md) and its
-[strict interfaces](phase-03-interfaces.md).
+[strict interfaces](phase-03-interfaces.md). Phase 5's independently reviewable
+[Terminal Observability](phase-05-terminal-observability.md) slice is
+implemented and deterministically tested; packaged native and live managed MCP
+validation remains part of the batched integration pass.
 
 ## Product promise
 
@@ -182,9 +185,12 @@ the native UI adapter. Automations invoke the core in-process.
    pane/layout state through domain commands such as open file, show diff,
    select layout, and start/stop a configured terminal. Do not expose click
    simulation.
-5. **Terminal Observability** — expose authoritative lifecycle, readiness,
-   command/cwd, status, transcript, and output-tail data where it exists.
-   Return explicit unsupported/unavailable states where it does not.
+5. **Terminal Observability — implemented and deterministically tested.** Five
+   Tier 0 `terminals.read` queries expose authoritative lifecycle, readiness,
+   command/cwd, status, session/transcript, and bounded output-tail data where
+   it exists. Current libghostty surfaces return explicit `unsupported` output
+   tails because Orpheus does not receive an authoritative text stream. See
+   [phase-05-terminal-observability.md](phase-05-terminal-observability.md).
 6. **Settings/Resources** — add scoped, allowlisted reads and safe writes for
    non-secret settings and resources, preserving layered composition and
    restart-to-apply semantics.

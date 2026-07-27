@@ -14,6 +14,7 @@ export type ControlPermission =
   | 'workspaces.close'
   | 'workspaces.rename'
   | 'workspaces.archive'
+  | 'terminals.read'
   | 'reviews.read'
   | 'reviews.resolve'
   | 'ui.workbench.control'

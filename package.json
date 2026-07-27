@@ -49,6 +49,7 @@
     "test:creation-menu": "bun run scripts/verify-new-workspace-menu.ts",
     "test:overlay-dismissal": "bun run scripts/verify-overlay-dismissal.ts",
     "test:control-plane": "bun run scripts/verify-control-plane.ts",
+    "test:terminal-observation": "bun run scripts/verify-terminal-observability.ts",
     "test:workspace-orchestration:foundation": "bun run scripts/verify-workspace-orchestration-foundation.ts",
     "test:workspace-orchestration:main": "bun run scripts/verify-workspace-orchestration-main.ts",
     "test:workspace-orchestration:cli": "bun run build:cli && bun run scripts/verify-cli-phase3-compat.ts",

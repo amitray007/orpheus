@@ -7,7 +7,8 @@
 [Phase 1](phase-01-control-foundation.md), and
 [Phase 2](phase-02-self-identity-readonly-mcp.md);
 [Phase 3 contract](phase-03-workspace-orchestration.md) and
-[Phase 3 interfaces](phase-03-interfaces.md)
+[Phase 3 interfaces](phase-03-interfaces.md); and
+[Phase 5](phase-05-terminal-observability.md)
 
 This roadmap delivers the Agentic Control Plane as eight additive, independently
 reviewable phases. Each phase has a narrow contract, explicit exclusions, and a
@@ -49,7 +50,7 @@ Every phase:
 | 2. Self Identity + Read-only MCP | Implemented and live-validated    | Ship managed MCP discovery with identity and read-only tools                                    | MCP bootstrap, contextual tool filtering, read schemas    |
 | 3. Workspace Orchestration       | Implemented and validated          | Add semantic workspace creation, task start, wait, and lifecycle control                        | One orchestration service, strict schemas, archive safety |
 | 4. Self Workbench/Panes Control  | Planned                           | Let an agent control its own workbench and panes semantically                                   | Self-scoped UI commands, no click simulation              |
-| 5. Terminal Observability        | Planned                           | Add authoritative terminal/session observation                                                  | Source/freshness contract and explicit unavailable states |
+| 5. Terminal Observability        | Implemented and statically tested | Add authoritative terminal/session observation                                                  | Source/freshness contract and explicit absence states     |
 | 6. Settings/Resources            | Planned                           | Expose allowlisted non-secret settings and resources                                            | Layering, validation, dirty-state, and secret boundaries  |
 | 7. Durable Automations           | Planned                           | Persist bounded triggers and runs that invoke semantic operations                               | Scheduler, idempotency, budgets, retries, run history     |
 | 8. Integrated Validation         | Planned                           | Prove parity, recovery, policy, and compatibility across all adapters                           | Cross-surface contract and live validation matrix         |
@@ -198,13 +199,18 @@ terminals:
 - Claude transcript, last turn, and session metadata;
 - bounded output tail only where an authoritative text stream exists.
 
-Every result names its source and observation time. No screenshot OCR, renderer
-scraping, or invented terminal text is permitted. Unsupported output tails
-return an explicit unavailable result.
+Every result names its source, freshness, availability, and observation time.
+No screenshot OCR, renderer scraping, or invented terminal text is permitted.
+Unsupported output tails return an explicit `unsupported` result.
 
 Exit when initial snapshots and subscriptions cannot miss the transition
 between them, bounded reads cannot exhaust memory, and stale/offline state is
 distinguishable from live state.
+
+The implementation and deterministic verification harness satisfy those
+static acceptance criteria. Packaged native behavior and live managed MCP
+discovery remain deferred to the batched integration pass. See
+[phase-05-terminal-observability.md](phase-05-terminal-observability.md).
 
 ## 6. Settings/Resources
 

@@ -34,6 +34,7 @@ const PERMISSION_RISK_TIER: Readonly<Record<ControlPermission, 0 | 1 | 2 | 3>> =
   'workspaces.close': 2,
   'workspaces.rename': 2,
   'workspaces.archive': 3,
+  'terminals.read': 0,
   'reviews.read': 0,
   'reviews.resolve': 2,
   'ui.workbench.control': 1,

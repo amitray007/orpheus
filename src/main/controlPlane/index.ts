@@ -12,12 +12,15 @@ import type {
 import type { WorkspaceOrchestrationService } from '../workspaceOrchestration/service'
 import { createConfiguredControlRegistry } from './configuredRegistry'
 import type { WorkbenchControlService } from '../workbenchControl/service'
+import type { TerminalObservationService } from '../terminalObservation/service'
+import { createTerminalObservationHandlers } from '../terminalObservation/service'
 
 export type Phase2ControlPlaneConfig = {
   authorization: ControlAuthorizationPolicy
   reads: ReadCapabilityHandlers
   workspaceOrchestration?: WorkspaceOrchestrationService
   workbenchControl?: WorkbenchControlService
+  terminalObservation?: TerminalObservationService
 }
 
 let phase2Config: Phase2ControlPlaneConfig | null = null
@@ -55,7 +58,10 @@ export function bootControlPlane(): void {
     },
     phase2Config?.reads,
     phase2Config?.workspaceOrchestration,
-    phase2Config?.workbenchControl
+    phase2Config?.workbenchControl,
+    phase2Config?.terminalObservation == null
+      ? undefined
+      : createTerminalObservationHandlers(phase2Config.terminalObservation)
   )
   booted = true
 }
