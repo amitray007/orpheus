@@ -50,15 +50,20 @@ snapshot.
 | Audit trail | Exists for Quick Action mutators | `src/main/actions/audit.ts`, `src/main/db/schema.ts` |
 | Domain state | Projects, workspaces, lineage, worktrees, sessions, and declarative SQLite migrations exist | `src/main/projects.ts`, `workspaces.ts`, `worktrees.ts`, `sessions.ts`, `db/` |
 | Activity/transcripts | File-authoritative Claude status and JSONL-derived session reads exist | `src/main/sessionState.ts`, `sessionStatusMap.ts`, `sessions.ts`, `actions/session.ts` |
+| Home dashboard | Exists with Overview, Limits, and Insights views over account-wide GitHub work, provider usage, Claude activity windows, recent sessions, model activity, and GitHub contribution windows | `src/renderer/src/components/dashboard/DashboardView.tsx`, `dashboard/dashboard-home/` |
+| Dashboard data services | Typed renderer IPC and main-process domain modules provide GitHub account snapshots, provider-neutral usage, activity/contribution windows, persisted stale-while-revalidate caches, and background pushes | `src/shared/ipc.ts`, `src/main/githubDashboard.ts`, `providerUsage.ts`, `claudeActivityWindow.ts`, `db/dashboardCache.ts`, `usagePoller.ts` |
 | Review/workbench | Diff viewing and local review comments exist | `src/main/gitDiff.ts`, `reviewStore.ts`, `ipc/reviews.ts`, `src/renderer/src/components/workbench/` |
 | Panes | Persisted panel/layout/terminal hierarchy and native surfaces exist | `src/main/paneStore.ts`, `ipc/panes.ts`, `src/renderer/src/components/panes/` |
 | MCP | Orpheus can manage Claude MCP configuration, but does not yet ship an Orpheus control MCP server | `src/main/mcp.ts`, `ipc/mcp.ts`, `ClaudeToolsSection.tsx` |
 | Automations | No durable control-plane automation engine exists | — |
 
 The principal architectural gap is split authority: the CLI command dispatch in
-`src/main/commandServer.ts` and Quick Actions in
-`src/main/actions/registry.ts` are independent surfaces. Neither is a complete,
-transport-neutral, self-describing control contract.
+`src/main/commandServer.ts`, Quick Actions in `src/main/actions/registry.ts`, and
+typed dashboard IPC/domain modules are independent surfaces. They are migration
+inputs, not yet a complete, transport-neutral, self-describing control contract.
+The dashboard surfaces are not automatically agent-visible: Phase 2 explicitly
+defers account-wide GitHub, provider-usage, and all-history activity publication
+until their scope, freshness, refresh effects, and permissions are modeled.
 
 ### Legacy design-document status
 
@@ -84,6 +89,7 @@ Orpheus MCP surface.
 | Permission capability | A versioned authority such as `workspaces.create`, `workspaces.wait`, or `reviews.resolve`, defined by the identity/permissions design |
 | Adapter | A consumer-specific translation layer: MCP, renderer IPC, CLI live transport, or automation |
 | Principal | The caller identity: renderer user, workspace agent, CLI process, or automation run |
+| Source account | A GitHub or provider account whose data Orpheus reads; account labels are result metadata, not caller identity or authorization |
 | Execution context | Principal plus workspace/project scope, consumer, request id, and granted policy |
 | Offline read | A read directly from SQLite or Claude-owned files that does not require the app |
 | Semantic control | Intent expressed in Orpheus domain terms, not pointer events, DOM selectors, coordinates, or generic key simulation |
@@ -147,7 +153,8 @@ the native UI adapter. Automations invoke the core in-process.
    `reviews.read`, and operation descriptions. Managed launch-time
    `--mcp-config` is the preferred direction and must not mutate user/global
    `.mcp.json`; the exact launch mechanism remains subject to implementation
-   verification.
+   verification. Account-wide Home dashboard reads and active source refreshes
+   remain renderer-only compatibility surfaces in this phase.
 3. **Workspace Orchestration** — expose semantic create/start/wait/send/close/
    archive operations with lineage, same-project defaults, self-action guards,
    background activation, and fan-out limits.

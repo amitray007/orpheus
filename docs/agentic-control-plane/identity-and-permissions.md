@@ -33,6 +33,15 @@ state; it does not make string parsing part of the public contract.
 **Claude conversation** avoids the overloaded “session,” which currently means
 both a transcript row and a live file under `~/.claude/sessions/<pid>.json`.
 
+### Source-account metadata is not caller identity
+
+The Home dashboard may return a GitHub login, provider `identityLabel`, auth-file
+label, plan name, or similar source-account metadata. These values describe the
+account or source from which Orpheus read data. They do not identify the caller,
+bind a runtime, select a grant subject, or prove that the caller may access
+account-wide data. Only main-resolved principal and runtime context establish
+caller identity.
+
 ## Surface and shell distinctions
 
 ### Workspace Claude surface
@@ -138,6 +147,9 @@ capability decisions. For all other actions:
    guessed mutation.
 10. Defaults never cross project boundaries. Existing self-close and
     self-archive guards remain enforced after target resolution.
+11. Account/app-global source reads do not inherit workspace or project scope.
+    They require an explicit account/app grant and, where more than one source
+    account exists, an explicit source-account target.
 
 On workspace creation, the bound workspace remains the default parent and its
 project the default project. Cross-project creation requires an explicit grant.
@@ -158,6 +170,12 @@ new authority is introduced additively.
 | `workspaces.wait` | Subscribe to workspace completion or blocked states |
 | `reviews.read` | Read local review comments |
 | `reviews.resolve` | Change a local review comment's resolved state |
+| `github.account.read` | Read a cached account-wide GitHub snapshot or contribution window |
+| `github.account.refresh` | Explicitly refresh account-wide GitHub data through bounded source requests |
+| `activity.read` | Read a cached app-global Claude activity snapshot or window |
+| `activity.refresh` | Explicitly rescan the app-global Claude transcript source and update its cache |
+| `providers.usage.read` | Read a cached provider-neutral usage snapshot |
+| `providers.usage.refresh` | Explicitly probe provider sources and update the usage cache |
 | `ui.workbench.control` | Open/focus Workbench UI and select or create its terminal |
 | `terminals.control` | Send input or run a command in an authorized plain terminal |
 | `settings.workspace.patch` | Change workspace-scoped Claude settings |
@@ -165,6 +183,11 @@ new authority is introduced additively.
 `workspaces.send` and `terminals.control` are deliberately separate. The former
 talks to Claude's interactive input; the latter controls a shell. Neither implies
 the other.
+
+The account-wide dashboard capabilities are future contracts and are not
+published in Phase 2. Their `.read` capabilities are cache-only. Their
+`.refresh` capabilities can carry materially broader effects and never inherit
+authority from the read grant.
 
 ## Grants
 
@@ -176,7 +199,8 @@ type Grant = {
   subject: { runtimeId?: string; workspaceId?: string; kind?: 'unbound_local' }
   capability: string
   scope: { projectIds?: string[]; workspaceIds?: string[]
-    surfaceIds?: string[]; selfOnly?: boolean }
+    surfaceIds?: string[]; accountIds?: string[]; appWide?: boolean
+    selfOnly?: boolean }
   decision: 'allow' | 'ask' | 'deny'
   maxRiskTier: 0 | 1 | 2 | 3
   expiresAt: number | null
@@ -201,6 +225,11 @@ syntax can execute arbitrary code. A conservative classifier may raise a known
 destructive command to tier 3, but an unknown command is never downgraded below
 tier 2.
 
+A cached dashboard read can remain Tier 0 because it performs no source probe or
+durable write. A refresh is classified from its maximum declared effects, not
+from its read-shaped result. Credential access or a fixed helper-process spawn
+therefore cannot be hidden behind a Tier 0 query or an optional `force` flag.
+
 ## Declared effects and audit
 
 Every action declares possible effects before execution, such as `ui.focus`,
@@ -208,12 +237,23 @@ Every action declares possible effects before execution, such as `ui.focus`,
 `workspace.delete`. Authorization uses the resolved target and all declared
 effects. Responses contain actual receipts, including partial success.
 
+Dashboard refresh operations use precise effects such as `process.inspect`,
+`credential.read`, `network.request`, `process.spawn`, and `cache.write`.
+Cache-only reads declare none of them. Effects are bounded by fixed executables
+and endpoints, timeouts, concurrency limits, response-size limits, and
+source-specific policy. Antigravity's certificate-validation exception is
+request-scoped to the hard-coded loopback language-server target and cannot
+apply to provider cloud traffic.
+
 Audits include request ID, time, trusted `runtimeId`, targets, capability, tier,
 grant/decision, declared effects, receipts, and result. Tier 2/3 requests are
 always persisted, including denied and failed attempts.
 
 Arguments are structurally redacted; tokens are never stored. Commands and
 terminal input default to hash, length, and safe summary rather than raw bytes.
+Dashboard results, errors, receipts, and audits also exclude raw credentials,
+tokens, and secret-bearing process arguments while preserving explicit stale,
+unavailable, unsupported, and unknown states.
 
 ## Example `self.get`
 

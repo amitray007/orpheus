@@ -32,6 +32,9 @@ Every phase:
   validation;
 - uses the declarative migration engine in `src/main/db/` for any persistence;
 - keeps secrets out of agent-readable descriptors, results, and logs;
+- keeps cache-only observations separate from refresh/probe operations whose
+  declared effects can include process inspection, credential access, network
+  requests, process spawning, and cache writes;
 - can be rolled back without migrating user data backward.
 
 ## Phase summary
@@ -85,6 +88,15 @@ Main creates an immutable runtime binding and runtime-scoped bearer lease for
 the managed adapter. The current app-global same-user command token and
 caller-supplied ambient workspace context remain compatibility inputs, not
 runtime authentication. This phase does not expose mutations.
+
+The existing Home dashboard's account-wide GitHub snapshot, provider-neutral
+usage, all-history Claude activity windows, GitHub contribution windows,
+persisted cache, and background push channels are typed renderer compatibility
+surfaces and future catalog migration inputs. Phase 2 does not publish them.
+Before later publication, cached snapshot reads and active refresh/probe
+operations receive separate schemas and permissions, with explicit
+account/app-global scope and declared effects. Home tab selection and
+refresh-button clicks remain renderer presentation details.
 
 Exit when a fresh managed workspace discovers the read tools without prompt
 instructions or manual configuration, schemas match the catalog, reads identify
@@ -196,6 +208,15 @@ Validate the assembled system without changing its product surface:
 - restart/reconnect and subscription race behavior;
 - automation recovery, idempotency, retry, timeout, and disable behavior;
 - audit redaction and correlation;
+- for each dashboard capability published after Phase 2, cache-only reads are
+  side-effect-free while refresh/probe operations declare and bound
+  `process.inspect`, `credential.read`, `network.request`, `process.spawn`, and
+  `cache.write`;
+- dashboard results preserve stale, unavailable, unsupported, and unknown
+  states without exposing tokens, raw credentials, or secret-bearing process
+  arguments;
+- Antigravity's self-signed-certificate exception remains request-scoped to the
+  hard-coded loopback language-server target and never affects cloud requests;
 - absence of click/coordinate simulation from agent-visible tools.
 
 This phase may fix integration defects, but it does not become a vehicle for new

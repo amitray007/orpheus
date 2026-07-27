@@ -3,8 +3,9 @@
 ## 1. Boundary and invariants
 
 The control plane is an in-process main-process service. It is not a new source
-of domain truth: SQLite, Claude JSONL/session files, and existing Orpheus domain
-modules remain authoritative. It centralizes the contract around those modules.
+of domain truth: SQLite, Claude JSONL/session files, external source accounts,
+local provider services, and existing Orpheus domain modules remain
+authoritative. It centralizes the contract around those modules.
 
 Invariants:
 
@@ -93,6 +94,12 @@ type OperationDescriptor = {
     | 'workspaces.wait'
     | 'reviews.read'
     | 'reviews.resolve'
+    | 'github.account.read'
+    | 'github.account.refresh'
+    | 'activity.read'
+    | 'activity.refresh'
+    | 'providers.usage.read'
+    | 'providers.usage.refresh'
     | 'ui.workbench.control'
     | 'terminals.control'
     | 'settings.workspace.patch'
@@ -103,7 +110,7 @@ type OperationDescriptor = {
   outputSchema: JsonSchema
   surfaces: Array<'mcp' | 'renderer' | 'cli' | 'automation'>
   risk: 'read' | 'local-write' | 'process-control'
-  scope: 'self' | 'project' | 'app'
+  scope: 'self' | 'project' | 'account' | 'app'
   idempotency: 'none' | 'keyed' | 'natural'
 }
 ```
@@ -119,10 +126,14 @@ catalog. Permission names and target rules follow
 Adapters may rename commands or render friendlier output, but cannot redefine
 accepted inputs or policy.
 
-The current `src/main/actions/registry.ts` and
-`src/main/commandServer.ts` dispatch table are migration inputs. During Control
-Foundation, existing action ids are bridged into the catalog one at a time.
-Compatibility routes may forward to the new invocation pipeline indefinitely.
+The current `src/main/actions/registry.ts`,
+`src/main/commandServer.ts` dispatch table, and typed dashboard IPC/domain
+modules are migration inputs. The dashboard set includes
+`src/main/githubDashboard.ts`, `src/main/providerUsage.ts`,
+`src/main/claudeActivityWindow.ts`, their cache/poller support, and the channels
+in `src/shared/ipc.ts`. During Control Foundation, existing action ids are
+bridged into the catalog one at a time. Compatibility routes may forward to the
+new invocation pipeline indefinitely.
 
 ## 4. Adapter responsibilities
 
@@ -156,6 +167,12 @@ Typed IPC maps renderer intent to the same invocation pipeline. Existing
 presentation state stays in the renderer; semantic workbench commands are
 targeted messages such as “open this file in my workspace,” never fabricated
 pointer events.
+
+The Home dashboard's typed GitHub, provider-usage, activity-window, cache, and
+push channels remain compatibility surfaces while their semantic operations
+migrate. Overview/Limits/Insights tab selection and refresh-button clicks are
+presentation gestures, not catalog capabilities. A future operation names the
+data outcome directly.
 
 ### CLI
 
@@ -191,6 +208,12 @@ Public operations describe outcomes and name explicit permissions:
 - workspace completion subscription → `workspaces.wait`
 - review list → `reviews.read`
 - review resolution → `reviews.resolve`
+- cached account-wide GitHub snapshot → `github.account.read`
+- explicit GitHub source refresh → `github.account.refresh`
+- cached all-history activity snapshot/window → `activity.read`
+- explicit transcript rescan → `activity.refresh`
+- cached provider-usage snapshot → `providers.usage.read`
+- explicit provider probe/refresh → `providers.usage.refresh`
 - Workbench presentation control → `ui.workbench.control`
 - authorized plain-terminal control → `terminals.control`
 - workspace settings updates → `settings.workspace.patch`
@@ -208,18 +231,44 @@ Self Workbench/Panes Control is scoped to the caller's workspace. Cross-workspac
 UI manipulation is out of scope unless a future capability names and authorizes
 that intent explicitly.
 
+The account-wide dashboard capabilities above are future contracts, not Phase 2
+MCP tools. They require explicit account/app scope and are published only after
+their source, freshness, effects, and redaction rules are implemented. A cached
+snapshot query and an active refresh are separate operations; a `force` flag
+must not silently turn a Tier 0 read into a credential, process, or network
+operation.
+
 ## 6. Reads, freshness, and observability
 
 Every observable result identifies its source where ambiguity matters:
-`live`, `sqlite`, `claude-jsonl`, or `claude-session-file`, with `observedAt`
-and optional `stale`/`unavailable` metadata.
+`live`, `sqlite`, `dashboard-cache`, `claude-jsonl`,
+`claude-session-file`, `github-cli`, `provider-local`, or `provider-api`, with
+`observedAt` or `fetchedAt` and explicit `stale`, `unavailable`, `unsupported`,
+or unknown-value metadata where applicable.
 
 The read hierarchy is:
 
 1. use live main-process state when the app owns authoritative state;
-2. use persisted SQLite shadows for app-independent summaries;
-3. use Claude JSONL/session files for transcripts and Claude-owned status;
-4. return unavailable when no authoritative source exists.
+2. use a persisted dashboard-cache snapshot for an immediate, side-effect-free
+   account/app summary;
+3. use persisted SQLite shadows for other app-independent summaries;
+4. use Claude JSONL/session files for transcripts and Claude-owned status;
+5. use explicit, bounded source refreshes for GitHub/provider data only when
+   the operation and grant permit their declared effects;
+6. return unavailable or unsupported when no authoritative source exists.
+
+A cache-only query never inspects processes, reads credentials, starts a
+process, makes a network request, or writes the cache. An explicit refresh may
+declare `process.inspect`, `credential.read`, `network.request`,
+`process.spawn`, and `cache.write`; authorization and audit use the maximum
+possible effect set, not the read-shaped result. Refreshes preserve last-good
+data with freshness metadata and never fabricate zero utilization when a source
+omits a value.
+
+Provider collectors may use secrets internally but never return tokens or raw
+credential material. Antigravity's self-signed TLS exception remains
+request-scoped to its hard-coded loopback language-server target; it is never a
+process-global TLS setting and never applies to provider cloud requests.
 
 Terminal Observability never uses screenshot OCR or renderer scraping.
 Claude-workspace observation starts from `src/main/sessionState.ts`,
@@ -248,10 +297,14 @@ applies:
 - allowlisted settings/resource writes;
 - secret-field denial and recursive redaction;
 - risk and surface filtering from descriptors;
+- explicit account/app-global grants for source-account data;
 - timeout, concurrency, and body/output-size limits.
 
 Caller-supplied workspace ids are treated as claims and resolved against known
 state. Automations use persisted principals, not fabricated workspace env.
+GitHub logins, provider account labels, auth-file labels, and plan names are
+source metadata; they never establish caller identity or grants. A workspace or
+project default does not authorize account/app-global data.
 Mutations record principal, consumer, capability, redacted params, result code,
 request/correlation id, and time. Automation run history links to the same audit
 entry.
@@ -270,6 +323,11 @@ Direct readers are not forced through the live core. Existing routes may remain
 as compatibility adapters. Database changes use the declarative engine in
 `src/main/db/`; additive columns/tables and named data steps are preferred.
 No migration step requires deleting old command routes.
+
+Dashboard migration preserves two operations where the renderer currently has a
+cached-first/live-refresh flow: a side-effect-free snapshot read and an explicit
+refresh/probe. Phase 2 does not publish the account-wide GitHub,
+provider-usage, or all-history activity operations.
 
 The eight delivery phases are: Control Foundation; Self Identity + Read-only
 MCP; Workspace Orchestration; Self Workbench/Panes Control; Terminal
@@ -293,6 +351,13 @@ Integrated validation covers:
 - restart/reconnect and subscription initial-snapshot races;
 - automation idempotency, retry, timeout, disable, and recovery;
 - audit redaction and correlation;
+- for every published dashboard capability, cache-only reads remain
+  side-effect-free and refreshes declare bounded process, credential, network,
+  spawn, and cache-write effects;
+- dashboard results preserve stale/unavailable/unsupported/unknown states and
+  never expose tokens, raw credentials, or secret-bearing process arguments;
+- Antigravity's certificate-validation exception remains request-scoped to its
+  hard-coded loopback target and does not affect cloud requests;
 - absence of click/coordinate simulation from the public catalog.
 
 ## 10. Decision records
@@ -311,3 +376,4 @@ Integrated validation covers:
 | ACP-010 | Automations persist intent and invoke the core directly. | No shell/CLI or renderer-click automation layer. |
 | ACP-011 | Textual terminal observation requires an authoritative stream. | No OCR, screenshot scraping, or invented output. |
 | ACP-012 | The plan has no deletion/deprecation phase. | Completion is based on parity and adoption, not removal of working surfaces. |
+| ACP-013 | Cached dashboard reads and active source refreshes are separate semantic operations. | Phase 2 stays narrow; future account-wide capabilities declare refresh effects and never derive caller identity from source-account metadata. |
