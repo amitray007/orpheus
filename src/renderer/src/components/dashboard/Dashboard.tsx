@@ -41,7 +41,9 @@ import type {
   GitStatus,
   GhPullRequest
 } from '@shared/types'
+import { rendererControlRequiresPresentation } from '@shared/workbenchControl'
 import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
+import { executeRendererControl } from '@/lib/rendererControl'
 
 const Sidebar = memo(SidebarBase)
 const MainContent = memo(MainContentBase)
@@ -122,6 +124,44 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const runWorktreeArchiveFlowRef = useRef<
     (workspace: WorkspaceRecord, projectId: string) => Promise<void>
   >(async () => {})
+
+  useEffect(() => {
+    const unsubscribe = window.api.control.onRendererCommand((request) => {
+      void (async () => {
+        try {
+          const command = request.command
+          if (rendererControlRequiresPresentation(command) && 'workspaceId' in command) {
+            const projectId = Object.entries(workspacesByProjectRef.current).find(([, rows]) =>
+              rows.some((workspace) => workspace.id === command.workspaceId)
+            )?.[0]
+            if (projectId == null) throw new Error('Workspace is unavailable in the renderer.')
+            handleSelectWorkspaceRef.current(command.workspaceId, projectId)
+          } else if (rendererControlRequiresPresentation(command)) {
+            setView({ kind: 'panes' })
+            setSidebarContext('panes')
+          }
+          const value = await executeRendererControl(command)
+          await window.api.control.acknowledgeRendererCommand({
+            requestId: request.requestId,
+            generation: request.generation,
+            status: 'completed',
+            observedAt: Date.now(),
+            value
+          })
+        } catch (error) {
+          await window.api.control.acknowledgeRendererCommand({
+            requestId: request.requestId,
+            generation: request.generation,
+            status: 'failed',
+            observedAt: Date.now(),
+            error: error instanceof Error ? error.message : String(error)
+          })
+        }
+      })()
+    })
+    void window.api.control.markRendererReady()
+    return unsubscribe
+  }, [])
   // De-races the archive navigation double-fire: finishWorktreeArchive (called
   // by the local runWorktreeArchiveFlow, awaited right after the archive IPC
   // resolves) and the workspaces:archived broadcast listener (below, fired for

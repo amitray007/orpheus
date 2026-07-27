@@ -1,9 +1,14 @@
 import type { ClaudeRuntimeBinding } from './runtimeLeases'
-import type { ControlPermission } from './types'
+import type { ControlPermission, TrustedRuntimeBinding } from './types'
 
 export type RuntimeControlGrant = Readonly<{
   permissions: readonly ControlPermission[]
   maxRiskTier: 0 | 1 | 2 | 3
+  scope?: Readonly<{
+    selfOnly: true
+    layoutIds?: readonly string[]
+    surfaceIds?: readonly string[]
+  }>
 }>
 
 export type RuntimeControlGrantSource = (
@@ -30,7 +35,9 @@ const PERMISSION_RISK_TIER: Readonly<Record<ControlPermission, 0 | 1 | 2 | 3>> =
   'workspaces.rename': 2,
   'workspaces.archive': 3,
   'reviews.read': 0,
-  'reviews.resolve': 2
+  'reviews.resolve': 2,
+  'ui.workbench.control': 1,
+  'terminals.control': 2
 }
 
 /**
@@ -48,5 +55,14 @@ export class RuntimeControlGrantPolicy {
       if (PERMISSION_RISK_TIER[permission] <= grant.maxRiskTier) permissions.add(permission)
     }
     return Object.freeze([...permissions])
+  }
+
+  scopeFor(binding: ClaudeRuntimeBinding): TrustedRuntimeBinding['resourceScope'] {
+    const scope = this.source?.(binding)?.scope
+    return Object.freeze({
+      selfOnly: true,
+      layoutIds: Object.freeze([...(scope?.layoutIds ?? [])]),
+      surfaceIds: Object.freeze([...(scope?.surfaceIds ?? [])])
+    })
   }
 }

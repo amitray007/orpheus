@@ -16,6 +16,8 @@ export type ControlPermission =
   | 'workspaces.archive'
   | 'reviews.read'
   | 'reviews.resolve'
+  | 'ui.workbench.control'
+  | 'terminals.control'
 export type ControlErrorCode =
   | 'invalid'
   | 'not_found'
@@ -35,6 +37,11 @@ export type TrustedRuntimeBinding = Readonly<{
   claudeConversationId: string | null
   issuedAt: number
   permissions: readonly ControlPermission[]
+  resourceScope?: Readonly<{
+    selfOnly: true
+    layoutIds: readonly string[]
+    surfaceIds: readonly string[]
+  }>
 }>
 
 export type ControlContext = {
