@@ -209,6 +209,17 @@ function mounted(phase: NativeSurfacePhase): boolean {
   return phase === 'hidden' || phase === 'attached' || phase === 'visible'
 }
 
+function appendUniqueTarget(
+  targets: ResolvedTerminalTarget[],
+  seenTerminalIds: Set<string>,
+  target: ResolvedTerminalTarget
+): boolean {
+  if (seenTerminalIds.has(target.terminalId)) return false
+  seenTerminalIds.add(target.terminalId)
+  targets.push(target)
+  return targets.length > MAX_LISTED_TERMINALS
+}
+
 function sessionMetadata(info: TerminalSessionInfo): ClaudeSessionMetadataModel | null {
   if (info.claudeConversationId == null) return null
   return {
@@ -752,6 +763,9 @@ export class TerminalObservationService implements TerminalObservationHandlers {
     }
     if (runtime.projectId == null) return []
     const targets: ResolvedTerminalTarget[] = []
+    const seenTerminalIds = new Set<string>()
+    const append = (target: ResolvedTerminalTarget): boolean =>
+      appendUniqueTarget(targets, seenTerminalIds, target)
     const projectWorkspaces = this.deps
       .listWorkspaces(runtime.projectId)
       .filter((workspace) => workspace.projectId === runtime.projectId)
@@ -759,6 +773,15 @@ export class TerminalObservationService implements TerminalObservationHandlers {
       runtime.workspaceId == null
         ? null
         : (projectWorkspaces.find((workspace) => workspace.id === runtime.workspaceId) ?? null)
+
+    // Keep the runtime's own workspace and exact server-issued pane scope
+    // discoverable even when the broader project exceeds the published list
+    // bound. The extra sentinel entry preserves accurate truncation reporting.
+    if (selfWorkspace != null && append(this.resolveWorkspace(selfWorkspace))) return targets
+    for (const pane of this.scopedPaneTargets(runtime)) {
+      if (append(pane)) return targets
+    }
+
     const orderedWorkspaces =
       selfWorkspace == null
         ? projectWorkspaces
@@ -767,15 +790,30 @@ export class TerminalObservationService implements TerminalObservationHandlers {
             ...projectWorkspaces.filter((workspace) => workspace.id !== selfWorkspace.id)
           ]
     for (const workspace of orderedWorkspaces) {
-      if (workspace.projectId !== runtime.projectId) continue
-      targets.push(this.resolveWorkspace(workspace))
-      if (targets.length > MAX_LISTED_TERMINALS) return targets
-      for (const terminalId of this.deps.listWorkbenchTerminalIds(workspace.id)) {
-        targets.push(this.resolveWorkbench(workspace, terminalId))
-        if (targets.length > MAX_LISTED_TERMINALS) return targets
-      }
+      if (
+        this.appendProjectWorkspaceTargets(runtime.projectId, workspace, targets, seenTerminalIds)
+      )
+        return targets
     }
     return targets
+  }
+
+  private appendProjectWorkspaceTargets(
+    projectId: string,
+    workspace: WorkspaceRecord,
+    targets: ResolvedTerminalTarget[],
+    seenTerminalIds: Set<string>
+  ): boolean {
+    if (workspace.projectId !== projectId) return false
+    if (appendUniqueTarget(targets, seenTerminalIds, this.resolveWorkspace(workspace))) return true
+    for (const terminalId of this.deps.listWorkbenchTerminalIds(workspace.id)) {
+      if (
+        appendUniqueTarget(targets, seenTerminalIds, this.resolveWorkbench(workspace, terminalId))
+      ) {
+        return true
+      }
+    }
+    return false
   }
 
   private resolveAuthorizedTarget(
@@ -800,8 +838,7 @@ export class TerminalObservationService implements TerminalObservationHandlers {
       }
       const resolved = this.resolvePane(pane)
       if (
-        runtime.runtimeKind !== 'pane_shell' ||
-        runtime.surfaceId !== resolved.surfaceId ||
+        !this.paneTargetAuthorized(runtime, resolved) ||
         !this.deps.hasPaneSurface(pane.layoutId, pane.paneId)
       ) {
         throw terminalObservationError('not_found', RESOURCE_NOT_FOUND)
@@ -849,7 +886,9 @@ export class TerminalObservationService implements TerminalObservationHandlers {
     }
   }
 
-  private resolvePane(pane: PaneTerminalSnapshot): ResolvedTerminalTarget {
+  private resolvePane(
+    pane: PaneTerminalSnapshot
+  ): Extract<ResolvedTerminalTarget, { kind: 'pane' }> {
     return {
       kind: 'pane',
       terminalId: paneTerminalId(pane.layoutId, pane.paneId),
@@ -874,6 +913,36 @@ export class TerminalObservationService implements TerminalObservationHandlers {
     return pane == null || !this.deps.hasPaneSurface(pane.layoutId, pane.paneId)
       ? null
       : this.resolvePane(pane)
+  }
+
+  private scopedPaneTargets(runtime: TrustedRuntimeBinding): ResolvedTerminalTarget[] {
+    const surfaceIds = runtime.resourceScope?.surfaceIds ?? []
+    const targets: ResolvedTerminalTarget[] = []
+    const seen = new Set<string>()
+    for (const surfaceId of surfaceIds) {
+      if (seen.has(surfaceId)) continue
+      seen.add(surfaceId)
+      const pane = this.deps.getPaneTargetBySurfaceId(surfaceId)
+      if (pane == null || !this.deps.hasPaneSurface(pane.layoutId, pane.paneId)) continue
+      const resolved = this.resolvePane(pane)
+      if (resolved.surfaceId !== surfaceId || !this.paneTargetAuthorized(runtime, resolved)) {
+        continue
+      }
+      targets.push(resolved)
+    }
+    return targets
+  }
+
+  private paneTargetAuthorized(
+    runtime: TrustedRuntimeBinding,
+    target: Extract<ResolvedTerminalTarget, { kind: 'pane' }>
+  ): boolean {
+    if (runtime.runtimeKind === 'pane_shell' && runtime.surfaceId === target.surfaceId) return true
+    const scope = runtime.resourceScope
+    return (
+      scope?.layoutIds.includes(target.layoutId) === true &&
+      scope.surfaceIds.includes(target.surfaceId)
+    )
   }
 
   private safePhase(surfaceId: string): NativeSurfacePhase {

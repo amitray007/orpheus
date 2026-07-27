@@ -131,12 +131,19 @@ export class AutomationScheduler {
   async start(): Promise<void> {
     if (this.started) return
     this.started = true
-    await this.recover()
-    if (!this.started) return
-    await this.tick()
-    if (!this.started) return
-    this.timer = setInterval(() => void this.tick(), this.tickMs)
-    this.timer.unref?.()
+    try {
+      await this.recover()
+      if (!this.started) return
+      await this.tick()
+      if (!this.started) return
+      this.timer = setInterval(() => void this.tick(), this.tickMs)
+      this.timer.unref?.()
+    } catch (error) {
+      if (this.timer != null) clearInterval(this.timer)
+      this.timer = null
+      this.started = false
+      throw error
+    }
   }
 
   stop(): void {
@@ -161,16 +168,57 @@ export class AutomationScheduler {
     return definition
   }
 
+  deleteDefinition(id: string, management: AutomationManagementContext): AutomationDefinition {
+    for (const controller of this.controllers.get(id) ?? []) controller.abort('disabled')
+    return this.ports.service.deleteDefinition(id, management)
+  }
+
+  /**
+   * Persist one validated domain occurrence. This is intentionally
+   * synchronous so callers can invoke it inside the transaction that commits
+   * the source-of-truth domain mutation.
+   */
+  persistEvent(event: AutomationEvent): void {
+    this.ports.service.validateEvent(event)
+    if (this.ports.store.insertEventOccurrence(event, this.clock.now())) return
+    const existing = this.ports.store.getEventOccurrence(event.id)
+    if (
+      existing == null ||
+      existing.type !== event.type ||
+      existing.occurredAt !== event.occurredAt ||
+      existing.projectId !== event.projectId ||
+      existing.workspaceId !== event.workspaceId
+    ) {
+      throw new AutomationDefinitionError(
+        'conflict',
+        'Automation event id is already bound to a different occurrence.'
+      )
+    }
+  }
+
+  drainEvents(): Promise<void> {
+    return Promise.resolve().then(() => {
+      this.enqueuePendingEvents(this.clock.now())
+    })
+  }
+
   async emitEvent(event: AutomationEvent): Promise<AutomationRun[]> {
-    const runs = this.ports.service.matchingEventDefinitions(event).map((definition) =>
-      this.enqueue(definition, {
+    const definitions = this.ports.service.matchingEventDefinitions(event)
+    this.persistEvent(event)
+    await this.drainEvents()
+    await this.tick()
+    return definitions.flatMap((definition) => {
+      const occurrence: AutomationTriggerOccurrence = {
         kind: 'event',
         key: event.id,
         occurredAt: event.occurredAt
-      })
-    )
-    await this.tick()
-    return runs
+      }
+      const run = this.ports.store.getRunByIdempotencyKey(
+        definition.id,
+        stableKey(definition.id, occurrence)
+      )
+      return run == null ? [] : [run]
+    })
   }
 
   async recover(): Promise<void> {
@@ -218,10 +266,15 @@ export class AutomationScheduler {
 
   private async reconcile(): Promise<void> {
     const now = this.clock.now()
+    this.enqueuePendingEvents(now)
     if (this.lastCleanupAt == null || now - this.lastCleanupAt >= CLEANUP_INTERVAL_MS) {
       this.ports.store.pruneTerminalRuns(
         now - AUTOMATION_LIMITS.runRetentionMs,
         AUTOMATION_LIMITS.maxRetainedRunsPerAutomation
+      )
+      this.ports.store.pruneDeliveredEventOccurrences(
+        now - AUTOMATION_LIMITS.eventRetentionMs,
+        AUTOMATION_LIMITS.maxRetainedDeliveredEvents
       )
       this.lastCleanupAt = now
     }
@@ -259,6 +312,32 @@ export class AutomationScheduler {
       selected.push({ definition, run })
     }
     await Promise.all(selected.map(({ definition, run }) => this.execute(definition, run)))
+  }
+
+  private enqueuePendingEvents(now: number): void {
+    for (const occurrence of this.ports.store.listPendingEventOccurrences(
+      now,
+      MAX_RECONCILE_ITEMS
+    )) {
+      try {
+        this.ports.store.transaction(() => {
+          for (const definition of this.ports.service.matchingEventDefinitions(occurrence)) {
+            this.enqueue(definition, {
+              kind: 'event',
+              key: occurrence.id,
+              occurredAt: occurrence.occurredAt
+            })
+          }
+          if (!this.ports.store.markEventDelivered(occurrence.id, now)) {
+            throw new Error('Automation event delivery changed concurrently.')
+          }
+        })
+      } catch {
+        const multiplier = 2 ** Math.min(occurrence.deliveryAttempts, 12)
+        const retryDelayMs = Math.min(AUTOMATION_LIMITS.maxEventRetryDelayMs, 1_000 * multiplier)
+        this.ports.store.recordEventDeliveryFailure(occurrence.id, now, now + retryDelayMs)
+      }
+    }
   }
 
   private enqueueDueSchedules(now: number): void {
@@ -303,7 +382,9 @@ export class AutomationScheduler {
       auditId: null
     }
     if (this.ports.store.insertRun(run)) return run
-    return this.ports.store.getRunByIdempotencyKey(definition.id, idempotencyKey) ?? run
+    const winner = this.ports.store.getRunByIdempotencyKey(definition.id, idempotencyKey)
+    if (winner != null) return winner
+    throw new Error('Automation run was not persisted and no idempotent winner exists.')
   }
 
   private async execute(definition: AutomationDefinition, pending: AutomationRun): Promise<void> {

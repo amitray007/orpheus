@@ -1160,6 +1160,32 @@ export const schema: SchemaDef = {
     }
   },
 
+  // Durable domain-event outbox. Workspace completion occurrences are inserted
+  // in the same SQLite transaction as the authoritative workspace status
+  // transition, then replayed into idempotent automation_runs rows at startup.
+  automation_event_occurrences: {
+    columns: {
+      id: TEXT_PK,
+      event_type: TEXT_NOT_NULL,
+      occurred_at: INTEGER_NOT_NULL,
+      project_id: 'TEXT',
+      workspace_id: 'TEXT',
+      delivery_attempts: { type: 'INTEGER', notNull: true, default: '0' },
+      next_attempt_at: 'INTEGER',
+      delivered_at: 'INTEGER',
+      created_at: INTEGER_NOT_NULL
+    },
+    indexes: {
+      idx_automation_event_occurrences_pending: [
+        'delivered_at',
+        'next_attempt_at',
+        'occurred_at',
+        'id'
+      ],
+      idx_automation_event_occurrences_delivered: ['delivered_at DESC', 'id DESC']
+    }
+  },
+
   // ---------------------------------------------------------------------
   // routing_proxy_providers — model-routing unit 05 (provider framework).
   // One row per provider a user has configured (codex, xai, antigravity,

@@ -11,6 +11,7 @@ import type {
   SessionsPagedRequest,
   SessionsPagedResult,
   WorkspaceRecord,
+  WorkspaceOpenRequest,
   WorkspaceStatus,
   WorkspaceActivityDetail,
   CreateWorktreeParams,
@@ -372,12 +373,8 @@ const api = {
       subscribe(PUSH_CHANNELS.workspacesChanged, cb),
     onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.terminalActiveWorkspaceChanged, cb),
-    onWorkspaceRequestOpen: (
-      cb: (e: { workspaceId: string; focus: boolean }) => void
-    ): (() => void) =>
-      subscribe(PUSH_CHANNELS.workspaceRequestOpen, (e) =>
-        cb({ workspaceId: e.workspaceId, focus: e.focus !== false })
-      ),
+    onWorkspaceRequestOpen: (cb: (e: WorkspaceOpenRequest) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspaceRequestOpen, cb),
     convertToLocal: (id: string): Promise<WorkspaceRecord> =>
       invoke('workspaces:convertToLocal', { id }),
     // Footer Model chip: persists a model override and suppresses the

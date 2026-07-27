@@ -369,6 +369,104 @@ assert.deepEqual(paneDenied, {
   error: 'Requested resource was not found.'
 })
 
+// A managed Claude runtime with the exact server-issued Phase 4 pane scope can
+// observe that mounted pane through every Phase 5 read. This models the
+// startTerminal -> native registry -> observation integration state; ordinary
+// same-project identity without the exact layout+surface grant remains denied.
+const scopedPaneBinding: TrustedRuntimeBinding = {
+  ...binding,
+  resourceScope: {
+    selfOnly: true,
+    layoutIds: ['layout-1'],
+    surfaceIds: [paneSurfaceId('layout-1', 'pane-1'), paneSurfaceId('layout-1', 'pane-1')]
+  }
+}
+const scopedPaneContext: ControlContext = {
+  ...context,
+  trustedRuntime: scopedPaneBinding
+}
+const scopedPaneList = await registry.invoke<
+  TerminalObservation<{
+    terminals: Array<{
+      kind: string
+      layoutId: string | null
+      paneId: string | null
+      surfaceRegistered: boolean
+    }>
+    truncated: boolean
+  }>
+>({
+  id: TERMINALS_LIST_CONTROL_ID,
+  input: {},
+  context: scopedPaneContext
+})
+assert.equal(scopedPaneList.ok, true)
+if (scopedPaneList.ok) {
+  assert.deepEqual(
+    scopedPaneList.value.value?.terminals.filter(({ kind }) => kind === 'pane'),
+    [
+      {
+        terminalId: 'pane-terminal/layout-1/pane-1',
+        kind: 'pane',
+        workspaceId: null,
+        projectId: null,
+        layoutId: 'layout-1',
+        paneId: 'pane-1',
+        surfaceRegistered: true
+      }
+    ]
+  )
+}
+
+const scopedPaneGet = await registry.invoke({
+  id: TERMINALS_GET_CONTROL_ID,
+  input: { target: { kind: 'pane', layoutId: 'layout-1', paneId: 'pane-1' } },
+  context: scopedPaneContext
+})
+assert.equal(scopedPaneGet.ok, true)
+if (scopedPaneGet.ok) {
+  const snapshot = scopedPaneGet.value as {
+    lifecycle: { value: { registered: boolean; phase: string } }
+    configuration: { value: { command: string; cwd: string } }
+  }
+  assert.deepEqual(snapshot.lifecycle.value, { registered: true, phase: 'visible' })
+  assert.deepEqual(snapshot.configuration.value, {
+    command: 'bun test',
+    cwd: '/panes/one'
+  })
+}
+
+const scopedPaneTail = await registry.invoke({
+  id: TERMINALS_GET_OUTPUT_TAIL_CONTROL_ID,
+  input: { target: { kind: 'pane', layoutId: 'layout-1', paneId: 'pane-1' } },
+  context: scopedPaneContext
+})
+assert.equal(scopedPaneTail.ok, true)
+if (scopedPaneTail.ok) {
+  assert.equal((scopedPaneTail.value as { availability: string }).availability, 'unsupported')
+}
+
+const scopedPaneSubscription = await registry.invoke({
+  id: TERMINALS_SUBSCRIBE_CONTROL_ID,
+  input: { target: { kind: 'pane', layoutId: 'layout-1', paneId: 'pane-1' } },
+  context: scopedPaneContext
+})
+assert.equal(scopedPaneSubscription.ok, true)
+if (scopedPaneSubscription.ok) {
+  const subscription = scopedPaneSubscription.value as {
+    snapshots: Array<{
+      terminalId: string
+      snapshot: { lifecycle: { value: { registered: boolean; phase: string } } }
+    }>
+  }
+  assert.equal(subscription.snapshots.length, 1)
+  assert.equal(subscription.snapshots[0]?.terminalId, 'pane-terminal/layout-1/pane-1')
+  assert.deepEqual(subscription.snapshots[0]?.snapshot.lifecycle.value, {
+    registered: true,
+    phase: 'visible'
+  })
+}
+
 const paneBinding: TrustedRuntimeBinding = {
   ...binding,
   runtimeId: 'pane-runtime',
@@ -413,6 +511,16 @@ const stalePaneDenied = await stalePaneRegistry.invoke({
   context: paneContext
 })
 assert.deepEqual(stalePaneDenied, {
+  ok: false,
+  code: 'not_found',
+  error: 'Requested resource was not found.'
+})
+const staleScopedPaneDenied = await stalePaneRegistry.invoke({
+  id: TERMINALS_GET_CONTROL_ID,
+  input: { target: { kind: 'pane', layoutId: 'layout-1', paneId: 'pane-1' } },
+  context: scopedPaneContext
+})
+assert.deepEqual(staleScopedPaneDenied, {
   ok: false,
   code: 'not_found',
   error: 'Requested resource was not found.'
@@ -635,6 +743,40 @@ const boundedList = boundedListService.list(context)
 assert.equal(boundedList.value?.terminals.length, 256)
 assert.equal(boundedList.value?.truncated, true)
 assert.equal(boundedList.value?.terminals[0]?.terminalId, 'workspace-claude/workspace-1')
+
+function createScopedPaneBoundaryService(projectTargetCount: number): TerminalObservationService {
+  const workspaces = [workspaceOne, ...manyWorkspaces.slice(0, projectTargetCount - 1)]
+  const workspacesById = new Map(workspaces.map((workspace) => [workspace.id, workspace]))
+  return new TerminalObservationService({
+    ...baseDeps,
+    listWorkspaces: () => workspaces,
+    getWorkspace: (workspaceId) => workspacesById.get(workspaceId) ?? null,
+    listWorkbenchTerminalIds: () => [],
+    getNativePhase: (surfaceId) =>
+      surfaceId === paneSurfaceId('layout-1', 'pane-1') ? 'visible' : 'none'
+  })
+}
+
+for (const projectTargetCount of [255, 256]) {
+  const boundaryService = createScopedPaneBoundaryService(projectTargetCount)
+  const boundaryList = boundaryService.list(scopedPaneContext)
+  assert.equal(boundaryList.value?.terminals.length, 256)
+  assert.equal(boundaryList.value?.truncated, projectTargetCount === 256)
+  assert.equal(boundaryList.value?.terminals[0]?.terminalId, 'workspace-claude/workspace-1')
+  assert.equal(boundaryList.value?.terminals[1]?.terminalId, 'pane-terminal/layout-1/pane-1')
+  assert.equal(boundaryList.value?.terminals.filter(({ kind }) => kind === 'pane').length, 1)
+
+  const boundarySubscription = await boundaryService.subscribe({}, scopedPaneContext)
+  assert.equal(boundarySubscription.snapshots.length, 256)
+  assert.equal(boundarySubscription.snapshots[0]?.terminalId, 'workspace-claude/workspace-1')
+  assert.equal(boundarySubscription.snapshots[1]?.terminalId, 'pane-terminal/layout-1/pane-1')
+  assert.equal(
+    boundarySubscription.snapshots.filter(({ terminalId }) =>
+      terminalId.startsWith('pane-terminal/')
+    ).length,
+    1
+  )
+}
 
 const oneWaiterJournal = new TerminalObservationJournal(() => 1_000, 3, 1)
 const pendingWait = oneWaiterJournal.waitForChange(0, null, 25)

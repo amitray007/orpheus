@@ -22,6 +22,7 @@ const MODEL_SCHEMA = {
 const EFFORT_SCHEMA = { enum: [...CLAUDE_EFFORT_VALUES] } as const
 const RESOURCE_KINDS = ['mcp_server', 'hook', 'slash_command', 'subagent'] as const
 const SETTINGS_RESOURCE_OPERATIONS = new Set<string>(SETTINGS_RESOURCE_OPERATION_IDS)
+const READ_SURFACES = ['mcp', 'automation'] as const
 const MCP_SURFACE = ['mcp'] as const
 const MAX_METADATA_LENGTH = 512
 const MAX_METADATA_ITEMS = 64
@@ -358,11 +359,12 @@ export function createSettingsResourceCapabilities(service: SettingsResourceServ
       properties: { workspaceId: ID_SCHEMA }
     },
     outputSchema: EFFECTIVE_SETTINGS_SCHEMA,
-    allowedSurfaces: MCP_SURFACE,
+    allowedSurfaces: READ_SURFACES,
     permission: 'settings.read',
     scope: { kind: 'workspace', inputField: 'workspaceId' },
     risk: { tier: 0, label: 'read' },
     declaredEffects: [],
+    idempotency: 'natural',
     validateInput: isEffectiveInput,
     handler: (input, context) => service.getEffective(input, context)
   }
@@ -420,12 +422,13 @@ export function createSettingsResourceCapabilities(service: SettingsResourceServ
     outputSchema: {
       type: 'object',
       additionalProperties: false,
-      required: ['schemaVersion', 'projectId', 'source', 'observedAt', 'resources'],
+      required: ['schemaVersion', 'projectId', 'source', 'observedAt', 'truncated', 'resources'],
       properties: {
         schemaVersion: { const: 1 },
         projectId: ID_SCHEMA,
         source: { const: 'project-files' },
         observedAt: { type: 'number' },
+        truncated: { type: 'boolean' },
         resources: {
           type: 'array',
           maxItems: MAX_PUBLISHED_RESOURCES,
@@ -433,11 +436,12 @@ export function createSettingsResourceCapabilities(service: SettingsResourceServ
         }
       }
     },
-    allowedSurfaces: MCP_SURFACE,
+    allowedSurfaces: READ_SURFACES,
     permission: 'resources.read',
     scope: { kind: 'project', inputField: 'projectId' },
     risk: { tier: 0, label: 'read' },
     declaredEffects: [],
+    idempotency: 'natural',
     validateInput: isResourceListInput,
     handler: (input, context) => service.listProjectMetadata(input, context)
   }

@@ -30,6 +30,7 @@ import type {
   DoctorResult,
   HealthReport,
   WorkspaceRecord,
+  WorkspaceOpenRequest,
   WorkspaceStatus,
   WorkspaceActivityDetail,
   AppUiState,
@@ -944,7 +945,7 @@ export interface RendererPushMap {
     detail: WorkspaceActivityDetail
   }>
   'workspace:navigateTo': { workspaceId: string; projectId?: string }
-  'workspace:requestOpen': { workspaceId: string; focus?: boolean }
+  'workspace:requestOpen': WorkspaceOpenRequest
   'workspaces:created': { workspace: WorkspaceRecord }
   'workspaces:archived': { workspaceId: string; projectId: string }
   'workspaces:changed': { workspace: WorkspaceRecord }

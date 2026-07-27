@@ -501,30 +501,50 @@ export function archivedAtForStatus(status: string, now: number): number | null 
   return status === 'archived' ? now : null
 }
 
-export function setWorkspaceStatus(id: string, status: WorkspaceStatus): WorkspaceRecord {
+export function setWorkspaceStatus(
+  id: string,
+  status: WorkspaceStatus,
+  beforeCommit?: (oldStatus: WorkspaceStatus, workspace: WorkspaceRecord) => void
+): WorkspaceRecord {
   if (!VALID_STATUSES.includes(status)) {
     throw new Error(`Invalid status: ${status}`)
   }
   const db = getDb()
-  // Sync archived_at with status. Transitioning to 'archived' sets archived_at;
-  // transitioning AWAY from 'archived' clears it.
-  let row: WorkspaceRow | undefined
-  if (status === 'archived') {
-    // COALESCE preserves the original archived_at on idempotent re-archive;
-    // archivedAtForStatus('archived', now) is just `now` here, used only as
-    // the COALESCE fallback for a first-time archive.
-    row = db
-      .prepare(
-        'UPDATE workspaces SET status = ?, archived_at = COALESCE(archived_at, ?) WHERE id = ? RETURNING *'
-      )
-      .get(status, archivedAtForStatus(status, Date.now()), id) as WorkspaceRow | undefined
-  } else {
-    row = db
-      .prepare('UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ? RETURNING *')
-      .get(status, id) as WorkspaceRow | undefined
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const existing = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as
+      | WorkspaceRow
+      | undefined
+    if (!existing) throw new Error(`workspace not found: ${id}`)
+
+    // Sync archived_at with status. Transitioning to 'archived' sets archived_at;
+    // transitioning AWAY from 'archived' clears it.
+    let row: WorkspaceRow | undefined
+    if (status === 'archived') {
+      // COALESCE preserves the original archived_at on idempotent re-archive.
+      row = db
+        .prepare(
+          'UPDATE workspaces SET status = ?, archived_at = COALESCE(archived_at, ?) WHERE id = ? RETURNING *'
+        )
+        .get(status, archivedAtForStatus(status, Date.now()), id) as WorkspaceRow | undefined
+    } else {
+      row = db
+        .prepare('UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ? RETURNING *')
+        .get(status, id) as WorkspaceRow | undefined
+    }
+    if (!row) throw new Error(`workspace not found: ${id}`)
+    const workspace = rowToWorkspaceRecord(row)
+    beforeCommit?.(existing.status, workspace)
+    db.exec('COMMIT')
+    return workspace
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK')
+    } catch {
+      // Preserve the status or outbox failure that triggered rollback.
+    }
+    throw error
   }
-  if (!row) throw new Error(`workspace not found: ${id}`)
-  return rowToWorkspaceRecord(row)
 }
 
 // ---------------------------------------------------------------------------

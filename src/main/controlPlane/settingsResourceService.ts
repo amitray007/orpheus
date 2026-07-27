@@ -133,6 +133,7 @@ export type ListProjectResourceMetadataOutput = {
   projectId: string
   source: 'project-files'
   observedAt: number
+  truncated: boolean
   resources: ProjectResourceMetadata[]
 }
 
@@ -361,6 +362,7 @@ export class SettingsResourceService {
         projectId,
         source: 'project-files',
         observedAt: this.now(),
+        truncated: resources.length > MAX_PUBLISHED_RESOURCES,
         resources: resources.slice(0, MAX_PUBLISHED_RESOURCES)
       }
     } catch (error) {
@@ -541,20 +543,27 @@ export class SettingsResourceService {
     context: ControlContext,
     selfOnly: boolean
   ): WorkspaceRecord {
-    const binding = context.trustedRuntime
-    if (binding?.workspaceId == null || binding.projectId == null) throw stableNotFound()
-    const targetId = workspaceId ?? binding.workspaceId
-    if (selfOnly && targetId !== binding.workspaceId) throw stableNotFound()
+    const runtime = context.trustedRuntime
+    const automation =
+      context.trustedAutomation?.scope.kind === 'workspace' ? context.trustedAutomation.scope : null
+    const boundWorkspaceId = runtime?.workspaceId ?? automation?.workspaceId ?? null
+    const boundProjectId = runtime?.projectId ?? automation?.projectId ?? null
+    if (boundWorkspaceId == null || boundProjectId == null) throw stableNotFound()
+    const targetId = workspaceId ?? boundWorkspaceId
+    if (selfOnly && targetId !== boundWorkspaceId) throw stableNotFound()
     const workspace = this.deps.getWorkspace(targetId)
-    if (workspace == null || workspace.projectId !== binding.projectId) throw stableNotFound()
+    if (workspace == null || workspace.projectId !== boundProjectId) throw stableNotFound()
     return workspace
   }
 
   private resolveProject(projectId: string | undefined, context: ControlContext): string {
-    const binding = context.trustedRuntime
-    if (binding?.projectId == null) throw stableNotFound()
-    const targetId = projectId ?? binding.projectId
-    if (targetId !== binding.projectId || this.deps.getProject(targetId) == null) {
+    const automation = context.trustedAutomation?.scope
+    const boundProjectId =
+      context.trustedRuntime?.projectId ??
+      (automation?.kind === 'app' ? null : (automation?.projectId ?? null))
+    if (boundProjectId == null) throw stableNotFound()
+    const targetId = projectId ?? boundProjectId
+    if (targetId !== boundProjectId || this.deps.getProject(targetId) == null) {
       throw stableNotFound()
     }
     return targetId
@@ -606,6 +615,7 @@ export class SettingsResourceService {
     receipts: EffectReceipt[] = []
   ): Promise<void> {
     const binding = context.trustedRuntime
+    const automation = context.trustedAutomation
     const record: WorkspaceControlAuditRecord = {
       schemaVersion: 1,
       auditId,
@@ -625,7 +635,16 @@ export class SettingsResourceService {
       redactedParams: recursivelyRedact(params),
       receipts,
       result: { code: result },
-      correlation: { requestId: context.requestId }
+      correlation: {
+        requestId: context.requestId,
+        ...(automation == null
+          ? {}
+          : {
+              automationId: automation.automationId,
+              runId: context.automationRunId,
+              idempotencyKey: context.idempotencyKey
+            })
+      }
     }
     try {
       await this.deps.audit.append(record)

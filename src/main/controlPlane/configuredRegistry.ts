@@ -1,9 +1,6 @@
 import type { WorkspaceOrchestrationService } from '../workspaceOrchestration/service'
 import { ControlRegistry } from './registry'
-import type {
-  ControlAuthorizationPolicy,
-  ControlRejectionAuditor
-} from './types'
+import type { ControlAuthorizationPolicy, ControlRejectionAuditor } from './types'
 import { createWorkspaceRejectionAuditor } from './workspaceCapabilities'
 import { withWorkspaceMutationPolicy } from './workspacePolicy'
 import { withWorkbenchControlPolicy } from './workbenchPolicy'

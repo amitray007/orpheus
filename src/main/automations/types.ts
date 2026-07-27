@@ -1,5 +1,6 @@
 import type {
   AutomationScopeBinding,
+  ControlContext,
   ControlDescription,
   ControlResult
 } from '../controlPlane/types'
@@ -23,7 +24,10 @@ export const AUTOMATION_LIMITS = Object.freeze({
   maxListLimit: 200,
   maxEventFanout: 200,
   maxRetainedRunsPerAutomation: 1_000,
-  runRetentionMs: 30 * 24 * 60 * 60 * 1_000
+  runRetentionMs: 30 * 24 * 60 * 60 * 1_000,
+  maxRetainedDeliveredEvents: 10_000,
+  eventRetentionMs: 30 * 24 * 60 * 60 * 1_000,
+  maxEventRetryDelayMs: 60 * 60 * 1_000
 })
 
 export type AutomationTrigger =
@@ -112,9 +116,18 @@ export type AutomationEvent = Readonly<{
   workspaceId?: string
 }>
 
+export type AutomationEventOccurrence = AutomationEvent &
+  Readonly<{
+    deliveryAttempts: number
+    nextAttemptAt: number | null
+    deliveredAt: number | null
+    createdAt: number
+  }>
+
 export type AutomationStore = {
   transaction<T>(work: () => T): T
   insertDefinition(definition: AutomationDefinition): void
+  deleteDefinition(id: string): boolean
   getDefinition(id: string): AutomationDefinition | null
   listDefinitions(enabledOnly?: boolean): AutomationDefinition[]
   setDefinitionEnabled(
@@ -134,6 +147,7 @@ export type AutomationStore = {
   listRuns(input: {
     automationId?: string
     statuses?: readonly AutomationRunStatus[]
+    order?: 'oldest' | 'recent'
     limit: number
   }): AutomationRun[]
   countStartsSince(automationId: string, since: number): number
@@ -164,11 +178,17 @@ export type AutomationStore = {
   cancelPending(automationId: string, now: number): number
   markRunningInterrupted(now: number): AutomationRun[]
   pruneTerminalRuns(finishedBefore: number, retainPerAutomation: number): void
+  insertEventOccurrence(event: AutomationEvent, createdAt: number): boolean
+  getEventOccurrence(id: string): AutomationEventOccurrence | null
+  listPendingEventOccurrences(now: number, limit: number): AutomationEventOccurrence[]
+  markEventDelivered(id: string, deliveredAt: number): boolean
+  recordEventDeliveryFailure(id: string, attemptedAt: number, nextAttemptAt: number): boolean
+  pruneDeliveredEventOccurrences(finishedBefore: number, retain: number): void
 }
 
 export type AutomationRegistry = {
   describe(id: string): ControlDescription | null
-  validateInput(id: string, input: unknown, context: AutomationInvocationContext): boolean
+  validateInput(id: string, input: unknown, context: ControlContext): boolean
   invoke<T>(invocation: {
     id: string
     input: unknown
@@ -208,7 +228,10 @@ export type AutomationAuditPort = {
     auditId: string
     requestId: string
     occurredAt: number
-    action: 'automations.createDefinition' | 'automations.setEnabled'
+    action:
+      | 'automations.createDefinition'
+      | 'automations.setEnabled'
+      | 'automations.deleteDefinition'
     definitionId: string
     principal: AutomationManagementContext['principal']
     consumer: AutomationManagementContext['consumer']

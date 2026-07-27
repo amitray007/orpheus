@@ -1,6 +1,6 @@
 # Phase 1: Control Foundation
 
-**Status:** implementation plan<br>
+**Status:** implemented and statically tested<br>
 **Roadmap:** [roadmap.md](roadmap.md)<br>
 **Proof slice:** `reviews.list` and `reviews.setResolved`
 

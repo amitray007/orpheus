@@ -1,6 +1,7 @@
 # Phase 3: Workspace Orchestration Interfaces
 
-**Status:** implemented and validated; final source-only fixes await batched live reconfirmation<br>
+**Status:** implemented; packaged background-open and terminal-color paths
+reconfirmed, with three focused final-fix paths still pending<br>
 **Phase contract:** [phase-03-workspace-orchestration.md](phase-03-workspace-orchestration.md)
 
 ## Purpose
@@ -524,9 +525,20 @@ The passing Phase 3 deterministic harness asserts:
 `bun run test:workspace-orchestration` and `bun run check` pass. Packaged live
 validation confirmed the default grant's mutation absence plus live
 `self.get`, lineage, wait-timeout, CLI lifecycle/fork/archive/audit, renderer
-create/fork, and cleanup behavior. That live pass predates the final
-source-only renderer-ready acknowledgement, explicit-name, CLI `--no-submit`,
-and ambient `NO_COLOR` fixes. Those four paths have static regressions only and
-await the next batched integration pass; no post-fix packaged build is claimed.
+create/fork, and cleanup behavior. The current integration batch additionally
+confirmed that packaged CLI `ws open --background` mounts an unmounted workspace
+without timing out and leaves Home visible. The command used the required Dev
+data selection, `ORPHEUS_DATA_VARIANT=dev`; omitting it correctly targets the
+production data variant and is not a product failure.
+
+The terminal-color path is also live-reconfirmed: the managed runtime had no
+ambient `NO_COLOR` or `FORCE_COLOR`, reported `TERM=xterm-ghostty`,
+`COLORTERM=truecolor`, and 256 colors, and rendered an ANSI/truecolor swatch.
+The earlier color loss was caused by the QA launcher itself setting ambient
+`NO_COLOR`, not by the CLI or control-plane integration.
+
+The ordinary renderer-ready close/archive race, explicit-name behavior, and CLI
+`--no-submit` path retain deterministic regressions but were not individually
+re-exercised in the packaged batch.
 See the detailed evidence boundary in
 [phase-03-workspace-orchestration.md](phase-03-workspace-orchestration.md).

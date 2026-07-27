@@ -44,6 +44,7 @@ type SurfacePhase = 'none' | 'hidden' | 'attached' | 'visible' | 'freeing'
 export type MainWorkspaceOrchestrationDeps = {
   runtimeLeases: RuntimeLeaseRegistry
   requestOpenWorkspace: (workspaceId: string, focus?: boolean) => void
+  requestOrchestrationMount: (workspaceId: string, cwd: string) => void
   getSurfacePhase: (workspaceId: string) => SurfacePhase
   isWorkspaceSessionReady: (workspaceId: string) => boolean
   canInject: (workspaceId: string) => boolean
@@ -303,7 +304,8 @@ export function createMainWorkspaceOrchestration(
   const waits = new MainWorkspaceWaitEngine()
   const lastTerminalTitles = new Map<string, string | null>()
   const runtime = new WorkspaceRuntimeCoordinator({
-    requestOpen: (workspaceId) => deps.requestOpenWorkspace(workspaceId, false),
+    requestOpen: (workspace) =>
+      deps.requestOrchestrationMount(workspace.workspaceId, workspace.cwd),
     getSurfacePhase: deps.getSurfacePhase,
     isSessionReady: deps.isWorkspaceSessionReady,
     canInject: deps.canInject,

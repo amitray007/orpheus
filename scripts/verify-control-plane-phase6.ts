@@ -14,8 +14,10 @@ import type {
 import type { ClaudeLaunch } from '../src/main/claudeSettings.ts'
 import { bootControlRegistry } from '../src/main/controlPlane/boot.ts'
 import { createConfiguredControlRegistry } from '../src/main/controlPlane/configuredRegistry.ts'
+import { AutomationGrantPolicy } from '../src/main/controlPlane/automationPolicy.ts'
 import { createTrustedRuntimeReadPolicy } from '../src/main/controlPlane/readPolicy.ts'
 import { RuntimeControlGrantPolicy } from '../src/main/controlPlane/runtimeGrants.ts'
+import { createSafeAutomationGrantSource } from '../src/main/controlPlane/safeAutomationGrants.ts'
 import {
   RESOURCES_LIST_PROJECT_METADATA_ID,
   SETTINGS_GET_EFFECTIVE_ID,
@@ -339,6 +341,142 @@ assert.deepEqual(
   [RESOURCES_LIST_PROJECT_METADATA_ID, SETTINGS_GET_EFFECTIVE_ID, SETTINGS_PATCH_WORKSPACE_ID]
 )
 
+const automationGrants = new AutomationGrantPolicy(
+  createSafeAutomationGrantSource({
+    getProject: (projectId) => (projectId === 'project-1' ? { id: projectId } : null),
+    getWorkspace: (workspaceId) => workspaces.get(workspaceId) ?? null
+  })
+)
+const effectiveDescription = registry.describe(SETTINGS_GET_EFFECTIVE_ID)
+const resourceDescription = registry.describe(RESOURCES_LIST_PROJECT_METADATA_ID)
+const patchDescription = registry.describe(SETTINGS_PATCH_WORKSPACE_ID)
+assert.ok(effectiveDescription)
+assert.ok(resourceDescription)
+assert.ok(patchDescription)
+assert.equal(effectiveDescription.idempotency, 'natural')
+assert.equal(resourceDescription.idempotency, 'natural')
+assert.equal(patchDescription.allowedSurfaces.includes('automation'), false)
+const automationScope = {
+  kind: 'workspace' as const,
+  projectId: workspace.projectId,
+  workspaceId: workspace.id
+}
+const effectiveBinding = await automationGrants.resolve(
+  'automation-effective',
+  automationScope,
+  effectiveDescription,
+  { workspaceId: workspace.id }
+)
+assert.ok(effectiveBinding)
+assert.deepEqual(effectiveBinding.permissions, ['settings.read'])
+assert.equal(effectiveBinding.maxRiskTier, 0)
+assert.equal(
+  await automationGrants.resolve(
+    'automation-sibling-target',
+    automationScope,
+    effectiveDescription,
+    { workspaceId: sibling.id }
+  ),
+  null
+)
+const throwingAutomationGrants = new AutomationGrantPolicy(
+  createSafeAutomationGrantSource({
+    getProject: () => {
+      throw new Error('sensitive project lookup failure')
+    },
+    getWorkspace: () => workspace
+  })
+)
+assert.equal(
+  await throwingAutomationGrants.resolve(
+    'automation-lookup-failure',
+    automationScope,
+    effectiveDescription,
+    { workspaceId: workspace.id }
+  ),
+  null
+)
+const resourceBinding = await automationGrants.resolve(
+  'automation-resources',
+  automationScope,
+  resourceDescription,
+  { projectId: workspace.projectId }
+)
+assert.ok(resourceBinding)
+assert.deepEqual(resourceBinding.permissions, ['resources.read'])
+assert.equal(
+  await automationGrants.resolve(
+    'automation-cross-project',
+    { kind: 'project', projectId: 'project-2' },
+    resourceDescription,
+    { projectId: 'project-2' }
+  ),
+  null
+)
+assert.equal(
+  await automationGrants.resolve('automation-patch', automationScope, patchDescription, {
+    workspaceId: workspace.id,
+    patch: { effort: 'low' }
+  }),
+  null
+)
+const automationContext = (
+  automationId: string,
+  binding: NonNullable<typeof effectiveBinding | typeof resourceBinding>
+): ControlContext => ({
+  principal: { type: 'automation', id: automationId },
+  consumer: 'automation',
+  workspaceId: workspace.id,
+  projectId: workspace.projectId,
+  requestId: `request-${automationId}`,
+  trustedAutomation: binding,
+  automationRunId: `run-${automationId}`,
+  idempotencyKey: `key-${automationId}`
+})
+assert.ok(
+  registry.describeForContext(
+    SETTINGS_GET_EFFECTIVE_ID,
+    automationContext('automation-effective', effectiveBinding)
+  )
+)
+assert.ok(
+  registry.describeForContext(
+    RESOURCES_LIST_PROJECT_METADATA_ID,
+    automationContext('automation-resources', resourceBinding)
+  )
+)
+assert.equal(
+  registry.describeForContext(
+    SETTINGS_PATCH_WORKSPACE_ID,
+    automationContext('automation-effective', effectiveBinding)
+  ),
+  null
+)
+const automatedEffective = await registry.invoke({
+  id: SETTINGS_GET_EFFECTIVE_ID,
+  input: { workspaceId: workspace.id },
+  context: automationContext('automation-effective', effectiveBinding)
+})
+assert.equal(automatedEffective.ok, true)
+const automatedSibling = await registry.invoke({
+  id: SETTINGS_GET_EFFECTIVE_ID,
+  input: { workspaceId: sibling.id },
+  context: automationContext('automation-effective', effectiveBinding)
+})
+assert.equal(automatedSibling.ok, false)
+if (!automatedSibling.ok) assert.equal(automatedSibling.code, 'forbidden')
+const automatedResources = await registry.invoke({
+  id: RESOURCES_LIST_PROJECT_METADATA_ID,
+  input: { projectId: workspace.projectId },
+  context: automationContext('automation-resources', resourceBinding)
+})
+assert.equal(automatedResources.ok, true)
+composeCalls = 0
+scopedMcpCalls = 0
+scopedHookCalls = 0
+scopedCommandCalls = 0
+scopedSubagentCalls = 0
+
 bulkMcp = true
 const boundedResources = await registry.invoke({
   id: RESOURCES_LIST_PROJECT_METADATA_ID,
@@ -349,6 +487,7 @@ assert.equal(boundedResources.ok, true)
 if (boundedResources.ok) {
   const value = boundedResources.value as ReturnType<typeof service.listProjectMetadata>
   assert.equal(value.resources.length, 256)
+  assert.equal(value.truncated, true)
   assert.equal(value.resources[0]?.kind, 'mcp_server')
   assert.equal(value.resources.at(-1)?.kind, 'mcp_server')
 }
@@ -372,8 +511,10 @@ assert.deepEqual(staleProjectRead, {
   error: 'Requested resource was not found.'
 })
 for (const description of phase6Catalog) {
-  assert.equal(description.allowedSurfaces.length, 1)
-  assert.equal(description.allowedSurfaces[0], 'mcp')
+  assert.deepEqual(
+    description.allowedSurfaces,
+    description.id === SETTINGS_PATCH_WORKSPACE_ID ? ['mcp'] : ['mcp', 'automation']
+  )
   assert.equal(description.inputSchema.additionalProperties, false)
   for (const excluded of [
     'customEnvVars',
@@ -458,6 +599,7 @@ const resourceResult = await registry.invoke({
 assert.equal(resourceResult.ok, true)
 if (resourceResult.ok) {
   const value = resourceResult.value as ReturnType<typeof service.listProjectMetadata>
+  assert.equal(value.truncated, false)
   const serialized = JSON.stringify(resourceResult.value)
   for (const secret of [
     '/secret/command',

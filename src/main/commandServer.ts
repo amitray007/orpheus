@@ -32,6 +32,14 @@ import type {
 import type { WorkspaceOperationActor } from './workspaceOrchestration/types'
 import type { WorkspaceOrchestrationService } from './workspaceOrchestration/service'
 import { legacyWaitReason, type MainWorkspaceWaitEngine } from './workspaceOrchestration/waitEngine'
+import { parseCommandAction } from './commandAction'
+import {
+  PHASE8_QA_COMMAND,
+  PHASE8_QA_TOKEN_HEADER,
+  phase8QaCredentialMatches,
+  type Phase8QaController
+} from './automations/phase8Qa'
+import { redactErrorForLog, redactErrorMessage } from './logRedaction'
 
 // ---------------------------------------------------------------------------
 // Deps injected from index.ts (these live as locals there, so we receive them
@@ -45,6 +53,8 @@ export type CommandServerDeps = {
   runtimeControlGrants: RuntimeControlGrantPolicy
   listControl: (context: ControlContext) => ControlDescription[]
   invokeControl: ControlInvoker
+  /** Present only in the explicitly enabled Orpheus Dev Phase 8 QA process. */
+  phase8Qa?: Readonly<{ controller: Phase8QaController; credential: string }>
   /** Destroy the libghostty surface for a workspace (no-op if not mounted). */
   destroySurface: (workspaceId: string) => void
   /**
@@ -364,7 +374,7 @@ function collectWorkspaceSubtreeIds(rootId: string): string[] {
 // ---------------------------------------------------------------------------
 
 function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> {
-  return {
+  const dispatch: Record<string, DispatchFn> = {
     // Create a new workspace inside a project.
     // Args:
     //   projectId (required) — the project to create the workspace under
@@ -616,6 +626,11 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       )
     }
   }
+  const phase8Qa = deps.phase8Qa
+  if (phase8Qa != null) {
+    dispatch[PHASE8_QA_COMMAND] = (args) => phase8Qa.controller.execute(args)
+  }
+  return dispatch
 }
 
 // ---------------------------------------------------------------------------
@@ -650,6 +665,17 @@ function authenticate(req: http.IncomingMessage, res: http.ServerResponse, token
     return false
   }
   return true
+}
+
+function authenticatePhase8Qa(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  credential: string
+): boolean {
+  if (phase8QaCredentialMatches(req.headers[PHASE8_QA_TOKEN_HEADER], credential)) return true
+  res.writeHead(401, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
+  return false
 }
 
 /**
@@ -932,8 +958,8 @@ async function dispatchCmdAndRespond(
     const data = await handler(args, context, deps)
     writeJsonResponse(res, 200, { ok: true, data })
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.error('[commandServer] handler error:', err)
+    const message = redactErrorMessage(err)
+    console.error('[commandServer] handler error:', redactErrorForLog(err))
     writeJsonResponse(res, 200, { ok: false, error: message })
   }
 }
@@ -1421,15 +1447,27 @@ export function startCommandServer(deps: CommandServerDeps): {
         if (raw == null) return // readBody already responded (413)
 
         // --- Parse JSON body ---
-        let body: CmdBody
+        let body: unknown
         try {
-          body = JSON.parse(raw.toString('utf-8')) as CmdBody
+          body = JSON.parse(raw.toString('utf-8')) as unknown
         } catch {
           writeJsonResponse(res, 400, { ok: false, error: 'invalid JSON body' })
           return
         }
 
-        const { action, args = {}, context = {} } = body
+        const action = parseCommandAction(body)
+        if (action == null) {
+          writeJsonResponse(res, 400, { ok: false, error: 'invalid action' })
+          return
+        }
+        const { args = {}, context = {} } = body as CmdBody
+        if (
+          action === PHASE8_QA_COMMAND &&
+          deps.phase8Qa != null &&
+          !authenticatePhase8Qa(req, res, deps.phase8Qa.credential)
+        ) {
+          return
+        }
 
         // --- Dispatch ---
         const handler = resolveCmdHandler(dispatch, action)
@@ -1485,7 +1523,7 @@ export function startCommandServer(deps: CommandServerDeps): {
     try {
       fs.chmodSync(sockPath, 0o600)
     } catch (err) {
-      console.error('[commandServer] could not chmod cmd.sock to 0600:', err)
+      console.error('[commandServer] could not chmod cmd.sock to 0600:', redactErrorForLog(err))
       if (!readySettled) {
         readySettled = true
         rejectReady(new Error('Command socket permissions could not be secured.'))
@@ -1505,7 +1543,7 @@ export function startCommandServer(deps: CommandServerDeps): {
   })
 
   server.on('error', (err) => {
-    console.error('[commandServer] server error:', err)
+    console.error('[commandServer] server error:', redactErrorForLog(err))
     // Clean up the socket file so a subsequent start doesn't hit EADDRINUSE.
     try {
       fs.unlinkSync(sockPath)

@@ -1,7 +1,7 @@
 # Phase 5: Terminal Observability
 
-**Status:** implemented and deterministically tested; packaged native and live managed MCP
-validation deferred to the batched integration pass<br>
+**Status:** implemented, deterministically tested, and rebuilt live-validated
+for exact scoped pane observation<br>
 **Roadmap:** [roadmap.md](roadmap.md)<br>
 **Depends on:** [Phase 2: Self Identity + Read-only MCP](phase-02-self-identity-readonly-mcp.md)
 and the Phase 3 same-project policy contract
@@ -27,8 +27,14 @@ All five operations are version `1`, Tier 0 queries requiring
 `additionalProperties: false`. Managed MCP callers use the Phase 2 runtime
 lease and may observe only their own terminal or workspace/workbench terminals
 whose owning workspace resolves to the caller's project. Pane terminals have
-no Orpheus project identity and are therefore self-only; directory coincidence
-never grants access.
+no Orpheus project identity and are available only to the exact pane-bound
+runtime or a runtime with the exact server-issued layout and pane-surface
+scope; directory coincidence never grants access.
+
+`terminals.read` is not in the default 11-tool managed-runtime grant. It
+requires an explicit server-owned grant. The Phase 8 `Orpheus Dev` QA source
+can grant it only to the exact configured, current main-observed live runtime;
+production and invalid, pending, stale, or revoked bindings remain fail-closed.
 
 ## Explicit exclusions
 
@@ -59,8 +65,9 @@ type TerminalTarget =
 An omitted `workspace_claude.workspaceId` defaults only to the trusted runtime
 workspace. Workbench targets resolve their workspace in SQLite and must match
 the trusted project. Pane targets resolve the persisted layout/terminal and
-are authorized only when they are the trusted runtime's exact surface. Unknown
-and unauthorized targets both return non-enumerating `not_found`.
+are authorized only when they are the trusted runtime's exact surface or appear
+in its exact server-issued layout and pane-surface scope. Unknown, unmounted,
+and unauthorized targets all return non-enumerating `not_found`.
 
 `terminals.list` returns the caller's same-project Claude terminals and
 currently registered Workbench surfaces. It returns a pane only for an exact
@@ -220,7 +227,8 @@ The Phase 5 verification harness must cover:
 
 1. exact catalog ids, Tier 0 metadata, `terminals.read`, and strict schemas;
 2. trusted self defaults and same-project/non-enumerating target denial;
-3. pane self-only policy without cwd-derived authority;
+3. pane-self and exact layout/surface-grant policy without cwd-derived
+   authority;
 4. native lifecycle, runtime, readiness, activity, command/cwd, and Claude
    session provenance;
 5. explicit unavailable, unsupported, stale, and offline results;
@@ -235,9 +243,27 @@ The Phase 5 verification harness must cover:
 11. no renderer, OCR, screenshot, settings-write, terminal-input, shell
     execution, or secret-bearing imports in the observation core.
 
-Packaged native behavior and live managed MCP discovery are deferred to the
-batched integration pass. Static or deterministic verification must not be
-reported as live app validation.
+The first packaged scoped-pane run mounted and later destroyed the real native
+surface, but exposed an integration defect: `terminals.list` omitted the pane
+and `terminals.get`, `terminals.getOutputTail`, and `terminals.subscribe`
+returned non-enumerating `not_found`. The observation policy accepted
+pane-shell self identity but did not consume the runtime's exact server-issued
+layout/surface scope.
+
+The source repair now discovers only granted, currently registered panes and
+allows the four scoped observation paths for that exact layout/surface. It
+retains `not_found` for ungranted, mismatched, and unmounted panes, prioritizes
+the exact scoped pane ahead of broad project enumeration, and preserves
+discoverability at the 255/256 terminal bound. The terminal observation and
+Workbench control harnesses pass with coverage for lifecycle configuration,
+explicit unsupported output tail, subscription snapshot, de-duplication,
+boundary truncation, and denial paths.
+
+The rebuilt packaged app repeated pane start/focus, native mount,
+`terminals.list`, `terminals.get`, the explicit `unsupported` output-tail
+result, and a subscription snapshot through managed MCP. Stop destroyed the
+native surface; the subsequent list omitted it and direct get returned the
+expected non-enumerating `not_found`.
 
 ## Rollback
 

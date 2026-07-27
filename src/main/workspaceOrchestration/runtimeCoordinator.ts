@@ -10,7 +10,7 @@ type SurfacePhase = 'none' | 'hidden' | 'attached' | 'visible' | 'freeing'
 export type RuntimeCoordinatorDeps = {
   now?: () => number
   openTimeoutMs?: number
-  requestOpen: (workspaceId: string) => void
+  requestOpen: (workspace: WorkspaceSnapshot) => void
   getSurfacePhase: (workspaceId: string) => SurfacePhase
   isSessionReady: (workspaceId: string) => boolean
   canInject: (workspaceId: string) => boolean
@@ -59,7 +59,7 @@ export class WorkspaceRuntimeCoordinator implements WorkspaceRuntimePort {
     return this.serialized(workspace.workspaceId, async () => {
       const initialPhase = this.safePhase(workspace.workspaceId)
       const wasMounted = mounted(initialPhase)
-      if (!wasMounted) this.deps.requestOpen(workspace.workspaceId)
+      if (!wasMounted) this.deps.requestOpen(workspace)
       const deadlineAt = this.now() + (this.deps.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS)
       while (
         this.now() < deadlineAt &&

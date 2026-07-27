@@ -21,8 +21,11 @@ import { countManagedHooks } from '../orpheusNotify'
 import { getUserShellPath } from '../shellHelpers'
 import { openDiagConsole } from '../diagConsoleWindow'
 import { queryDiagnostics } from '../diagnostics'
+import { sanitizeDiagnosticRowsForOutput } from '../diagnosticOutputRedaction'
 import { formatTraceTree, formatEventLine } from '../../shared/diagFormat'
 import { handle } from './handle'
+import { redactErrorMessage } from '../logRedaction'
+import { writePrivateDiagnosticReportFiles } from '../diagnosticExportFiles'
 
 export interface SystemIpcDeps {
   getAppUiState: () => AppUiState
@@ -137,15 +140,15 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
       const { dir, name } = path.parse(txtPath)
       const jsonPath = path.join(dir, name + '.json')
 
-      const rows = queryDiagnostics({ sinceMs, limit: 100_000 })
+      const rows = sanitizeDiagnosticRowsForOutput(queryDiagnostics({ sinceMs, limit: 100_000 }))
       const txtContent = buildDiagReportText(rows, sinceMs)
 
-      const writeResult = writeDiagReportFiles(txtPath, jsonPath, txtContent, rows)
+      const writeResult = writePrivateDiagnosticReportFiles(txtPath, jsonPath, txtContent, rows)
       if (!writeResult.ok) return writeResult
 
       return { ok: true, path: txtPath, txtPath, jsonPath }
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      return { ok: false, error: redactErrorMessage(err) }
     }
   })
 }
@@ -196,31 +199,4 @@ function buildDiagReportText(rows: DiagRow[], sinceMs: number): string {
   }
 
   return lines.join('\n')
-}
-
-/** Write the .txt report then the .json sidecar. If the JSON write fails after the
- *  txt landed, removes the orphaned txt so a half-completed report is never left behind. */
-function writeDiagReportFiles(
-  txtPath: string,
-  jsonPath: string,
-  txtContent: string,
-  rows: DiagRow[]
-): { ok: true } | { ok: false; error: string } {
-  fs.writeFileSync(txtPath, txtContent, 'utf8')
-  try {
-    fs.writeFileSync(jsonPath, JSON.stringify(rows, null, 2), 'utf8')
-  } catch (jsonErr) {
-    try {
-      fs.unlinkSync(txtPath)
-    } catch {
-      /* best-effort cleanup */
-    }
-    return {
-      ok: false,
-      error: `Report could not be completed (JSON sidecar failed): ${
-        jsonErr instanceof Error ? jsonErr.message : String(jsonErr)
-      }`
-    }
-  }
-  return { ok: true }
 }

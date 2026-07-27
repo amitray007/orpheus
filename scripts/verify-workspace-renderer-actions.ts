@@ -26,6 +26,7 @@ import type {
   CreateWorkspaceValue,
   WorkspaceOperationReceipt
 } from '../src/main/workspaceOrchestration/types.ts'
+import { mountWorkspaceInBackground } from '../src/renderer/src/components/dashboard/backgroundWorkspaceMount.ts'
 
 const repoRoot = path.resolve(import.meta.dirname, '..')
 const readRepoFile = (relativePath: string): string =>
@@ -90,6 +91,70 @@ function receipt<T>(
     effects: [],
     auditId: 'audit-control'
   }
+}
+
+// Orchestration background mounts use main's authoritative cwd and never
+// re-enter the mutating renderer acknowledgement while the project lease is
+// held. Genuine renderer opens acknowledge first, and a failed acknowledgement
+// prevents a stale native mount after close/archive wins the race.
+{
+  const calls: string[] = []
+  const opened = workspace('renderer-opened', { cwd: '/authoritative/renderer' })
+  const ports = {
+    acknowledgeOpen: async (workspaceId: string): Promise<WorkspaceRecord> => {
+      calls.push(`ack:${workspaceId}`)
+      return opened
+    },
+    mount: async (workspaceId: string, cwd: string): Promise<void> => {
+      calls.push(`mount:${workspaceId}:${cwd}`)
+    },
+    hide: async (workspaceId: string): Promise<void> => {
+      calls.push(`hide:${workspaceId}`)
+    }
+  }
+
+  assert.equal(
+    await mountWorkspaceInBackground(
+      {
+        kind: 'orchestration-mount',
+        workspaceId: 'orchestrated',
+        focus: false,
+        cwd: '/authoritative/orchestrated'
+      },
+      ports
+    ),
+    null
+  )
+  assert.deepEqual(calls, ['mount:orchestrated:/authoritative/orchestrated', 'hide:orchestrated'])
+
+  calls.length = 0
+  assert.strictEqual(
+    await mountWorkspaceInBackground(
+      { kind: 'renderer-open', workspaceId: 'renderer-opened', focus: false },
+      ports
+    ),
+    opened
+  )
+  assert.deepEqual(calls, [
+    'ack:renderer-opened',
+    'mount:renderer-opened:/authoritative/renderer',
+    'hide:renderer-opened'
+  ])
+
+  calls.length = 0
+  await assert.rejects(() =>
+    mountWorkspaceInBackground(
+      { kind: 'renderer-open', workspaceId: 'archived-first', focus: false },
+      {
+        ...ports,
+        acknowledgeOpen: async () => {
+          calls.push('ack:archived-first')
+          throw new Error('workspace archived')
+        }
+      }
+    )
+  )
+  assert.deepEqual(calls, ['ack:archived-first'])
 }
 
 const projects = new Map([['project-1', project()]])
@@ -525,7 +590,7 @@ function createValue(record: WorkspaceRecord): CreateWorkspaceValue {
   assert.doesNotMatch(capabilitySource, /properties:\s*\{[^}]*force/)
 
   const rendererSource = readRepoFile('src/renderer/src/components/dashboard/Dashboard.tsx')
-  assert.match(rendererSource, /background mount: failed to resolve workspace cwd:[\s\S]*?return/)
+  assert.match(rendererSource, /backgroundMountWorkspace\(request\)/)
 }
 
 console.log('workspace renderer/actions harness: ok')

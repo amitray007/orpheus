@@ -596,6 +596,62 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
   await import('../src/main/db/data-steps.ts')
 
 {
+  const diagnosticsStepName = 'diagnostics-pre-redaction-purge'
+  const purgeDb = new Database(':memory:')
+  purgeDb.exec(`
+    CREATE TABLE diagnostics_events (
+      id INTEGER PRIMARY KEY,
+      message TEXT
+    )
+  `)
+  purgeDb.exec(`
+    WITH RECURSIVE legacy_rows(id) AS (
+      VALUES(1)
+      UNION ALL
+      SELECT id + 1 FROM legacy_rows WHERE id < 50001
+    )
+    INSERT INTO diagnostics_events (id, message)
+    SELECT id, 'legacy' FROM legacy_rows
+  `)
+  assert.equal(
+    (purgeDb.prepare('SELECT COUNT(*) AS count FROM diagnostics_events').get() as { count: number })
+      .count,
+    50_001,
+    'the migration fixture must exceed the former 50,000-row cap'
+  )
+  ensureLedger(purgeDb)
+  const markApplied = purgeDb.prepare(
+    'INSERT INTO applied_data_steps (name, hash, applied_at) VALUES (?, ?, ?)'
+  )
+  for (const step of dataSteps) {
+    if (step.name !== diagnosticsStepName) markApplied.run(step.name, 'test', 0)
+  }
+
+  runDataSteps(purgeDb, { preRebuild: false })
+  assert.equal(
+    (purgeDb.prepare('SELECT COUNT(*) AS count FROM diagnostics_events').get() as { count: number })
+      .count,
+    0,
+    'the one-time diagnostics remediation step must purge legacy diagnostic history'
+  )
+  assert.ok(
+    purgeDb.prepare('SELECT 1 FROM applied_data_steps WHERE name = ?').get(diagnosticsStepName),
+    'the diagnostics purge must converge into the applied-data-step ledger'
+  )
+
+  purgeDb
+    .prepare('INSERT INTO diagnostics_events (id, message) VALUES (?, ?)')
+    .run(3, 'post-remediation')
+  runDataSteps(purgeDb, { preRebuild: false })
+  assert.equal(
+    (purgeDb.prepare('SELECT COUNT(*) AS count FROM diagnostics_events').get() as { count: number })
+      .count,
+    1,
+    'a converged diagnostics purge must not rerun on later startups'
+  )
+}
+
+{
   const dsdb = new Database(':memory:')
   ensureLedger(dsdb)
   // a v45 DB already ran the v28 remap → seeded as applied, must NOT re-run

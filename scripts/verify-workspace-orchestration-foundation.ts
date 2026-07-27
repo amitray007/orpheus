@@ -385,20 +385,54 @@ assert.equal(
   false
 )
 
+// Background open, startTask, and send all request a started runtime without
+// asking the presentation port to focus it. This models the unmounted path
+// used by command-socket --background operations.
+context.requestId = 'request-background-open'
+const effectsBeforeBackgroundOpen = effectLog.length
+const openedInBackground = await registry.invoke({
+  id: 'workspaces.open',
+  input: { workspaceId: createdId, presentation: 'background' },
+  context
+})
+assert.equal(openedInBackground.ok, true)
+assert.deepEqual(effectLog.slice(effectsBeforeBackgroundOpen), [`ensureOpen:${createdId}`])
+
 context.requestId = 'request-2'
+const effectsBeforeStartTask = effectLog.length
 const started = await registry.invoke({
   id: 'workspaces.startTask',
   input: { workspaceId: createdId, text: 'top secret task text' },
   context
 })
 assert.equal(started.ok, true)
-assert.deepEqual(effectLog.slice(-2), [`ensureOpen:${createdId}`, `send:${createdId}`])
+assert.deepEqual(effectLog.slice(effectsBeforeStartTask), [
+  `ensureOpen:${createdId}`,
+  `send:${createdId}`
+])
 const startAudit = audits.find((record) => record.requestId === 'request-2')
 assert.ok(startAudit)
 assert.equal(JSON.stringify(startAudit).includes('top secret task text'), false)
 assert.equal(
   typeof (startAudit.redactedParams['text'] as Record<string, unknown>)['sha256'],
   'string'
+)
+
+context.requestId = 'request-background-send'
+const effectsBeforeSend = effectLog.length
+const sentInBackground = await registry.invoke({
+  id: 'workspaces.send',
+  input: { workspaceId: createdId, text: 'background send', submit: false },
+  context
+})
+assert.equal(sentInBackground.ok, true)
+assert.deepEqual(effectLog.slice(effectsBeforeSend), [
+  `ensureOpen:${createdId}`,
+  `send:${createdId}`
+])
+assert.equal(
+  effectLog.slice(effectsBeforeBackgroundOpen).some((effect) => effect === `focus:${createdId}`),
+  false
 )
 
 context.requestId = 'request-3'

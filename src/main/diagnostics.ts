@@ -2,6 +2,8 @@ import type Database from 'better-sqlite3'
 import { getDb } from './db'
 import type { DiagEvent, DiagRow, DiagQuery } from '../shared/types'
 import { ringLength, drainRing, getDiagDropped } from './diagCore'
+import { redactLogRecord, redactLogString } from './logRedaction'
+import { sanitizeDiagnosticRowForOutput } from './diagnosticOutputRedaction'
 
 // Re-export the full in-memory event bus API so all callers that currently
 // import from './diagnostics' continue to work without any path changes.
@@ -38,24 +40,28 @@ function flush(): void {
     const stmt = insertStmt
     const tx = db.transaction((rows: DiagEvent[]) => {
       for (const r of rows) {
-        stmt.run({
-          ts: r.ts,
-          process: r.process,
-          category: r.category,
-          level: r.level,
-          event: r.event,
-          workspaceId: r.workspaceId ?? null,
-          sessionId: r.sessionId ?? null,
-          durationMs: r.durationMs ?? null,
-          message: r.message ?? null,
-          data: r.data != null ? JSON.stringify(r.data) : null,
-          seq: seqCounter++,
-          traceId: r.traceId ?? null,
-          spanId: r.spanId ?? null,
-          parentSpanId: r.parentSpanId ?? null,
-          name: r.name ?? null,
-          kind: r.kind ?? null
-        })
+        try {
+          stmt.run({
+            ts: r.ts,
+            process: r.process,
+            category: r.category,
+            level: r.level,
+            event: redactLogString(r.event),
+            workspaceId: r.workspaceId == null ? null : redactLogString(r.workspaceId),
+            sessionId: r.sessionId == null ? null : redactLogString(r.sessionId),
+            durationMs: r.durationMs ?? null,
+            message: r.message == null ? null : redactLogString(r.message),
+            data: r.data != null ? JSON.stringify(redactLogRecord(r.data)) : null,
+            seq: seqCounter++,
+            traceId: r.traceId == null ? null : redactLogString(r.traceId),
+            spanId: r.spanId == null ? null : redactLogString(r.spanId),
+            parentSpanId: r.parentSpanId == null ? null : redactLogString(r.parentSpanId),
+            name: r.name == null ? null : redactLogString(r.name),
+            kind: r.kind ?? null
+          })
+        } catch {
+          // A malformed event must not prevent later safe rows from persisting.
+        }
       }
     })
     tx(batch)
@@ -78,8 +84,8 @@ function prune(): void {
 }
 
 export function startDiagnostics(): void {
-  prune()
   if (timer) return
+  prune()
   timer = setInterval(flush, FLUSH_INTERVAL_MS)
   if (typeof timer.unref === 'function') timer.unref()
 }
@@ -132,23 +138,11 @@ export function queryDiagnostics(q: DiagQuery): DiagRow[] {
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
       ORDER BY ts ASC, seq ASC
       LIMIT @limit`
-  params.limit = q.limit ?? 1000
+  params.limit = Math.max(1, Math.min(100_000, Math.trunc(q.limit ?? 1000)))
   const rows = db.prepare(sql).all(params) as Array<Record<string, unknown>>
-  return rows.map((r) => ({
-    ...(r as unknown as DiagRow),
-    data: r.data ? safeParse(r.data as string) : null
-  }))
-}
-
-function safeParse(s: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(s)
-    return typeof parsed === 'object' && parsed !== null
-      ? (parsed as Record<string, unknown>)
-      : null
-  } catch {
-    return null
-  }
+  return rows
+    .map((row) => sanitizeDiagnosticRowForOutput(row))
+    .filter((row): row is DiagRow => row != null)
 }
 
 export function diagDroppedCount(): number {

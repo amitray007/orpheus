@@ -332,7 +332,7 @@ provider-usage, or all-history activity operations.
 The eight delivery phases are: Control Foundation; Self Identity + Read-only
 MCP; Workspace Orchestration; Self Workbench/Panes Control; Terminal
 Observability; Settings/Resources; Durable Automations; Integrated Validation.
-There is no Phase F or later deletion/deprecation phase.
+There is no later deletion/deprecation phase.
 
 ## 9. Failure model and validation
 

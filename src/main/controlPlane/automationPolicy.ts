@@ -104,8 +104,15 @@ export type AutomationGrant = Readonly<{
   scopes: readonly AutomationScopeBinding[]
 }>
 
-export type AutomationGrantSource = (
+export type AutomationGrantRequest = Readonly<{
   automationId: string
+  scope: AutomationScopeBinding
+  description: ControlDescription
+  params: unknown
+}>
+
+export type AutomationGrantSource = (
+  request: AutomationGrantRequest
 ) => AutomationGrant | null | undefined | Promise<AutomationGrant | null | undefined>
 
 function scopeContains(
@@ -127,7 +134,12 @@ export class AutomationGrantPolicy {
     description: ControlDescription,
     input?: unknown
   ): Promise<TrustedAutomationBinding | null> {
-    const grant = await this.source?.(automationId)
+    const grant = await this.source?.({
+      automationId,
+      scope,
+      description,
+      params: input
+    })
     if (
       grant == null ||
       !grant.permissions.includes(description.permission) ||

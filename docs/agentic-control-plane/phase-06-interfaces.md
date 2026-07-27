@@ -1,6 +1,7 @@
 # Phase 6: Settings and Resources Interfaces
 
-**Status:** implemented and deterministically tested; live validation pending<br>
+**Status:** implemented and deterministically tested; core live MCP
+read/patch paths validated, restart-required live path pending<br>
 **Phase contract:** [phase-06-settings-resources.md](phase-06-settings-resources.md)
 
 ## Common constraints
@@ -10,7 +11,8 @@
 - A settings patch contains at least one allowlisted property.
 - `null` clears an override; omission leaves it unchanged.
 - Outputs contain no arbitrary record copied from a settings or resource file.
-- MCP targets default only from trusted runtime identity.
+- MCP targets default only from trusted runtime identity; automation targets
+  default only from a server-resolved exact scope.
 
 ## Catalog
 
@@ -20,7 +22,8 @@
 | `settings.patchWorkspace` | mutation | `settings.workspace.patch` | 2 | self workspace |
 | `resources.listProjectMetadata` | query | `resources.read` | 0 | same project |
 
-All descriptors are version `1` and MCP-only in Phase 6.
+All descriptors are version `1`. The two Tier 0 reads allow MCP and automation
+and declare natural idempotency; `settings.patchWorkspace` remains MCP-only.
 
 ## `settings.getEffective`
 
@@ -134,6 +137,7 @@ type ListProjectResourceMetadataOutput = {
   projectId: string
   source: 'project-files'
   observedAt: number
+  truncated: boolean
   resources: Array<
     | {
         kind: 'mcp_server'
@@ -175,8 +179,10 @@ type ListProjectResourceMetadataOutput = {
 Ordering is deterministic by kind and then the resource's stable visible
 fields. Duplicate hooks remain separate entries. Results contain at most 256
 resources; metadata arrays contain at most 64 strings; metadata strings contain
-at most 512 characters. Project-relative resource files and directories must
-not traverse a symlink, and individual source files are capped at 1 MiB.
+at most 512 characters. `truncated` is true when additional sanitized resources
+were omitted by the 256-item response cap. Project-relative resource files and
+directories must not traverse a symlink, and individual source files are capped
+at 1 MiB.
 
 ## Stable errors
 

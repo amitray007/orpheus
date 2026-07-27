@@ -178,7 +178,10 @@ new authority is introduced additively.
 | `providers.usage.refresh` | Explicitly probe provider sources and update the usage cache |
 | `ui.workbench.control` | Open/focus Workbench UI and select or create its terminal |
 | `terminals.control` | Send input or run a command in an authorized plain terminal |
+| `terminals.read` | Read bounded authoritative terminal/session observations |
+| `settings.read` | Read allowlisted effective workspace settings and provenance |
 | `settings.workspace.patch` | Change workspace-scoped Claude settings |
+| `resources.read` | Read sanitized same-project resource metadata |
 
 `workspaces.send` and `terminals.control` are deliberately separate. The former
 talks to Claude's interactive input; the latter controls a shell. Neither implies
@@ -210,6 +213,36 @@ type Grant = {
 Runtime grants expire with the runtime. Workspace grants can survive restart but
 re-bind only to a new trusted runtime. Deny wins; otherwise the most specific grant
 wins. No match uses the capability's ask/deny default. Changing grants is tier 3.
+
+### Delivered grant state
+
+The implemented managed-runtime default is deliberately smaller than the full
+permission vocabulary. It grants only `identity.read`, `projects.read`,
+`workspaces.read`, `workspaces.wait`, and `reviews.read`, which currently
+publish exactly 11 query/wait operations. Workspace mutations and every Phase
+4–6 permission require a server-owned injected grant; there is no persisted
+grant store or production grant-administration UI.
+
+The Phase 8 `Orpheus Dev` QA grant is process-local and exact-scope. Its launch
+configuration selects a candidate but does not establish identity. Main grants
+Phase 4–6 permissions only when the candidate is the same current
+main-observed Claude binding, has state `live` and a valid PID, matches the
+configured project/workspace, and resolves the configured pane terminal.
+Missing, malformed, pending, revoked, stale, replaced, or throwing state
+receives only the default grant. Production and worktree app identities cannot
+enable this source.
+
+Automation authority is separate from runtime authority. Definitions cannot
+grant themselves permissions. Main's fixed automation source permits only
+`settings.getEffective` and `resources.listProjectMetadata`, both effect-free
+Tier 0 queries with natural idempotency, against a server-resolved exact
+workspace/project scope. App scope, mutations, and every other descriptor fail
+closed.
+
+The separate Phase 8 QA command credential is fixture authentication, not a
+runtime or automation grant. It is accepted only together with the ordinary
+command-socket token and cannot supply targets, operation ids, params, grants,
+or SQL.
 
 ## Risk tiers
 

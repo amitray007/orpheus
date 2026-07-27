@@ -2388,15 +2388,13 @@ static ghostty_config_t buildGhosttyConfig(const char* resDir) {
 
     ghostty_config_finalize(cfg);
 
-    // Log any config diagnostics so theme/parse errors are visible in Console.app.
+    // Config diagnostic text can echo user-authored config values (including
+    // credentials passed to commands). Keep the failure count visible without
+    // copying untrusted config content into Console.app.
     uint32_t diagCount = ghostty_config_diagnostics_count(cfg);
     if (diagCount > 0) {
-        NSLog(@"[ghostty-surface] %u config diagnostic(s):", (unsigned)diagCount);
-        for (uint32_t i = 0; i < diagCount; i++) {
-            ghostty_diagnostic_s diag = ghostty_config_get_diagnostic(cfg, i);
-            NSLog(@"[ghostty-surface]   diag[%u]: %s", (unsigned)i,
-                  diag.message ? diag.message : "(null)");
-        }
+        NSLog(@"[ghostty-surface] %u config diagnostic(s); message text omitted",
+              (unsigned)diagCount);
     } else {
         NSLog(@"[ghostty-surface] config loaded cleanly (0 diagnostics)");
     }
@@ -3286,7 +3284,10 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         surface_cfg.env_var_count = (size_t)envVarStructs.size();
         NSLog(@"[ghostty-surface] surface env_vars count=%zu", envVarStructs.size());
         for (const auto& ev : envVarStructs) {
-            NSLog(@"[ghostty-surface]   env %s=%s", ev.key, ev.value);
+            // Environment values can contain API credentials, command-server
+            // tokens, runtime lease tokens, and user-configured secrets. Keep
+            // diagnostics useful without ever crossing that logging boundary.
+            NSLog(@"[ghostty-surface]   env key=%s", ev.key);
         }
     } else {
         surface_cfg.env_vars     = nullptr;
@@ -3306,13 +3307,13 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     @try {
         surface = ghostty_surface_new(g_app, &surface_cfg);
     } @catch (NSException* ex) {
-        NSLog(@"[ghostty-surface] ghostty_surface_new EXCEPTION: %@", ex.reason);
+        NSLog(@"[ghostty-surface] ghostty_surface_new EXCEPTION (reason omitted)");
         // Free strdup'd env var strings before returning.
         for (char* p : envVarKeys)   free(p);
         for (char* p : envVarValues) free(p);
         [termView removeFromSuperview];
-        Napi::Error::New(env, std::string("ghostty_surface_new threw: ") +
-                         [[ex reason] UTF8String]).ThrowAsJavaScriptException();
+        Napi::Error::New(env, "E_GHOSTTY_SURFACE_CREATE_EXCEPTION")
+            .ThrowAsJavaScriptException();
         return env.Undefined();
     }
 
@@ -3322,7 +3323,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
     if (!surface) {
         [termView removeFromSuperview];
-        Napi::Error::New(env, "ghostty_surface_new returned NULL").ThrowAsJavaScriptException();
+        Napi::Error::New(env, "E_GHOSTTY_SURFACE_CREATE_NULL").ThrowAsJavaScriptException();
         return env.Undefined();
     }
 

@@ -1,6 +1,9 @@
 # Phase 4: Workbench and Pane Control
 
-**Status:** implemented and deterministically tested; live-app validation pending
+**Status:** implemented and deterministically tested; core live MCP/renderer
+controls validated, negative live paths pending<br>
+**Roadmap:** [roadmap.md](roadmap.md)<br>
+**Interfaces:** [phase-04-interfaces.md](phase-04-interfaces.md)<br>
 **Depends on:** Phase 3 workspace orchestration
 
 ## Outcome
@@ -53,9 +56,25 @@ models, and environment.
 | `panes.stopTerminal` | `terminals.control` | 2 | `surface.destroy`, `process.terminate` |
 | `panes.focusTerminal` | `terminals.control` | 1 | `ui.present`, `ui.focus` |
 
-Default runtime grants do not include either new permission. Tests and future
-user policy inject them explicitly.
+Default runtime grants do not include either new permission. Deterministic
+tests inject them explicitly. The Phase 8 `Orpheus Dev` QA grant can publish
+them only to one current main-observed live runtime and exact configured pane
+scope; there is no production user-grant surface.
 
 `openDiff` v1 supports only working-tree files and Orpheus local review targets.
 PR/GitHub targets are excluded because opening them may cross account and
 network authority.
+
+## Validation record
+
+The packaged integration batch exercised the exact scoped grant through managed
+MCP and a real renderer acknowledgement. It read Workbench and pane state,
+selected Files and Git, opened a workspace file and its working-tree diff,
+selected the granted layout, and started, focused, and stopped the granted pane
+terminal. Completed mutation receipts carried correlated request/audit ids and
+applied effect receipts. No coordinates, selectors, accessibility scripting,
+or generic key simulation were used.
+
+The live batch did not force renderer loss or an unavailable/partial
+acknowledgement. Those negative paths remain covered by deterministic harnesses
+only.

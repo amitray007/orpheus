@@ -1,6 +1,7 @@
 # Phase 3: Workspace Orchestration
 
-**Status:** implemented and validated; final source-only fixes await batched live reconfirmation<br>
+**Status:** implemented; packaged background-open and terminal-color paths
+reconfirmed, with three focused final-fix paths still pending<br>
 **Roadmap:** [roadmap.md](roadmap.md)<br>
 **Interfaces:** [phase-03-interfaces.md](phase-03-interfaces.md)<br>
 **Depends on:** [Phase 2: Self Identity + Read-only MCP](phase-02-self-identity-readonly-mcp.md)
@@ -386,23 +387,40 @@ The packaged worktree app and live acceptance pass established:
 - live renderer create and fork flows;
 - cleanup of the live acceptance workspaces and fixtures.
 
-That packaged/live pass occurred before four final source-only fixes:
+That packaged/live pass occurred before five final source-only fixes:
 
 1. renderer readiness now uses an open-request queue plus acknowledgement to
    avoid the renderer-ready race;
-2. an explicit workspace name sets `nameIsAuto=false`;
-3. `ws new --no-submit` fails if staging receives a readiness warning instead
+2. orchestration background mounts now carry main's authoritative workspace
+   cwd and skip the renderer's mutating open acknowledgement while the
+   orchestration service holds the project lease, avoiding a lease re-entry
+   deadlock; ordinary renderer opens still acknowledge before mount so a
+   close/archive race can prevent a stale runtime;
+3. an explicit workspace name sets `nameIsAuto=false`;
+4. `ws new --no-submit` fails if staging receives a readiness warning instead
    of silently continuing;
-4. terminal launch preparation deletes ambient inherited `NO_COLOR` at the
+5. terminal launch preparation deletes ambient inherited `NO_COLOR` at the
    Claude, workbench, and shared pane mount boundaries while preserving an
    explicit layered Orpheus `NO_COLOR` value exactly.
 
-The readiness, naming, `--no-submit`, and `NO_COLOR` paths have deterministic
-static regressions, but no post-fix packaged build or live run is claimed.
-`NO_COLOR` was traced to the inherited Electron process environment; an empty
-override is insufficient because Claude checks key presence. The next batched
-integration pass must reconfirm all four fixes together. This validation repair
-does not expand Phase 3 into workbench/panes control or terminal observability.
+The current packaged integration batch reconfirmed the orchestration mount
+ordering: with Home visible, packaged CLI `ws open --background` against an
+unmounted Dev workspace returned `requested: true`, mounted the hidden
+workspace, and did not time out or steal the current view. The required
+`ORPHEUS_DATA_VARIANT=dev` selected the Dev command socket; a probe without it
+correctly targeted the separate production data variant.
+
+The terminal-color repair was also reconfirmed. The managed runtime observed no
+ambient `NO_COLOR` or `FORCE_COLOR`, reported `TERM=xterm-ghostty`,
+`COLORTERM=truecolor`, and 256 colors, and a visible ANSI/truecolor swatch
+rendered with color. The earlier color loss was caused by the QA launcher
+setting ambient `NO_COLOR`; an empty override is insufficient because Claude
+checks key presence.
+
+The ordinary renderer-ready close/archive race, explicit workspace naming, and
+CLI `--no-submit` paths retain deterministic regressions but were not
+individually re-exercised in the packaged batch. This validation repair does
+not expand Phase 3 into workbench/panes control or terminal observability.
 
 ## Explicit exclusions
 

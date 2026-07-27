@@ -1,6 +1,7 @@
 import type { DbLike } from '../db/types'
 import type {
   AutomationDefinition,
+  AutomationEventOccurrence,
   AutomationRun,
   AutomationRunStatus,
   AutomationStore
@@ -52,6 +53,18 @@ type RunRow = {
   audit_id: string | null
 }
 
+type EventOccurrenceRow = {
+  id: string
+  event_type: string
+  occurred_at: number
+  project_id: string | null
+  workspace_id: string | null
+  delivery_attempts: number
+  next_attempt_at: number | null
+  delivered_at: number | null
+  created_at: number
+}
+
 const DEFINITION_COLUMNS = `id, name, trigger_kind, trigger_json, operation_id,
   operation_version, params_json, scope_kind, project_id, workspace_id, enabled,
   idempotency_mode, timeout_ms, concurrency_limit, retry_max_attempts,
@@ -62,6 +75,8 @@ const RUN_COLUMNS = `id, automation_id, trigger_kind, trigger_key,
   trigger_occurred_at, idempotency_key, status, attempt, queued_at, started_at,
   finished_at, next_attempt_at, result_code, result_json, error_json, request_id,
   audit_id`
+const EVENT_OCCURRENCE_COLUMNS = `id, event_type, occurred_at, project_id,
+  workspace_id, delivery_attempts, next_attempt_at, delivered_at, created_at`
 
 const INVALID_JSON = Symbol('invalid-json')
 
@@ -159,6 +174,20 @@ function runFromRow(row: RunRow): AutomationRun {
   }
 }
 
+function eventOccurrenceFromRow(row: EventOccurrenceRow): AutomationEventOccurrence {
+  return {
+    id: row.id,
+    type: row.event_type,
+    occurredAt: row.occurred_at,
+    ...(row.project_id == null ? {} : { projectId: row.project_id }),
+    ...(row.workspace_id == null ? {} : { workspaceId: row.workspace_id }),
+    deliveryAttempts: row.delivery_attempts,
+    nextAttemptAt: row.next_attempt_at,
+    deliveredAt: row.delivered_at,
+    createdAt: row.created_at
+  }
+}
+
 function scopeColumns(scope: AutomationDefinition['scope']): [string | null, string | null] {
   if (scope.kind === 'app') return [null, null]
   if (scope.kind === 'project') return [scope.projectId, null]
@@ -172,6 +201,10 @@ export function createAutomationStore(db: DbLike): AutomationStore {
   const insertRun = db.prepare(`INSERT OR IGNORE INTO automation_runs (
     ${RUN_COLUMNS}
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  const insertEventOccurrence = db.prepare(`INSERT OR IGNORE INTO automation_event_occurrences (
+    id, event_type, occurred_at, project_id, workspace_id, delivery_attempts,
+    next_attempt_at, delivered_at, created_at
+  ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, ?)`)
 
   return {
     transaction<T>(work: () => T): T {
@@ -216,6 +249,11 @@ export function createAutomationStore(db: DbLike): AutomationStore {
         definition.createdAt,
         definition.updatedAt
       )
+    },
+    deleteDefinition(id) {
+      db.prepare('DELETE FROM automation_definitions WHERE id = ?').run(id)
+      const changed = db.prepare('SELECT changes() AS count').get() as { count: number } | undefined
+      return changed?.count === 1
     },
     getDefinition(id) {
       const row = db
@@ -353,12 +391,14 @@ export function createAutomationStore(db: DbLike): AutomationStore {
         params.push(...input.statuses)
       }
       const where = conditions.length === 0 ? '' : ` WHERE ${conditions.join(' AND ')}`
+      const order =
+        input.order === 'recent' ? 'queued_at DESC, rowid DESC' : 'queued_at ASC, rowid ASC'
       params.push(input.limit)
       return (
         db
           .prepare(
             `SELECT ${RUN_COLUMNS} FROM automation_runs${where}
-             ORDER BY queued_at ASC, id ASC LIMIT ?`
+             ORDER BY ${order} LIMIT ?`
           )
           .all(...params) as RunRow[]
       ).map(runFromRow)
@@ -485,6 +525,86 @@ export function createAutomationStore(db: DbLike): AutomationStore {
            )
          )`
       ).run(finishedBefore, retainPerAutomation)
+    },
+    insertEventOccurrence(event, createdAt) {
+      insertEventOccurrence.run(
+        event.id,
+        event.type,
+        event.occurredAt,
+        event.projectId ?? null,
+        event.workspaceId ?? null,
+        createdAt
+      )
+      const changed = db.prepare('SELECT changes() AS count').get() as { count: number } | undefined
+      return changed?.count === 1
+    },
+    getEventOccurrence(id) {
+      const row = db
+        .prepare(
+          `SELECT ${EVENT_OCCURRENCE_COLUMNS}
+           FROM automation_event_occurrences WHERE id = ?`
+        )
+        .get(id) as EventOccurrenceRow | undefined
+      return row == null ? null : eventOccurrenceFromRow(row)
+    },
+    listPendingEventOccurrences(now, limit) {
+      return (
+        db
+          .prepare(
+            `SELECT ${EVENT_OCCURRENCE_COLUMNS}
+             FROM automation_event_occurrences
+             WHERE delivered_at IS NULL
+               AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+             ORDER BY occurred_at ASC, id ASC
+             LIMIT ?`
+          )
+          .all(now, limit) as EventOccurrenceRow[]
+      ).map(eventOccurrenceFromRow)
+    },
+    markEventDelivered(id, deliveredAt) {
+      db.prepare(
+        `UPDATE automation_event_occurrences
+         SET delivered_at = ?, next_attempt_at = NULL
+         WHERE id = ? AND delivered_at IS NULL`
+      ).run(deliveredAt, id)
+      const row = db
+        .prepare('SELECT delivered_at FROM automation_event_occurrences WHERE id = ?')
+        .get(id) as { delivered_at: number | null } | undefined
+      return row?.delivered_at === deliveredAt
+    },
+    recordEventDeliveryFailure(id, attemptedAt, nextAttemptAt) {
+      db.prepare(
+        `UPDATE automation_event_occurrences
+         SET delivery_attempts = delivery_attempts + 1, next_attempt_at = ?
+         WHERE id = ? AND delivered_at IS NULL
+           AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`
+      ).run(nextAttemptAt, id, attemptedAt)
+      const row = db
+        .prepare(
+          `SELECT delivered_at, next_attempt_at
+           FROM automation_event_occurrences WHERE id = ?`
+        )
+        .get(id) as { delivered_at: number | null; next_attempt_at: number | null } | undefined
+      return row !== undefined && row.delivered_at == null && row.next_attempt_at === nextAttemptAt
+    },
+    pruneDeliveredEventOccurrences(finishedBefore, retain) {
+      db.prepare(
+        `DELETE FROM automation_event_occurrences
+         WHERE delivered_at IS NOT NULL
+           AND (
+             delivered_at < ?
+             OR id IN (
+               SELECT id FROM (
+                 SELECT id, ROW_NUMBER() OVER (
+                   ORDER BY delivered_at DESC, occurred_at DESC, id DESC
+                 ) AS retained_rank
+                 FROM automation_event_occurrences
+                 WHERE delivered_at IS NOT NULL
+               )
+               WHERE retained_rank > ?
+             )
+           )`
+      ).run(finishedBefore, retain)
     }
   }
 }

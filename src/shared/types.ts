@@ -130,6 +130,27 @@ export type WorkspaceRecord = {
   worktreeBranch: string | null
 }
 
+/**
+ * Main-to-renderer workspace mount request.
+ *
+ * Ordinary renderer-handled opens still acknowledge through workspace IPC
+ * before mounting. Orchestration already owns the project mutation lease and
+ * supplies the authoritative cwd, so its background mount must not re-enter
+ * the mutating acknowledgement while that lease is held.
+ */
+export type WorkspaceOpenRequest =
+  | Readonly<{
+      kind: 'renderer-open'
+      workspaceId: string
+      focus: boolean
+    }>
+  | Readonly<{
+      kind: 'orchestration-mount'
+      workspaceId: string
+      focus: false
+      cwd: string
+    }>
+
 /** Params for creating a worktree-backed workspace (v64). When `branch` is
  *  omitted/blank, the handler defaults it to `worktree-<slug-of-name>`. */
 export type CreateWorktreeParams = { name: string; branch?: string }

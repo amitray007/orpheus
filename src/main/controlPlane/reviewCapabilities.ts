@@ -47,15 +47,21 @@ function isReviewListInput(input: unknown, context: ControlContext): input is Re
   if (input == null || typeof input !== 'object') return false
   const record = input as Record<string, unknown>
   const workspaceId = record['workspaceId']
-  if (typeof workspaceId !== 'string') return false
-  if (context.consumer !== 'mcp') return true
-  return workspaceId.length > 0 && Object.keys(record).every((key) => key === 'workspaceId')
+  return (
+    typeof workspaceId === 'string' &&
+    (context.consumer !== 'mcp' || workspaceId.length > 0) &&
+    Object.keys(record).every((key) => key === 'workspaceId')
+  )
 }
 
 function isReviewSetResolvedInput(input: unknown): input is ReviewSetResolvedInput {
   if (input == null || typeof input !== 'object') return false
   const record = input as Record<string, unknown>
-  return typeof record['id'] === 'string' && typeof record['resolved'] === 'boolean'
+  return (
+    typeof record['id'] === 'string' &&
+    typeof record['resolved'] === 'boolean' &&
+    Object.keys(record).every((key) => key === 'id' || key === 'resolved')
+  )
 }
 
 export function createReviewCapabilities(
@@ -95,6 +101,7 @@ export function createReviewCapabilities(
       description: 'Set the resolved state of a local review comment.',
       inputSchema: {
         type: 'object',
+        additionalProperties: false,
         required: ['id', 'resolved'],
         properties: {
           id: { type: 'string' },

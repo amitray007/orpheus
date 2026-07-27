@@ -14,6 +14,7 @@ import type { WorkspaceOrchestrationService } from '../src/main/workspaceOrchest
 import { WorkspaceRuntimeCoordinator } from '../src/main/workspaceOrchestration/runtimeCoordinator.ts'
 import { WorkspaceOpenRequestQueue } from '../src/main/workspaceOrchestration/openRequestQueue.ts'
 import { WaitLifecycleGeneration } from '../src/main/workspaceOrchestration/waitState.ts'
+import type { WorkspaceOpenRequest } from '../src/shared/types.ts'
 
 const ALL_RUNTIME_PERMISSIONS = [
   'identity.read',
@@ -249,12 +250,14 @@ for (const description of registry
 
 const phase = { value: 'none' as 'none' | 'attached' }
 let openRequests = 0
+let requestedWorkspaceCwd: string | null = null
 let sentText = ''
 let submitCount = 0
 let destroyCount = 0
 const runtime = new WorkspaceRuntimeCoordinator({
-  requestOpen: () => {
+  requestOpen: (workspace) => {
     openRequests++
+    requestedWorkspaceCwd = workspace.cwd
     phase.value = 'attached'
   },
   getSurfacePhase: () => phase.value,
@@ -292,6 +295,7 @@ const snapshot = {
 const started = await runtime.ensureOpen(snapshot)
 assert.equal(started.runtimeState, 'started')
 assert.equal(openRequests, 1)
+assert.equal(requestedWorkspaceCwd, '/project')
 assert.equal(await runtime.waitUntilReady(snapshot.workspaceId, Date.now() + 10), true)
 await runtime.sendText(snapshot.workspaceId, 'ship it', true)
 assert.equal(sentText, 'ship it')
@@ -301,23 +305,58 @@ await runtime.teardown(snapshot.workspaceId)
 assert.equal(destroyCount, 1)
 
 const openQueue = new WorkspaceOpenRequestQueue()
-const deliveredOpenRequests: Array<{ workspaceId: string; focus: boolean }> = []
+const deliveredOpenRequests: WorkspaceOpenRequest[] = []
 let rendererReady = false
-const deliverOpenRequest = (request: { workspaceId: string; focus: boolean }): boolean => {
+const deliverOpenRequest = (request: WorkspaceOpenRequest): boolean => {
   if (!rendererReady) return false
   deliveredOpenRequests.push(request)
   return true
 }
-openQueue.request('cold-workspace', false, deliverOpenRequest)
-openQueue.request('cold-workspace', true, deliverOpenRequest)
-openQueue.request('cancelled-workspace', false, deliverOpenRequest)
+openQueue.request(
+  {
+    kind: 'orchestration-mount',
+    workspaceId: 'cold-workspace',
+    focus: false,
+    cwd: '/project/cold'
+  },
+  deliverOpenRequest
+)
+openQueue.request(
+  { kind: 'renderer-open', workspaceId: 'cold-workspace', focus: true },
+  deliverOpenRequest
+)
+openQueue.request(
+  { kind: 'renderer-open', workspaceId: 'cancelled-workspace', focus: false },
+  deliverOpenRequest
+)
+openQueue.request(
+  { kind: 'renderer-open', workspaceId: 'sticky-workspace', focus: false },
+  deliverOpenRequest
+)
+openQueue.request(
+  {
+    kind: 'orchestration-mount',
+    workspaceId: 'sticky-workspace',
+    focus: false,
+    cwd: '/project/sticky'
+  },
+  deliverOpenRequest
+)
 assert.equal(openQueue.cancel('cancelled-workspace'), true)
 assert.equal(openQueue.cancel('cancelled-workspace'), false)
-assert.equal(openQueue.size, 1)
+assert.equal(openQueue.size, 2)
 assert.deepEqual(deliveredOpenRequests, [])
 rendererReady = true
-assert.equal(openQueue.flush(deliverOpenRequest), 1)
-assert.deepEqual(deliveredOpenRequests, [{ workspaceId: 'cold-workspace', focus: true }])
+assert.equal(openQueue.flush(deliverOpenRequest), 2)
+assert.deepEqual(deliveredOpenRequests, [
+  { kind: 'renderer-open', workspaceId: 'cold-workspace', focus: true },
+  {
+    kind: 'orchestration-mount',
+    workspaceId: 'sticky-workspace',
+    focus: false,
+    cwd: '/project/sticky'
+  }
+])
 assert.equal(openQueue.flush(deliverOpenRequest), 0)
 
 const closedGeneration = new WaitLifecycleGeneration()
@@ -358,5 +397,13 @@ const mainAdapterSource = fs.readFileSync(
 )
 assert.match(mainAdapterSource, /lastTerminalTitles\.set\(workspaceId, getTitle\(workspaceId\)/)
 assert.match(mainAdapterSource, /closeWorkspace\(workspaceId, takeLastTitle\(workspaceId\)\)/)
+assert.match(
+  mainAdapterSource,
+  /requestOpen: \(workspace\) =>[\s\S]*?requestOrchestrationMount\(workspace\.workspaceId, workspace\.cwd\)/
+)
+assert.doesNotMatch(
+  mainAdapterSource,
+  /requestOpen: \(workspaceId\) => deps\.requestOpenWorkspace\(workspaceId, false\)/
+)
 
 console.log('Workspace orchestration main integration verification passed.')

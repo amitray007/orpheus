@@ -1,5 +1,9 @@
 # Phase 4: Workbench and Pane Interfaces
 
+**Status:** implemented and deterministically tested; core live MCP/renderer
+controls validated, negative live paths pending<br>
+**Phase contract:** [phase-04-workbench-pane-control.md](phase-04-workbench-pane-control.md)
+
 All descriptors are version 1, use `additionalProperties: false`, and are
 published only to renderer IPC and managed MCP.
 

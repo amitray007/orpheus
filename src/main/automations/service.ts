@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type { AutomationGrantPolicy } from '../controlPlane/automationPolicy'
-import type { ControlDescription, TrustedAutomationBinding } from '../controlPlane/types'
+import type {
+  ControlContext,
+  ControlDescription,
+  TrustedAutomationBinding
+} from '../controlPlane/types'
 import {
   AUTOMATION_LIMITS,
   type AutomationAuditPort,
@@ -19,6 +23,26 @@ import {
   validateAutomationDraft,
   validateAutomationScope
 } from './validation'
+
+function validationContext(
+  automationId: string,
+  scope: AutomationScope,
+  now: number,
+  timeoutMs: number
+): ControlContext {
+  const controller = new AbortController()
+  return {
+    principal: { type: 'automation', id: automationId },
+    consumer: 'automation',
+    workspaceId: scope.kind === 'workspace' ? scope.workspaceId : null,
+    projectId: scope.kind === 'app' ? null : scope.projectId,
+    requestId: `definition:${automationId}`,
+    automationRunId: 'definition-validation',
+    idempotencyKey: 'definition-validation',
+    deadlineAt: now + timeoutMs,
+    signal: controller.signal
+  }
+}
 
 export class AutomationDefinitionError extends Error {
   constructor(
@@ -118,30 +142,18 @@ export class AutomationService {
     if (descriptorError != null || description == null) {
       throw new AutomationDefinitionError('invalid', descriptorError ?? 'Operation was not found.')
     }
+    const context = validationContext(id, draft.scope, now, draft.timeoutMs)
+    if (!this.ports.registry.validateInput(draft.operationId, draft.params, context)) {
+      throw new AutomationDefinitionError(
+        'invalid',
+        'Automation params do not match the operation schema.'
+      )
+    }
     const binding = await this.ports.grants.resolve(id, draft.scope, description, draft.params)
     if (binding == null) {
       throw new AutomationDefinitionError(
         'forbidden',
         'No server-owned grant allows this operation and scope.'
-      )
-    }
-    const controller = new AbortController()
-    const context = {
-      principal: { type: 'automation' as const, id },
-      consumer: 'automation' as const,
-      workspaceId: draft.scope.kind === 'workspace' ? draft.scope.workspaceId : null,
-      projectId: draft.scope.kind === 'app' ? null : draft.scope.projectId,
-      requestId: `definition:${id}`,
-      trustedAutomation: binding,
-      automationRunId: 'definition-validation',
-      idempotencyKey: 'definition-validation',
-      deadlineAt: now + draft.timeoutMs,
-      signal: controller.signal
-    }
-    if (!this.ports.registry.validateInput(draft.operationId, draft.params, context)) {
-      throw new AutomationDefinitionError(
-        'invalid',
-        'Automation params do not match the operation schema.'
       )
     }
     return {
@@ -177,7 +189,51 @@ export class AutomationService {
     if (automationId != null && this.ports.store.getDefinition(automationId) == null) {
       throw new AutomationDefinitionError('not_found', 'Automation definition was not found.')
     }
-    return this.ports.store.listRuns({ automationId, limit })
+    return this.ports.store.listRuns({ automationId, order: 'recent', limit })
+  }
+
+  deleteDefinition(id: string, management: AutomationManagementContext): AutomationDefinition {
+    this.validateManagementContext(management)
+    let current: AutomationDefinition | null = null
+    try {
+      current = this.getDefinition(id)
+      const now = this.now()
+      this.ports.store.transaction(() => {
+        if (!this.ports.store.deleteDefinition(id)) {
+          throw new AutomationDefinitionError(
+            'conflict',
+            'Automation definition changed concurrently.'
+          )
+        }
+        this.ports.audit.appendManagement({
+          auditId: this.generateId(),
+          requestId: management.requestId,
+          occurredAt: now,
+          action: 'automations.deleteDefinition',
+          definitionId: id,
+          principal: management.principal,
+          consumer: management.consumer,
+          scope: current?.scope ?? null,
+          decision: 'allow',
+          resultCode: 'completed',
+          params: {},
+          receipts: [{ effect: 'db.write', status: 'applied', resourceId: id }],
+          correlation: { deleted: true }
+        })
+      })
+      return current
+    } catch (error) {
+      this.auditManagementFailure({
+        action: 'automations.deleteDefinition',
+        definitionId: id,
+        management,
+        scope: current?.scope ?? null,
+        params: {},
+        error,
+        effectStatus: current == null ? 'skipped' : 'failed'
+      })
+      throw this.normalizeError(error)
+    }
   }
 
   async setEnabled(
@@ -282,7 +338,10 @@ export class AutomationService {
   }
 
   private auditManagementFailure(input: {
-    action: 'automations.createDefinition' | 'automations.setEnabled'
+    action:
+      | 'automations.createDefinition'
+      | 'automations.setEnabled'
+      | 'automations.deleteDefinition'
     definitionId: string
     management: AutomationManagementContext
     scope: AutomationScope | null
@@ -327,7 +386,7 @@ export class AutomationService {
       : new AutomationDefinitionError('failed', 'Automation management operation failed.')
   }
 
-  matchingEventDefinitions(event: AutomationEvent): AutomationDefinition[] {
+  validateEvent(event: AutomationEvent): void {
     if (
       event.id.length < 1 ||
       event.id.length > 128 ||
@@ -351,6 +410,10 @@ export class AutomationService {
     ) {
       throw new AutomationDefinitionError('invalid', 'Automation event is invalid.')
     }
+  }
+
+  matchingEventDefinitions(event: AutomationEvent): AutomationDefinition[] {
+    this.validateEvent(event)
     const matching = this.ports.store
       .listDefinitions(true)
       .filter(
@@ -386,6 +449,18 @@ export class AutomationService {
     ) {
       throw new AutomationDefinitionError('invalid', descriptorError ?? 'Operation was not found.')
     }
+    const context = validationContext(
+      definition.id,
+      definition.scope,
+      this.now(),
+      definition.timeoutMs
+    )
+    if (!this.ports.registry.validateInput(definition.operationId, definition.params, context)) {
+      throw new AutomationDefinitionError(
+        'invalid',
+        'Persisted automation params no longer match the operation schema.'
+      )
+    }
     const binding = await this.ports.grants.resolve(
       definition.id,
       definition.scope,
@@ -396,25 +471,6 @@ export class AutomationService {
       throw new AutomationDefinitionError(
         'forbidden',
         'The server-owned automation grant is absent or insufficient.'
-      )
-    }
-    const controller = new AbortController()
-    const context = {
-      principal: { type: 'automation' as const, id: definition.id },
-      consumer: 'automation' as const,
-      workspaceId: definition.scope.kind === 'workspace' ? definition.scope.workspaceId : null,
-      projectId: definition.scope.kind === 'app' ? null : definition.scope.projectId,
-      requestId: `definition:${definition.id}`,
-      trustedAutomation: binding,
-      automationRunId: 'definition-validation',
-      idempotencyKey: 'definition-validation',
-      deadlineAt: this.now() + definition.timeoutMs,
-      signal: controller.signal
-    }
-    if (!this.ports.registry.validateInput(definition.operationId, definition.params, context)) {
-      throw new AutomationDefinitionError(
-        'invalid',
-        'Persisted automation params no longer match the operation schema.'
       )
     }
     return { binding, description }

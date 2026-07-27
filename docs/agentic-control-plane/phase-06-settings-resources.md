@@ -1,6 +1,7 @@
 # Phase 6: Settings and Resources
 
-**Status:** implemented and deterministically tested; live validation pending<br>
+**Status:** implemented and deterministically tested; core live MCP
+read/patch paths validated, restart-required live path pending<br>
 **Roadmap:** [roadmap.md](roadmap.md)<br>
 **Interfaces:** [phase-06-interfaces.md](phase-06-interfaces.md)<br>
 **Depends on:** [Phase 3: Workspace Orchestration](phase-03-workspace-orchestration.md)
@@ -73,12 +74,15 @@ objects. The domain readers resolve one explicit project and do not enumerate
 or read every registered project's resource files. Project-relative resource
 paths reject symlinked files/directories, each source file is capped at 1 MiB,
 the response is capped at 256 resources, metadata arrays at 64 items, and
-published strings at 512 characters. Unsafe, oversized, or unreadable
+published strings at 512 characters. The response reports `truncated: true`
+when sanitized resources exceed that cap. Unsafe, oversized, or unreadable
 authoritative sources produce a stable `unavailable` result.
 
 ## Identity and policy
 
-All three operations require a valid Phase 2 runtime lease.
+MCP access to all three operations requires a valid Phase 2 runtime lease.
+The two Tier 0 reads additionally accept a server-resolved automation binding;
+the workspace patch remains MCP-only.
 
 - Reads may target the bound workspace/project or an explicitly named
   same-project workspace/project.
@@ -90,6 +94,9 @@ All three operations require a valid Phase 2 runtime lease.
   MCP identity or authority.
 - Default managed runtime grants do not include any Phase 6 permission.
   Publication requires an injected exact grant.
+- Main's automation policy grants only the two effect-free reads, at Tier 0,
+  for the exact existing workspace/project scope. It never grants app scope or
+  `settings.patchWorkspace`.
 
 The permission vocabulary is:
 
@@ -176,8 +183,15 @@ Deterministic verification must cover:
 - absence of every excluded field from schemas and results;
 - recursive audit redaction and secret-pattern filtering;
 - stable redacted errors and Phase 2/3 registry regressions.
+- automation discovery/idempotency pairing, exact-scope default grants,
+  cross-project denial, and workspace-patch exclusion.
 
-The batched live acceptance pass must separately verify managed MCP discovery,
-an effective read, one self workspace patch followed by a restart-to-apply
-indicator, and project resource metadata. This phase's implementation task does
-not run `build:unpack` or claim live app validation.
+The packaged integration batch verified exact scoped managed-MCP discovery,
+`settings.getEffective`, sanitized `resources.listProjectMetadata`, and a
+self-workspace effort patch with correlated request/audit ids and effects. The
+test then restored the original workspace effort override to `high` and
+confirmed both the override and effective value were `high`.
+
+That restored result reported `restartRequired: false`, so the live batch did
+not exercise a native restart-to-apply transition. That focused path remains
+deterministic-only and must not be inferred from the successful patch/restore.

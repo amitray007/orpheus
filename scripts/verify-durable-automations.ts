@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { Database } from 'bun:sqlite'
 import { AutomationGrantPolicy } from '../src/main/controlPlane/automationPolicy.ts'
+import type { AutomationGrantRequest } from '../src/main/controlPlane/automationPolicy.ts'
+import { createSafeAutomationGrantSource } from '../src/main/controlPlane/safeAutomationGrants.ts'
 import { withAutomationPolicy } from '../src/main/controlPlane/automationPolicy.ts'
 import { ControlRegistry } from '../src/main/controlPlane/registry.ts'
 import type {
@@ -8,7 +10,18 @@ import type {
   ControlDescriptor,
   ControlPermission
 } from '../src/main/controlPlane/types.ts'
+import {
+  RESOURCES_LIST_PROJECT_METADATA_ID,
+  SETTINGS_GET_EFFECTIVE_ID
+} from '../src/main/controlPlane/settingsResourceService.ts'
 import { createAutomationAuditStore } from '../src/main/automations/audit.ts'
+import {
+  capturePhase8QaConfig,
+  createPhase8QaController,
+  parsePhase8QaArgs,
+  phase8QaCredentialMatches, // gitleaks:allow -- symbol name, not a credential
+  phase8QaGateEnabled
+} from '../src/main/automations/phase8Qa.ts'
 import { AutomationScheduler } from '../src/main/automations/scheduler.ts'
 import { AutomationService } from '../src/main/automations/service.ts'
 import { createAutomationStore } from '../src/main/automations/store.ts'
@@ -18,9 +31,15 @@ import type {
   AutomationDefinition,
   AutomationDefinitionDraft,
   AutomationManagementContext,
-  AutomationRun
+  AutomationRun,
+  AutomationStore
 } from '../src/main/automations/types.ts'
+import {
+  wireWorkspaceAutomationEvents,
+  WORKSPACE_COMPLETED_EVENT
+} from '../src/main/automations/workspaceEvents.ts'
 import { runMigrations } from '../src/main/db/cutover.ts'
+import type { WorkspaceRecord, WorkspaceStatus } from '../src/shared/types.ts'
 
 const db = new Database(':memory:')
 db.exec('PRAGMA foreign_keys = ON')
@@ -140,11 +159,15 @@ const noneDescriptor: ControlDescriptor<{ text: string }, { ok: true }> = {
 registry.register(noneDescriptor)
 
 const permissions: ControlPermission[] = ['reviews.resolve']
-const grants = new AutomationGrantPolicy(() => ({
-  permissions,
-  maxRiskTier: 2,
-  scopes: [{ kind: 'project', projectId: 'project-1' }]
-}))
+const grantRequests: AutomationGrantRequest[] = []
+const grants = new AutomationGrantPolicy((request) => {
+  grantRequests.push(request)
+  return {
+    permissions,
+    maxRiskTier: 2,
+    scopes: [{ kind: 'project', projectId: 'project-1' }]
+  }
+})
 const auditStore = createAutomationAuditStore(db)
 let managementRequest = 0
 const managementContext = (): AutomationManagementContext =>
@@ -170,6 +193,30 @@ const scheduler = new AutomationScheduler({
   clock,
   generateId
 })
+
+// A failed recover/tick must not strand the scheduler in a false "started"
+// state. The same instance can be started again after the transient failure.
+let retryableStartRecoveries = 0
+const retryableStartStore: AutomationStore = {
+  ...store,
+  markRunningInterrupted(recoveryNow) {
+    retryableStartRecoveries++
+    if (retryableStartRecoveries === 1) throw new Error('injected startup recovery failure')
+    return store.markRunningInterrupted(recoveryNow)
+  }
+}
+const retryableStartScheduler = new AutomationScheduler({
+  store: retryableStartStore,
+  service,
+  registry,
+  audit: auditStore,
+  clock,
+  generateId
+})
+await assert.rejects(() => retryableStartScheduler.start(), /startup recovery failure/)
+await retryableStartScheduler.start()
+retryableStartScheduler.stop()
+assert.ok(retryableStartRecoveries >= 2)
 
 function draft(overrides: Partial<AutomationDefinitionDraft> = {}): AutomationDefinitionDraft {
   return {
@@ -205,17 +252,20 @@ function persistedRun(automationId: string, index = 0): AutomationRun {
   return run
 }
 
-// Declarative migration created both durable tables and their critical indexes.
+// Declarative migration created the durable definitions, runs, and event
+// outbox tables plus their critical indexes.
 {
   const tables = db
     .prepare(
       `SELECT name FROM sqlite_master WHERE type = 'table'
-       AND name IN ('automation_definitions', 'automation_runs') ORDER BY name`
+       AND name IN (
+         'automation_definitions', 'automation_event_occurrences', 'automation_runs'
+       ) ORDER BY name`
     )
     .all() as Array<{ name: string }>
   assert.deepEqual(
     tables.map(({ name }) => name),
-    ['automation_definitions', 'automation_runs']
+    ['automation_definitions', 'automation_event_occurrences', 'automation_runs']
   )
   const indexes = db
     .prepare(
@@ -224,6 +274,7 @@ function persistedRun(automationId: string, index = 0): AutomationRun {
     )
     .all() as Array<{ name: string }>
   assert.ok(indexes.some(({ name }) => name === 'idx_automation_runs_idempotency'))
+  assert.ok(indexes.some(({ name }) => name === 'idx_automation_event_occurrences_pending'))
 }
 
 // Strict definition validation rejects unknown events, extra operation params,
@@ -232,7 +283,13 @@ await assert.rejects(
   () => create({ trigger: { kind: 'event', eventType: 'external.webhook' } }),
   /not allowlisted/
 )
+const grantsBeforeInvalidParams = grantRequests.length
 await assert.rejects(() => create({ params: { text: 'ok', shell: 'no' } }), /operation schema/)
+assert.equal(
+  grantRequests.length,
+  grantsBeforeInvalidParams,
+  'grant source must receive only schema-validated params'
+)
 await assert.rejects(
   () => create({ params: { text: 'ok', authToken: 'must-not-persist' } }),
   /secret-bearing/
@@ -326,6 +383,35 @@ assert.equal(firstContext?.trustedAutomation?.automationId, scheduled.id)
 assert.equal(firstContext?.automationRunId, persistedRun(scheduled.id).id)
 assert.equal(firstContext?.idempotencyKey, persistedRun(scheduled.id).idempotencyKey)
 
+// A failed INSERT is only a dedupe win when the stable-key lookup finds the
+// persisted winner. Never return or advance a schedule with a fabricated run.
+const lostInsertDefinition = await create({
+  trigger: { kind: 'schedule', intervalMs: 1_000, startAt: now }
+})
+const lostInsertStore: AutomationStore = {
+  ...store,
+  insertRun(run) {
+    return run.automationId === lostInsertDefinition.id ? false : store.insertRun(run)
+  },
+  getRunByIdempotencyKey(automationId, idempotencyKey) {
+    return automationId === lostInsertDefinition.id
+      ? null
+      : store.getRunByIdempotencyKey(automationId, idempotencyKey)
+  }
+}
+const lostInsertScheduler = new AutomationScheduler({
+  store: lostInsertStore,
+  service,
+  registry,
+  audit: auditStore,
+  clock,
+  generateId
+})
+await assert.rejects(() => lostInsertScheduler.tick(), /not persisted and no idempotent winner/)
+assert.equal(store.listRuns({ automationId: lostInsertDefinition.id, limit: 100 }).length, 0)
+assert.equal(store.getDefinition(lostInsertDefinition.id)?.nextRunAt, now)
+await scheduler.setEnabled(lostInsertDefinition.id, false, managementContext())
+
 // Event scope filtering and stable-key dedupe: cross-project events do not run,
 // and replaying the same server event id produces one logical run.
 const eventDefinition = await create()
@@ -346,6 +432,81 @@ await scheduler.emitEvent(event)
 await scheduler.emitEvent(event)
 assert.equal(store.listRuns({ automationId: eventDefinition.id, limit: 100 }).length, 1)
 await scheduler.setEnabled(eventDefinition.id, false, managementContext())
+
+// The event occurrence is a real outbox: a source transaction rollback removes
+// it, a delivery failure leaves it pending with bounded backoff, and a fresh
+// scheduler replays it exactly once before invoking the handler.
+const rolledBackEvent = {
+  id: 'event-source-rollback',
+  type: 'workspace.completed',
+  occurredAt: now,
+  projectId: 'project-1'
+}
+assert.throws(
+  () =>
+    store.transaction(() => {
+      scheduler.persistEvent(rolledBackEvent)
+      throw new Error('source write failed')
+    }),
+  /source write failed/
+)
+assert.equal(store.getEventOccurrence(rolledBackEvent.id), null)
+
+const replayDefinition = await create()
+const replayEvent = {
+  id: 'event-crash-replay',
+  type: 'workspace.completed',
+  occurredAt: now,
+  projectId: 'project-1'
+}
+scheduler.persistEvent(replayEvent)
+let rejectFirstOutboxInsert = true
+const failOnceStore: AutomationStore = {
+  ...store,
+  insertRun(run) {
+    if (rejectFirstOutboxInsert) {
+      rejectFirstOutboxInsert = false
+      throw new Error('injected run materialization failure')
+    }
+    return store.insertRun(run)
+  }
+}
+const failingDispatcher = new AutomationScheduler({
+  store: failOnceStore,
+  service,
+  registry,
+  audit: auditStore,
+  clock,
+  generateId
+})
+await failingDispatcher.drainEvents()
+const deferredOccurrence = store.getEventOccurrence(replayEvent.id)
+assert.equal(deferredOccurrence?.deliveredAt, null)
+assert.equal(deferredOccurrence?.deliveryAttempts, 1)
+assert.equal(store.listRuns({ automationId: replayDefinition.id, limit: 100 }).length, 0)
+now = deferredOccurrence?.nextAttemptAt ?? now
+const restartedScheduler = new AutomationScheduler({
+  store,
+  service,
+  registry,
+  audit: auditStore,
+  clock,
+  generateId
+})
+await restartedScheduler.start()
+restartedScheduler.stop()
+assert.ok(store.getEventOccurrence(replayEvent.id)?.deliveredAt != null)
+assert.equal(store.listRuns({ automationId: replayDefinition.id, limit: 100 }).length, 1)
+assert.equal(persistedRun(replayDefinition.id).status, 'succeeded')
+await scheduler.setEnabled(replayDefinition.id, false, managementContext())
+store.pruneDeliveredEventOccurrences(-1, 2)
+const retainedDeliveredEvents = db
+  .prepare(
+    `SELECT COUNT(*) AS count FROM automation_event_occurrences
+     WHERE delivered_at IS NOT NULL`
+  )
+  .get() as { count: number }
+assert.ok(retainedDeliveredEvents.count <= 2)
 
 // Timeout retry retains one logical run and one idempotency key. The second
 // attempt succeeds after deterministic exponential backoff.
@@ -708,6 +869,302 @@ await assert.rejects(
 )
 assert.equal(store.getDefinition(rollbackEnableDefinition.id)?.enabled, false)
 rejectManagementAudit = false
+
+// The Phase 8 seam exposes only the two fixed Tier-0 Phase 6 reads, and the
+// authenticated Dev fixture can create/manage only its bounded definitions.
+const fixedReadDescriptor = (
+  id: typeof SETTINGS_GET_EFFECTIVE_ID | typeof RESOURCES_LIST_PROJECT_METADATA_ID
+): ControlDescriptor<Record<string, string>, Record<string, unknown>> => ({
+  id,
+  version: 1,
+  kind: 'query',
+  description: 'Fixed Phase 8 read.',
+  inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  outputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  allowedSurfaces: ['mcp', 'automation'],
+  permission: id === SETTINGS_GET_EFFECTIVE_ID ? 'settings.read' : 'resources.read',
+  scope:
+    id === SETTINGS_GET_EFFECTIVE_ID
+      ? { kind: 'workspace', inputField: 'workspaceId' }
+      : { kind: 'project', inputField: 'projectId' },
+  risk: { tier: 0, label: 'read' },
+  declaredEffects: [],
+  idempotency: 'natural',
+  validateInput: (input): input is Record<string, string> => {
+    if (input == null || typeof input !== 'object' || Array.isArray(input)) return false
+    const record = input as Record<string, unknown>
+    const field = id === SETTINGS_GET_EFFECTIVE_ID ? 'workspaceId' : 'projectId'
+    return (
+      Object.keys(record).length === 1 && typeof record[field] === 'string' && record[field] !== ''
+    )
+  },
+  handler: (_input, context) => ({
+    operationId: id,
+    requestId: context.requestId
+  })
+})
+registry.register(fixedReadDescriptor(SETTINGS_GET_EFFECTIVE_ID))
+registry.register(fixedReadDescriptor(RESOURCES_LIST_PROJECT_METADATA_ID))
+const qaWorkspace = {
+  id: 'workspace-1',
+  projectId: 'project-1',
+  name: 'QA',
+  cwd: '/qa'
+} as WorkspaceRecord
+const otherQaWorkspace = {
+  ...qaWorkspace,
+  id: 'workspace-2',
+  name: 'Other QA'
+} as WorkspaceRecord
+const qaGrants = new AutomationGrantPolicy(
+  createSafeAutomationGrantSource({
+    getProject: (projectId) => (projectId === qaWorkspace.projectId ? { id: projectId } : null),
+    getWorkspace: (workspaceId) =>
+      [qaWorkspace, otherQaWorkspace].find(({ id }) => id === workspaceId) ?? null
+  })
+)
+const qaService = new AutomationService({
+  store,
+  registry,
+  grants: qaGrants,
+  audit: auditStore,
+  allowedEventTypes: new Set([WORKSPACE_COMPLETED_EVENT]),
+  now: () => now,
+  generateId
+})
+const qaScheduler = new AutomationScheduler({
+  store,
+  service: qaService,
+  registry,
+  audit: auditStore,
+  clock,
+  generateId
+})
+const qaCredential = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijk'
+const qaEnv: Record<string, string | undefined> = {
+  ORPHEUS_PHASE8_QA: '1',
+  ORPHEUS_PHASE8_QA_WORKSPACE_ID: qaWorkspace.id,
+  ORPHEUS_PHASE8_QA_TOKEN: qaCredential
+}
+const qaConfig = capturePhase8QaConfig(qaEnv, 'Orpheus Dev')
+assert.ok(qaConfig)
+assert.deepEqual(qaEnv, {})
+assert.equal(qaConfig.workspaceId, qaWorkspace.id)
+assert.match(qaConfig.principalId, /^phase8-qa:[a-f0-9]{16}$/)
+assert.doesNotMatch(qaConfig.principalId, new RegExp(qaCredential))
+assert.equal(phase8QaCredentialMatches(qaCredential, qaCredential), true)
+assert.equal(phase8QaCredentialMatches('wrong', qaCredential), false)
+assert.equal(phase8QaCredentialMatches(undefined, qaCredential), false)
+const weakQaEnv: Record<string, string | undefined> = {
+  ORPHEUS_PHASE8_QA: '1',
+  ORPHEUS_PHASE8_QA_WORKSPACE_ID: qaWorkspace.id,
+  ORPHEUS_PHASE8_QA_TOKEN: 'too-short'
+}
+assert.equal(capturePhase8QaConfig(weakQaEnv, 'Orpheus Dev'), null)
+assert.deepEqual(weakQaEnv, {})
+
+const qa = createPhase8QaController({
+  service: qaService,
+  scheduler: qaScheduler,
+  getWorkspace: (workspaceId) =>
+    [qaWorkspace, otherQaWorkspace].find(({ id }) => id === workspaceId) ?? null,
+  targetWorkspaceId: qaConfig.workspaceId,
+  principalId: qaConfig.principalId,
+  generateId
+})
+assert.equal(phase8QaGateEnabled('1', 'Orpheus Dev'), true)
+assert.equal(phase8QaGateEnabled('1', 'Orpheus'), false)
+assert.equal(phase8QaGateEnabled(undefined, 'Orpheus Dev'), false)
+assert.equal(
+  parsePhase8QaArgs({
+    fixtureAction: 'createSchedule',
+    workspaceId: qaWorkspace.id
+  }),
+  null
+)
+assert.equal(parsePhase8QaArgs({ fixtureAction: 'enable', definitionId: 'qa', params: {} }), null)
+
+const [qaSchedule, reusedQaSchedule] = await Promise.all([
+  qa.execute({ fixtureAction: 'createSchedule' }),
+  qa.execute({ fixtureAction: 'createSchedule' })
+])
+assert.ok(qaSchedule.definition)
+const qaScheduleId = qaSchedule.definition.id
+assert.equal(qaSchedule.definition.workspaceId, qaWorkspace.id)
+assert.equal(qaSchedule.definition.operationId, SETTINGS_GET_EFFECTIVE_ID)
+assert.equal(qaSchedule.definition.enabled, false)
+assert.equal(reusedQaSchedule.definition?.id, qaScheduleId)
+assert.equal(reusedQaSchedule.reused, true)
+assert.equal(
+  qaService
+    .listDefinitions()
+    .filter(
+      (definition) =>
+        definition.operationId === SETTINGS_GET_EFFECTIVE_ID &&
+        definition.scope.kind === 'workspace' &&
+        definition.scope.workspaceId === qaWorkspace.id
+    ).length,
+  1
+)
+const enabledQaSchedule = await qa.execute({
+  fixtureAction: 'enable',
+  definitionId: qaScheduleId
+})
+assert.equal(enabledQaSchedule.definition?.enabled, true)
+now += 1_001
+await qaScheduler.tick()
+now += 1_001
+await qaScheduler.tick()
+const qaScheduleStatus = await qa.execute({
+  fixtureAction: 'status',
+  definitionId: qaScheduleId
+})
+assert.equal(qaScheduleStatus.runs?.length, 2)
+assert.equal(qaScheduleStatus.runs?.[0]?.status, 'succeeded')
+const recentScheduleRuns = store.listRuns({
+  automationId: qaScheduleId,
+  order: 'recent',
+  limit: 50
+})
+assert.deepEqual(
+  qaScheduleStatus.runs?.map(({ id }) => id),
+  recentScheduleRuns.map(({ id }) => id)
+)
+await qa.execute({
+  fixtureAction: 'disable',
+  definitionId: qaScheduleId
+})
+
+const otherQa = createPhase8QaController({
+  service: qaService,
+  scheduler: qaScheduler,
+  getWorkspace: (workspaceId) =>
+    [qaWorkspace, otherQaWorkspace].find(({ id }) => id === workspaceId) ?? null,
+  targetWorkspaceId: otherQaWorkspace.id,
+  principalId: 'phase8-qa:otherprincipal',
+  generateId
+})
+const otherFixture = await otherQa.execute({ fixtureAction: 'createSchedule' })
+assert.ok(otherFixture.definition)
+await assert.rejects(
+  () => qa.execute({ fixtureAction: 'status', definitionId: otherFixture.definition!.id }),
+  /not a fixed Phase 8 QA fixture/
+)
+
+const qaEvent = await qa.execute({ fixtureAction: 'createEvent' })
+assert.ok(qaEvent.definition)
+const qaEventId = qaEvent.definition.id
+await qa.execute({ fixtureAction: 'enable', definitionId: qaEventId })
+let committedObserver:
+  | ((
+      workspaceId: string,
+      oldStatus: WorkspaceStatus | undefined,
+      newStatus: WorkspaceStatus
+    ) => void)
+  | null = null
+let persistingObserver:
+  | ((
+      workspaceId: string,
+      oldStatus: WorkspaceStatus,
+      newStatus: WorkspaceStatus,
+      workspace: WorkspaceRecord
+    ) => void)
+  | null = null
+const disposeWorkspaceEvents = wireWorkspaceAutomationEvents({
+  scheduler: qaScheduler,
+  subscribePersisting: (observer) => {
+    persistingObserver = observer
+    return () => {
+      persistingObserver = null
+    }
+  },
+  subscribeCommitted: (observer) => {
+    committedObserver = observer
+    return () => {
+      committedObserver = null
+    }
+  },
+  now: () => now,
+  generateId
+})
+assert.ok(persistingObserver)
+assert.ok(committedObserver)
+persistingObserver(qaWorkspace.id, 'idle', 'awaiting_input', qaWorkspace)
+committedObserver(qaWorkspace.id, 'idle', 'awaiting_input')
+await new Promise<void>((resolve) => setImmediate(resolve))
+assert.equal(qaService.listRuns(qaEventId).length, 0)
+store.transaction(() => {
+  persistingObserver?.(qaWorkspace.id, 'in_progress', 'awaiting_input', qaWorkspace)
+})
+const pendingQaOccurrence = db
+  .prepare(
+    `SELECT id, delivered_at FROM automation_event_occurrences
+     WHERE workspace_id = ? AND delivered_at IS NULL
+     ORDER BY created_at DESC LIMIT 1`
+  )
+  .get(qaWorkspace.id) as { id: string; delivered_at: number | null }
+assert.equal(pendingQaOccurrence.delivered_at, null)
+committedObserver(qaWorkspace.id, 'in_progress', 'awaiting_input')
+await new Promise<void>((resolve) => setImmediate(resolve))
+await qaScheduler.tick()
+assert.equal(qaService.listRuns(qaEventId).length, 1)
+disposeWorkspaceEvents()
+const qaEventStatus = await qa.execute({ fixtureAction: 'status', definitionId: qaEventId })
+const correlatedRun = qaEventStatus.runs?.[0]
+assert.ok(correlatedRun?.auditId)
+const correlatedAudit = db
+  .prepare('SELECT correlation_json FROM control_audit WHERE audit_id = ?')
+  .get(correlatedRun.auditId) as { correlation_json: string }
+assert.equal(
+  (JSON.parse(correlatedAudit.correlation_json) as Record<string, unknown>)['runId'],
+  correlatedRun.id
+)
+await qa.execute({ fixtureAction: 'disable', definitionId: qaEventId })
+const cleanupResult = await qa.execute({ fixtureAction: 'cleanup' })
+assert.deepEqual(new Set(cleanupResult.cleanedDefinitionIds), new Set([qaScheduleId, qaEventId]))
+assert.equal(store.getDefinition(qaScheduleId), null)
+assert.equal(store.getDefinition(qaEventId), null)
+assert.ok(store.getDefinition(otherFixture.definition.id))
+
+const qaManagementRows = db
+  .prepare(
+    `SELECT operation_id, principal_kind, consumer, decision, result_code, correlation_json
+     FROM control_audit
+     WHERE operation_id IN (
+       'automations.createDefinition', 'automations.setEnabled', 'automations.deleteDefinition'
+     )
+       AND principal_kind = 'cli'`
+  )
+  .all() as Array<{
+  operation_id: string
+  principal_kind: string
+  consumer: string
+  decision: string
+  result_code: string
+  correlation_json: string
+}>
+assert.ok(qaManagementRows.length >= 6)
+assert.ok(
+  qaManagementRows.some(
+    ({ operation_id, decision, result_code, correlation_json }) =>
+      operation_id === 'automations.deleteDefinition' &&
+      decision === 'allow' &&
+      result_code === 'completed' &&
+      cleanupResult.cleanedDefinitionIds?.includes(
+        String((JSON.parse(correlation_json) as Record<string, unknown>)['definitionId'])
+      ) === true
+  ),
+  'Phase 8 cleanup must persist an exact successful delete-definition audit'
+)
+for (const row of qaManagementRows) {
+  assert.equal(row.consumer, 'cli')
+  const correlation = JSON.parse(row.correlation_json) as Record<string, unknown>
+  if (correlation['principalId'] !== 'phase8-qa:otherprincipal') {
+    assert.equal(correlation['principalId'], qaConfig.principalId)
+  }
+  assert.equal(typeof correlation['definitionId'], 'string')
+  assert.equal(typeof correlation['requestId'], 'string')
+}
 
 // Static architectural guard: the subsystem has no child-process, command
 // socket, renderer selector, click, or key-simulation dependency.

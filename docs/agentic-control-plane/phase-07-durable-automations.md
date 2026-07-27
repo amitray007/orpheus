@@ -1,7 +1,9 @@
 # Phase 7: Durable Automations
 
-**Status:** contract frozen; statically implemented and verified
-**Roadmap:** [roadmap.md](roadmap.md)
+**Status:** implemented and deterministically verified; packaged schedule,
+event, restart-recovery, and cleanup paths live-validated<br>
+**Roadmap:** [roadmap.md](roadmap.md)<br>
+**Validation ledger:** [Phase 8](roadmap.md#8-integrated-validation)<br>
 **Depends on:** the canonical control registry and declarative database migration engine
 
 ## Outcome
@@ -55,6 +57,12 @@ A unique `(automation_id, idempotency_key)` index prevents two run rows for one
 logical occurrence. Attempts update that row; they do not create a second
 logical run.
 
+`automation_event_occurrences` is the durable internal-event outbox. It stores
+the bounded event identity/type/time/scope, delivery attempts and retry time,
+and the delivered timestamp. Pending occurrences are never removed by
+retention. Delivered occurrences are retained for at most 30 days and 10,000
+rows.
+
 ## Trigger contract
 
 Phase 7 supports exactly two trigger shapes:
@@ -76,11 +84,18 @@ Schedules are fixed intervals, not cron expressions. At most one overdue
 occurrence is enqueued per scheduler reconciliation. The next due time advances
 past `now`, preventing an unbounded restart catch-up storm.
 
-Events arrive through an in-process `emitEvent` seam with a server-issued event
+Events arrive through an in-process persistence seam with a server-issued event
 id, event type, time, and optional project/workspace attribution. The scheduler
 does not synthesize identity from event payloads. Definition scope must contain
 the event attribution, and the server allowlist must include the event type.
 One event fans out to at most 200 matching definitions per reconciliation.
+
+Main currently allowlists one production event: `workspace.completed`. It is
+inserted in the same SQLite transaction as the authoritative workspace status
+write when the persisted old status is `in_progress` or `attention` and the new
+status is `awaiting_input`. The event carries the persisted workspace/project
+attribution and a bounded unique occurrence id. The post-commit observer only
+prompts an outbox drain; it is not the durable source.
 
 ## Scope and grants
 
@@ -93,8 +108,12 @@ type AutomationScope =
   | { kind: 'workspace'; projectId: string; workspaceId: string }
 ```
 
-Definitions cannot contain grants. A server-owned grant source resolves, by
-automation id, allowed permissions, maximum risk tier, and allowed scopes.
+Definitions cannot contain grants. A server-owned grant source resolves from
+the automation id, already validated params, requested scope, and canonical
+descriptor. Main's fixed default policy grants only the two effect-free Phase 6
+reads `settings.getEffective` and `resources.listProjectMetadata`, at Tier 0
+and for the exact existing workspace/project scope. App scope, mutations, and
+all other operations fail closed.
 Creation/update, enable, scheduler reconciliation, and immediately-before-
 invoke checks all re-resolve the grant. Absence of a grant fails closed.
 
@@ -116,13 +135,21 @@ definitions receive the same key for every attempt and after restart.
 
 On restart:
 
-1. persisted `running` rows become `interrupted`;
-2. `none` rows remain terminal, avoiding a blind replay of possibly committed
+1. pending event occurrences atomically materialize idempotent run rows and are
+   marked delivered before any handler starts; a crash on either side replays
+   safely;
+2. persisted `running` rows become `interrupted`;
+3. `none` rows remain terminal, avoiding a blind replay of possibly committed
    effects;
-3. `natural` and `keyed` rows move to bounded retry only when retry and
+4. `natural` and `keyed` rows move to bounded retry only when retry and
    aggregate run budgets still allow it;
-4. persisted `queued` and `retry_wait` rows resume;
-5. terminal rows are never enqueued again.
+5. persisted `queued` and `retry_wait` rows resume;
+6. terminal rows are never enqueued again.
+
+An outbox delivery failure rolls back any partially materialized runs, leaves
+the occurrence pending, and records deterministic exponential backoff capped
+at one hour. An occurrence with no matching enabled definition is still
+delivered. Reusing an event id with different contents is rejected.
 
 This is at-least-once execution only for operations that explicitly tolerate
 it, and at-most-once replay behavior for `none`. Phase 7 does not claim
@@ -153,8 +180,9 @@ The enabled state, next scheduled time, and pending-run cancellation commit in
 one SQLite transaction.
 
 Terminal run history is retained for at most 30 days and 1,000 rows per
-definition. Malformed persisted definition JSON fails closed and is never
-scheduled or invoked.
+definition. Delivered event occurrences are retained for at most 30 days and
+10,000 rows; undelivered occurrences are not pruned. Malformed persisted
+definition JSON fails closed and is never scheduled or invoked.
 
 ## Audit and redaction
 
@@ -169,16 +197,34 @@ safe summary. Secret-like keys never enter run history. Raw params remain only
 in the definition row required to execute the validated semantic operation;
 management audit records use redacted params.
 
-Definition creation and enable/disable state changes persist a completed audit
-in the same SQLite transaction as the state change. Validation, grant, conflict,
+Definition creation, enable/disable, and deletion persist a completed audit in
+the same SQLite transaction as the state change. Validation, grant, conflict,
 and persistence failures emit a denied/failed audit with request, definition,
 and principal correlation; an audit-write failure rolls the mutation back.
+
+There is no production grant-administration or automation-management UI/API.
+For batched live validation only, the authenticated command socket exposes a
+fixed fixture protocol only when the process identity is exactly `Orpheus Dev`
+and startup captures valid `ORPHEUS_PHASE8_QA=1`,
+`ORPHEUS_PHASE8_QA_WORKSPACE_ID`, and a separate high-entropy
+`ORPHEUS_PHASE8_QA_TOKEN`. Every QA request needs both the ordinary command
+token and the separate QA token. All QA environment keys, including the Phase
+4–6 QA flag/scope, are deleted from `process.env` before a native terminal can
+mount.
+
+The configured workspace is the only target and cannot be overridden in the
+request. The CLI principal is a non-secret fingerprint of the QA credential.
+Creation reuses an existing fixed fixture, status returns at most 50 runs
+recent-first, and explicit cleanup transactionally deletes only fixed fixtures
+for the configured target with management-audit correlation. Callers cannot
+supply workspace ids, operation ids, params, grants, or SQL.
 
 ## Acceptance boundary
 
 Deterministic verification covers:
 
-- declarative creation and idempotent reconciliation of both tables/indexes;
+- declarative creation and idempotent reconciliation of definitions, runs, and
+  event-outbox tables/indexes;
 - strict definition, trigger, scope, and target-operation validation;
 - absent/insufficient/stale server grant denial;
 - schedule catch-up bounds and event scope filtering;
@@ -186,10 +232,32 @@ Deterministic verification covers:
 - timeout, retry, deterministic backoff, per-run and rolling budgets;
 - enable/disable behavior;
 - restart reconciliation for `none`, `natural`, and `keyed`;
+- source-transaction rollback, delivery failure/backoff, startup replay, and
+  outbox/run deduplication;
 - no replay of terminal success;
 - automation principal/context propagation;
 - audit/run correlation and recursive result redaction;
+- real Phase 6 automation discovery, natural idempotency, exact-scope grants,
+  cross-project denial, and mutation exclusion;
+- independent QA credential rejection and environment scrubbing;
+- exact configured QA target, fixture reuse, recent-first bounded status,
+  audited cleanup, event bridge, and truthful CLI/automation audit correlation;
 - absence of CLI subprocess and renderer-gesture dependencies.
 
-Static harnesses do not claim live app, renderer, packaged build, or real
-Phase 4–6 operation validation. Those paths are batched into Phase 8.
+The packaged Orpheus Dev integration batch exercised the fixed QA fixture
+without adding a production management surface:
+
+- a missing QA credential and malformed non-string action failed before fixture
+  dispatch;
+- duplicate schedule creation reused the same definition id;
+- the schedule produced bounded recent-first successful runs and rolling-budget
+  retry-wait outcomes;
+- a real `workspace.completed` transition produced one successful event run;
+- run rows carried request and control-audit correlation ids;
+- after app restart, the enabled schedule recovered, produced new successful
+  runs, and reconciled older retry-wait rows;
+- schedule/event definitions were disabled and scoped fixture cleanup
+  completed.
+
+These are packaged fixture results, not a production grant-administration or
+automation-management claim.

@@ -1,3 +1,4 @@
+import './safeConsole'
 import { APP_NAME, APP_ID, isDev } from './appMode'
 import {
   startSessionStateService,
@@ -29,6 +30,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import * as childProcess from 'node:child_process'
 import { promisify } from 'node:util'
+import { pathToFileURL } from 'node:url'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { DoctorResult } from '../shared/types'
@@ -58,7 +60,9 @@ import {
   ensureManagedHooks,
   uninstallManagedHooks,
   clearWorkspaceActivity,
-  setAutoCloseHandler
+  setAutoCloseHandler,
+  onWorkspaceStatusPersisting,
+  onWorkspaceStatusCommitted
 } from './orpheusNotify'
 import {
   configureLoadingOverlay,
@@ -90,7 +94,6 @@ import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor } from '../shared/types'
 import type { SplitTree, PaneLayout, TerminalRect, TerminalMountResult } from '../shared/types'
-import type { DiagEvent } from '../shared/types'
 import { bootActions, setTerminalAddonRef, registerWebContentsCleanup } from './actions/index'
 import { evictAccumulator } from './actions/session'
 import { seedDefaultFooterActions } from './footerActions'
@@ -103,6 +106,7 @@ import {
   diag
 } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
+import { redactErrorForLog, redactErrorMessage, redactLogString } from './logRedaction'
 import { startPowerAwake } from './powerAwake'
 import { startCommandServer } from './commandServer'
 import type { CommandServerDeps } from './commandServer'
@@ -132,6 +136,7 @@ import {
 } from './workspaceResources'
 import { handle } from './ipc/handle'
 import { isSafeExternalUrl } from './ipc/validate'
+import { isTrustedRendererUrl } from './rendererTrust'
 import { registerGitIpc } from './ipc/git'
 import { registerFilesIpc } from './ipc/files'
 import { registerShellIpc } from './ipc/shell'
@@ -170,6 +175,16 @@ import {
   validateRegisteredControlInput
 } from './controlPlane'
 import { createAutomationRuntime, type AutomationScheduler } from './automations'
+import {
+  capturePhase8QaConfig,
+  createPhase8QaController,
+  type Phase8QaController
+} from './automations/phase8Qa'
+import {
+  wireWorkspaceAutomationEvents,
+  WORKSPACE_COMPLETED_EVENT
+} from './automations/workspaceEvents'
+import { createSafeAutomationGrantSource } from './controlPlane/safeAutomationGrants'
 import { createTrustedRuntimeReadPolicy } from './controlPlane/readPolicy'
 import { createMainReadHandlers } from './controlPlane/mainReadHandlers'
 import { createMainSettingsResourceService } from './controlPlane/mainSettingsResourceService'
@@ -180,6 +195,7 @@ import {
   type WorkspaceOrchestrationService
 } from './workspaceOrchestration'
 import { RuntimeControlGrantPolicy } from './controlPlane/runtimeGrants'
+import { createPhase456QaGrantSource } from './controlPlane/phase456QaGrant'
 import {
   WorkspaceOpenRequestQueue,
   type WorkspaceOpenRequest
@@ -221,7 +237,17 @@ let workspaceOrchestrationService: WorkspaceOrchestrationService | null = null
 let terminalObservationService: TerminalObservationService | null = null
 let terminalObservationCleanup: (() => void) | null = null
 let automationScheduler: AutomationScheduler | null = null
+let automationEventCleanup: (() => void) | null = null
+let phase8QaController: Phase8QaController | undefined
 let unmanagedMountWarningEmitted = false
+
+// Capture QA-only process configuration once, then scrub it before any native
+// terminal can inherit the main-process environment.
+const phase456QaFlagValue = process.env['ORPHEUS_PHASE456_QA']
+const phase456QaScopeValue = process.env['ORPHEUS_PHASE456_QA_SCOPE']
+delete process.env['ORPHEUS_PHASE456_QA']
+delete process.env['ORPHEUS_PHASE456_QA_SCOPE']
+const phase8QaConfig = capturePhase8QaConfig(process.env, APP_NAME)
 
 setRuntimeSessionObserver(({ workspaceId, claudeConversationId, session }) => {
   const binding = runtimeLeases.getBySurfaceId(workspaceId)
@@ -264,13 +290,13 @@ function reconcileHooks(): void {
       try {
         notifyServer = startNotifyServer()
       } catch (err) {
-        console.error('[orpheusNotify] failed to start notify server:', err)
+        console.error('[orpheusNotify] failed to start notify server:', redactErrorForLog(err))
       }
     }
     try {
       ensureManagedHooks()
     } catch (err) {
-      console.error('[orpheusNotify] failed to install managed hooks:', err)
+      console.error('[orpheusNotify] failed to install managed hooks:', redactErrorForLog(err))
     }
   } else {
     if (notifyServer) {
@@ -280,7 +306,7 @@ function reconcileHooks(): void {
     try {
       uninstallManagedHooks()
     } catch (err) {
-      console.error('[orpheusNotify] failed to uninstall managed hooks:', err)
+      console.error('[orpheusNotify] failed to uninstall managed hooks:', redactErrorForLog(err))
     }
   }
 }
@@ -297,6 +323,13 @@ function getMainWindow(): BrowserWindow | null {
   return mainWindowRef
 }
 
+function trustedRendererEntryUrl(): string {
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    return process.env['ELECTRON_RENDERER_URL']
+  }
+  return pathToFileURL(join(__dirname, '../renderer/index.html')).toString()
+}
+
 // Ask the renderer to open (and mount) the given workspace. Mirrors the
 // pattern used by other main→renderer signals (e.g. workspace:activityBatch,
 // workspace:navigateTo).
@@ -307,7 +340,19 @@ function getMainWindow(): BrowserWindow | null {
 // what the user is looking at). Defaults to true so existing callers that
 // don't pass it keep the pre-existing "always navigate" behavior.
 function requestOpenWorkspace(workspaceId: string, focus: boolean = true): void {
-  workspaceOpenRequests.request(workspaceId, focus, deliverWorkspaceOpenRequest)
+  workspaceOpenRequests.request(
+    { kind: 'renderer-open', workspaceId, focus },
+    deliverWorkspaceOpenRequest
+  )
+}
+
+// Runtime orchestration already holds the project mutation lease. Carry the
+// snapshot cwd so the renderer can mount without re-entering workspaces:open.
+function requestOrchestrationMount(workspaceId: string, cwd: string): void {
+  workspaceOpenRequests.request(
+    { kind: 'orchestration-mount', workspaceId, focus: false, cwd },
+    deliverWorkspaceOpenRequest
+  )
 }
 
 function deliverWorkspaceOpenRequest(request: WorkspaceOpenRequest): boolean {
@@ -441,7 +486,11 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
     if (getTitle(workspaceId) === (cleaned ?? undefined)) return
     if (!cleaned && getTitle(workspaceId) === undefined) return
 
-    console.log('[title] native fired', { workspaceId, raw: title, cleaned })
+    console.log('[title] native fired', {
+      workspaceId,
+      titleBytes: Buffer.byteLength(title, 'utf8'),
+      hasCleanedTitle: cleaned != null
+    })
     if (cleaned) {
       setTitle(workspaceId, cleaned)
     } else {
@@ -452,7 +501,7 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
     try {
       setWorkspaceLastTitle(workspaceId, cleaned)
     } catch (err) {
-      console.error('[title] failed to persist last_title', err)
+      console.error('[title] failed to persist last_title', redactErrorForLog(err))
     }
   })
   addon.setOcclusionCallback((workspaceId: string, occluded: boolean) => {
@@ -629,7 +678,7 @@ function applyGlobalHotkey(hotkey: string): boolean {
     registeredHotkey = hotkey
     return true
   } catch (err) {
-    console.error('[shortcut] register threw:', err)
+    console.error('[shortcut] register threw:', redactErrorForLog(err))
     return false
   }
 }
@@ -639,10 +688,14 @@ function applyGlobalHotkey(hotkey: string): boolean {
 // Must never throw — this runs from inside error handlers.
 function writeCrashFile(err: unknown): void {
   try {
-    fs.writeFileSync(
-      path.join(app.getPath('userData'), 'orpheus-crash.log'),
-      `${new Date().toISOString()}\n${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`
-    )
+    const crashPath = path.join(app.getPath('userData'), 'orpheus-crash.log')
+    const detail =
+      err instanceof Error ? redactLogString(err.stack ?? err.message) : redactErrorMessage(err)
+    fs.writeFileSync(crashPath, `${new Date().toISOString()}\n${detail}\n`, {
+      encoding: 'utf8',
+      mode: 0o600
+    })
+    fs.chmodSync(crashPath, 0o600)
   } catch {
     /* last-resort logging must never throw */
   }
@@ -673,7 +726,7 @@ process.on('uncaughtException', (err) => {
   writeCrashFile(err)
   dialog.showErrorBox(
     'Orpheus — Unexpected Error',
-    'Orpheus encountered an unexpected error and must close.\n\n' + (err?.message ?? String(err))
+    'Orpheus encountered an unexpected error and must close. A redacted crash report was saved.'
   )
   app.exit(1)
 })
@@ -713,7 +766,7 @@ function focusWorkspaceTerminal(): boolean {
     loadTerminalAddon().focus(ws)
     return true
   } catch (err) {
-    console.error('[lifecycle] focusWorkspaceTerminal failed:', err)
+    console.error('[lifecycle] focusWorkspaceTerminal failed:', redactErrorForLog(err))
     return false
   }
 }
@@ -736,7 +789,7 @@ function kickActiveTerminal(): void {
     console.log('[lifecycle] terminal kick (wake)')
     loadTerminalAddon().focus(ws)
   } catch (err) {
-    console.error('[lifecycle] terminal kick failed:', err)
+    console.error('[lifecycle] terminal kick failed:', redactErrorForLog(err))
   }
 }
 
@@ -843,7 +896,7 @@ function createWindow(): void {
     try {
       loadTerminalAddon().installBackstop(mainWindow.getNativeWindowHandle())
     } catch (err) {
-      console.error('[lifecycle] installBackstop failed:', err)
+      console.error('[lifecycle] installBackstop failed:', redactErrorForLog(err))
     }
     try {
       initOverlayLayer(mainWindow, loadTerminalAddon(), {
@@ -852,7 +905,7 @@ function createWindow(): void {
       })
       setOverlayTheme(getAppUiState().theme)
     } catch (err) {
-      console.error('[overlayLayer] init failed:', err)
+      console.error('[overlayLayer] init failed:', redactErrorForLog(err))
     }
     if (isDev) {
       mainWindow.setTitle(app.getName())
@@ -862,6 +915,9 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler((details) => {
     if (isSafeExternalUrl(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    if (!isTrustedRendererUrl(navigationUrl, trustedRendererEntryUrl())) event.preventDefault()
   })
 
   // On macOS, standard Electron behavior keeps the app frontmost when the
@@ -1116,7 +1172,10 @@ handle('ghosttySettings:update', (_e, patch) => {
     const addon = loadTerminalAddon()
     addon.reloadGhosttyConfig()
   } catch (err) {
-    console.warn('[ghosttySettings] reloadGhosttyConfig failed (non-fatal):', err)
+    console.warn(
+      '[ghosttySettings] reloadGhosttyConfig failed (non-fatal):',
+      redactErrorForLog(err)
+    )
   }
   return result
 })
@@ -1139,7 +1198,18 @@ registerOrpheusConfigIpc({ getProject })
 // Diagnostics IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.on('diag:event', (_e, evt: DiagEvent) => {
+ipcMain.on('diag:event', (event, evt: unknown) => {
+  const window = getMainWindow()
+  if (window == null || window.isDestroyed() || event.sender.id !== window.webContents.id) return
+  const senderFrame = event.senderFrame
+  if (senderFrame == null || senderFrame !== event.sender.mainFrame) return
+  const trustedEntry = trustedRendererEntryUrl()
+  if (
+    !isTrustedRendererUrl(senderFrame.url, trustedEntry) ||
+    !isTrustedRendererUrl(window.webContents.getURL(), trustedEntry)
+  ) {
+    return
+  }
   ingestDiagEvent(evt)
 })
 
@@ -1230,7 +1300,7 @@ function loadTerminalAddon(): GhosttySurfaceAddon {
   } catch (err) {
     const msg = String(err)
     terminalAddonError = msg
-    console.error('[terminal] addon load FAILED:', msg)
+    console.error('[terminal] addon load FAILED:', redactLogString(msg))
     throw err
   }
 }
@@ -1445,11 +1515,11 @@ async function traceTerminalMount(
     launchOut.authEnv = authEnv
 
     console.log(
-      '[terminal] mount workspaceId=%s flags=%s settingsJson=%s envKeys=%s',
+      '[terminal] mount workspaceId=%s flagsBytes=%d settingsBytes=%d envKeys=%s',
       workspaceId,
-      composedLaunch.flags || '(none)',
-      composedLaunch.settingsJson || '(none)',
-      Object.keys(surfaceEnv).join(',')
+      Buffer.byteLength(composedLaunch.flags, 'utf8'),
+      Buffer.byteLength(composedLaunch.settingsJson, 'utf8'),
+      Object.keys(surfaceEnv).sort().join(',')
     )
 
     let mountResult: { workspaceId: string; created: boolean }
@@ -2134,13 +2204,13 @@ function mountLayoutBackground(nativeHandle: Buffer, layout: PaneLayout): void {
       } catch (err) {
         console.error(
           `[panes] background hide failed for pane ${paneId} in layout ${layout.id}:`,
-          err
+          redactErrorForLog(err)
         )
       }
     } catch (err) {
       console.error(
         `[panes] background mount failed for pane ${paneId} in layout ${layout.id}:`,
-        err
+        redactErrorForLog(err)
       )
     }
   }
@@ -2163,7 +2233,7 @@ function autoStartFlaggedLayouts(): void {
   try {
     nativeHandle = win.getNativeWindowHandle()
   } catch (err) {
-    console.error('[panes] auto-start: no native window handle:', err)
+    console.error('[panes] auto-start: no native window handle:', redactErrorForLog(err))
     return
   }
 
@@ -2171,7 +2241,7 @@ function autoStartFlaggedLayouts(): void {
   try {
     layouts = listAutoStartLayouts()
   } catch (err) {
-    console.error('[panes] auto-start: failed to list auto-start layouts:', err)
+    console.error('[panes] auto-start: failed to list auto-start layouts:', redactErrorForLog(err))
     return
   }
 
@@ -2179,7 +2249,7 @@ function autoStartFlaggedLayouts(): void {
     try {
       mountLayoutBackground(nativeHandle, layout)
     } catch (err) {
-      console.error(`[panes] auto-start: failed for layout ${layout.id}:`, err)
+      console.error(`[panes] auto-start: failed for layout ${layout.id}:`, redactErrorForLog(err))
     }
   }
 }
@@ -2488,13 +2558,13 @@ if (!app.requestSingleInstanceLock()) {
       try {
         getDb()
       } catch (err) {
-        console.error('[startup] database migration failed:', err)
+        console.error('[startup] database migration failed:', redactErrorForLog(err))
         writeCrashFile(err)
         dialog.showErrorBox(
           'Orpheus — Database Error',
           'The database could not be migrated to the latest version and the app cannot start safely.\n\n' +
             'Your data has not been modified. A backup may exist alongside the database file.\n\n' +
-            String(err instanceof Error ? err.message : err)
+            redactErrorMessage(err)
         )
         app.exit(1)
         return
@@ -2516,7 +2586,7 @@ if (!app.requestSingleInstanceLock()) {
           }
         })
       } catch (err) {
-        console.error('[startup] failed to build application menu:', err)
+        console.error('[startup] failed to build application menu:', redactErrorForLog(err))
       }
 
       // Wire the workspaceResources registry's main→renderer broadcast bridge
@@ -2529,6 +2599,7 @@ if (!app.requestSingleInstanceLock()) {
       const workspaceOrchestration = createMainWorkspaceOrchestration({
         runtimeLeases,
         requestOpenWorkspace,
+        requestOrchestrationMount,
         getSurfacePhase: getNativeSurfacePhase,
         isWorkspaceSessionReady,
         canInject: terminalActions.canInject,
@@ -2538,7 +2609,18 @@ if (!app.requestSingleInstanceLock()) {
         destroyWorkspaceRuntime
       })
       workspaceOrchestrationService = workspaceOrchestration.service
-      const runtimeControlGrants = new RuntimeControlGrantPolicy()
+      const runtimeControlGrants = new RuntimeControlGrantPolicy(
+        createPhase456QaGrantSource({
+          flagValue: phase456QaFlagValue,
+          scopeValue: phase456QaScopeValue,
+          appName: APP_NAME,
+          getRuntimeBinding: (runtimeId) => runtimeLeases.getByRuntimeId(runtimeId),
+          getWorkspaceProjectId: (workspaceId) => getWorkspace(workspaceId)?.projectId ?? null,
+          hasPaneTerminal: (layoutId, terminalId) =>
+            getLayout(layoutId) != null &&
+            listTerminals(layoutId).some((terminal) => terminal.id === terminalId)
+        })
+      )
       const workbenchControlAudit = createControlAuditStore(getDb())
       const workbenchControl = new WorkbenchControlService({
         renderer: {
@@ -2614,7 +2696,11 @@ if (!app.requestSingleInstanceLock()) {
         }),
         audit: workbenchControlAudit,
         onAuditFailure: (error, record) => {
-          console.error('[controlAudit] Phase 4 append failed:', record.auditId, error)
+          console.error(
+            '[controlAudit] Phase 4 append failed:',
+            record.auditId,
+            redactErrorForLog(error)
+          )
         }
       })
       const mainReads = createMainReadHandlers({
@@ -2700,9 +2786,32 @@ if (!app.requestSingleInstanceLock()) {
           describe: describeRegisteredControl,
           validateInput: validateRegisteredControlInput,
           invoke: invokeControl
-        }
+        },
+        grants: createSafeAutomationGrantSource({
+          getProject,
+          getWorkspace
+        }),
+        allowedEventTypes: new Set([WORKSPACE_COMPLETED_EVENT])
       })
       automationScheduler = automations.scheduler
+      automationEventCleanup = wireWorkspaceAutomationEvents({
+        scheduler: automations.scheduler,
+        subscribePersisting: onWorkspaceStatusPersisting,
+        subscribeCommitted: onWorkspaceStatusCommitted,
+        onError: (error) => {
+          console.error('[automations] workspace event failed:', redactErrorForLog(error))
+        }
+      })
+      phase8QaController =
+        phase8QaConfig == null
+          ? undefined
+          : createPhase8QaController({
+              service: automations.service,
+              scheduler: automations.scheduler,
+              getWorkspace,
+              targetWorkspaceId: phase8QaConfig.workspaceId,
+              principalId: phase8QaConfig.principalId
+            })
       void automationScheduler.start().catch(() => {
         console.error('[automations] startup reconciliation failed')
       })
@@ -2712,7 +2821,7 @@ if (!app.requestSingleInstanceLock()) {
       try {
         seedDefaultFooterActions()
       } catch (err) {
-        console.error('[footerActions] failed to seed defaults:', err)
+        console.error('[footerActions] failed to seed defaults:', redactErrorForLog(err))
       }
 
       // Refresh model context/pricing from models.dev — fire-and-forget, never
@@ -2728,7 +2837,7 @@ if (!app.requestSingleInstanceLock()) {
           console.log('[startup] cleared', cleared, 'stale workspace activity statuses')
         }
       } catch (err) {
-        console.error('[startup] failed to clear stale activity statuses:', err)
+        console.error('[startup] failed to clear stale activity statuses:', redactErrorForLog(err))
       }
 
       // Seed the in-memory workspaceTitles map from the DB so the sidebar /
@@ -2739,7 +2848,7 @@ if (!app.requestSingleInstanceLock()) {
           seedTitle(id, title)
         }
       } catch (err) {
-        console.error('[startup] failed to seed workspaceTitles from DB:', err)
+        console.error('[startup] failed to seed workspaceTitles from DB:', redactErrorForLog(err))
       }
 
       app.on('browser-window-created', (_, window) => {
@@ -2772,7 +2881,7 @@ if (!app.requestSingleInstanceLock()) {
         applyLaunchAtLogin(state.launchAtLogin)
         applyGlobalHotkey(state.globalHotkey)
       } catch (err) {
-        console.error('[startup] failed to apply launch/hotkey settings:', err)
+        console.error('[startup] failed to apply launch/hotkey settings:', redactErrorForLog(err))
       }
 
       // Start the update auto-check loop (30s initial delay, then every 6h).
@@ -2839,6 +2948,14 @@ if (!app.requestSingleInstanceLock()) {
               runtimeLeases,
               listControl,
               invokeControl,
+              ...(phase8QaController == null || phase8QaConfig == null
+                ? {}
+                : {
+                    phase8Qa: {
+                      controller: phase8QaController,
+                      credential: phase8QaConfig.credential
+                    }
+                  }),
               workspaceOrchestration: workspaceOrchestration.service,
               workspaceWaitEngine: workspaceOrchestration.waits,
               runtimeControlGrants,
@@ -3191,7 +3308,7 @@ if (!app.requestSingleInstanceLock()) {
               throw err
             }
           } catch (err) {
-            console.error('[commandServer] failed to start:', err)
+            console.error('[commandServer] failed to start:', redactErrorForLog(err))
           }
         }
 
@@ -3214,13 +3331,13 @@ if (!app.requestSingleInstanceLock()) {
         try {
           sessionStateService = startSessionStateService()
         } catch (err) {
-          console.error('[sessionState] failed to start:', err)
+          console.error('[sessionState] failed to start:', redactErrorForLog(err))
         }
 
         try {
           powerAwakeCleanup = startPowerAwake(getMainWindow)
         } catch (err) {
-          console.error('[powerAwake] failed to start:', err)
+          console.error('[powerAwake] failed to start:', redactErrorForLog(err))
         }
 
         // Fix 4 — background-mount every auto-start-flagged pane layout now that
@@ -3228,7 +3345,7 @@ if (!app.requestSingleInstanceLock()) {
         try {
           autoStartFlaggedLayouts()
         } catch (err) {
-          console.error('[panes] auto-start: unexpected failure:', err)
+          console.error('[panes] auto-start: unexpected failure:', redactErrorForLog(err))
         }
 
         app.on('activate', function () {
@@ -3239,7 +3356,7 @@ if (!app.requestSingleInstanceLock()) {
 
       setImmediate(() => {
         void startDeferredServices().catch((err: unknown) => {
-          console.error('[startup] deferred service composition failed:', err)
+          console.error('[startup] deferred service composition failed:', redactErrorForLog(err))
         })
       })
     })
@@ -3253,12 +3370,14 @@ if (!app.requestSingleInstanceLock()) {
       })
       dialog.showErrorBox(
         'Orpheus — Startup Error',
-        'Orpheus failed to start.\n\n' + String(err instanceof Error ? err.message : err)
+        'Orpheus failed to start.\n\n' + redactErrorMessage(err)
       )
       app.exit(1)
     })
 
   app.on('will-quit', () => {
+    automationEventCleanup?.()
+    automationEventCleanup = null
     automationScheduler?.stop()
     globalShortcut.unregisterAll()
     runtimeLeases.revokeAll()
