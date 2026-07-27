@@ -1067,7 +1067,10 @@ export class WorkspaceOrchestrationService {
       redactedParams: recursivelyRedact(state.params),
       receipts,
       result: { code: result },
-      correlation: { requestId: state.actor.requestId }
+      correlation: {
+        requestId: state.actor.requestId,
+        ...(state.actor.correlation ?? {})
+      }
     }
     try {
       await this.ports.audit.append(record)

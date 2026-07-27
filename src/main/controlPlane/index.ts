@@ -69,4 +69,17 @@ export function describeControl(id: string, context: ControlContext): ControlDes
   return getRegistry().describeForContext(id, context)
 }
 
+/** Main-process subsystem seam; unlike describeControl this does not publish. */
+export function describeRegisteredControl(id: string): ControlDescription | null {
+  return getRegistry().describe(id)
+}
+
+export function validateRegisteredControlInput(
+  id: string,
+  input: unknown,
+  context: ControlContext
+): boolean {
+  return getRegistry().validateInput(id, input, context)
+}
+
 export { unwrapControlResult }

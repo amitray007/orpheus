@@ -28,6 +28,7 @@ function surfaceForConsumer(
 ): ControlSurface | null {
   if (consumer === 'renderer-ipc') return 'renderer'
   if (consumer === 'command-socket' || consumer === 'mcp') return consumer
+  if (consumer === 'automation') return 'automation'
   return null
 }
 
@@ -60,7 +61,8 @@ export class ControlRegistry {
       permission: descriptor.permission,
       scope: descriptor.scope,
       risk: descriptor.risk,
-      declaredEffects: descriptor.declaredEffects ?? []
+      declaredEffects: descriptor.declaredEffects ?? [],
+      idempotency: descriptor.idempotency
     }
   }
 
@@ -84,6 +86,17 @@ export class ControlRegistry {
       .sort()
       .map((id) => this.describeForContext(id, context))
       .filter((description): description is ControlDescription => description != null)
+  }
+
+  validateInput(id: string, input: unknown, context: ControlInvocation['context']): boolean {
+    const descriptor = this.descriptors.get(id)
+    if (descriptor == null) return false
+    const surface = surfaceForConsumer(context.consumer)
+    return (
+      surface != null &&
+      descriptor.allowedSurfaces.includes(surface) &&
+      descriptor.validateInput(input, context)
+    )
   }
 
   async invoke<T>(invocation: ControlInvocation): Promise<ControlResult<T>> {

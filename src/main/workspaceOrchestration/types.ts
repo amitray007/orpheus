@@ -63,6 +63,11 @@ export type WorkspaceOperationActor = {
   boundProjectId: string | null
   boundWorkspaceId: string | null
   permissions: readonly ControlPermission[]
+  correlation?: Readonly<{
+    automationId: string
+    runId: string
+    idempotencyKey: string
+  }>
 }
 
 export type CreateWorkspaceInput = {
