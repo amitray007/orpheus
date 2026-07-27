@@ -54,7 +54,15 @@ export function getCmdSockPath(): string {
   return path.join(getUserDataDir(), 'cmd.sock')
 }
 
-/** Path to the CLI command bearer-token file. */
+/**
+ * Path to the CLI command bearer-token file.
+ * ORPHEUS_CMD_TOKEN_FILE is an absolute-path internal/testing override,
+ * symmetric with ORPHEUS_CMD_SOCK; it is not a user-facing CLI flag.
+ */
 export function getCmdTokenPath(): string {
+  const injectedPath = process.env.ORPHEUS_CMD_TOKEN_FILE
+  if (typeof injectedPath === 'string' && path.isAbsolute(injectedPath)) {
+    return injectedPath
+  }
   return path.join(getUserDataDir(), 'cmd.token')
 }

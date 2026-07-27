@@ -1023,6 +1023,37 @@ export const schema: SchemaDef = {
     }
   },
 
+  // Dedicated structural control audit. This is intentionally separate from
+  // Quick Actions history: parameters are recursively redacted before this
+  // append-only row is written, and task/send text is stored only as metadata.
+  control_audit: {
+    columns: {
+      audit_id: TEXT_PK,
+      request_id: TEXT_NOT_NULL,
+      occurred_at: INTEGER_NOT_NULL,
+      consumer: TEXT_NOT_NULL,
+      operation_id: TEXT_NOT_NULL,
+      operation_version: INTEGER_NOT_NULL,
+      principal_kind: TEXT_NOT_NULL,
+      runtime_id: 'TEXT',
+      project_id: 'TEXT',
+      workspace_ids_json: TEXT_NOT_NULL,
+      permission: TEXT_NOT_NULL,
+      tier: INTEGER_NOT_NULL,
+      decision: TEXT_NOT_NULL,
+      declared_effects_json: TEXT_NOT_NULL,
+      redacted_params_json: TEXT_NOT_NULL,
+      receipts_json: TEXT_NOT_NULL,
+      result_code: TEXT_NOT_NULL,
+      correlation_json: TEXT_NOT_NULL
+    },
+    indexes: {
+      idx_control_audit_request: ['request_id'],
+      idx_control_audit_occurred: ['occurred_at DESC'],
+      idx_control_audit_operation: ['operation_id', 'occurred_at DESC']
+    }
+  },
+
   // ---------------------------------------------------------------------
   // routing_proxy_providers — model-routing unit 05 (provider framework).
   // One row per provider a user has configured (codex, xai, antigravity,

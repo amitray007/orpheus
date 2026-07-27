@@ -7,6 +7,13 @@ export type ControlPermission =
   | 'identity.read'
   | 'projects.read'
   | 'workspaces.read'
+  | 'workspaces.create'
+  | 'workspaces.open'
+  | 'workspaces.send'
+  | 'workspaces.wait'
+  | 'workspaces.close'
+  | 'workspaces.rename'
+  | 'workspaces.archive'
   | 'reviews.read'
   | 'reviews.resolve'
 export type ControlErrorCode =
@@ -69,6 +76,8 @@ export type ControlDescriptor<TInput, TOutput> = {
   permission: ControlPermission
   scope: ControlScope
   risk: Readonly<{ tier: 0 | 1 | 2 | 3; label: string }>
+  /** Maximum effects possible for validated input. Empty for pure queries. */
+  declaredEffects?: readonly string[]
   validateInput: (input: unknown, context: ControlContext) => input is TInput
   handler: (input: TInput, context: ControlContext) => TOutput | Promise<TOutput>
 }
@@ -97,6 +106,16 @@ export type ControlAuthorizationPolicy = {
     input: unknown,
     context: ControlContext
   ) => ControlAuthorizationDecision | Promise<ControlAuthorizationDecision>
+}
+
+export type ControlRejectionAuditor = {
+  auditRejected: (input: {
+    description: ControlDescription
+    params: unknown
+    context: ControlContext
+    code: 'invalid' | 'not_found' | 'forbidden'
+    decision: 'deny'
+  }) => void | Promise<void>
 }
 
 export type ControlReadSource = 'live' | 'sqlite' | 'claude-jsonl' | 'claude-session-file'

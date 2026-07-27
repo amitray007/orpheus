@@ -1,11 +1,13 @@
 # Agentic Control Plane Roadmap
 
-**Status:** Phases 1–2 implemented and validated; Phases 3–8 planned<br>
+**Status:** Phases 1–2 implemented and validated; Phase 3 contract frozen and implementation in progress; Phases 4–8 planned<br>
 **Companion documents:** [README.md](README.md),
 [architecture.md](architecture.md),
 [identity-and-permissions.md](identity-and-permissions.md),
 [Phase 1](phase-01-control-foundation.md), and
-[Phase 2](phase-02-self-identity-readonly-mcp.md)
+[Phase 2](phase-02-self-identity-readonly-mcp.md);
+[Phase 3 contract](phase-03-workspace-orchestration.md) and
+[Phase 3 interfaces](phase-03-interfaces.md)
 
 This roadmap delivers the Agentic Control Plane as eight additive, independently
 reviewable phases. Each phase has a narrow contract, explicit exclusions, and a
@@ -45,7 +47,7 @@ Every phase:
 | -------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | 1. Control Foundation            | Implemented and statically tested | Add a transport-neutral capability registry and prove it with the two review-comment operations | Registry contract plus preserved IPC/socket adapters      |
 | 2. Self Identity + Read-only MCP | Implemented and live-validated    | Ship managed MCP discovery with identity and read-only tools                                    | MCP bootstrap, contextual tool filtering, read schemas    |
-| 3. Workspace Orchestration       | Planned                           | Add semantic workspace creation, task start, wait, and lifecycle control                        | Existing guardrails expressed once in the control core    |
+| 3. Workspace Orchestration       | Contract frozen; implementation in progress | Add semantic workspace creation, task start, wait, and lifecycle control             | One orchestration service, strict schemas, archive safety |
 | 4. Self Workbench/Panes Control  | Planned                           | Let an agent control its own workbench and panes semantically                                   | Self-scoped UI commands, no click simulation              |
 | 5. Terminal Observability        | Planned                           | Add authoritative terminal/session observation                                                  | Source/freshness contract and explicit unavailable states |
 | 6. Settings/Resources            | Planned                           | Expose allowlisted non-secret settings and resources                                            | Layering, validation, dirty-state, and secret boundaries  |
@@ -116,26 +118,49 @@ lifecycle checks.
 
 ## 3. Workspace Orchestration
 
-Publish semantic mutations for workspace creation, task start, wait, send,
-open/background activation, close, reopen, rename, and archive. Preserve the
-existing CLI behavior while routing shared semantics through the control core.
+The Phase 3 contract is frozen; implementation and validation are in progress,
+not complete. Publish one `WorkspaceOrchestrationService` behind semantic
+operations for workspace creation, task start, open/background activation,
+send, bounded wait, close, reopen, rename, and Tier 3 archive, plus a lineage
+read. Preserve existing CLI behavior while routing shared semantics through the
+control core.
 
 The core owns:
 
-- same-project defaults and explicit cross-project checks;
-- parent lineage and fork resolution;
+- strict runtime identity, same-project defaults, and non-enumerating
+  cross-project checks;
+- parent lineage and fork resolution, including fork without an initial task;
+- `local` and managed `worktree` creation with server-derived cwd;
 - max-depth/max-children limits;
 - self-close/self-archive protection;
 - readiness and bounded task injection;
+- MCP waits capped at 25 seconds while retaining existing CLI durations;
 - stable wait outcomes and timeout behavior;
-- mutation audit context.
+- strict schemas with no settings overlay or arbitrary key injection;
+- typed effect receipts and partial results;
+- a dedicated recursively redacted control audit;
+- nonrecursive child rejection and recursive whole-subtree archive preflight,
+  with no MCP force option.
+
+The compatibility boundary retains CLI envelopes, output, exit codes, offline
+reads, long waits, and auto-launch. Implementation also repairs stale
+token/socket cache invalidation on the intended single auto-launch retry and
+makes fork-alone a valid CLI creation intent.
 
 Review this phase as workspace-domain work only. Do not include workbench,
 panes, settings, or automation.
 
 Exit when MCP and live CLI operations produce equivalent domain outcomes and
-policy failures, while CLI offline reads and existing exit codes remain
-unchanged.
+policy failures, archive failures cannot bypass whole-subtree preflight, typed
+receipts and audit redaction are verified, and CLI offline reads and existing
+exit codes remain unchanged. Deterministic harness evidence and packaged
+`Orpheus Dev.app` evidence must be reported separately.
+
+See
+[phase-03-workspace-orchestration.md](phase-03-workspace-orchestration.md) for
+the frozen domain and acceptance contract and
+[phase-03-interfaces.md](phase-03-interfaces.md) for the strict operation
+schemas, permissions, tiers, effects, receipts, and stable errors.
 
 ## 4. Self Workbench/Panes Control
 

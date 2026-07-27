@@ -8,8 +8,12 @@
 // Queries and subscriptions are never audited.
 // ---------------------------------------------------------------------------
 
-import type { ActionKind, ActionInvocation, ActionResult } from '../../shared/types'
-import { recordAudit, redactAndSerialize } from './audit'
+import type {
+  ActionAuditEntry,
+  ActionKind,
+  ActionInvocation,
+  ActionResult
+} from '../../shared/types'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -21,7 +25,19 @@ export type ActionDescriptor<T = unknown> = {
   /** Return true if the raw params object is valid for this action. */
   validate: (params: unknown) => boolean
   /** The actual implementation. Throws on unrecoverable error. */
-  handler: (params: Record<string, unknown>, workspaceId: string) => Promise<ActionResult<T>>
+  handler: (
+    params: Record<string, unknown>,
+    workspaceId: string,
+    context: ActionInvocationContext
+  ) => Promise<ActionResult<T>>
+}
+
+export type ActionInvocationContext = {
+  consumerHint: string
+  /** Actual Electron webContents id for renderer calls; null for internal subscriptions. */
+  senderId: number | null
+  /** Deterministic harness injection; production uses the persisted Quick Actions audit. */
+  audit?: (entry: Omit<ActionAuditEntry, 'id'>) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -43,7 +59,7 @@ export function register(descriptor: ActionDescriptor): void {
 
 export async function invoke(
   invocation: ActionInvocation,
-  consumerHint: string
+  context: ActionInvocationContext
 ): Promise<ActionResult> {
   const { id, params, workspaceId } = invocation
 
@@ -58,7 +74,7 @@ export async function invoke(
 
   let result: ActionResult
   try {
-    result = await descriptor.handler(params, workspaceId)
+    result = await descriptor.handler(params, workspaceId, context)
   } catch (err) {
     result = { ok: false, code: 'failed', error: String(err) }
   }
@@ -66,12 +82,15 @@ export async function invoke(
   // Audit mutators — always, regardless of success
   if (descriptor.kind === 'mutator') {
     try {
-      recordAudit({
+      const auditModule = context.audit == null ? await import('./audit') : null
+      const writeAudit = context.audit ?? auditModule!.recordAudit
+      writeAudit({
         workspaceId,
         actionId: id,
-        paramsJson: redactAndSerialize(params),
+        paramsJson:
+          auditModule == null ? JSON.stringify(params) : auditModule.redactAndSerialize(params),
         resultCode: result.ok ? 'ok' : (result as { code: string }).code,
-        consumerHint,
+        consumerHint: context.consumerHint,
         createdAt: Date.now()
       })
     } catch (auditErr) {

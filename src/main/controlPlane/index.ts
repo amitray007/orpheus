@@ -9,10 +9,13 @@ import type {
   ControlResult,
   ReadCapabilityHandlers
 } from './types'
+import type { WorkspaceOrchestrationService } from '../workspaceOrchestration/service'
+import { createConfiguredControlRegistry } from './configuredRegistry'
 
 export type Phase2ControlPlaneConfig = {
   authorization: ControlAuthorizationPolicy
   reads: ReadCapabilityHandlers
+  workspaceOrchestration?: WorkspaceOrchestrationService
 }
 
 let phase2Config: Phase2ControlPlaneConfig | null = null
@@ -21,7 +24,8 @@ let booted = false
 
 function getRegistry(): ControlRegistry {
   if (registry == null) {
-    registry = new ControlRegistry(phase2Config?.authorization)
+    registry =
+      phase2Config == null ? new ControlRegistry() : createConfiguredControlRegistry(phase2Config)
   }
   return registry
 }
@@ -47,7 +51,8 @@ export function bootControlPlane(): void {
         listByWorkspace(workspaceId),
       setResolved: (id, resolved) => setResolved(id, resolved)
     },
-    phase2Config?.reads
+    phase2Config?.reads,
+    phase2Config?.workspaceOrchestration
   )
   booted = true
 }

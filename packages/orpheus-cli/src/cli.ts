@@ -90,7 +90,8 @@
 
 import { spawn } from 'node:child_process'
 import * as net from 'node:net'
-import { AppNotRunningError, CommandError } from './socket-client.js'
+import { AppNotRunningError, CommandError, invalidateConnectionCache } from './socket-client.js'
+import { runWithSingleAppRetry } from './live-retry.js'
 import { OrpheusDataNotFoundError, openDb } from './reads/db.js'
 import { resolveContext, ProjectNotFoundError } from './context.js'
 import { getCmdSockPath, resolveAppName } from './paths.js'
@@ -796,7 +797,17 @@ async function runHandlerWithAutoLaunchRetry(
   ctx: CommandContext
 ): Promise<void> {
   try {
-    await descriptor.handler(ctx)
+    await runWithSingleAppRetry(
+      () => descriptor.handler(ctx),
+      async () => {
+        // A failed first attempt may have cached either a null token sentinel,
+        // a stale token rejected with 401, or a stale socket selection.
+        // Clear all of it before launch/re-resolution and the one retry.
+        invalidateConnectionCache()
+        await autoLaunch()
+      },
+      descriptor.isRead !== true
+    )
   } catch (err: unknown) {
     // Explicit --project value that didn't resolve to any project (QA fix #2).
     // Checked FIRST, ahead of the AppNotRunningError auto-launch branch below:
@@ -808,22 +819,10 @@ async function runHandlerWithAutoLaunchRetry(
       printNotFoundError(err.message)
       return
     }
-    // Read commands get no auto-launch; action commands that hit AppNotRunningError
-    // trigger auto-launch then retry.
-    if (err instanceof AppNotRunningError && descriptor.isRead !== true) {
-      try {
-        await autoLaunch()
-        // Retry the command once after the app is reachable
-        await descriptor.handler(ctx)
-      } catch (retryErr: unknown) {
-        dispatchRetryError(retryErr)
-      }
-    } else if (err instanceof OrpheusDataNotFoundError) {
+    if (err instanceof OrpheusDataNotFoundError) {
       printNotFoundError(err.message)
     } else if (err instanceof AppNotRunningError) {
-      // Read command hit AppNotRunningError — shouldn't happen for true reads,
-      // but handle gracefully just in case
-      printError(err)
+      dispatchRetryError(err)
     } else if (err instanceof CommandError) {
       printError(err)
     } else {

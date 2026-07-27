@@ -30,6 +30,11 @@ export {
   sendCommand,
   subscribe,
   resolveToken,
+  invalidateConnectionCache,
   AppNotRunningError,
-  CommandError
+  CommandError,
+  CommandTransportError,
+  SubscriptionError,
+  type SubscriptionErrorKind
 } from './socket-client.js'
+export { runWithSingleAppRetry } from './live-retry.js'

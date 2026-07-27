@@ -3,9 +3,11 @@ import type {
   ControlDescriptor,
   ControlDescription,
   ControlInvocation,
+  ControlRejectionAuditor,
   ControlResult,
   ControlSurface
 } from './types'
+import { WorkspaceOrchestrationError } from '../workspaceOrchestration/errors'
 
 type StoredDescriptor = ControlDescriptor<unknown, unknown>
 
@@ -32,7 +34,10 @@ function surfaceForConsumer(
 export class ControlRegistry {
   private readonly descriptors = new Map<string, StoredDescriptor>()
 
-  constructor(private readonly authorization: ControlAuthorizationPolicy = COMPATIBILITY_POLICY) {}
+  constructor(
+    private readonly authorization: ControlAuthorizationPolicy = COMPATIBILITY_POLICY,
+    private readonly rejectionAuditor?: ControlRejectionAuditor
+  ) {}
 
   register<TInput, TOutput>(descriptor: ControlDescriptor<TInput, TOutput>): void {
     if (this.descriptors.has(descriptor.id)) {
@@ -54,7 +59,8 @@ export class ControlRegistry {
       allowedSurfaces: descriptor.allowedSurfaces,
       permission: descriptor.permission,
       scope: descriptor.scope,
-      risk: descriptor.risk
+      risk: descriptor.risk,
+      declaredEffects: descriptor.declaredEffects ?? []
     }
   }
 
@@ -99,7 +105,17 @@ export class ControlRegistry {
       }
     }
 
+    const description = this.describe(invocation.id)
+    if (description == null) {
+      return {
+        ok: false,
+        code: 'not_found',
+        error: `Control capability not found: ${invocation.id}`
+      }
+    }
+
     if (!descriptor.validateInput(invocation.input, invocation.context)) {
+      await this.auditRejection(description, invocation, 'invalid')
       return {
         ok: false,
         code: 'invalid',
@@ -108,31 +124,42 @@ export class ControlRegistry {
     }
 
     try {
-      const description = this.describe(invocation.id)
-      if (description == null) {
-        return {
-          ok: false,
-          code: 'not_found',
-          error: `Control capability not found: ${invocation.id}`
-        }
-      }
       const decision = await this.authorization.authorize(
         description,
         invocation.input,
         invocation.context
       )
       if (!decision.allowed) {
+        await this.auditRejection(description, invocation, decision.code)
         return { ok: false, code: decision.code, error: decision.error }
       }
       const value = await descriptor.handler(invocation.input, invocation.context)
       return { ok: true, value: value as T }
     } catch (err) {
+      if (err instanceof WorkspaceOrchestrationError) {
+        return { ok: false, code: err.code, error: err.message }
+      }
       return {
         ok: false,
         code: 'failed',
         error: err instanceof Error ? err.message : String(err)
       }
     }
+  }
+
+  private async auditRejection(
+    description: ControlDescription,
+    invocation: ControlInvocation,
+    code: 'invalid' | 'not_found' | 'forbidden'
+  ): Promise<void> {
+    if (description.risk.tier < 2 || this.rejectionAuditor == null) return
+    await this.rejectionAuditor.auditRejected({
+      description,
+      params: invocation.input,
+      context: invocation.context,
+      code,
+      decision: 'deny'
+    })
   }
 }
 

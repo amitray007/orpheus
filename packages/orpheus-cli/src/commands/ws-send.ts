@@ -64,7 +64,7 @@
  */
 
 import { registerCommand } from '../registry.js'
-import { sendCommand } from '../socket-client.js'
+import { sendCommand, AppNotRunningError } from '../socket-client.js'
 import { printResult, printKeyValue, printError, printUsageError } from '../output.js'
 import { resolveFocus } from '../focus.js'
 import { isNotFoundError } from './ws-lifecycle.js'
@@ -177,6 +177,7 @@ registerCommand('ws send', {
     try {
       result = await sendCommand('workspace.send', args)
     } catch (err) {
+      if (err instanceof AppNotRunningError) throw err
       printError(err, { exitCode: isNotFoundError(errorMessage(err)) ? 3 : 1 })
       return
     }

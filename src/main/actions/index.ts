@@ -13,6 +13,7 @@
 
 import { register } from './registry'
 import type { ActionResult } from '../../shared/types'
+import type { WorkspaceControlAdapter } from '../workspaceControlAdapter'
 import { setTerminalAddonRef, getAddonRef, destroyAddonSurface } from './addonSurface'
 
 const TERMINAL_ADDON_NOT_LOADED_ERROR = 'Terminal addon not loaded'
@@ -60,7 +61,7 @@ export { setTerminalAddonRef, destroyAddonSurface }
 // bootActions — register all actions
 // ---------------------------------------------------------------------------
 
-export function bootActions(): void {
+export function bootActions(workspaceControl: WorkspaceControlAdapter): void {
   // -------------------------------------------------------------------------
   // session.* — kind: query
   // -------------------------------------------------------------------------
@@ -113,14 +114,20 @@ export function bootActions(): void {
         return false
       return true
     },
-    handler: handleFork
+    handler: (params, workspaceId, context) =>
+      context.senderId == null
+        ? Promise.resolve({ ok: false, code: 'failed', error: 'Renderer identity unavailable' })
+        : handleFork(workspaceControl, context.senderId, params, workspaceId)
   })
 
   register({
     id: 'workspace.archive',
     kind: 'mutator',
     validate: () => true, // workspaceId from invocation, no params needed
-    handler: handleArchive
+    handler: (params, workspaceId, context) =>
+      context.senderId == null
+        ? Promise.resolve({ ok: false, code: 'failed', error: 'Renderer identity unavailable' })
+        : handleArchive(workspaceControl, context.senderId, params, workspaceId)
   })
 
   register({
@@ -131,7 +138,10 @@ export function bootActions(): void {
       const params = p as Record<string, unknown>
       return typeof params['name'] === 'string' && params['name'].trim() !== ''
     },
-    handler: handleRename
+    handler: (params, workspaceId, context) =>
+      context.senderId == null
+        ? Promise.resolve({ ok: false, code: 'failed', error: 'Renderer identity unavailable' })
+        : handleRename(workspaceControl, context.senderId, params, workspaceId)
   })
 
   register({
@@ -144,7 +154,10 @@ export function bootActions(): void {
         return false
       return true
     },
-    handler: handleDuplicate
+    handler: (params, workspaceId, context) =>
+      context.senderId == null
+        ? Promise.resolve({ ok: false, code: 'failed', error: 'Renderer identity unavailable' })
+        : handleDuplicate(workspaceControl, context.senderId, params, workspaceId)
   })
 
   register({

@@ -43,7 +43,7 @@
  */
 
 import { registerCommand } from '../registry.js'
-import { sendCommand } from '../socket-client.js'
+import { sendCommand, AppNotRunningError, CommandTransportError } from '../socket-client.js'
 import { printResult, printKeyValue, printError, printUsageError } from '../output.js'
 import { effectiveLifecycleStatus } from '../reads/session-status.js'
 import { resolveFocus } from '../focus.js'
@@ -75,15 +75,33 @@ function errorMessage(err: unknown): string {
 type ArchiveOutcome = { id: string; ok: boolean; error?: string; count?: number }
 
 /** Archive each id in sequence; collect results and any errors. */
-async function archiveEach(ids: string[], recursive: boolean): Promise<ArchiveOutcome[]> {
+export async function archiveEach(
+  ids: string[],
+  recursive: boolean,
+  send: typeof sendCommand = sendCommand
+): Promise<ArchiveOutcome[]> {
   const results: ArchiveOutcome[] = []
-  for (const id of ids) {
+  let completedCount = 0
+  for (const [index, id] of ids.entries()) {
     try {
-      const result = await sendCommand('workspace.archive', { id, recursive })
+      const result = await send('workspace.archive', { id, recursive })
       const data = result as { archived: boolean; count?: number } | null
       results.push({ id, ok: true, count: data?.count })
+      completedCount++
     } catch (err) {
+      if (err instanceof AppNotRunningError && completedCount === 0) throw err
+
       results.push({ id, ok: false, error: errorMessage(err) })
+      if (err instanceof AppNotRunningError || err instanceof CommandTransportError) {
+        for (const pendingId of ids.slice(index + 1)) {
+          results.push({
+            id: pendingId,
+            ok: false,
+            error: 'not attempted: command connection failed after an earlier archive result'
+          })
+        }
+        break
+      }
     }
   }
   return results
@@ -176,6 +194,7 @@ registerCommand('ws open', {
     try {
       result = await sendCommand('workspace.open', { id, focus: focusResult.focus })
     } catch (err) {
+      if (err instanceof AppNotRunningError) throw err
       printError(err, { exitCode: isNotFoundError(errorMessage(err)) ? 3 : 1 })
       return
     }
@@ -262,6 +281,7 @@ registerCommand('ws close', {
     try {
       result = await sendCommand('workspace.close', { id })
     } catch (err) {
+      if (err instanceof AppNotRunningError) throw err
       printError(err, { exitCode: isNotFoundError(errorMessage(err)) ? 3 : 1 })
       return
     }
@@ -306,6 +326,7 @@ registerCommand('ws reopen', {
     try {
       result = await sendCommand('workspace.reopen', { id })
     } catch (err) {
+      if (err instanceof AppNotRunningError) throw err
       printError(err, { exitCode: isNotFoundError(errorMessage(err)) ? 3 : 1 })
       return
     }
@@ -354,6 +375,7 @@ registerCommand('ws rename', {
     try {
       result = await sendCommand('workspace.rename', { id, name })
     } catch (err) {
+      if (err instanceof AppNotRunningError) throw err
       printError(err, { exitCode: isNotFoundError(errorMessage(err)) ? 3 : 1 })
       return
     }

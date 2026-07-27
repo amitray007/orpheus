@@ -666,6 +666,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         })
       } catch (err) {
         console.error('[dashboard] background mount: failed to resolve workspace cwd:', err)
+        // The acknowledgement can lose a race to archive. Never mount a
+        // runtime for a row that main has already removed.
+        return
       }
       try {
         const scaleFactor = window.devicePixelRatio ?? 1

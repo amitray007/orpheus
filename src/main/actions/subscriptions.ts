@@ -182,7 +182,10 @@ function startSessionSubscription(
     invalidateSessionCache(workspaceId)
     void (async () => {
       try {
-        const result = await invoke({ id: actionId, params, workspaceId }, 'subscription')
+        const result = await invoke(
+          { id: actionId, params, workspaceId },
+          { consumerHint: 'subscription', senderId: null }
+        )
         if (result.ok && 'value' in result) {
           sendUpdate(result.value)
         }

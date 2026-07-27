@@ -1,6 +1,6 @@
 # Orpheus Agentic Control Plane
 
-**Status:** Phases 1–2 implemented and validated; Phases 3–8 planned<br>
+**Status:** Phases 1–2 implemented and validated; Phase 3 contract frozen and implementation in progress; Phases 4–8 planned<br>
 **Scope:** local Orpheus app, its renderer, bundled CLI, managed Claude sessions, and future durable automations
 
 The Agentic Control Plane makes Orpheus programmable through stable, semantic
@@ -19,6 +19,9 @@ runtime identity, target resolution, grants, permission capabilities, and risk
 tiers. Delivered phase records:
 [Phase 1: Control Foundation](phase-01-control-foundation.md) and
 [Phase 2: Self Identity + Read-only MCP](phase-02-self-identity-readonly-mcp.md).
+The frozen, not-yet-implemented Phase 3 contract is split between
+[Workspace Orchestration](phase-03-workspace-orchestration.md) and its
+[strict interfaces](phase-03-interfaces.md).
 
 ## Product promise
 
@@ -160,9 +163,14 @@ the native UI adapter. Automations invoke the core in-process.
    [phase-02-self-identity-readonly-mcp.md](phase-02-self-identity-readonly-mcp.md).
    Account-wide Home dashboard reads and active source refreshes remain
    renderer-only compatibility surfaces.
-3. **Workspace Orchestration** — expose semantic create/start/wait/send/close/
-   archive operations with lineage, same-project defaults, self-action guards,
-   background activation, and fan-out limits.
+3. **Workspace Orchestration — contract frozen; implementation in progress.**
+   One main-process service will expose semantic create/start/open/send/wait/
+   close/reopen/rename/archive operations plus lineage reads, with strict
+   same-project runtime identity, background defaults, typed receipts, and
+   preflighted Tier 3 archive. This status does not mean the operations are
+   implemented or MCP-visible. See
+   [phase-03-workspace-orchestration.md](phase-03-workspace-orchestration.md)
+   and [phase-03-interfaces.md](phase-03-interfaces.md).
 4. **Self Workbench/Panes Control** — let an agent control its own workbench and
    pane/layout state through domain commands such as open file, show diff,
    select layout, and start/stop a configured terminal. Do not expose click

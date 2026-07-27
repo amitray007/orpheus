@@ -181,16 +181,22 @@ function broadcastWorkspaceArchived(workspaceId: string, projectId: string): voi
 }
 
 export function createWorkspace({
+  id = crypto.randomUUID(),
   projectId,
   name,
+  nameIsAuto = true,
   cwd,
   forkedFromSessionId = null,
   parentWorkspaceId = null,
   worktreeParentCwd = null,
   worktreeBranch = null
 }: {
+  /** Optional server-owned id used by orchestration transactions. */
+  id?: string
   projectId: string
   name: string
+  /** Explicitly named workspaces are manual from their first persisted row. */
+  nameIsAuto?: boolean
   cwd: string
   /** When creating a forked workspace, pass the parent session ID so the
    *  record is written before broadcastWorkspaceCreated fires. Avoids a race
@@ -205,7 +211,6 @@ export function createWorkspace({
   worktreeBranch?: string | null
 }): WorkspaceRecord {
   const db = getDb()
-  const id = crypto.randomUUID()
   const createdAt = Date.now()
   const sanitizedName = sanitizeWorkspaceName(name)
 
@@ -228,13 +233,14 @@ export function createWorkspace({
 
   const row = db
     .prepare(
-      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order, forked_from_session_id, parent_workspace_id, worktree_parent_cwd, worktree_branch)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+      `INSERT INTO workspaces (id, project_id, name, name_is_auto, cwd, created_at, claude_session_id, sort_order, forked_from_session_id, parent_workspace_id, worktree_parent_cwd, worktree_branch)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
     )
     .get(
       id,
       projectId,
       sanitizedName,
+      nameIsAuto ? 1 : 0,
       cwd,
       createdAt,
       claudeSessionId,
@@ -365,6 +371,26 @@ export async function archiveWorkspace(
   return { archived: true, wasDirty }
 }
 
+/**
+ * Delete only the persisted workspace record.
+ *
+ * WorkspaceOrchestrationService owns native/runtime and worktree teardown
+ * ordering, so its adapter needs a DB-only final step. Existing renderer
+ * archive paths continue to use archiveWorkspace() above.
+ */
+export function removeWorkspaceRecord(id: string): boolean {
+  const db = getDb()
+  const ws = db.prepare('SELECT id, project_id FROM workspaces WHERE id = ?').get(id) as
+    | { id: string; project_id: string }
+    | undefined
+  if (!ws) return false
+  const result = db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
+  if (result.changes === 0) return false
+  invalidateClaudeWorkspaceSettingsCache(id)
+  broadcastWorkspaceArchived(ws.id, ws.project_id)
+  return true
+}
+
 export function closeWorkspace(id: string, lastTitle: string | null): WorkspaceRecord | undefined {
   const db = getDb()
   const row = db
@@ -400,7 +426,9 @@ export function renameWorkspace(id: string, name: string): WorkspaceRecord {
     .prepare('UPDATE workspaces SET name = ?, name_is_auto = 0 WHERE id = ? RETURNING *')
     .get(sanitizedName, id) as WorkspaceRow | undefined
   if (!row) throw new Error(`workspace not found: ${id}`)
-  return rowToWorkspaceRecord(row)
+  const record = rowToWorkspaceRecord(row)
+  broadcastWorkspaceChanged(record)
+  return record
 }
 
 export function reorderWorkspaces(projectId: string, orderedIds: string[]): void {
