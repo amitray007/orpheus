@@ -361,7 +361,8 @@ assert.ok(resourceDescription)
 assert.ok(patchDescription)
 assert.equal(effectiveDescription.idempotency, 'natural')
 assert.equal(resourceDescription.idempotency, 'natural')
-assert.equal(patchDescription.allowedSurfaces.includes('automation'), false)
+assert.equal(patchDescription.idempotency, 'natural')
+assert.deepEqual(patchDescription.allowedSurfaces, ['mcp', 'automation'])
 assert.deepEqual(resourceDescription.allowedSurfaces, ['mcp'])
 const automationScope = {
   kind: 'workspace' as const,
@@ -409,12 +410,26 @@ assert.equal(
   }),
   null
 )
-assert.equal(
-  await automationGrants.resolve('automation-patch', automationScope, patchDescription, {
+const patchBinding = await automationGrants.resolve(
+  'automation-patch',
+  automationScope,
+  patchDescription,
+  {
     workspaceId: workspace.id,
     patch: { effort: 'low' }
+  }
+)
+assert.ok(patchBinding)
+assert.deepEqual(patchBinding.permissions, ['settings.workspace.patch'])
+assert.equal(patchBinding.maxRiskTier, 2)
+assert.deepEqual(patchBinding.scope, automationScope)
+assert.equal(
+  await automationGrants.resolve('automation-patch-sibling', automationScope, patchDescription, {
+    workspaceId: sibling.id,
+    patch: { effort: 'low' }
   }),
-  null
+  null,
+  'automation settings mutations must not target a sibling workspace'
 )
 const automationContext = (
   automationId: string,
@@ -449,6 +464,12 @@ assert.equal(
   ),
   null
 )
+assert.ok(
+  registry.describeForContext(
+    SETTINGS_PATCH_WORKSPACE_ID,
+    automationContext('automation-patch', patchBinding)
+  )
+)
 const automatedEffective = await registry.invoke({
   id: SETTINGS_GET_EFFECTIVE_ID,
   input: { workspaceId: workspace.id },
@@ -462,6 +483,37 @@ const automatedSibling = await registry.invoke({
 })
 assert.equal(automatedSibling.ok, false)
 if (!automatedSibling.ok) assert.equal(automatedSibling.code, 'forbidden')
+const automatedPatch = await registry.invoke({
+  id: SETTINGS_PATCH_WORKSPACE_ID,
+  input: { workspaceId: workspace.id, patch: { effort: 'low' } },
+  context: automationContext('automation-patch', patchBinding)
+})
+assert.equal(automatedPatch.ok, true)
+const replayedAutomatedPatch = await registry.invoke({
+  id: SETTINGS_PATCH_WORKSPACE_ID,
+  input: { workspaceId: workspace.id, patch: { effort: 'low' } },
+  context: automationContext('automation-patch-replay', patchBinding)
+})
+assert.equal(
+  replayedAutomatedPatch.ok,
+  true,
+  'replaying a naturally idempotent exact-workspace patch must remain successful'
+)
+const automatedPatchSibling = await registry.invoke({
+  id: SETTINGS_PATCH_WORKSPACE_ID,
+  input: { workspaceId: sibling.id, patch: { effort: 'low' } },
+  context: automationContext('automation-patch-sibling', patchBinding)
+})
+assert.equal(automatedPatchSibling.ok, false)
+if (!automatedPatchSibling.ok) assert.equal(automatedPatchSibling.code, 'forbidden')
+workspaceSettings = {
+  workspaceId: workspace.id,
+  overrides: { effort: 'high' },
+  updatedAt: 300
+}
+dirty = false
+updates.length = 0
+recomputeCalls = 0
 composeCalls = 0
 scopedMcpCalls = 0
 scopedHookCalls = 0
@@ -540,7 +592,9 @@ assert.deepEqual(staleProjectRead, {
 for (const description of phase6Catalog) {
   assert.deepEqual(
     description.allowedSurfaces,
-    description.id === SETTINGS_GET_EFFECTIVE_ID ? ['mcp', 'automation'] : ['mcp']
+    [SETTINGS_GET_EFFECTIVE_ID, SETTINGS_PATCH_WORKSPACE_ID].includes(description.id)
+      ? ['mcp', 'automation']
+      : ['mcp']
   )
   assert.equal(description.inputSchema.additionalProperties, false)
   for (const excluded of [

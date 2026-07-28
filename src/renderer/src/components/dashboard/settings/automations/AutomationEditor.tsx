@@ -97,6 +97,125 @@ function operationLabel(operation: AutomationOperationCatalogEntry): string {
   return operation.id
 }
 
+const PATCH_CLEAR_VALUE = '__clear__'
+const PATCH_SET_MODEL_VALUE = '__set_model__'
+
+function patchRecord(value: unknown): Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+function updatePatchProperty(
+  value: unknown,
+  key: 'model' | 'effort',
+  next: unknown,
+  remove = false
+): Record<string, unknown> {
+  const updated = { ...patchRecord(value) }
+  if (remove) delete updated[key]
+  else updated[key] = next
+  return updated
+}
+
+function SettingsPatchField({
+  field,
+  value,
+  disabled,
+  onChange
+}: {
+  field: Extract<SimpleSchemaField, { kind: 'settings-patch' }>
+  value: unknown
+  disabled: boolean
+  onChange: (value: unknown) => void
+}): React.JSX.Element {
+  const modelModeId = useId()
+  const modelValueId = useId()
+  const effortId = useId()
+  const patch = patchRecord(value)
+  const hasModel = Object.hasOwn(patch, 'model')
+  const model = patch['model']
+  const modelMode = !hasModel ? '' : model === null ? PATCH_CLEAR_VALUE : PATCH_SET_MODEL_VALUE
+  const hasEffort = Object.hasOwn(patch, 'effort')
+  const effort = patch['effort']
+  const effortValue = !hasEffort ? '' : effort === null ? PATCH_CLEAR_VALUE : String(effort)
+
+  return (
+    <Field label={field.label} description={field.description}>
+      <div className="flex flex-col gap-2.5 rounded-md border border-border-default/60 bg-surface-overlay/40 p-2.5">
+        <div className="grid gap-1">
+          <label htmlFor={modelModeId} className="text-[11px] font-medium text-text-secondary">
+            Model
+          </label>
+          <Select
+            id={modelModeId}
+            value={modelMode}
+            options={[
+              { value: '', label: 'No change' },
+              { value: PATCH_CLEAR_VALUE, label: 'Clear workspace override' },
+              { value: PATCH_SET_MODEL_VALUE, label: 'Set model' }
+            ]}
+            onChange={(next) => {
+              if (next === '') onChange(updatePatchProperty(patch, 'model', undefined, true))
+              else if (next === PATCH_CLEAR_VALUE) {
+                onChange(updatePatchProperty(patch, 'model', null))
+              } else {
+                onChange(
+                  updatePatchProperty(patch, 'model', typeof model === 'string' ? model : '')
+                )
+              }
+            }}
+            ariaLabel="Workspace model patch action"
+            disabled={disabled}
+          />
+          {modelMode === PATCH_SET_MODEL_VALUE && (
+            <input
+              id={modelValueId}
+              type="text"
+              value={typeof model === 'string' ? model : ''}
+              required
+              minLength={field.model.minLength}
+              maxLength={field.model.maxLength}
+              pattern={field.model.pattern}
+              disabled={disabled}
+              onChange={(event) =>
+                onChange(updatePatchProperty(patch, 'model', event.target.value))
+              }
+              placeholder="claude-sonnet-5"
+              aria-label="Workspace model value"
+              className={INPUT_CLASS}
+            />
+          )}
+        </div>
+        <div className="grid gap-1">
+          <label htmlFor={effortId} className="text-[11px] font-medium text-text-secondary">
+            Effort
+          </label>
+          <Select
+            id={effortId}
+            value={effortValue}
+            options={[
+              { value: '', label: 'No change' },
+              { value: PATCH_CLEAR_VALUE, label: 'Clear workspace override' },
+              ...field.effortOptions.map((option) => ({ value: option, label: option }))
+            ]}
+            onChange={(next) => {
+              if (next === '') onChange(updatePatchProperty(patch, 'effort', undefined, true))
+              else {
+                onChange(
+                  updatePatchProperty(patch, 'effort', next === PATCH_CLEAR_VALUE ? null : next)
+                )
+              }
+            }}
+            ariaLabel="Workspace effort patch"
+            disabled={disabled}
+          />
+        </div>
+      </div>
+    </Field>
+  )
+}
+
 // SchemaField deliberately exhausts the small, server-approved field vocabulary.
 // eslint-disable-next-line sonarjs/cognitive-complexity
 function SchemaField({
@@ -182,6 +301,11 @@ function SchemaField({
           })}
         </div>
       </Field>
+    )
+  }
+  if (field.kind === 'settings-patch') {
+    return (
+      <SettingsPatchField field={field} value={value} disabled={disabled} onChange={onChange} />
     )
   }
   if (field.kind === 'number') {

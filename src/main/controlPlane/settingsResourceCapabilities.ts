@@ -24,6 +24,7 @@ const RESOURCE_KINDS = ['mcp_server', 'hook', 'slash_command', 'subagent'] as co
 const SETTINGS_RESOURCE_OPERATIONS = new Set<string>(SETTINGS_RESOURCE_OPERATION_IDS)
 const READ_SURFACES = ['mcp', 'automation'] as const
 const MCP_SURFACE = ['mcp'] as const
+const MUTATION_SURFACES = ['mcp', 'automation'] as const
 const MAX_METADATA_LENGTH = 512
 const MAX_METADATA_ITEMS = 64
 const MAX_PUBLISHED_RESOURCES = 256
@@ -376,7 +377,8 @@ export function createSettingsResourceCapabilities(service: SettingsResourceServ
     id: SETTINGS_PATCH_WORKSPACE_ID,
     version: 1,
     kind: 'mutation',
-    description: 'Patch only this runtime workspace model and effort overrides.',
+    description:
+      'Naturally idempotent patch of model and effort overrides for the exact bound workspace.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -387,11 +389,12 @@ export function createSettingsResourceCapabilities(service: SettingsResourceServ
       }
     },
     outputSchema: patchOutputSchema(),
-    allowedSurfaces: MCP_SURFACE,
+    allowedSurfaces: MUTATION_SURFACES,
     permission: 'settings.workspace.patch',
     scope: { kind: 'workspace', inputField: 'workspaceId' },
     risk: { tier: 2, label: 'write' },
     declaredEffects: ['db.write', 'workspace.dirty.recompute'],
+    idempotency: 'natural',
     validateInput: isPatchInput,
     handler: (input, context) => service.patchWorkspace(input, context)
   }

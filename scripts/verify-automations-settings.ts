@@ -16,6 +16,7 @@ import {
   operationSchemaForm,
   reconcileAutomationDefinitions,
   resetOperation,
+  SETTINGS_PATCH_WORKSPACE_OPERATION_ID,
   shouldConfirmAutomationNavigation,
   shouldRefreshSelectedRuns,
   validateAutomationForm
@@ -272,6 +273,131 @@ assert.equal(
   'a newly narrowed workspace scope remains incomplete until a workspace is selected'
 )
 
+const settingsPatchOperation: AutomationOperationCatalogEntry = {
+  id: SETTINGS_PATCH_WORKSPACE_OPERATION_ID,
+  version: 1,
+  kind: 'mutation',
+  description: 'Patch exact workspace settings.',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['patch'],
+    properties: {
+      workspaceId: { type: 'string', minLength: 1, maxLength: 128 },
+      patch: {
+        type: 'object',
+        additionalProperties: false,
+        minProperties: 1,
+        properties: {
+          model: {
+            anyOf: [
+              {
+                type: 'string',
+                minLength: 1,
+                maxLength: 255,
+                pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$'
+              },
+              { type: 'null' }
+            ]
+          },
+          effort: {
+            anyOf: [{ enum: ['low', 'medium', 'high'] }, { type: 'null' }]
+          }
+        }
+      }
+    }
+  },
+  outputSchema: { type: 'object' },
+  permission: 'settings.workspace.patch',
+  scope: { kind: 'workspace', inputField: 'workspaceId' },
+  risk: { tier: 2, label: 'write' },
+  declaredEffects: ['db.write', 'workspace.dirty.recompute'],
+  idempotency: 'natural'
+}
+const settingsPatchCatalog: AutomationCatalog = {
+  ...catalog,
+  operations: [settingsPatchOperation]
+}
+const settingsPatchForm = operationSchemaForm(settingsPatchOperation)
+assert.deepEqual(
+  settingsPatchForm.fields.map(({ kind, key }) => ({ kind, key })),
+  [{ kind: 'settings-patch', key: 'patch' }],
+  'only the fixed settings patch object may use the nested editor'
+)
+assert.deepEqual(settingsPatchForm.unsupported, [])
+const emptySettingsPatchState = {
+  ...emptyAutomationForm(settingsPatchCatalog),
+  name: 'Tune workspace',
+  projectId: 'project-1',
+  workspaceId: 'workspace-1'
+}
+assert.equal(
+  validateAutomationForm(settingsPatchCatalog, emptySettingsPatchState).valid,
+  false,
+  'a settings patch must select at least one allowlisted change'
+)
+const settingsPatchState = {
+  ...emptySettingsPatchState,
+  params: { patch: { model: null, effort: 'high' } }
+}
+assert.deepEqual(validateAutomationForm(settingsPatchCatalog, settingsPatchState), {
+  valid: true,
+  errors: []
+})
+const settingsPatchDraft = buildAutomationDraft(settingsPatchCatalog, settingsPatchState)
+assert.deepEqual(settingsPatchDraft?.scope, {
+  kind: 'workspace',
+  projectId: 'project-1',
+  workspaceId: 'workspace-1'
+})
+assert.deepEqual(settingsPatchDraft?.params, {
+  patch: { model: null, effort: 'high' },
+  workspaceId: 'workspace-1'
+})
+assert.equal(settingsPatchDraft?.enabled, false, 'settings patch creation must start disabled')
+assert.equal(settingsPatchDraft?.idempotency, 'natural')
+assert.equal(
+  validateAutomationForm(settingsPatchCatalog, {
+    ...settingsPatchState,
+    params: { patch: { model: ' invalid ' } }
+  }).valid,
+  false,
+  'invalid model identifiers must fail before persistence'
+)
+assert.equal(
+  validateAutomationForm(settingsPatchCatalog, {
+    ...settingsPatchState,
+    params: { patch: { apiKey: 'forbidden' } }
+  }).valid,
+  false,
+  'the nested editor must reject arbitrary patch properties'
+)
+assert.ok(settingsPatchDraft)
+const settingsPatchDefinition: AutomationDefinition = {
+  ...settingsPatchDraft,
+  id: 'automation-settings-patch',
+  enabled: false,
+  operationVersion: 1,
+  nextRunAt: 60_000,
+  createdAt: 10,
+  updatedAt: 11
+}
+const replayedSettingsPatch = buildAutomationDraft(
+  settingsPatchCatalog,
+  automationFormFromDefinition(settingsPatchDefinition)
+)
+assert.deepEqual(
+  replayedSettingsPatch?.params,
+  settingsPatchDraft.params,
+  'persisted nested clear/set semantics must survive editor replay'
+)
+
+const arbitraryObjectOperation: AutomationOperationCatalogEntry = {
+  ...settingsPatchOperation,
+  id: 'settings.unsafeObject'
+}
+assert.deepEqual(operationSchemaForm(arbitraryObjectOperation).unsupported, ['patch'])
+
 const selfOperation: AutomationOperationCatalogEntry = {
   ...operation,
   id: 'self.get',
@@ -451,6 +577,14 @@ const editorSource = readFileSync(
 )
 assert.match(editorSource, /automationScopeEditorMode/)
 assert.match(editorSource, /scopeMode === 'workspace'/)
+assert.match(editorSource, /function SettingsPatchField/)
+assert.match(editorSource, /Workspace model patch action/)
+assert.match(editorSource, /Clear workspace override/)
+assert.doesNotMatch(
+  editorSource,
+  /JSON parameters|textarea[\s\S]{0,200}JSON/,
+  'the settings patch editor must not expose an arbitrary JSON parameter surface'
+)
 const recoveryStart = sectionSource.indexOf('const recoverAfterMutationError')
 const recoveryEnd = sectionSource.indexOf('\n  useEffect(', recoveryStart)
 assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart)

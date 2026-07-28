@@ -8,8 +8,10 @@ import type {
 } from '@shared/types'
 
 export const AUTOMATION_RUN_POLL_MS = 4_000
+export const SETTINGS_PATCH_WORKSPACE_OPERATION_ID = 'settings.patchWorkspace'
 
 type JsonRecord = Record<string, unknown>
+const SETTINGS_MODEL_PATTERN = '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$'
 
 export type SimpleSchemaField =
   | Readonly<{
@@ -53,6 +55,19 @@ export type SimpleSchemaField =
       description: string | null
       required: boolean
       options: readonly string[]
+    }>
+  | Readonly<{
+      kind: 'settings-patch'
+      key: string
+      label: string
+      description: string | null
+      required: true
+      model: Readonly<{
+        minLength: number
+        maxLength: number
+        pattern: typeof SETTINGS_MODEL_PATTERN
+      }>
+      effortOptions: readonly string[]
     }>
 
 export type SchemaForm = Readonly<{
@@ -101,6 +116,10 @@ function isRecord(value: unknown): value is JsonRecord {
   return value != null && typeof value === 'object' && !Array.isArray(value)
 }
 
+function onlyKeys(value: JsonRecord, keys: readonly string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key))
+}
+
 function stringArray(value: unknown): string[] | null {
   return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : null
 }
@@ -127,6 +146,68 @@ function fieldDescription(schema: JsonRecord): string | null {
   return typeof schema['description'] === 'string' && schema['description'].trim().length > 0
     ? schema['description'].trim()
     : null
+}
+
+function nullableBranches(schema: JsonRecord): readonly JsonRecord[] | null {
+  if (!Array.isArray(schema['anyOf']) || !schema['anyOf'].every(isRecord)) return null
+  const branches = schema['anyOf']
+  return branches.length === 2 && branches.some((branch) => branch['type'] === 'null')
+    ? branches
+    : null
+}
+
+function settingsPatchSchemaField(
+  operation: AutomationOperationCatalogEntry,
+  key: string,
+  schema: JsonRecord,
+  required: boolean
+): SimpleSchemaField | null {
+  if (
+    operation.id !== SETTINGS_PATCH_WORKSPACE_OPERATION_ID ||
+    key !== 'patch' ||
+    !required ||
+    schema['type'] !== 'object' ||
+    schema['additionalProperties'] !== false ||
+    schema['minProperties'] !== 1 ||
+    !isRecord(schema['properties']) ||
+    !Object.keys(schema['properties']).every((property) =>
+      ['model', 'effort'].includes(property)
+    ) ||
+    Object.keys(schema['properties']).length !== 2
+  ) {
+    return null
+  }
+  const modelSchema = schema['properties']['model']
+  const effortSchema = schema['properties']['effort']
+  if (!isRecord(modelSchema) || !isRecord(effortSchema)) return null
+  const modelBranches = nullableBranches(modelSchema)
+  const effortBranches = nullableBranches(effortSchema)
+  const model = modelBranches?.find((branch) => branch['type'] === 'string')
+  const effort = effortBranches?.find((branch) => Array.isArray(branch['enum']))
+  const effortOptions = effort == null ? null : stringArray(effort['enum'])
+  if (
+    model?.['minLength'] !== 1 ||
+    model['maxLength'] !== 255 ||
+    model['pattern'] !== SETTINGS_MODEL_PATTERN ||
+    effortOptions == null ||
+    effortOptions.length === 0 ||
+    effortOptions.length > 16
+  ) {
+    return null
+  }
+  return {
+    kind: 'settings-patch',
+    key,
+    label: fieldLabel(key, schema),
+    description: fieldDescription(schema),
+    required: true,
+    model: {
+      minLength: 1,
+      maxLength: 255,
+      pattern: SETTINGS_MODEL_PATTERN
+    },
+    effortOptions
+  }
 }
 
 // The schema catalog is a compact discriminated interpreter: each supported JSON Schema
@@ -218,6 +299,12 @@ export function operationSchemaForm(operation: AutomationOperationCatalogEntry):
         })
         break
       }
+      case 'object': {
+        const settingsPatch = settingsPatchSchemaField(operation, key, rawSchema, isRequired)
+        if (settingsPatch == null) unsupported.push(key)
+        else fields.push(settingsPatch)
+        break
+      }
       default:
         unsupported.push(key)
     }
@@ -243,6 +330,8 @@ function initialParams(operation: AutomationOperationCatalogEntry): Record<strin
       params[field.key] = []
     } else if (field.kind === 'enum' && field.required) {
       params[field.key] = field.options[0] ?? ''
+    } else if (field.kind === 'settings-patch') {
+      params[field.key] = {}
     }
   }
   return params
@@ -414,6 +503,39 @@ function inRange(value: number, bounds: Readonly<{ min: number; max: number }>):
   return Number.isSafeInteger(value) && value >= bounds.min && value <= bounds.max
 }
 
+function settingsPatchError(
+  field: Extract<SimpleSchemaField, { kind: 'settings-patch' }>,
+  value: unknown
+): string | null {
+  if (
+    !isRecord(value) ||
+    !onlyKeys(value, ['model', 'effort']) ||
+    Object.keys(value).length === 0
+  ) {
+    return `${field.label} must change or clear at least one setting.`
+  }
+  if (Object.hasOwn(value, 'model')) {
+    const model = value['model']
+    if (
+      model !== null &&
+      (typeof model !== 'string' ||
+        model !== model.trim() ||
+        model.length < field.model.minLength ||
+        model.length > field.model.maxLength ||
+        !new RegExp(field.model.pattern).test(model))
+    ) {
+      return 'Model must be a valid bounded model identifier or Clear.'
+    }
+  }
+  if (Object.hasOwn(value, 'effort')) {
+    const effort = value['effort']
+    if (effort !== null && (typeof effort !== 'string' || !field.effortOptions.includes(effort))) {
+      return 'Effort must be one of the allowlisted values or Clear.'
+    }
+  }
+  return null
+}
+
 // Keep all cross-field budget and scope invariants in one deterministic validator so
 // the UI and verifier cannot drift into separate acceptance rules.
 // eslint-disable-next-line sonarjs/cognitive-complexity
@@ -463,6 +585,10 @@ export function validateAutomationForm(
       ) {
         errors.push(`${field.label} is outside its allowed range.`)
       }
+    }
+    if (field.kind === 'settings-patch') {
+      const error = settingsPatchError(field, value)
+      if (error != null) errors.push(error)
     }
   }
   if (state.triggerKind === 'event') {
