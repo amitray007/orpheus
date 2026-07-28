@@ -1,9 +1,8 @@
 # Phase 4: Workbench and Pane Interfaces
 
-**Status:** existing controls implemented and deterministically tested; core
-live MCP/renderer controls validated. The workspace-terminal create/delete
-delta is deterministically verified; packaged-live validation remains
-pending.<br>
+**Status:** implemented, deterministically tested, and packaged-live validated.
+Workspace-owned terminal creation, output observation, Retina-correct rendering,
+and exact dual-CAS deletion passed against the packaged Dev app.<br>
 **Phase contract:** [phase-04-workbench-pane-control.md](phase-04-workbench-pane-control.md)
 
 All descriptors are version 1, use `additionalProperties: false`, and are
@@ -188,7 +187,9 @@ layout/terminal target. A renderer loss after a native effect returns a
 `partial` receipt containing only effects known to have occurred.
 
 The focused Workbench/pane lifecycle verifier, node and web typechecks, and the
-aggregate agentic harness pass for this source. The aggregate tuple is 48
-registered, 48 MCP, 48 default-exposed, 48 in the explicit Phase 4–6 scope, and
-2 automation-eligible operations. Packaged-live lifecycle validation remains
-pending.
+aggregate agentic regression suite pass for this source. The inventory tuple is
+48 registered, 48 MCP, 48 default-exposed, 48 runtime-visible, and 2
+automation-eligible operations. Packaged-live validation confirmed
+Retina-correct terminal scale, colored output, direct observation through the
+returned target, exact deletion, post-delete `not_found`, and preservation of
+the workspace Claude terminal.

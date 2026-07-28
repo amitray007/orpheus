@@ -31,7 +31,7 @@ import { isTrustedRendererUrl } from '../src/main/rendererTrust'
 const secretValues = [
   'cmd-token-value',
   'runtime-lease-value',
-  'phase8-qa-value',
+  'custom-service-token-value',
   'anthropic-api-value',
   'future-credential-value',
   'nested-password-value'
@@ -44,7 +44,7 @@ const result = redactLogValue({
   envKeys: ['ORPHEUS_CMD_TOKEN', 'TERM', 'PATH'],
   ORPHEUS_CMD_TOKEN: secretValues[0],
   ORPHEUS_RUNTIME_LEASE_TOKEN: secretValues[1],
-  ORPHEUS_PHASE8_QA_TOKEN: secretValues[2],
+  X_CUSTOM_SERVICE_TOKEN: secretValues[2],
   ANTHROPIC_API_KEY: secretValues[3],
   futureSessionCredential: secretValues[4],
   nested: {
@@ -70,7 +70,7 @@ assert.equal(
 for (const key of [
   'ORPHEUS_CMD_TOKEN',
   'ORPHEUS_RUNTIME_LEASE_TOKEN',
-  'ORPHEUS_PHASE8_QA_TOKEN',
+  'X_CUSTOM_SERVICE_TOKEN',
   'ANTHROPIC_API_KEY',
   'future_auth_token',
   'futuretoken',

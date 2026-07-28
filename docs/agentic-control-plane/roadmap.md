@@ -45,9 +45,9 @@ advertise `tools.listChanged`, long-poll for revision changes, refresh
 `tools/list`, and recheck authorization at invocation time. Exposure changes do
 not require a workspace or MCP restart. Before the automation-management
 descriptors landed, the all-enabled deterministic snapshot contained 37 of 37
-MCP-eligible descriptors. The post-pane-lifecycle 2026-07-28 harness snapshot
-reports 48 registered, 48 MCP, 48 default-exposed, 48 in the explicit Phase
-4–6 scope, and 2 automation-eligible operations. These dated counts are
+MCP-eligible descriptors. The current harness snapshot reports 48 registered,
+48 MCP, 48 default-exposed, 48 runtime-visible, and 2 automation-eligible
+operations. These dated counts are
 verification evidence, not a stable catalog contract.
 
 Current source also publishes scoped, audited `reviews.setResolved` to MCP,
@@ -465,18 +465,19 @@ rewriting these results.
 | Phase 1 registry and review adapters                  | Dedicated control-plane harness and adapter guards pass                                                                             | Exercised indirectly by later packaged runs                                                                                                                  | Deterministic pass; no new direct live proof required                                                       |
 | Phase 2 identity and default MCP reads                | Runtime-lease, policy, bridge, and schema harnesses pass                                                                            | Historical bound-identity/denial run retained; current batch discovered exactly 11 default tools and 28 exact-scoped tools                                   | Current discovery passed; a fresh final-build `self.get` refresh remains                                    |
 | Phase 3 workspace orchestration and CLI compatibility | Foundation, main, CLI, and renderer-action harnesses pass                                                                           | Historical lifecycle/fork/archive/audit evidence retained; current packaged `open --background` mounted an unmounted Dev workspace while Home stayed visible | Background-mount and terminal-color repairs live-reconfirmed; three focused paths remain deterministic-only |
-| Phase 4 Workbench/Panes                               | Domain, policy, renderer-broker, and exact-scope QA grant harnesses pass                                                            | Current batch exercised state, tab/file/diff/layout control and pane start/focus/stop with real acknowledgements                                             | Core positive paths current-batch live; unavailable/partial live paths pending                              |
+| Phase 4 Workbench/Panes                               | Domain, policy, renderer-broker, and exact persisted-scope harnesses pass                                                           | Current batch exercised state, tab/file/diff/layout control and pane start/focus/stop with real acknowledgements                                             | Core positive paths current-batch live; unavailable/partial live paths pending                              |
 | Phase 5 terminal observation                          | Source/freshness, bounds, subscription, exact scoped pane, unsupported-tail, de-duplication, and denial harnesses pass after repair | Rebuilt app exposed the mounted exact-scoped pane through list/get/tail/subscribe, then omitted it and returned `not_found` after stop                       | Current-batch live                                                                                          |
 | Phase 6 settings/resources                            | Layering, allowlist, grant, scope, redaction, and restart-to-apply harnesses pass                                                   | Current batch exercised effective settings, sanitized metadata, patch, and restore to effective `high`                                                       | Core positive paths current-batch live; native restart-required path pending                                |
-| Phase 7 automations                                   | Persistence, scheduler, outbox, recovery, idempotency, budget, grant, audit, and QA-fixture harnesses pass                          | Current batch exercised schedule/event runs, duplicate reuse, restart recovery, disable, audit correlation, and cleanup                                      | Current-batch live                                                                                          |
-| Phase 8 QA authentication and aggregate inventory     | Strict parsing, separate credential, environment scrub, catalog, surface/idempotency, and grant-omission harnesses pass             | Current batch rejected missing QA auth and malformed action, discovered default/scoped inventories, ran packaged fixtures, and rebuilt the final source      | Major current-batch paths passed; residual negatives recorded below                                         |
+| Phase 7 automations                                   | Persistence, scheduler, outbox, recovery, idempotency, budget, grant, audit, production management, and event-bridge harnesses pass | Historical packaged fixture batch exercised schedule/event runs, duplicate reuse, restart recovery, disable, audit correlation, and cleanup                  | Historical core live; production MCP management live paths remain pending                                  |
+| Phase 8 integrated validation                         | Blocking aggregate covers every focused verifier; temporary injected-grant and command-fixture runtime modules are removed          | Historical packaged fixture run retained below; final packaged pane, observation, scope round-trip, scale, color, and cleanup paths passed                    | Current deterministic suite is CI-blocking; residual live negatives recorded below                          |
 | CLI preservation                                      | Compatibility harness covers live envelopes; offline readers remain independent of the app                                          | Historical lifecycle evidence retained; current packaged background-open and app-stopped project/workspace/transcript reads passed                           | Existing CLI retained                                                                                       |
 | Audit/log redaction                                   | Dedicated redaction, exhaustive legacy purge, hostile-input, export, and operation-audit checks pass                                | Packaged main logs emitted structural counts/key names rather than values; automation runs carried audit correlation; Gitleaks found no staged-diff leaks    | Current source and run evidence passed                                                                      |
 
-The aggregate `test:agentic-integration` script composes the Phase 4–6 QA grant,
-Phase 8 QA action-authentication, durable-automation, cross-phase inventory, and
-log-redaction harnesses. It does not include every earlier phase harness and
-does not replace `bun run check` or the packaged checklist below.
+The blocking `test:agentic` aggregate builds the CLI and MCP transports once,
+then runs every focused control-plane, identity, workspace, review, Workbench,
+pane, terminal, settings, automation, redaction, and MCP bridge verifier. The
+legacy `test:agentic-integration` name aliases the same complete suite. It
+complements `bun run check` and the packaged checklist below.
 
 ### Historical deterministic checklist
 
@@ -501,7 +502,7 @@ historical evidence above.
 - [x] Run the dedicated pane provisioning/deletion store, policy, receipt,
       redaction, and renderer reconciliation harnesses.
 - [x] Repeat the aggregate agentic integration harness with the two descriptors
-      registered; it reports 48 registered/MCP/default/explicit Phase 4–6 and 2
+      registered; it reports 48 registered/MCP/default/runtime-visible and 2
       automation-eligible operations.
 - [x] Repeat the full repository check with the two descriptors registered.
 - [x] Package and launch the exact source; confirm 48 managed MCP tools.
@@ -539,10 +540,12 @@ No item below is claimed by source inspection or a deterministic harness.
       exact Phase 4–6 project/workspace/layout/terminal grant.
 - [ ] Reconfirm pending, revoked, stale, replaced, mismatched, and production
       identities remain at the default grant on the final build.
-- [x] Verify a missing QA credential and malformed non-string Phase 8 action
-      fail before fixture dispatch.
-- [ ] Reconfirm wrong ordinary command and separate QA credentials on the final
-      build.
+- [x] Historical packaged evidence confirmed a missing QA credential and
+      malformed non-string action failed before fixture dispatch.
+- [x] Retire the packaged-only QA credential, environment inputs, and command
+      action. Current source asserts that no QA dispatch seam remains, while the
+      blocking generic command-action verifier preserves strict bounded-string
+      parsing coverage.
 - [x] Exercise packaged CLI `ws open --background` against an unmounted Dev
       workspace; it returned without timeout and Home remained visible.
 - [ ] Exercise task start/send, focused open, and the ordinary renderer
@@ -577,13 +580,11 @@ No item below is claimed by source inspection or a deterministic harness.
       panel remains because it is the built-in non-deletable panel; it now has
       zero layouts.
 
-The final layout deletion also reproduced a pre-existing renderer selection
-race outside the control-plane diff: SQLite durably deleted the fixture and
-cleared the foreign-keyed selection, while a stale renderer snapshot briefly
-tried to persist the deleted layout id and logged a foreign-key error. No data
-was lost and the UI converged to the empty built-in panel. Follow-up should
-revision-gate pane layout snapshots or invalidate them before clearing the
-active selection.
+The final-layout renderer selection race found during the historical batch is
+resolved. Deletion now invalidates the stale pane snapshot before clearing or
+reconciling active selection, so the removed layout cannot be re-seeded and no
+foreign-key write is attempted. `verify-pane-layout-deletion.ts` keeps the
+final-layout and sibling-selection cases in the blocking regression suite.
 
 ### Completion rule
 

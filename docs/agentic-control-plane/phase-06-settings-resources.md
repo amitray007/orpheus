@@ -84,7 +84,9 @@ authoritative sources produce a stable `unavailable` result.
 
 MCP access to all three operations requires a valid Phase 2 runtime lease.
 The two Tier 0 reads additionally accept a server-resolved automation binding;
-the workspace patch remains MCP-only.
+the workspace patch remains MCP-only. Project metadata results use a
+five-second, 128-entry bounded cache keyed by project and requested kinds, so
+repeated reads do not continuously rescan project files.
 
 - Reads may target the bound workspace/project or an explicitly named
   same-project workspace/project.

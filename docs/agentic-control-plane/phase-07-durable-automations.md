@@ -116,7 +116,8 @@ Definitions cannot contain grants. A server-owned grant source resolves from
 the automation id, already validated params, requested scope, and canonical
 descriptor. Main's fixed default policy grants only the two effect-free Phase 6
 reads `settings.getEffective` and `resources.listProjectMetadata`, at Tier 0
-and for the exact existing workspace/project scope. App scope, mutations, and
+and for the exact existing workspace/project scope. Metadata scans are
+amortized by a five-second, 128-entry bounded cache. App scope, mutations, and
 all other operations fail closed.
 Creation/update, enable, scheduler reconciliation, and immediately-before-
 invoke checks all re-resolve the grant. Absence of a grant fails closed.
@@ -247,27 +248,19 @@ Settings Agent Tools may further suppress their `automations` category without
 widening authority. This MCP surface is source/deterministic evidence only until
 a fresh packaged managed-runtime pass exercises it.
 
-The post-pane-lifecycle 2026-07-28 agentic harness snapshot reports 48
-registered, 48 MCP, 48 default-exposed, 48 in the explicit Phase 4–6 scope, and
-2 automation-eligible operations. That count is dated verification evidence
-rather than a stable catalog contract; the two automation-eligible operations
-remain the fixed, effect-free Phase 6 reads.
+The current agentic harness snapshot reports 48 registered, 48 MCP, 48
+default-exposed, 48 runtime-visible, and 2 automation-eligible operations. That
+count is dated verification evidence rather than a stable catalog contract;
+the two automation-eligible operations remain the fixed, effect-free Phase 6
+reads.
 
-For the historical batched live validation, the authenticated command socket
-exposed a fixed fixture protocol only when the process identity was exactly `Orpheus Dev`
-and startup captures valid `ORPHEUS_PHASE8_QA=1`,
-`ORPHEUS_PHASE8_QA_WORKSPACE_ID`, and a separate high-entropy
-`ORPHEUS_PHASE8_QA_TOKEN`. Every QA request needs both the ordinary command
-token and the separate QA token. All QA environment keys, including the Phase
-4–6 QA flag/scope, are deleted from `process.env` before a native terminal can
-mount.
-
-The configured workspace is the only target and cannot be overridden in the
-request. The CLI principal is a non-secret fingerprint of the QA credential.
-Creation reuses an existing fixed fixture, status returns at most 50 runs
-recent-first, and explicit cleanup transactionally deletes only fixed fixtures
-for the configured target with management-audit correlation. Callers cannot
-supply workspace ids, operation ids, params, grants, or SQL.
+The authenticated command-socket fixture used by the historical packaged batch
+has been removed from the runtime now that production Settings and MCP
+management paths exist. Its environment capture, injected grants, extra command
+dispatch, and fixture controller are not included in the application bundle.
+The historical results below remain evidence for that build only; current
+regression coverage invokes the production service, scheduler, event bridge,
+renderer-management, and MCP-management interfaces directly.
 
 ## Acceptance boundary
 
@@ -289,9 +282,10 @@ Deterministic verification covers:
 - audit/run correlation and recursive result redaction;
 - real Phase 6 automation discovery, natural idempotency, exact-scope grants,
   cross-project denial, and mutation exclusion;
-- independent QA credential rejection and environment scrubbing;
-- exact configured QA target, fixture reuse, recent-first bounded status,
-  audited cleanup, event bridge, and truthful CLI/automation audit correlation;
+- production management create/update/enable/delete/list/retry policy, revision,
+  audit, and ownership behavior;
+- transactional workspace-event persistence, post-commit delivery, and
+  run/audit correlation without a packaged-only fixture;
 - absence of CLI subprocess and renderer-gesture dependencies.
 
 The historical packaged Orpheus Dev integration batch exercised the fixed QA
@@ -309,7 +303,8 @@ fixture before the production management API was added:
 - schedule/event definitions were disabled and scoped fixture cleanup
   completed.
 
-These remain packaged fixture results, not current-live evidence for the
-production MCP management API or manual retry generations. The separate
-2026-07-28 Settings save proves only the no-op round trip, retained
-workspace-scope, and revision-advance path described above.
+These remain historical packaged fixture results, not current-live evidence for
+the production MCP management API or manual retry generations. The fixture code
+has since been removed. The separate 2026-07-28 Settings save proves only the
+no-op round trip, retained workspace-scope, and revision-advance path described
+above.

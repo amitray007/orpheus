@@ -290,9 +290,9 @@ client prompt neither adds an Orpheus gate nor changes Orpheus grants or
 exposure.
 Before the automation-management descriptors landed on 2026-07-28, the
 all-enabled deterministic snapshot contained 37 of 37 MCP-eligible descriptors;
-the post-pane-lifecycle harness snapshot reports 48 registered, 48 MCP, 48
-default-exposed, 48 in the explicit Phase 4–6 scope, and 2 automation-eligible
-operations. These counts are dated evidence, not a normative catalog contract.
+the current harness snapshot reports 48 registered, 48 MCP, 48
+default-exposed, 48 runtime-visible, and 2 automation-eligible operations.
+These counts are dated evidence, not a normative catalog contract.
 
 The current vocabulary also includes `automations.manage`. Its nine
 `automations.*` descriptors are MCP-only, require a trusted live
@@ -301,21 +301,21 @@ project and workspace. They never declare the `automation` surface, so an
 automation cannot create, enable, delete, or retry another automation.
 
 The earlier Phase 8 `Orpheus Dev` injected-grant run remains historical live
-evidence for the former restricted default. It must not be read as the current
-production permission model. There is still no user-editable grant store or
-grant-administration UI; Agent Tools preferences only reduce exposure.
+evidence for the former restricted default. The packaged-only injection module,
+environment inputs, and command fixture have now been removed. It must not be
+read as the current production permission model. There is still no
+user-editable grant store or grant-administration UI; Agent Tools preferences
+only reduce exposure.
 
 Automation authority is separate from runtime authority. Definitions cannot
 grant themselves permissions. Main's fixed automation source permits only
 `settings.getEffective` and `resources.listProjectMetadata`, both effect-free
 Tier 0 queries with natural idempotency, against a server-resolved exact
-workspace/project scope. App scope, mutations, and every other descriptor fail
-closed.
+workspace/project scope. Metadata scans use a five-second, 128-entry bounded
+cache. App scope, mutations, and every other descriptor fail closed.
 
-The separate Phase 8 QA command credential is fixture authentication, not a
-runtime or automation grant. It is accepted only together with the ordinary
-command-socket token and cannot supply targets, operation ids, params, grants,
-or SQL.
+The retired Phase 8 QA command credential was fixture authentication, never a
+runtime or automation grant. No current command-server action accepts it.
 
 ## Risk tiers
 
