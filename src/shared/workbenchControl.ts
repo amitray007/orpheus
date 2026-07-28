@@ -92,6 +92,11 @@ export type PaneTerminalLayoutMutationV1 = {
   terminalId: string
   layoutUpdatedAt: number
   terminalUpdatedAt: number
+  observationTarget: {
+    kind: 'pane'
+    layoutId: string
+    paneId: string
+  }
 }
 
 export type PaneLayoutDeletionStateV1 = {

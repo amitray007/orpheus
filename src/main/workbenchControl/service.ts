@@ -535,7 +535,12 @@ export class WorkbenchControlService {
           panelId: target.panelId,
           terminalId: target.terminalId,
           layoutUpdatedAt: target.layoutUpdatedAt,
-          terminalUpdatedAt: target.terminalUpdatedAt
+          terminalUpdatedAt: target.terminalUpdatedAt,
+          observationTarget: {
+            kind: 'pane',
+            layoutId: target.layoutId,
+            paneId: target.terminalId
+          }
         }
         const effects: EffectReceipt[] = [
           { effect: 'db.write', status: 'applied', resourceId: target.layoutId }
@@ -674,7 +679,12 @@ export class WorkbenchControlService {
           panelId: target.panelId,
           terminalId: target.terminalId,
           layoutUpdatedAt: target.layoutUpdatedAt,
-          terminalUpdatedAt: target.terminalUpdatedAt
+          terminalUpdatedAt: target.terminalUpdatedAt,
+          observationTarget: {
+            kind: 'pane',
+            layoutId: target.layoutId,
+            paneId: target.terminalId
+          }
         }
         if (deleted.persistence === 'retained') {
           return { value, effects, status: 'partial' }

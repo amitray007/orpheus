@@ -96,11 +96,17 @@ Ordinary user-created pane commands remain intentionally persistent and are not
 consumed by this path.
 
 Creation returns the exact layout, panel, terminal, layout-update timestamp, and
-terminal-update timestamp. Durable creation, one-shot ephemeral start, renderer
-presentation, and native focus are separate receipt stages. Native visibility
-is not inferred from `ui.present`: that receipt confirms only the renderer's
-semantic layout and terminal selection acknowledgement, while `surface.mount`
-records native mount acceptance. Native focus has no authoritative
+terminal-update timestamp plus a canonical
+`observationTarget: { kind: "pane", layoutId, paneId: terminalId }` that can be
+passed directly to `terminals.getOutputTail`; `panelId` is never a terminal
+observation identifier. Durable creation, one-shot ephemeral start, renderer
+presentation, and native focus are separate receipt stages. The pre-render
+bootstrap mount and the existing auto-start/sidebar-start background mounts use
+the current BrowserWindow display scale factor so a retained native surface
+matches PaneCell's later `devicePixelRatio` handoff. Native visibility is not
+inferred from `ui.present`: that receipt confirms only the renderer's semantic
+layout and terminal selection acknowledgement, while `surface.mount` records
+native mount acceptance. Native focus has no authoritative
 acknowledgement, so `ui.focus` is reported
 `skipped`/unconfirmed rather than `applied`; that alone does not make the result
 partial. Because there is no shell-execution acknowledgement, `shell.execute`

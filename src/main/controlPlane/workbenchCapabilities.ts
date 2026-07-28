@@ -128,13 +128,30 @@ const PANE_STATE = {
 const PANE_LAYOUT_MUTATION = {
   type: 'object',
   additionalProperties: false,
-  required: ['layoutId', 'panelId', 'terminalId', 'layoutUpdatedAt', 'terminalUpdatedAt'],
+  required: [
+    'layoutId',
+    'panelId',
+    'terminalId',
+    'layoutUpdatedAt',
+    'terminalUpdatedAt',
+    'observationTarget'
+  ],
   properties: {
     layoutId: ID,
     panelId: ID,
     terminalId: ID,
     layoutUpdatedAt: { type: 'number' },
-    terminalUpdatedAt: { type: 'number' }
+    terminalUpdatedAt: { type: 'number' },
+    observationTarget: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'layoutId', 'paneId'],
+      properties: {
+        kind: { const: 'pane' },
+        layoutId: ID,
+        paneId: ID
+      }
+    }
   }
 } as const
 

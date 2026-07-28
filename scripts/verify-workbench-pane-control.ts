@@ -25,6 +25,10 @@ import {
 } from '../src/main/workbenchControl/service'
 import { PaneProvisioningStoreError } from '../src/main/workbenchControl/paneManagementErrors'
 import {
+  resolvePaneBackgroundScaleFactor,
+  startProvisionedPaneSurface
+} from '../src/main/workbenchControl/paneProvisioningStart'
+import {
   layoutMutationReleasesAgentOwner,
   terminalMutationReleasesAgentOwner
 } from '../src/main/workbenchControl/paneOwnership'
@@ -340,6 +344,44 @@ const allowRevalidation = {
 }
 
 const strictTeardownEvents: string[] = []
+const retinaStartEvents: string[] = []
+assert.equal(
+  resolvePaneBackgroundScaleFactor({
+    getWindowBounds: () => ({ x: 10, y: 20, width: 1200, height: 800 }),
+    resolveDisplayScaleFactor: (bounds) => {
+      assert.deepEqual(bounds, { x: 10, y: 20, width: 1200, height: 800 })
+      return 2
+    }
+  }),
+  2
+)
+assert.equal(
+  startProvisionedPaneSurface({
+    getWindowBounds: () => ({ x: 10, y: 20, width: 1200, height: 800 }),
+    resolveDisplayScaleFactor: (bounds) => {
+      assert.deepEqual(bounds, { x: 10, y: 20, width: 1200, height: 800 })
+      return 2
+    },
+    getSurfacePhase: () => 'none',
+    mount: (scaleFactor) => retinaStartEvents.push(`mount:${scaleFactor}`),
+    hide: () => retinaStartEvents.push('hide')
+  }),
+  'started'
+)
+assert.deepEqual(retinaStartEvents, ['mount:2', 'hide'])
+assert.equal(
+  startProvisionedPaneSurface({
+    getWindowBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+    resolveDisplayScaleFactor: () => Number.NaN,
+    getSurfacePhase: () => 'hidden',
+    mount: (scaleFactor) => assert.equal(scaleFactor, 1),
+    hide: () => {}
+  }),
+  'retained'
+)
+const mainSource = await fs.readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8')
+assert.equal(mainSource.match(/mountLayoutBackground\(win, layout\)/g)?.length, 2)
+assert.doesNotMatch(mainSource, /const scaleFactor = 1/)
 assert.equal(layoutMutationReleasesAgentOwner({}), false)
 assert.equal(layoutMutationReleasesAgentOwner({ dir: '/repurposed' }), true)
 assert.equal(layoutMutationReleasesAgentOwner({ splitTree: null }), true)
@@ -444,7 +486,12 @@ const managedValue = {
   panelId: managedTarget.panelId,
   terminalId: managedTarget.terminalId,
   layoutUpdatedAt: managedTarget.layoutUpdatedAt,
-  terminalUpdatedAt: managedTarget.terminalUpdatedAt
+  terminalUpdatedAt: managedTarget.terminalUpdatedAt,
+  observationTarget: {
+    kind: 'pane' as const,
+    layoutId: managedTarget.layoutId,
+    paneId: managedTarget.terminalId
+  }
 }
 const managementStubs = {
   provision: async () => managedTarget,

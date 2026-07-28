@@ -96,6 +96,11 @@ type PaneTerminalLayoutMutationV1 = {
   terminalId: Id
   layoutUpdatedAt: number
   terminalUpdatedAt: number
+  observationTarget: {
+    kind: "pane"
+    layoutId: Id
+    paneId: Id // exactly terminalId
+  }
 }
 ```
 
@@ -114,13 +119,16 @@ layout position, forces `autoStart` off, enforces at most four agent-owned
 layouts for the workspace, and enforces the panel-wide 12-terminal cap. The
 returned value is only
 `PaneTerminalLayoutMutationV1`; it never includes cwd or command text.
+`observationTarget` can be passed directly to `terminals.getOutputTail`; its
+`paneId` is exactly `terminalId`, never `panelId`.
 
 The durable records, including an empty persistent terminal command, are the
 first applied effect. The one-shot initial command exists only in memory for the
 dedicated first-start call. Starting the configured surface/process, presenting
 the new layout through the renderer, and focusing the native terminal are
-subsequent stages. Surface visibility and renderer presentation are verified; a
-missing or invalid acknowledgement returns `partial`. Native focus has no
+subsequent stages. Native mount acceptance and semantic renderer presentation
+are recorded separately; `ui.present` is not native visibility proof. A missing
+or invalid renderer acknowledgement returns `partial`. Native focus has no
 authoritative acknowledgement, so `ui.focus` is reported `skipped`/unconfirmed,
 not `applied`, and its absence alone does not manufacture a partial failure.
 `shell.execute` remains a maximum declared effect, but the receipt does not

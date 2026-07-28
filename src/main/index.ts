@@ -176,6 +176,10 @@ import { createRendererCommandTransport, registerWorkbenchControlIpc } from './i
 import { RendererCommandBroker } from './workbenchControl/rendererCommandBroker'
 import { WorkbenchControlService } from './workbenchControl/service'
 import { createMainPaneControlPort } from './workbenchControl/mainPaneAdapter'
+import {
+  resolvePaneBackgroundScaleFactor,
+  startProvisionedPaneSurface
+} from './workbenchControl/paneProvisioningStart'
 import { teardownPaneSurfaceStrict } from './workbenchControl/paneSurfaceTeardown'
 import { isCanonicalWorkspacePath } from './workbenchControl/pathSafety'
 import { createControlAuditStore } from './controlPlane/controlAudit'
@@ -2250,18 +2254,22 @@ function collectLeafPaneIds(tree: SplitTree): string[] {
  *  (mountPaneBackground/addon.hide are both sync) — callers invoke it
  *  alongside genuinely async neighbors (getMainWindow/IPC), but there is no
  *  await inside it. */
-function mountLayoutBackground(nativeHandle: Buffer, layout: PaneLayout): void {
+function mountLayoutBackground(window: BrowserWindow, layout: PaneLayout): void {
   if (!layout.splitTree) return
   const leafPaneIds = collectLeafPaneIds(layout.splitTree)
   if (leafPaneIds.length === 0) return
 
+  const nativeHandle = window.getNativeWindowHandle()
   const terminals = listTerminals(layout.id)
   const commandByPaneId = new Map(terminals.map((t) => [t.id, t.command]))
 
   // Synthetic default rect — panes get real bounds once the layout is
   // actually shown; a hidden surface's rect doesn't need to be accurate.
   const rect: TerminalRect = { x: 0, y: 0, w: 800, h: 600 }
-  const scaleFactor = 1
+  const scaleFactor = resolvePaneBackgroundScaleFactor({
+    getWindowBounds: () => window.getBounds(),
+    resolveDisplayScaleFactor: (bounds) => screen.getDisplayMatching(bounds).scaleFactor
+  })
 
   for (const paneId of leafPaneIds) {
     const command = commandByPaneId.get(paneId)
@@ -2299,13 +2307,6 @@ function mountLayoutBackground(nativeHandle: Buffer, layout: PaneLayout): void {
 function autoStartFlaggedLayouts(): void {
   const win = getMainWindow()
   if (!win) return
-  let nativeHandle: Buffer
-  try {
-    nativeHandle = win.getNativeWindowHandle()
-  } catch (err) {
-    console.error('[panes] auto-start: no native window handle:', redactErrorForLog(err))
-    return
-  }
 
   let layouts: PaneLayout[]
   try {
@@ -2317,7 +2318,7 @@ function autoStartFlaggedLayouts(): void {
 
   for (const layout of layouts) {
     try {
-      mountLayoutBackground(nativeHandle, layout)
+      mountLayoutBackground(win, layout)
     } catch (err) {
       console.error(`[panes] auto-start: failed for layout ${layout.id}:`, redactErrorForLog(err))
     }
@@ -2364,8 +2365,7 @@ handle('panes:startLayoutBackground', (_e, { id }): void => {
   if (!win) return
   const layout = getLayout(id)
   if (!layout) return
-  const nativeHandle = win.getNativeWindowHandle()
-  mountLayoutBackground(nativeHandle, layout)
+  mountLayoutBackground(win, layout)
 })
 
 handle('panes:stopLayout', (_e, { id }): void => {
@@ -2764,17 +2764,22 @@ if (!app.requestSingleInstanceLock()) {
               throw new Error('Pane terminal is unavailable.')
             }
             const slotId = paneSlotId(layout.id, terminal.id)
-            const retained = loadTerminalAddon().getSurfacePhase(slotId) !== 'none'
-            mountPaneBackground(
-              window.getNativeWindowHandle(),
-              layout.id,
-              terminal.id,
-              { x: 0, y: 0, w: 800, h: 600 },
-              1,
-              terminal.command
-            )
-            loadTerminalAddon().hide(slotId)
-            return retained ? 'retained' : 'started'
+            return startProvisionedPaneSurface({
+              getWindowBounds: () => window.getBounds(),
+              resolveDisplayScaleFactor: (bounds) => screen.getDisplayMatching(bounds).scaleFactor,
+              getSurfacePhase: () => loadTerminalAddon().getSurfacePhase(slotId),
+              mount: (scaleFactor) => {
+                mountPaneBackground(
+                  window.getNativeWindowHandle(),
+                  layout.id,
+                  terminal.id,
+                  { x: 0, y: 0, w: 800, h: 600 },
+                  scaleFactor,
+                  terminal.command
+                )
+              },
+              hide: () => loadTerminalAddon().hide(slotId)
+            })
           },
           stopSurface: (layoutId, terminalId) => {
             return destroyPaneSurface(layoutId, terminalId)
