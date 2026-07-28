@@ -100,6 +100,7 @@ export type AutomationSchedulerPorts = {
   clock?: AutomationClock
   generateId?: () => string
   tickMs?: number
+  maxGlobalConcurrency?: number
 }
 
 type AttemptOutcome = {
@@ -114,11 +115,13 @@ export class AutomationScheduler {
   private readonly clock: AutomationClock
   private readonly generateId: () => string
   private readonly tickMs: number
+  private readonly maxGlobalConcurrency: number
   private readonly activeByAutomation = new Map<string, number>()
+  private readonly activeTasks = new Set<Promise<void>>()
   private readonly controllers = new Map<string, Set<AbortController>>()
   private readonly lingeringRunIds = new Set<string>()
   private timer: NodeJS.Timeout | null = null
-  private tickInFlight: Promise<void> | null = null
+  private tickInFlight: Promise<readonly Promise<void>[]> | null = null
   private started = false
   private lastCleanupAt: number | null = null
 
@@ -126,6 +129,7 @@ export class AutomationScheduler {
     this.clock = ports.clock ?? { now: Date.now, withTimeout: defaultWithTimeout }
     this.generateId = ports.generateId ?? randomUUID
     this.tickMs = ports.tickMs ?? DEFAULT_TICK_MS
+    this.maxGlobalConcurrency = ports.maxGlobalConcurrency ?? AUTOMATION_LIMITS.maxGlobalConcurrency
   }
 
   async start(): Promise<void> {
@@ -134,9 +138,9 @@ export class AutomationScheduler {
     try {
       await this.recover()
       if (!this.started) return
-      await this.tick()
+      await this.tick(false)
       if (!this.started) return
-      this.timer = setInterval(() => void this.tick(), this.tickMs)
+      this.timer = setInterval(() => void this.tick(false), this.tickMs)
       this.timer.unref?.()
     } catch (error) {
       if (this.timer != null) clearInterval(this.timer)
@@ -256,15 +260,39 @@ export class AutomationScheduler {
     }
   }
 
-  tick(): Promise<void> {
-    if (this.tickInFlight != null) return this.tickInFlight
-    this.tickInFlight = this.reconcile().finally(() => {
-      this.tickInFlight = null
-    })
-    return this.tickInFlight
+  async tick(waitForExecutions = true): Promise<void> {
+    if (this.tickInFlight == null) {
+      this.tickInFlight = Promise.resolve()
+        .then(() => this.reconcile())
+        .finally(() => {
+          this.tickInFlight = null
+        })
+    }
+    const dispatched = await this.tickInFlight
+    if (waitForExecutions) await Promise.all(dispatched)
   }
 
-  private async reconcile(): Promise<void> {
+  async waitForIdle(): Promise<void> {
+    while (this.activeTasks.size > 0) {
+      await Promise.all([...this.activeTasks])
+    }
+  }
+
+  private dispatch(definition: AutomationDefinition, run: AutomationRun): Promise<void> {
+    const task = this.execute(definition, run).finally(() => {
+      this.activeTasks.delete(task)
+    })
+    this.activeTasks.add(task)
+    void task.catch(() => {
+      // A timer-driven reconciliation has no awaiting caller. Run state and
+      // audit persistence remain authoritative; avoid an unhandled rejection.
+    })
+    return task
+  }
+
+  // Execution is tracked separately from reconciliation so one long-running
+  // automation cannot stop unrelated due work from being discovered.
+  private reconcile(): readonly Promise<void>[] {
     const now = this.clock.now()
     this.enqueuePendingEvents(now)
     if (this.lastCleanupAt == null || now - this.lastCleanupAt >= CLEANUP_INTERVAL_MS) {
@@ -279,27 +307,33 @@ export class AutomationScheduler {
       this.lastCleanupAt = now
     }
     this.enqueueDueSchedules(now)
-    const runnable = this.ports.store
-      .listRuns({
-        statuses: ['queued', 'retry_wait'],
-        limit: MAX_RECONCILE_ITEMS
-      })
-      .filter((run) => run.nextAttemptAt == null || run.nextAttemptAt <= now)
-
+    const runnable = this.ports.store.listRunnableRuns(now, MAX_RECONCILE_ITEMS)
+    const definitions = new Map(
+      this.ports.store
+        .listDefinitionsByIds([...new Set(runnable.map((run) => run.automationId))])
+        .map((definition) => [definition.id, definition])
+    )
+    const starts = this.ports.store.countStartsSinceMany(
+      [...definitions.values()].map((definition) => ({
+        automationId: definition.id,
+        since: now - definition.rollingBudget.windowMs
+      }))
+    )
+    const availableGlobalSlots = Math.max(0, this.maxGlobalConcurrency - this.activeTasks.size)
     const selected: Array<{ definition: AutomationDefinition; run: AutomationRun }> = []
     const reserved = new Map<string, number>()
     for (const run of runnable) {
-      const definition = this.ports.store.getDefinition(run.automationId)
+      if (selected.length >= availableGlobalSlots) break
+      const definition = definitions.get(run.automationId)
       if (definition == null || !definition.enabled) continue
       if (this.lingeringRunIds.has(run.id)) continue
       const active = this.activeByAutomation.get(definition.id) ?? 0
       const alreadyReserved = reserved.get(definition.id) ?? 0
       if (active + alreadyReserved >= definition.concurrencyLimit) continue
-      const starts = this.ports.store.countStartsSince(
-        definition.id,
-        now - definition.rollingBudget.windowMs
-      )
-      if (starts + alreadyReserved >= definition.rollingBudget.maxStarts) {
+      if (
+        (starts.get(definition.id) ?? 0) + alreadyReserved >=
+        definition.rollingBudget.maxStarts
+      ) {
         this.ports.store.deferRun(
           run.id,
           run.status as 'queued' | 'retry_wait',
@@ -311,17 +345,20 @@ export class AutomationScheduler {
       reserved.set(definition.id, alreadyReserved + 1)
       selected.push({ definition, run })
     }
-    await Promise.all(selected.map(({ definition, run }) => this.execute(definition, run)))
+    return selected.map(({ definition, run }) => this.dispatch(definition, run))
   }
 
   private enqueuePendingEvents(now: number): void {
-    for (const occurrence of this.ports.store.listPendingEventOccurrences(
-      now,
-      MAX_RECONCILE_ITEMS
-    )) {
+    const occurrences = this.ports.store.listPendingEventOccurrences(now, MAX_RECONCILE_ITEMS)
+    if (occurrences.length === 0) return
+    const enabledDefinitions = this.ports.store.listDefinitions(true)
+    for (const occurrence of occurrences) {
       try {
         this.ports.store.transaction(() => {
-          for (const definition of this.ports.service.matchingEventDefinitions(occurrence)) {
+          for (const definition of this.ports.service.matchingEventDefinitions(
+            occurrence,
+            enabledDefinitions
+          )) {
             this.enqueue(definition, {
               kind: 'event',
               key: occurrence.id,

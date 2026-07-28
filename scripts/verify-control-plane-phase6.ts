@@ -127,6 +127,7 @@ let failNextRecompute = false
 let bulkMcp = false
 let dirty = false
 let idCounter = 0
+let now = 1_000
 const audits: WorkspaceControlAuditRecord[] = []
 const updates: ClaudeWorkspaceSettingsOverrides[] = []
 
@@ -274,7 +275,8 @@ const service = new SettingsResourceService({
     ]
   },
   audit: { append: (record) => audits.push(record) },
-  now: () => 1_000,
+  now: () => now,
+  maxResourceMetadataCacheEntries: 2,
   generateId: () => `audit-${++idCounter}`
 })
 
@@ -623,8 +625,31 @@ if (resourceResult.ok) {
 }
 assert.deepEqual(
   [scopedMcpCalls, scopedHookCalls, scopedCommandCalls, scopedSubagentCalls],
-  [2, 1, 1, 1]
+  [1, 0, 0, 0],
+  'automation-warmed project metadata should be reused instead of rescanning files'
 )
+await registry.invoke({
+  id: RESOURCES_LIST_PROJECT_METADATA_ID,
+  input: { kinds: ['hook'] },
+  context: grantedContext
+})
+await registry.invoke({
+  id: RESOURCES_LIST_PROJECT_METADATA_ID,
+  input: { kinds: ['mcp_server'] },
+  context: grantedContext
+})
+assert.deepEqual(
+  [scopedMcpCalls, scopedHookCalls, scopedCommandCalls, scopedSubagentCalls],
+  [2, 1, 0, 0],
+  'resource metadata cache must evict the least-recently-used entry at its configured bound'
+)
+now += 5_001
+await registry.invoke({
+  id: RESOURCES_LIST_PROJECT_METADATA_ID,
+  input: { kinds: ['hook'] },
+  context: grantedContext
+})
+assert.equal(scopedHookCalls, 2, 'expired resource metadata must be rescanned')
 
 const invalidPatch = await registry.invoke({
   id: SETTINGS_PATCH_WORKSPACE_ID,

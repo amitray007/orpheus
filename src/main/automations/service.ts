@@ -122,6 +122,12 @@ export class AutomationService {
 
     try {
       this.ports.store.transaction(() => {
+        if (this.ports.store.countDefinitions() >= AUTOMATION_LIMITS.maxDefinitions) {
+          throw new AutomationDefinitionError(
+            'forbidden',
+            `Automation definition limit reached (${AUTOMATION_LIMITS.maxDefinitions}).`
+          )
+        }
         this.ports.store.insertDefinition(definition)
         this.ports.audit.appendManagement({
           auditId: this.generateId(),
@@ -216,6 +222,19 @@ export class AutomationService {
     return this.ports.store.listRuns({ automationId, order: 'recent', limit })
   }
 
+  listRunsForAutomations(automationIds: readonly string[], limit = 100): AutomationRun[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > AUTOMATION_LIMITS.maxListLimit) {
+      throw new AutomationDefinitionError('invalid', 'Run history limit is invalid.')
+    }
+    if (automationIds.length === 0) return []
+    const uniqueIds = [...new Set(automationIds)]
+    return this.ports.store.listRuns({
+      automationIds: uniqueIds,
+      order: 'recent',
+      limit
+    })
+  }
+
   getRun(id: string): AutomationRun {
     const run = this.ports.store.getRun(id)
     if (run == null)
@@ -224,26 +243,91 @@ export class AutomationService {
   }
 
   async summarizeRun(run: AutomationRun): Promise<AutomationRunWithEligibility> {
-    return {
-      id: run.id,
-      automationId: run.automationId,
-      trigger: {
-        kind: run.trigger.kind,
-        occurredAt: run.trigger.occurredAt
-      },
-      retryGeneration: run.retryGeneration ?? 0,
-      retryOfRunId: run.retryOfRunId ?? null,
-      status: run.status,
-      attempt: run.attempt,
-      queuedAt: run.queuedAt,
-      startedAt: run.startedAt,
-      finishedAt: run.finishedAt,
-      nextAttemptAt: run.nextAttemptAt,
-      resultCode: run.resultCode,
-      hasResult: run.result != null,
-      hasError: run.error != null,
-      manualRetry: await this.manualRetryEligibility(run)
-    }
+    const [summary] = await this.summarizeRuns([run])
+    if (summary == null)
+      throw new AutomationDefinitionError('failed', 'Run summary was unavailable.')
+    return summary
+  }
+
+  async summarizeRuns(runs: readonly AutomationRun[]): Promise<AutomationRunWithEligibility[]> {
+    const definitionIds = [...new Set(runs.map((run) => run.automationId))]
+    const definitions = new Map(
+      this.ports.store
+        .listDefinitionsByIds(definitionIds)
+        .map((definition) => [definition.id, definition])
+    )
+    const latestCandidates = runs.filter((run) => {
+      const definition = definitions.get(run.automationId)
+      return (
+        definition?.enabled === true &&
+        definition.idempotency !== 'none' &&
+        MANUAL_RETRY_STATUSES.has(run.status)
+      )
+    })
+    const latestRuns = this.ports.store.listLatestRunsForIdempotencyKeys(
+      latestCandidates.map(({ automationId, idempotencyKey }) => ({
+        automationId,
+        idempotencyKey
+      }))
+    )
+    const latestIds = new Set(latestRuns.map((run) => run.id))
+    const currentDefinitions = new Map<string, boolean>()
+    await Promise.all(
+      [
+        ...new Set(
+          latestCandidates.filter((run) => latestIds.has(run.id)).map((run) => run.automationId)
+        )
+      ].map(async (definitionId) => {
+        const definition = definitions.get(definitionId)
+        if (definition == null) return
+        try {
+          await this.resolveBinding(definition)
+          currentDefinitions.set(definitionId, true)
+        } catch {
+          currentDefinitions.set(definitionId, false)
+        }
+      })
+    )
+    return runs.map((run) => {
+      const definition = definitions.get(run.automationId)
+      let manualRetry: { eligible: boolean; reason: AutomationManualRetryReason }
+      if (definition == null) {
+        manualRetry = { eligible: false, reason: 'definition_not_found' }
+      } else if (!definition.enabled) {
+        manualRetry = { eligible: false, reason: 'definition_disabled' }
+      } else if (definition.idempotency === 'none') {
+        manualRetry = { eligible: false, reason: 'idempotency_unsupported' }
+      } else if (!MANUAL_RETRY_STATUSES.has(run.status)) {
+        manualRetry = { eligible: false, reason: 'run_not_terminal_failure' }
+      } else if (!latestIds.has(run.id)) {
+        manualRetry = { eligible: false, reason: 'not_latest_generation' }
+      } else {
+        manualRetry =
+          currentDefinitions.get(run.automationId) === true
+            ? { eligible: true, reason: 'eligible' }
+            : { eligible: false, reason: 'definition_not_current' }
+      }
+      return {
+        id: run.id,
+        automationId: run.automationId,
+        trigger: {
+          kind: run.trigger.kind,
+          occurredAt: run.trigger.occurredAt
+        },
+        retryGeneration: run.retryGeneration ?? 0,
+        retryOfRunId: run.retryOfRunId ?? null,
+        status: run.status,
+        attempt: run.attempt,
+        queuedAt: run.queuedAt,
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        nextAttemptAt: run.nextAttemptAt,
+        resultCode: run.resultCode,
+        hasResult: run.result != null,
+        hasError: run.error != null,
+        manualRetry
+      }
+    })
   }
 
   editorConfiguration(): AutomationEditorConfiguration {
@@ -285,26 +369,8 @@ export class AutomationService {
   async manualRetryEligibility(
     run: AutomationRun
   ): Promise<{ eligible: boolean; reason: AutomationManualRetryReason }> {
-    const definition = this.ports.store.getDefinition(run.automationId)
-    if (definition == null) return { eligible: false, reason: 'definition_not_found' }
-    if (!definition.enabled) return { eligible: false, reason: 'definition_disabled' }
-    if (definition.idempotency === 'none') {
-      return { eligible: false, reason: 'idempotency_unsupported' }
-    }
-    if (!MANUAL_RETRY_STATUSES.has(run.status)) {
-      return { eligible: false, reason: 'run_not_terminal_failure' }
-    }
-    const latest = this.ports.store.getLatestRunByIdempotencyKey(
-      run.automationId,
-      run.idempotencyKey
-    )
-    if (latest?.id !== run.id) return { eligible: false, reason: 'not_latest_generation' }
-    try {
-      await this.resolveBinding(definition)
-      return { eligible: true, reason: 'eligible' }
-    } catch {
-      return { eligible: false, reason: 'definition_not_current' }
-    }
+    const [summary] = await this.summarizeRuns([run])
+    return summary?.manualRetry ?? { eligible: false, reason: 'definition_not_found' }
   }
 
   async updateDefinition(
@@ -751,16 +817,18 @@ export class AutomationService {
     }
   }
 
-  matchingEventDefinitions(event: AutomationEvent): AutomationDefinition[] {
+  matchingEventDefinitions(
+    event: AutomationEvent,
+    enabledDefinitions: readonly AutomationDefinition[] = this.ports.store.listDefinitions(true)
+  ): AutomationDefinition[] {
     this.validateEvent(event)
-    const matching = this.ports.store
-      .listDefinitions(true)
-      .filter(
-        (definition) =>
-          definition.trigger.kind === 'event' &&
-          definition.trigger.eventType === event.type &&
-          eventMatchesScope(event, definition.scope)
-      )
+    const matching = enabledDefinitions.filter(
+      (definition) =>
+        definition.enabled &&
+        definition.trigger.kind === 'event' &&
+        definition.trigger.eventType === event.type &&
+        eventMatchesScope(event, definition.scope)
+    )
     if (matching.length > AUTOMATION_LIMITS.maxEventFanout) {
       throw new AutomationDefinitionError('invalid', 'Automation event fan-out exceeds the limit.')
     }

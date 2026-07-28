@@ -284,9 +284,14 @@ assert.match(ipcSource, /principal: \{ type: 'renderer-user', id: `webContents:\
 assert.match(ipcSource, /requestId: randomUUID\(\)/)
 assert.ok((ipcSource.match(/\{ \.\.\.request\.draft, enabled: false \}/g) ?? []).length >= 2)
 assert.match(ipcSource, /broadcastChanged\(\{/)
-const publicRunBody = ipcSource.slice(
-  ipcSource.indexOf('function publicRun('),
-  ipcSource.indexOf('async function publicRunWithEligibility(')
+assert.match(ipcSource, /return service\.summarizeRuns\(runs\)/)
+const serviceSource = readFileSync(
+  new URL('../src/main/automations/service.ts', import.meta.url),
+  'utf8'
+)
+const publicRunBody = serviceSource.slice(
+  serviceSource.indexOf('async summarizeRuns('),
+  serviceSource.indexOf('editorConfiguration()')
 )
 assert.doesNotMatch(publicRunBody, /\.\.\.run/)
 assert.doesNotMatch(publicRunBody, /result: run\.result/)

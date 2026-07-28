@@ -181,12 +181,17 @@ export function OrpheusAutomationsSection(): React.JSX.Element {
           setExternalChangePending(reconciliation.preservedDirtySelection)
         })
         .catch((error) => setLoadingError(errorMessage(error)))
-      if (shouldRefreshSelectedRuns(event, selectedId)) {
+      if (
+        detailTab === 'runs' &&
+        document.visibilityState === 'visible' &&
+        shouldRefreshSelectedRuns(event, selectedId)
+      ) {
         void refreshRuns(event.definitionId)
       }
     })
   }, [
     editorDirty,
+    detailTab,
     externalChangePending,
     refreshDefinitions,
     refreshRuns,
@@ -195,7 +200,7 @@ export function OrpheusAutomationsSection(): React.JSX.Element {
   ])
 
   useEffect(() => {
-    if (selectedId == null) {
+    if (selectedId == null || detailTab !== 'runs') {
       runsRequestId.current++
       // eslint-disable-next-line react-hooks/set-state-in-effect -- clearing history follows selection removal
       setRuns([])
@@ -204,12 +209,22 @@ export function OrpheusAutomationsSection(): React.JSX.Element {
     // Avoid showing another definition's history while the selected request is in flight.
     setRuns([])
     setRunsError(null)
-    void refreshRuns(selectedId, true)
+    const refreshIfVisible = (foreground = false): void => {
+      if (document.visibilityState === 'visible') void refreshRuns(selectedId, foreground)
+    }
+    refreshIfVisible(true)
     const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') void refreshRuns(selectedId)
+      refreshIfVisible()
     }, AUTOMATION_RUN_POLL_MS)
-    return () => window.clearInterval(timer)
-  }, [refreshRuns, selectedId])
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState === 'visible') void refreshRuns(selectedId)
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [detailTab, refreshRuns, selectedId])
 
   async function saveDefinition(draft: AutomationDefinitionDraft): Promise<void> {
     setMutationError(null)

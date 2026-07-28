@@ -3,16 +3,10 @@ import type {
   AutomationCatalog,
   AutomationChangedEvent,
   AutomationDefinitionDraft,
-  AutomationOperationCatalogEntry,
-  AutomationRunSummary,
-  AutomationRunWithEligibility
+  AutomationOperationCatalogEntry
 } from '../../shared/types'
 import type { ControlDescription } from '../controlPlane/types'
-import {
-  AutomationService,
-  type AutomationManagementContext,
-  type AutomationRun as StoredAutomationRun
-} from '../automations'
+import { AutomationService, type AutomationManagementContext } from '../automations'
 import { automationCatalogEntry, isAutomationDraftShape } from '../automations/validation'
 import { handle } from './handle'
 
@@ -46,38 +40,6 @@ function rendererManagementContext(senderId: number): AutomationManagementContex
     requestId: randomUUID(),
     principal: { type: 'renderer-user', id: `webContents:${senderId}` },
     consumer: 'renderer-ipc'
-  }
-}
-
-function publicRun(run: StoredAutomationRun): AutomationRunSummary {
-  return {
-    id: run.id,
-    automationId: run.automationId,
-    trigger: {
-      kind: run.trigger.kind,
-      occurredAt: run.trigger.occurredAt
-    },
-    retryGeneration: run.retryGeneration ?? 0,
-    retryOfRunId: run.retryOfRunId ?? null,
-    status: run.status,
-    attempt: run.attempt,
-    queuedAt: run.queuedAt,
-    startedAt: run.startedAt,
-    finishedAt: run.finishedAt,
-    nextAttemptAt: run.nextAttemptAt,
-    resultCode: run.resultCode,
-    hasResult: run.result != null,
-    hasError: run.error != null
-  }
-}
-
-async function publicRunWithEligibility(
-  service: AutomationService,
-  run: StoredAutomationRun
-): Promise<AutomationRunWithEligibility> {
-  return {
-    ...publicRun(run),
-    manualRetry: await service.manualRetryEligibility(run)
   }
 }
 
@@ -261,12 +223,12 @@ export function registerAutomationsIpc(
   handle('automations:listRuns', async (_event, request) => {
     assertListRunsRequest(request)
     const runs = service.listRuns(request.automationId, request.limit ?? 100)
-    return Promise.all(runs.map((run) => publicRunWithEligibility(service, run)))
+    return service.summarizeRuns(runs)
   })
   handle('automations:retryRun', async (event, request) => {
     assertRetryRequest(request)
     const run = await service.retryRun(request.runId, rendererManagementContext(event.sender.id))
-    const result = await publicRunWithEligibility(service, run)
+    const result = await service.summarizeRun(run)
     broadcastChanged({
       kind: 'run-retried',
       definitionId: result.automationId,

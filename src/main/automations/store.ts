@@ -7,6 +7,8 @@ import type {
   AutomationStore
 } from './types'
 
+type PreparedStatement = ReturnType<DbLike['prepare']>
+
 type DefinitionRow = {
   id: string
   name: string
@@ -209,6 +211,52 @@ export function createAutomationStore(db: DbLike): AutomationStore {
     id, event_type, occurred_at, project_id, workspace_id, delivery_attempts,
     next_attempt_at, delivered_at, created_at
   ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, ?)`)
+  const getDefinitionStatement = db.prepare(
+    `SELECT ${DEFINITION_COLUMNS} FROM automation_definitions WHERE id = ?`
+  )
+  const countDefinitionsStatement = db.prepare(
+    'SELECT COUNT(*) AS count FROM automation_definitions'
+  )
+  const listDefinitionsStatement = db.prepare(
+    `SELECT ${DEFINITION_COLUMNS} FROM automation_definitions ORDER BY created_at ASC, id ASC`
+  )
+  const listEnabledDefinitionsStatement = db.prepare(
+    `SELECT ${DEFINITION_COLUMNS} FROM automation_definitions
+     WHERE enabled = 1 ORDER BY created_at ASC, id ASC`
+  )
+  const listDueSchedulesStatement = db.prepare(
+    `SELECT ${DEFINITION_COLUMNS} FROM automation_definitions
+     WHERE enabled = 1 AND trigger_kind = 'schedule'
+       AND next_run_at IS NOT NULL AND next_run_at <= ?
+     ORDER BY next_run_at ASC, id ASC LIMIT ?`
+  )
+  const listRunnableRunsStatement = db.prepare(
+    `SELECT ${RUN_COLUMNS} FROM automation_runs
+     WHERE status IN ('queued', 'retry_wait')
+       AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+     ORDER BY queued_at ASC, rowid ASC LIMIT ?`
+  )
+  const countStartsSinceStatement = db.prepare(
+    `SELECT COUNT(*) AS count FROM automation_runs
+     WHERE automation_id = ? AND started_at IS NOT NULL AND started_at >= ?`
+  )
+  const definitionsByCount = new Map<number, PreparedStatement>()
+  const runsByShape = new Map<string, PreparedStatement>()
+  const startsByCount = new Map<number, PreparedStatement>()
+  const latestRunsByCount = new Map<number, PreparedStatement>()
+
+  const preparedForCount = (
+    cache: Map<number, PreparedStatement>,
+    count: number,
+    sql: (placeholders: string) => string,
+    tuple = '?'
+  ): PreparedStatement => {
+    const cached = cache.get(count)
+    if (cached != null) return cached
+    const statement = db.prepare(sql(Array.from({ length: count }, () => tuple).join(', ')))
+    cache.set(count, statement)
+    return statement
+  }
 
   return {
     transaction<T>(work: () => T): T {
@@ -338,16 +386,30 @@ export function createAutomationStore(db: DbLike): AutomationStore {
       }
     },
     getDefinition(id) {
-      const row = db
-        .prepare(`SELECT ${DEFINITION_COLUMNS} FROM automation_definitions WHERE id = ?`)
-        .get(id) as DefinitionRow | undefined
+      const row = getDefinitionStatement.get(id) as DefinitionRow | undefined
       return row == null ? null : definitionFromRow(row)
     },
+    countDefinitions() {
+      const row = countDefinitionsStatement.get() as { count: number }
+      return row.count
+    },
     listDefinitions(enabledOnly = false) {
-      const sql = `SELECT ${DEFINITION_COLUMNS} FROM automation_definitions${
-        enabledOnly ? ' WHERE enabled = 1' : ''
-      } ORDER BY created_at ASC, id ASC`
-      return (db.prepare(sql).all() as DefinitionRow[]).flatMap((row) => {
+      const statement = enabledOnly ? listEnabledDefinitionsStatement : listDefinitionsStatement
+      return (statement.all() as DefinitionRow[]).flatMap((row) => {
+        const definition = definitionFromRow(row)
+        return definition == null ? [] : [definition]
+      })
+    },
+    listDefinitionsByIds(ids) {
+      if (ids.length === 0) return []
+      const statement = preparedForCount(
+        definitionsByCount,
+        ids.length,
+        (placeholders) =>
+          `SELECT ${DEFINITION_COLUMNS} FROM automation_definitions
+           WHERE id IN (${placeholders})`
+      )
+      return (statement.all(...ids) as DefinitionRow[]).flatMap((row) => {
         const definition = definitionFromRow(row)
         return definition == null ? [] : [definition]
       })
@@ -407,16 +469,7 @@ export function createAutomationStore(db: DbLike): AutomationStore {
       return row?.next_run_at === next
     },
     listDueSchedules(now, limit) {
-      return (
-        db
-          .prepare(
-            `SELECT ${DEFINITION_COLUMNS} FROM automation_definitions
-             WHERE enabled = 1 AND trigger_kind = 'schedule'
-               AND next_run_at IS NOT NULL AND next_run_at <= ?
-             ORDER BY next_run_at ASC, id ASC LIMIT ?`
-          )
-          .all(now, limit) as DefinitionRow[]
-      ).flatMap((row) => {
+      return (listDueSchedulesStatement.all(now, limit) as DefinitionRow[]).flatMap((row) => {
         const definition = definitionFromRow(row)
         return definition == null ? [] : [definition]
       })
@@ -485,6 +538,11 @@ export function createAutomationStore(db: DbLike): AutomationStore {
         conditions.push('automation_id = ?')
         params.push(input.automationId)
       }
+      if (input.automationIds != null) {
+        if (input.automationIds.length === 0) return []
+        conditions.push(`automation_id IN (${input.automationIds.map(() => '?').join(', ')})`)
+        params.push(...input.automationIds)
+      }
       if (input.statuses != null && input.statuses.length > 0) {
         conditions.push(`status IN (${input.statuses.map(() => '?').join(', ')})`)
         params.push(...input.statuses)
@@ -493,23 +551,69 @@ export function createAutomationStore(db: DbLike): AutomationStore {
       const order =
         input.order === 'recent' ? 'queued_at DESC, rowid DESC' : 'queued_at ASC, rowid ASC'
       params.push(input.limit)
-      return (
-        db
-          .prepare(
-            `SELECT ${RUN_COLUMNS} FROM automation_runs${where}
-             ORDER BY ${order} LIMIT ?`
-          )
-          .all(...params) as RunRow[]
-      ).map(runFromRow)
+      const sql = `SELECT ${RUN_COLUMNS} FROM automation_runs${where}
+        ORDER BY ${order} LIMIT ?`
+      let statement = runsByShape.get(sql)
+      if (statement == null) {
+        statement = db.prepare(sql)
+        runsByShape.set(sql, statement)
+      }
+      return (statement.all(...params) as RunRow[]).map(runFromRow)
+    },
+    listRunnableRuns(now, limit) {
+      return (listRunnableRunsStatement.all(now, limit) as RunRow[]).map(runFromRow)
     },
     countStartsSince(automationId, since) {
-      const row = db
-        .prepare(
-          `SELECT COUNT(*) AS count FROM automation_runs
-           WHERE automation_id = ? AND started_at IS NOT NULL AND started_at >= ?`
-        )
-        .get(automationId, since) as { count: number }
+      const row = countStartsSinceStatement.get(automationId, since) as { count: number }
       return row.count
+    },
+    countStartsSinceMany(requests) {
+      if (requests.length === 0) return new Map()
+      const statement = preparedForCount(
+        startsByCount,
+        requests.length,
+        (placeholders) =>
+          `WITH budgets(automation_id, since_at) AS (VALUES ${placeholders})
+           SELECT budgets.automation_id AS automation_id, COUNT(runs.id) AS count
+           FROM budgets
+           LEFT JOIN automation_runs AS runs
+             ON runs.automation_id = budgets.automation_id
+            AND runs.started_at IS NOT NULL
+            AND runs.started_at >= budgets.since_at
+           GROUP BY budgets.automation_id`,
+        '(?, ?)'
+      )
+      const params = requests.flatMap(({ automationId, since }) => [automationId, since])
+      const rows = statement.all(...params) as Array<{ automation_id: string; count: number }>
+      return new Map(rows.map((row) => [row.automation_id, row.count]))
+    },
+    listLatestRunsForIdempotencyKeys(keys) {
+      if (keys.length === 0) return []
+      const statement = preparedForCount(
+        latestRunsByCount,
+        keys.length,
+        (placeholders) =>
+          `WITH requested(automation_id, idempotency_key) AS (VALUES ${placeholders})
+           SELECT ${RUN_COLUMNS.split(',')
+             .map((column) => `runs.${column.trim()}`)
+             .join(', ')}
+           FROM automation_runs AS runs
+           JOIN requested
+             ON requested.automation_id = runs.automation_id
+            AND requested.idempotency_key = runs.idempotency_key
+           WHERE runs.retry_generation = (
+             SELECT MAX(newer.retry_generation)
+             FROM automation_runs AS newer
+             WHERE newer.automation_id = runs.automation_id
+               AND newer.idempotency_key = runs.idempotency_key
+           )`,
+        '(?, ?)'
+      )
+      const params = keys.flatMap(({ automationId, idempotencyKey }) => [
+        automationId,
+        idempotencyKey
+      ])
+      return (statement.all(...params) as RunRow[]).map(runFromRow)
     },
     claimRun(id, expected, now, requestId) {
       db.prepare(

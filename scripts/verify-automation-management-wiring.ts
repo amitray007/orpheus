@@ -2,36 +2,31 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const mainSource = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8')
+const lifecycleSource = readFileSync(
+  new URL('../src/main/controlPlane/mainLifecycle.ts', import.meta.url),
+  'utf8'
+)
 
 assert.match(
-  mainSource,
-  /import \{ registerAutomationsIpc \} from '\.\/ipc\/automations'/,
-  'main must import the production automation management IPC registrar'
+  lifecycleSource,
+  /import \{ registerAutomationsIpc \} from '\.\.\/ipc\/automations'/,
+  'the main control-plane lifecycle must import the production automation management IPC registrar'
 )
 
-const bootIndex = mainSource.indexOf('bootControlPlane()')
-const runtimeIndex = mainSource.indexOf('const automations = createAutomationRuntime({')
-const broadcasterIndex = mainSource.indexOf(
-  'const broadcastAutomationChanged = (event: AutomationChangedEvent): void => {'
-)
-const adapterIndex = mainSource.indexOf(
+const bootIndex = lifecycleSource.indexOf('bootControlPlane()')
+const runtimeIndex = lifecycleSource.indexOf('const automations = createAutomationRuntime({')
+const adapterIndex = lifecycleSource.indexOf(
   'const automationManagement = new AutomationManagementService({'
 )
-const configureIndex = mainSource.indexOf('configurePhase2ControlPlane({')
-const registrationIndex = mainSource.indexOf(
-  'registerAutomationsIpc(automations.service, listRegisteredControl'
-)
-const schedulerIndex = mainSource.indexOf('automationScheduler = automations.scheduler')
+const configureIndex = lifecycleSource.indexOf('configurePhase2ControlPlane({')
+const registrationIndex = lifecycleSource.indexOf('registerAutomationsIpc(', bootIndex)
+const schedulerIndex = lifecycleSource.indexOf('void automations.scheduler.start()')
 
 assert.ok(bootIndex >= 0, 'control registry boot was not found')
 assert.ok(runtimeIndex >= 0, 'automation runtime creation was not found')
 assert.ok(
-  broadcasterIndex > runtimeIndex,
-  'the shared change broadcaster must be created after its automation service'
-)
-assert.ok(
-  adapterIndex > broadcasterIndex,
-  'the MCP management adapter must receive the shared broadcaster before boot'
+  adapterIndex > runtimeIndex,
+  'the MCP management adapter must receive the automation service before boot'
 )
 assert.ok(
   configureIndex > adapterIndex,
@@ -47,53 +42,37 @@ assert.ok(
 )
 assert.ok(
   schedulerIndex > registrationIndex,
-  'automation management IPC registration must stay adjacent to runtime creation'
+  'automation management IPC registration must precede scheduler startup'
 )
 
-const broadcasterBlock = mainSource.slice(broadcasterIndex, adapterIndex)
-const adapterBlock = mainSource.slice(adapterIndex, configureIndex)
-const wiringBlock = mainSource.slice(registrationIndex, schedulerIndex)
-const configurationBlock = mainSource.slice(configureIndex, bootIndex)
+const adapterBlock = lifecycleSource.slice(adapterIndex, configureIndex)
+const wiringBlock = lifecycleSource.slice(registrationIndex, schedulerIndex)
+const configurationBlock = lifecycleSource.slice(configureIndex, bootIndex)
 assert.match(
   configurationBlock,
   /automationManagement/,
   'control-plane boot must receive the MCP automation management adapter'
 )
 assert.match(
-  broadcasterBlock,
-  /const win = getMainWindow\(\)/,
-  'automation changes must resolve the current main window'
-)
-assert.match(
-  broadcasterBlock,
-  /win == null \|\| win\.isDestroyed\(\) \|\| win\.webContents\.isDestroyed\(\)/,
-  'automation changes must not send to a missing or destroyed window'
-)
-assert.match(
-  broadcasterBlock,
-  /win\.webContents\.send\(PUSH_CHANNELS\.automationsChanged, event\)/,
-  'automation management mutations must invalidate renderer state through the typed push channel'
-)
-assert.match(
-  broadcasterBlock,
-  /try \{[\s\S]*win\.webContents\.send\(PUSH_CHANNELS\.automationsChanged, event\)[\s\S]*\} catch \{/,
-  'renderer invalidation delivery must be best-effort after a committed mutation'
-)
-assert.match(
   adapterBlock,
-  /broadcastChanged: broadcastAutomationChanged/,
+  /broadcastChanged: deps\.broadcastAutomationChanged/,
   'MCP management mutations must use the shared renderer invalidation broadcaster'
 )
 assert.match(
   wiringBlock,
-  /registerAutomationsIpc\(\s*automations\.service,\s*listRegisteredControl,\s*broadcastAutomationChanged\s*\)/,
+  /registerAutomationsIpc\(\s*automations\.service,\s*listRegisteredControl,\s*deps\.broadcastAutomationChanged\s*\)/,
   'renderer IPC mutations must use the same broadcaster without wrapping or double-emitting'
 )
 
-assert.equal(
-  mainSource.match(/PUSH_CHANNELS\.automationsChanged/g)?.length,
-  1,
-  'this slice must not add scheduler transition pushes'
+assert.match(
+  mainSource,
+  /startMainControlPlaneLifecycle\(\{/,
+  'main must start the extracted control-plane lifecycle'
+)
+assert.match(
+  lifecycleSource,
+  /disposeEvents\(\)[\s\S]*automations\.scheduler\.stop\(\)/,
+  'lifecycle disposal must pair event unsubscription with scheduler shutdown'
 )
 
 console.log('Automation management main wiring verifier passed.')

@@ -32,6 +32,8 @@ export const AUTOMATION_LIMITS = Object.freeze({
   maxEventTypeLength: 128,
   maxNameLength: 120,
   maxListLimit: 200,
+  maxDefinitions: 500,
+  maxGlobalConcurrency: 8,
   maxEventFanout: 200,
   maxRetainedRunsPerAutomation: 1_000,
   runRetentionMs: 30 * 24 * 60 * 60 * 1_000,
@@ -108,7 +110,9 @@ export type AutomationStore = {
   ): boolean
   deleteDefinition(id: string, expectedUpdatedAt: number, beforeCommit?: () => void): boolean
   getDefinition(id: string): AutomationDefinition | null
+  countDefinitions(): number
   listDefinitions(enabledOnly?: boolean): AutomationDefinition[]
+  listDefinitionsByIds(ids: readonly string[]): AutomationDefinition[]
   setDefinitionEnabled(
     id: string,
     expectedEnabled: boolean,
@@ -126,11 +130,19 @@ export type AutomationStore = {
   getLatestRunByIdempotencyKey(automationId: string, idempotencyKey: string): AutomationRun | null
   listRuns(input: {
     automationId?: string
+    automationIds?: readonly string[]
     statuses?: readonly AutomationRunStatus[]
     order?: 'oldest' | 'recent'
     limit: number
   }): AutomationRun[]
+  listRunnableRuns(now: number, limit: number): AutomationRun[]
   countStartsSince(automationId: string, since: number): number
+  countStartsSinceMany(
+    requests: readonly { automationId: string; since: number }[]
+  ): ReadonlyMap<string, number>
+  listLatestRunsForIdempotencyKeys(
+    keys: readonly { automationId: string; idempotencyKey: string }[]
+  ): AutomationRun[]
   claimRun(id: string, expected: 'queued' | 'retry_wait', now: number, requestId: string): boolean
   finishRun(input: {
     id: string

@@ -1183,6 +1183,7 @@ export const schema: SchemaDef = {
     ],
     indexes: {
       idx_automation_runs_automation_queued: ['automation_id', 'queued_at DESC'],
+      idx_automation_runs_automation_started: ['automation_id', 'started_at'],
       idx_automation_runs_runnable: ['status', 'next_attempt_at', 'queued_at'],
       idx_automation_runs_request: ['request_id'],
       idx_automation_runs_audit: ['audit_id'],

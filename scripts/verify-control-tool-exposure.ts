@@ -30,6 +30,8 @@ db.exec(`
     enabled INTEGER NOT NULL DEFAULT 1,
     updated_at INTEGER NOT NULL
   );
+  INSERT INTO control_tool_category_preferences VALUES ('removed-category', 0, 999999);
+  INSERT INTO control_tool_preferences VALUES ('removed.operation', 0, 999999);
 `)
 
 const descriptions: ControlDescription[] = [
@@ -93,7 +95,8 @@ const exposure = new ControlToolExposureStore(
   () => now++
 )
 
-// Missing rows are enabled, and renderer-only operations never appear as
+// Missing rows are enabled, stale preference rows are not hydrated into the
+// bounded live-catalog cache, and renderer-only operations never appear as
 // pretend MCP toggles.
 let snapshot = exposure.get()
 assert.deepEqual(
@@ -204,7 +207,8 @@ db.exec(`
   CREATE TABLE workspaces (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, cwd TEXT NOT NULL);
   CREATE TABLE pane_layouts (id TEXT PRIMARY KEY, dir TEXT NOT NULL);
   CREATE TABLE pane_terminals (id TEXT PRIMARY KEY, layout_id TEXT NOT NULL);
-  INSERT INTO projects VALUES ('project-1', '/code/project-one'), ('project-2', '/code/project-two');
+  INSERT INTO projects VALUES ('project-1', '/code/project-one'),
+    ('project-2', '/code/project-two'), ('project-3', '/code/project-three');
   INSERT INTO workspaces VALUES ('workspace-1', 'project-1', '/code/project-one'),
     ('worktree-1', 'project-1', '/tmp/project-one-worktree');
   INSERT INTO pane_layouts VALUES ('layout-project', '/code/project-one/subdir'),
@@ -214,15 +218,19 @@ db.exec(`
     ('terminal-worktree', 'layout-worktree'),
     ('terminal-other', 'layout-other');
 `)
-const scopeSource = createRuntimeResourceScopeSource(db)
-assert.deepEqual(scopeSource(liveBinding), {
+const scopeSource = createRuntimeResourceScopeSource(db, { maxCachedProjects: 2 })
+const initialProjectScope = scopeSource(liveBinding)
+assert.deepEqual(initialProjectScope, {
   selfOnly: true,
   layoutIds: ['layout-project', 'layout-worktree'],
   surfaceIds: ['pane:layout-project:terminal-project', 'pane:layout-worktree:terminal-worktree']
 })
+assert.equal(scopeSource(liveBinding), initialProjectScope)
 db.prepare("DELETE FROM pane_layouts WHERE id = 'layout-project'").run()
 db.prepare("DELETE FROM pane_terminals WHERE layout_id = 'layout-project'").run()
-assert.deepEqual(scopeSource(liveBinding).layoutIds, ['layout-worktree'])
+const scopeAfterDelete = scopeSource(liveBinding)
+assert.notEqual(scopeAfterDelete, initialProjectScope)
+assert.deepEqual(scopeAfterDelete.layoutIds, ['layout-worktree'])
 db.prepare("INSERT INTO pane_layouts VALUES ('layout-agent-new', '/code/project-one')").run()
 db.prepare("INSERT INTO pane_terminals VALUES ('terminal-agent-new', 'layout-agent-new')").run()
 assert.deepEqual(scopeSource(liveBinding).layoutIds, ['layout-agent-new', 'layout-worktree'])
@@ -230,5 +238,25 @@ assert.deepEqual(scopeSource(liveBinding).surfaceIds, [
   'pane:layout-agent-new:terminal-agent-new',
   'pane:layout-worktree:terminal-worktree'
 ])
+const projectOneBeforeEviction = scopeSource(liveBinding)
+scopeSource({
+  ...liveBinding,
+  runtimeId: 'runtime-2',
+  surfaceId: 'workspace-2',
+  workspaceId: 'workspace-2',
+  projectId: 'project-2'
+})
+scopeSource({
+  ...liveBinding,
+  runtimeId: 'runtime-3',
+  surfaceId: 'workspace-3',
+  workspaceId: 'workspace-3',
+  projectId: 'project-3'
+})
+assert.notEqual(
+  scopeSource(liveBinding),
+  projectOneBeforeEviction,
+  'the oldest runtime-scope cache entry must be evicted at the configured bound'
+)
 
 console.log('Control tool exposure verification passed.')

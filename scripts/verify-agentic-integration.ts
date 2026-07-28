@@ -223,7 +223,7 @@ assert.ok(
   'Workbench, pane, terminal, and settings tools are enabled by default'
 )
 
-const phase456Permissions = [
+const fullRuntimePermissions = [
   ...DEFAULT_RUNTIME_CONTROL_PERMISSIONS,
   'ui.workbench.control',
   'terminals.control',
@@ -232,11 +232,11 @@ const phase456Permissions = [
   'settings.workspace.patch',
   'resources.read'
 ] satisfies ControlPermission[]
-const explicitlyGrantedIds = registry
-  .listForContext(context(phase456Permissions))
+const runtimeVisibleIds = registry
+  .listForContext(context(fullRuntimePermissions))
   .map(({ id }) => id)
 for (const id of [...workbenchIds, ...terminalIds, ...settingsIds]) {
-  assert.ok(explicitlyGrantedIds.includes(id), `explicit grant must discover ${id}`)
+  assert.ok(runtimeVisibleIds.includes(id), `full runtime grant must discover ${id}`)
 }
 
 function assertStrictObjectSchemas(value: unknown, path: string): void {
@@ -256,11 +256,12 @@ function assertStrictObjectSchemas(value: unknown, path: string): void {
 for (const description of allDescriptions) {
   assertStrictObjectSchemas(description.inputSchema, `${description.id}.inputSchema`)
   assertStrictObjectSchemas(description.outputSchema, `${description.id}.outputSchema`)
-  assert.equal(
-    description.allowedSurfaces.includes('automation'),
-    description.idempotency != null,
-    `${description.id} automation exposure and idempotency metadata must be paired`
-  )
+  if (description.allowedSurfaces.includes('automation')) {
+    assert.ok(
+      description.idempotency != null,
+      `${description.id} automation exposure needs idempotency`
+    )
+  }
 }
 assert.ok(
   workbenchIds.every((id) => {
@@ -305,7 +306,7 @@ assert.equal(registry.describe('resources.listProjectMetadata')?.idempotency, 'n
 const settingsInvalid = await registry.invoke({
   id: 'settings.patchWorkspace',
   input: { patch: {} },
-  context: context(phase456Permissions)
+  context: context(fullRuntimePermissions)
 })
 assert.equal(settingsInvalid.ok, false)
 if (!settingsInvalid.ok) assert.equal(settingsInvalid.code, 'invalid')
@@ -315,7 +316,7 @@ assert.deepEqual(workspaceRejections, [])
 const paneInvalid = await registry.invoke({
   id: 'panes.startTerminal',
   input: { layoutId: 'layout-1' },
-  context: context(phase456Permissions)
+  context: context(fullRuntimePermissions)
 })
 assert.equal(paneInvalid.ok, false)
 if (!paneInvalid.ok) assert.equal(paneInvalid.code, 'invalid')
@@ -390,25 +391,40 @@ assert.match(JSON.stringify(redacted), /safe/)
 
 const root = join(import.meta.dir, '..')
 const mainSource = readFileSync(join(root, 'src/main/index.ts'), 'utf8')
+const mainLifecycleSource = readFileSync(
+  join(root, 'src/main/controlPlane/mainLifecycle.ts'),
+  'utf8'
+)
 const schemaSource = readFileSync(join(root, 'src/main/db/schema.ts'), 'utf8')
 const workspacesSource = readFileSync(join(root, 'src/main/workspaces.ts'), 'utf8')
-const phase8QaSource = readFileSync(join(root, 'src/main/automations/phase8Qa.ts'), 'utf8')
 const notifySource = readFileSync(join(root, 'src/main/orpheusNotify.ts'), 'utf8')
-const commandServerSource = readFileSync(join(root, 'src/main/commandServer.ts'), 'utf8')
 for (const marker of [
   'new RendererCommandBroker(',
   'createMainTerminalObservation({',
   'createMainSettingsResourceService()',
-  'createPhase456QaGrantSource({',
-  'createAutomationRuntime({',
-  'automationScheduler.start()',
-  'automationScheduler?.stop()',
+  'startMainControlPlaneLifecycle({',
+  'controlPlaneLifecycle?.dispose()',
   'terminalObservationCleanup?.()'
 ]) {
   assert.equal(
     mainSource.split(marker).length - 1,
     1,
     `main lifecycle marker must occur once: ${marker}`
+  )
+}
+for (const marker of [
+  'createAutomationRuntime({',
+  'configurePhase2ControlPlane({',
+  'bootControlPlane()',
+  'registerAutomationsIpc(',
+  'wireWorkspaceAutomationEvents({',
+  'automations.scheduler.start()',
+  'automations.scheduler.stop()'
+]) {
+  assert.equal(
+    mainLifecycleSource.split(marker).length - 1,
+    1,
+    `control-plane lifecycle marker must occur once: ${marker}`
   )
 }
 for (const marker of [
@@ -466,23 +482,14 @@ assert.ok(
   'the event outbox hook must run inside the workspace status transaction'
 )
 assert.ok(mainSource.includes('subscribePersisting: onWorkspaceStatusPersisting'))
-assert.ok(mainSource.includes('capturePhase8QaConfig(process.env, APP_NAME)'))
-for (const key of [
-  'ORPHEUS_PHASE8_QA',
-  'ORPHEUS_PHASE8_QA_WORKSPACE_ID',
-  'ORPHEUS_PHASE8_QA_TOKEN'
-]) {
-  assert.ok(phase8QaSource.includes(key))
-}
-assert.ok(mainSource.includes("process.env['ORPHEUS_PHASE456_QA']"))
-assert.ok(mainSource.includes("process.env['ORPHEUS_PHASE456_QA_SCOPE']"))
-assert.ok(mainSource.includes("delete process.env['ORPHEUS_PHASE456_QA']"))
-assert.ok(mainSource.includes("delete process.env['ORPHEUS_PHASE456_QA_SCOPE']"))
-assert.ok(
-  mainSource.includes('getRuntimeBinding: (runtimeId) => runtimeLeases.getByRuntimeId(runtimeId)')
+assert.doesNotMatch(
+  `${mainSource}\n${mainLifecycleSource}`,
+  /ORPHEUS_PHASE(?:456|8)_QA|createPhase456QaGrantSource|capturePhase8QaConfig/,
+  'temporary packaged-QA seams must not ship in the main runtime'
 )
-assert.ok(mainSource.includes('APP_NAME'))
-assert.ok(commandServerSource.includes('if (phase8Qa != null)'))
+assert.ok(
+  mainSource.includes('getCurrentBinding: (runtimeId) => runtimeLeases.getByRuntimeId(runtimeId)')
+)
 
 const automationDescriptions = allDescriptions.filter(({ allowedSurfaces }) =>
   allowedSurfaces.includes('automation')
@@ -496,7 +503,7 @@ console.log(
     registered: allDescriptions.length,
     mcp: mcpIds.length,
     defaults: defaultIds.length,
-    explicitPhase456: explicitlyGrantedIds.length,
+    runtimeVisible: runtimeVisibleIds.length,
     automationEligible: automationDescriptions.length
   })
 )

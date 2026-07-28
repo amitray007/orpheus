@@ -75,39 +75,51 @@ function maxUpdatedAt(...maps: Map<string, PreferenceRow>[]): number | null {
 export class ControlToolExposureStore {
   private catalogRevision = 1
   private readonly catalogWaiters = new Set<CatalogWaiter>()
+  private readonly descriptions: readonly ControlDescription[]
+  private readonly categoryPreferences: Map<string, PreferenceRow>
+  private readonly toolPreferences: Map<string, PreferenceRow>
 
   constructor(
     private readonly db: DbLike,
-    private readonly listDescriptions: () => readonly ControlDescription[],
+    listDescriptions: () => readonly ControlDescription[],
     private readonly now: () => number = Date.now
-  ) {}
+  ) {
+    this.descriptions = Object.freeze(
+      [...listDescriptions()]
+        .filter((description) => description.allowedSurfaces.includes('mcp'))
+        .sort((a, b) => a.id.localeCompare(b.id))
+    )
+    const operationIds = new Set(this.descriptions.map((description) => description.id))
+    this.categoryPreferences = preferenceMap(
+      (
+        this.db
+          .prepare(
+            'SELECT category_id AS id, enabled, updated_at FROM control_tool_category_preferences'
+          )
+          .all() as PreferenceRow[]
+      ).filter((row) => CATEGORY_IDS.has(row.id as ControlToolCategory))
+    )
+    this.toolPreferences = preferenceMap(
+      (
+        this.db
+          .prepare('SELECT operation_id AS id, enabled, updated_at FROM control_tool_preferences')
+          .all() as PreferenceRow[]
+      ).filter((row) => operationIds.has(row.id))
+    )
+  }
 
   isEnabled(operationId: string): boolean {
     const category = categoryForOperation(operationId)
-    const categoryRow = this.db
-      .prepare('SELECT enabled FROM control_tool_category_preferences WHERE category_id = ?')
-      .get(category) as Pick<PreferenceRow, 'enabled'> | undefined
+    const categoryRow = this.categoryPreferences.get(category)
     if (categoryRow?.enabled === 0) return false
-    const toolRow = this.db
-      .prepare('SELECT enabled FROM control_tool_preferences WHERE operation_id = ?')
-      .get(operationId) as Pick<PreferenceRow, 'enabled'> | undefined
+    const toolRow = this.toolPreferences.get(operationId)
     return toolRow?.enabled !== 0
   }
 
   get(): ControlToolsSettings {
     const descriptions = this.mcpDescriptions()
-    const categoryRows = preferenceMap(
-      this.db
-        .prepare(
-          'SELECT category_id AS id, enabled, updated_at FROM control_tool_category_preferences'
-        )
-        .all() as PreferenceRow[]
-    )
-    const toolRows = preferenceMap(
-      this.db
-        .prepare('SELECT operation_id AS id, enabled, updated_at FROM control_tool_preferences')
-        .all() as PreferenceRow[]
-    )
+    const categoryRows = this.categoryPreferences
+    const toolRows = this.toolPreferences
     const toolCounts = new Map<ControlToolCategory, number>()
     for (const description of descriptions) {
       const category = categoryForOperation(description.id)
@@ -149,6 +161,7 @@ export class ControlToolExposureStore {
 
   update(update: ControlToolsUpdate): ControlToolsSettings {
     const before = this.exposureSnapshot()
+    const updatedAt = this.now()
     if (update.target === 'category') {
       this.assertCategory(update.id)
       this.db
@@ -159,7 +172,12 @@ export class ControlToolExposureStore {
              enabled = excluded.enabled,
              updated_at = excluded.updated_at`
         )
-        .run(update.id, update.enabled ? 1 : 0, this.now())
+        .run(update.id, update.enabled ? 1 : 0, updatedAt)
+      this.categoryPreferences.set(update.id, {
+        id: update.id,
+        enabled: update.enabled ? 1 : 0,
+        updated_at: updatedAt
+      })
     } else {
       this.assertOperation(update.id)
       this.db
@@ -170,7 +188,12 @@ export class ControlToolExposureStore {
              enabled = excluded.enabled,
              updated_at = excluded.updated_at`
         )
-        .run(update.id, update.enabled ? 1 : 0, this.now())
+        .run(update.id, update.enabled ? 1 : 0, updatedAt)
+      this.toolPreferences.set(update.id, {
+        id: update.id,
+        enabled: update.enabled ? 1 : 0,
+        updated_at: updatedAt
+      })
     }
     this.bumpRevisionIfChanged(before)
     return this.get()
@@ -182,14 +205,18 @@ export class ControlToolExposureStore {
       this.db.exec(
         'DELETE FROM control_tool_preferences; DELETE FROM control_tool_category_preferences'
       )
+      this.categoryPreferences.clear()
+      this.toolPreferences.clear()
     } else if (reset.target === 'category') {
       this.assertCategory(reset.id)
       this.db
         .prepare('DELETE FROM control_tool_category_preferences WHERE category_id = ?')
         .run(reset.id)
+      this.categoryPreferences.delete(reset.id)
     } else {
       this.assertOperation(reset.id)
       this.db.prepare('DELETE FROM control_tool_preferences WHERE operation_id = ?').run(reset.id)
+      this.toolPreferences.delete(reset.id)
     }
     this.bumpRevisionIfChanged(before)
     return this.get()
@@ -261,9 +288,7 @@ export class ControlToolExposureStore {
   }
 
   private mcpDescriptions(): ControlDescription[] {
-    return [...this.listDescriptions()]
-      .filter((description) => description.allowedSurfaces.includes('mcp'))
-      .sort((a, b) => a.id.localeCompare(b.id))
+    return [...this.descriptions]
   }
 
   private exposureSnapshot(): string {

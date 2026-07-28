@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { Database } from 'bun:sqlite'
 import { AutomationGrantPolicy } from '../src/main/controlPlane/automationPolicy.ts'
 import type { AutomationGrantRequest } from '../src/main/controlPlane/automationPolicy.ts'
-import { createSafeAutomationGrantSource } from '../src/main/controlPlane/safeAutomationGrants.ts'
 import { withAutomationPolicy } from '../src/main/controlPlane/automationPolicy.ts'
 import { ControlRegistry } from '../src/main/controlPlane/registry.ts'
 import type {
@@ -10,34 +9,21 @@ import type {
   ControlDescriptor,
   ControlPermission
 } from '../src/main/controlPlane/types.ts'
-import {
-  RESOURCES_LIST_PROJECT_METADATA_ID,
-  SETTINGS_GET_EFFECTIVE_ID
-} from '../src/main/controlPlane/settingsResourceService.ts'
 import { createAutomationAuditStore } from '../src/main/automations/audit.ts'
-import {
-  capturePhase8QaConfig,
-  createPhase8QaController,
-  parsePhase8QaArgs,
-  phase8QaCredentialMatches, // gitleaks:allow -- symbol name, not a credential
-  phase8QaGateEnabled
-} from '../src/main/automations/phase8Qa.ts'
 import { AutomationScheduler } from '../src/main/automations/scheduler.ts'
 import { AutomationService } from '../src/main/automations/service.ts'
 import { createAutomationStore } from '../src/main/automations/store.ts'
-import type {
-  AutomationAuditPort,
-  AutomationClock,
-  AutomationDefinition,
-  AutomationDefinitionDraft,
-  AutomationManagementContext,
-  AutomationRun,
-  AutomationStore
-} from '../src/main/automations/types.ts'
 import {
-  wireWorkspaceAutomationEvents,
-  WORKSPACE_COMPLETED_EVENT
-} from '../src/main/automations/workspaceEvents.ts'
+  AUTOMATION_LIMITS,
+  type AutomationAuditPort,
+  type AutomationClock,
+  type AutomationDefinition,
+  type AutomationDefinitionDraft,
+  type AutomationManagementContext,
+  type AutomationRun,
+  type AutomationStore
+} from '../src/main/automations/types.ts'
+import { wireWorkspaceAutomationEvents } from '../src/main/automations/workspaceEvents.ts'
 import { runMigrations } from '../src/main/db/cutover.ts'
 import type { WorkspaceRecord, WorkspaceStatus } from '../src/shared/types.ts'
 
@@ -274,6 +260,7 @@ function persistedRun(automationId: string, index = 0): AutomationRun {
     )
     .all() as Array<{ name: string }>
   assert.ok(indexes.some(({ name }) => name === 'idx_automation_runs_idempotency'))
+  assert.ok(indexes.some(({ name }) => name === 'idx_automation_runs_automation_started'))
   assert.ok(indexes.some(({ name }) => name === 'idx_automation_event_occurrences_pending'))
 }
 
@@ -308,6 +295,22 @@ const deniedService = new AutomationService({
 await assert.rejects(
   () => deniedService.createDefinition(draft(), managementContext()),
   /No server-owned grant/
+)
+const cappedDefinitionService = new AutomationService({
+  store: {
+    ...store,
+    countDefinitions: () => AUTOMATION_LIMITS.maxDefinitions
+  },
+  registry,
+  grants,
+  audit: auditStore,
+  allowedEventTypes: new Set(['workspace.completed']),
+  now: () => now,
+  generateId
+})
+await assert.rejects(
+  () => cappedDefinitionService.createDefinition(draft(), managementContext()),
+  /definition limit reached/
 )
 
 const workspaceOnlyGrant = new AutomationGrantPolicy(() => ({
@@ -368,6 +371,59 @@ for (let index = 0; index < 3; index++) {
 store.pruneTerminalRuns(-1, 2)
 assert.equal(store.listRuns({ automationId: cleanupDefinition.id, limit: 100 }).length, 2)
 
+// Future retries cannot consume the reconciliation LIMIT ahead of ready work.
+// This guards the due predicate's placement inside SQL rather than filtering
+// an already-limited result set in memory.
+const starvationDefinition = await create({ enabled: false })
+for (let index = 0; index < 200; index++) {
+  assert.equal(
+    store.insertRun({
+      id: generateId(),
+      automationId: starvationDefinition.id,
+      trigger: { kind: 'event', key: `future-${index}`, occurredAt: index },
+      idempotencyKey: `future-key-${index}`,
+      status: 'retry_wait',
+      attempt: 1,
+      queuedAt: index,
+      startedAt: index,
+      finishedAt: null,
+      nextAttemptAt: now + 1_000_000_000,
+      resultCode: 'timeout',
+      result: null,
+      error: null,
+      requestId: `future-request-${index}`,
+      auditId: null
+    }),
+    true
+  )
+}
+const readyRunId = generateId()
+assert.equal(
+  store.insertRun({
+    id: readyRunId,
+    automationId: starvationDefinition.id,
+    trigger: { kind: 'event', key: 'ready', occurredAt: now },
+    idempotencyKey: 'ready-key',
+    status: 'queued',
+    attempt: 0,
+    queuedAt: now,
+    startedAt: null,
+    finishedAt: null,
+    nextAttemptAt: null,
+    resultCode: null,
+    result: null,
+    error: null,
+    requestId: null,
+    auditId: null
+  }),
+  true
+)
+assert.deepEqual(
+  store.listRunnableRuns(now, 10).map(({ id }) => id),
+  [readyRunId]
+)
+db.prepare('DELETE FROM automation_runs WHERE automation_id = ?').run(starvationDefinition.id)
+
 // One overdue schedule occurrence is enqueued per reconciliation; the next due
 // time jumps past now instead of replaying every missed interval.
 const scheduled = await create({
@@ -382,6 +438,7 @@ assert.equal(firstContext?.principal.type, 'automation')
 assert.equal(firstContext?.trustedAutomation?.automationId, scheduled.id)
 assert.equal(firstContext?.automationRunId, persistedRun(scheduled.id).id)
 assert.equal(firstContext?.idempotencyKey, persistedRun(scheduled.id).idempotencyKey)
+await scheduler.setEnabled(scheduled.id, false, managementContext())
 
 // A failed INSERT is only a dedupe win when the stable-key lookup finds the
 // persisted winner. Never return or advance a schedule with a fabricated run.
@@ -494,6 +551,7 @@ const restartedScheduler = new AutomationScheduler({
   generateId
 })
 await restartedScheduler.start()
+await restartedScheduler.waitForIdle()
 restartedScheduler.stop()
 assert.ok(store.getEventOccurrence(replayEvent.id)?.deliveredAt != null)
 assert.equal(store.listRuns({ automationId: replayDefinition.id, limit: 100 }).length, 1)
@@ -632,6 +690,65 @@ assert.deepEqual(
   ['succeeded', 'succeeded']
 )
 await scheduler.setEnabled(concurrentDefinition.id, false, managementContext())
+
+// Global concurrency is bounded independently of each definition's limit, and
+// reconciliation remains responsive while a dispatched handler is still live.
+const globallyCappedDefinitions = [await create(), await create()]
+const globallyCappedRunIds = globallyCappedDefinitions.map((definition, index) => {
+  const id = generateId()
+  assert.equal(
+    store.insertRun({
+      id,
+      automationId: definition.id,
+      trigger: { kind: 'event', key: `global-cap-${index}`, occurredAt: now },
+      idempotencyKey: `global-cap-key-${index}`,
+      status: 'queued',
+      attempt: 0,
+      queuedAt: now + index,
+      startedAt: null,
+      finishedAt: null,
+      nextAttemptAt: null,
+      resultCode: null,
+      result: null,
+      error: null,
+      requestId: null,
+      auditId: null
+    }),
+    true
+  )
+  return id
+})
+const globallyCappedScheduler = new AutomationScheduler({
+  store,
+  service,
+  registry,
+  audit: auditStore,
+  clock,
+  generateId,
+  maxGlobalConcurrency: 1
+})
+blockNext = true
+releaseBlocked = null
+await globallyCappedScheduler.tick(false)
+for (let spin = 0; spin < 20 && releaseBlocked == null; spin++) {
+  await new Promise<void>((resolve) => setImmediate(resolve))
+}
+assert.ok(releaseBlocked)
+await globallyCappedScheduler.tick(false)
+assert.deepEqual(
+  globallyCappedRunIds.map((id) => store.getRun(id)?.status),
+  ['running', 'queued']
+)
+releaseBlocked()
+await globallyCappedScheduler.waitForIdle()
+await globallyCappedScheduler.tick()
+assert.deepEqual(
+  globallyCappedRunIds.map((id) => store.getRun(id)?.status),
+  ['succeeded', 'succeeded']
+)
+for (const definition of globallyCappedDefinitions) {
+  await globallyCappedScheduler.setEnabled(definition.id, false, managementContext())
+}
 
 // Disable aborts a running attempt and records cancellation, then also cancels
 // persisted pending/retry work. It does not fabricate rollback.
@@ -870,191 +987,15 @@ await assert.rejects(
 assert.equal(store.getDefinition(rollbackEnableDefinition.id)?.enabled, false)
 rejectManagementAudit = false
 
-// The Phase 8 seam exposes only the two fixed Tier-0 Phase 6 reads, and the
-// authenticated Dev fixture can create/manage only its bounded definitions.
-const fixedReadDescriptor = (
-  id: typeof SETTINGS_GET_EFFECTIVE_ID | typeof RESOURCES_LIST_PROJECT_METADATA_ID
-): ControlDescriptor<Record<string, string>, Record<string, unknown>> => ({
-  id,
-  version: 1,
-  kind: 'query',
-  description: 'Fixed Phase 8 read.',
-  inputSchema: { type: 'object', additionalProperties: false, properties: {} },
-  outputSchema: { type: 'object', additionalProperties: false, properties: {} },
-  allowedSurfaces: ['mcp', 'automation'],
-  permission: id === SETTINGS_GET_EFFECTIVE_ID ? 'settings.read' : 'resources.read',
-  scope:
-    id === SETTINGS_GET_EFFECTIVE_ID
-      ? { kind: 'workspace', inputField: 'workspaceId' }
-      : { kind: 'project', inputField: 'projectId' },
-  risk: { tier: 0, label: 'read' },
-  declaredEffects: [],
-  idempotency: 'natural',
-  validateInput: (input): input is Record<string, string> => {
-    if (input == null || typeof input !== 'object' || Array.isArray(input)) return false
-    const record = input as Record<string, unknown>
-    const field = id === SETTINGS_GET_EFFECTIVE_ID ? 'workspaceId' : 'projectId'
-    return (
-      Object.keys(record).length === 1 && typeof record[field] === 'string' && record[field] !== ''
-    )
-  },
-  handler: (_input, context) => ({
-    operationId: id,
-    requestId: context.requestId
-  })
-})
-registry.register(fixedReadDescriptor(SETTINGS_GET_EFFECTIVE_ID))
-registry.register(fixedReadDescriptor(RESOURCES_LIST_PROJECT_METADATA_ID))
-const qaWorkspace = {
+// The production workspace-event bridge persists only the authoritative
+// transition inside the source transaction, then delivers it after commit.
+const eventWorkspace = {
   id: 'workspace-1',
   projectId: 'project-1',
-  name: 'QA',
-  cwd: '/qa'
+  name: 'Event workspace',
+  cwd: '/event-workspace'
 } as WorkspaceRecord
-const otherQaWorkspace = {
-  ...qaWorkspace,
-  id: 'workspace-2',
-  name: 'Other QA'
-} as WorkspaceRecord
-const qaGrants = new AutomationGrantPolicy(
-  createSafeAutomationGrantSource({
-    getProject: (projectId) => (projectId === qaWorkspace.projectId ? { id: projectId } : null),
-    getWorkspace: (workspaceId) =>
-      [qaWorkspace, otherQaWorkspace].find(({ id }) => id === workspaceId) ?? null
-  })
-)
-const qaService = new AutomationService({
-  store,
-  registry,
-  grants: qaGrants,
-  audit: auditStore,
-  allowedEventTypes: new Set([WORKSPACE_COMPLETED_EVENT]),
-  now: () => now,
-  generateId
-})
-const qaScheduler = new AutomationScheduler({
-  store,
-  service: qaService,
-  registry,
-  audit: auditStore,
-  clock,
-  generateId
-})
-const qaCredential = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijk'
-const qaEnv: Record<string, string | undefined> = {
-  ORPHEUS_PHASE8_QA: '1',
-  ORPHEUS_PHASE8_QA_WORKSPACE_ID: qaWorkspace.id,
-  ORPHEUS_PHASE8_QA_TOKEN: qaCredential
-}
-const qaConfig = capturePhase8QaConfig(qaEnv, 'Orpheus Dev')
-assert.ok(qaConfig)
-assert.deepEqual(qaEnv, {})
-assert.equal(qaConfig.workspaceId, qaWorkspace.id)
-assert.match(qaConfig.principalId, /^phase8-qa:[a-f0-9]{16}$/)
-assert.doesNotMatch(qaConfig.principalId, new RegExp(qaCredential))
-assert.equal(phase8QaCredentialMatches(qaCredential, qaCredential), true)
-assert.equal(phase8QaCredentialMatches('wrong', qaCredential), false)
-assert.equal(phase8QaCredentialMatches(undefined, qaCredential), false)
-const weakQaEnv: Record<string, string | undefined> = {
-  ORPHEUS_PHASE8_QA: '1',
-  ORPHEUS_PHASE8_QA_WORKSPACE_ID: qaWorkspace.id,
-  ORPHEUS_PHASE8_QA_TOKEN: 'too-short'
-}
-assert.equal(capturePhase8QaConfig(weakQaEnv, 'Orpheus Dev'), null)
-assert.deepEqual(weakQaEnv, {})
-
-const qa = createPhase8QaController({
-  service: qaService,
-  scheduler: qaScheduler,
-  getWorkspace: (workspaceId) =>
-    [qaWorkspace, otherQaWorkspace].find(({ id }) => id === workspaceId) ?? null,
-  targetWorkspaceId: qaConfig.workspaceId,
-  principalId: qaConfig.principalId,
-  generateId
-})
-assert.equal(phase8QaGateEnabled('1', 'Orpheus Dev'), true)
-assert.equal(phase8QaGateEnabled('1', 'Orpheus'), false)
-assert.equal(phase8QaGateEnabled(undefined, 'Orpheus Dev'), false)
-assert.equal(
-  parsePhase8QaArgs({
-    fixtureAction: 'createSchedule',
-    workspaceId: qaWorkspace.id
-  }),
-  null
-)
-assert.equal(parsePhase8QaArgs({ fixtureAction: 'enable', definitionId: 'qa', params: {} }), null)
-
-const [qaSchedule, reusedQaSchedule] = await Promise.all([
-  qa.execute({ fixtureAction: 'createSchedule' }),
-  qa.execute({ fixtureAction: 'createSchedule' })
-])
-assert.ok(qaSchedule.definition)
-const qaScheduleId = qaSchedule.definition.id
-assert.equal(qaSchedule.definition.workspaceId, qaWorkspace.id)
-assert.equal(qaSchedule.definition.operationId, SETTINGS_GET_EFFECTIVE_ID)
-assert.equal(qaSchedule.definition.enabled, false)
-assert.equal(reusedQaSchedule.definition?.id, qaScheduleId)
-assert.equal(reusedQaSchedule.reused, true)
-assert.equal(
-  qaService
-    .listDefinitions()
-    .filter(
-      (definition) =>
-        definition.operationId === SETTINGS_GET_EFFECTIVE_ID &&
-        definition.scope.kind === 'workspace' &&
-        definition.scope.workspaceId === qaWorkspace.id
-    ).length,
-  1
-)
-const enabledQaSchedule = await qa.execute({
-  fixtureAction: 'enable',
-  definitionId: qaScheduleId
-})
-assert.equal(enabledQaSchedule.definition?.enabled, true)
-now += 1_001
-await qaScheduler.tick()
-now += 1_001
-await qaScheduler.tick()
-const qaScheduleStatus = await qa.execute({
-  fixtureAction: 'status',
-  definitionId: qaScheduleId
-})
-assert.equal(qaScheduleStatus.runs?.length, 2)
-assert.equal(qaScheduleStatus.runs?.[0]?.status, 'succeeded')
-const recentScheduleRuns = store.listRuns({
-  automationId: qaScheduleId,
-  order: 'recent',
-  limit: 50
-})
-assert.deepEqual(
-  qaScheduleStatus.runs?.map(({ id }) => id),
-  recentScheduleRuns.map(({ id }) => id)
-)
-await qa.execute({
-  fixtureAction: 'disable',
-  definitionId: qaScheduleId
-})
-
-const otherQa = createPhase8QaController({
-  service: qaService,
-  scheduler: qaScheduler,
-  getWorkspace: (workspaceId) =>
-    [qaWorkspace, otherQaWorkspace].find(({ id }) => id === workspaceId) ?? null,
-  targetWorkspaceId: otherQaWorkspace.id,
-  principalId: 'phase8-qa:otherprincipal',
-  generateId
-})
-const otherFixture = await otherQa.execute({ fixtureAction: 'createSchedule' })
-assert.ok(otherFixture.definition)
-await assert.rejects(
-  () => qa.execute({ fixtureAction: 'status', definitionId: otherFixture.definition!.id }),
-  /not a fixed Phase 8 QA fixture/
-)
-
-const qaEvent = await qa.execute({ fixtureAction: 'createEvent' })
-assert.ok(qaEvent.definition)
-const qaEventId = qaEvent.definition.id
-await qa.execute({ fixtureAction: 'enable', definitionId: qaEventId })
+const bridgedDefinition = await create()
 let committedObserver:
   | ((
       workspaceId: string,
@@ -1071,7 +1012,7 @@ let persistingObserver:
     ) => void)
   | null = null
 const disposeWorkspaceEvents = wireWorkspaceAutomationEvents({
-  scheduler: qaScheduler,
+  scheduler,
   subscribePersisting: (observer) => {
     persistingObserver = observer
     return () => {
@@ -1089,28 +1030,27 @@ const disposeWorkspaceEvents = wireWorkspaceAutomationEvents({
 })
 assert.ok(persistingObserver)
 assert.ok(committedObserver)
-persistingObserver(qaWorkspace.id, 'idle', 'awaiting_input', qaWorkspace)
-committedObserver(qaWorkspace.id, 'idle', 'awaiting_input')
+persistingObserver(eventWorkspace.id, 'idle', 'awaiting_input', eventWorkspace)
+committedObserver(eventWorkspace.id, 'idle', 'awaiting_input')
 await new Promise<void>((resolve) => setImmediate(resolve))
-assert.equal(qaService.listRuns(qaEventId).length, 0)
+assert.equal(service.listRuns(bridgedDefinition.id).length, 0)
 store.transaction(() => {
-  persistingObserver?.(qaWorkspace.id, 'in_progress', 'awaiting_input', qaWorkspace)
+  persistingObserver?.(eventWorkspace.id, 'in_progress', 'awaiting_input', eventWorkspace)
 })
-const pendingQaOccurrence = db
+const pendingOccurrence = db
   .prepare(
     `SELECT id, delivered_at FROM automation_event_occurrences
      WHERE workspace_id = ? AND delivered_at IS NULL
      ORDER BY created_at DESC LIMIT 1`
   )
-  .get(qaWorkspace.id) as { id: string; delivered_at: number | null }
-assert.equal(pendingQaOccurrence.delivered_at, null)
-committedObserver(qaWorkspace.id, 'in_progress', 'awaiting_input')
+  .get(eventWorkspace.id) as { id: string; delivered_at: number | null }
+assert.equal(pendingOccurrence.delivered_at, null)
+committedObserver(eventWorkspace.id, 'in_progress', 'awaiting_input')
 await new Promise<void>((resolve) => setImmediate(resolve))
-await qaScheduler.tick()
-assert.equal(qaService.listRuns(qaEventId).length, 1)
+await scheduler.tick()
+assert.equal(service.listRuns(bridgedDefinition.id).length, 1)
 disposeWorkspaceEvents()
-const qaEventStatus = await qa.execute({ fixtureAction: 'status', definitionId: qaEventId })
-const correlatedRun = qaEventStatus.runs?.[0]
+const correlatedRun = service.listRuns(bridgedDefinition.id)[0]
 assert.ok(correlatedRun?.auditId)
 const correlatedAudit = db
   .prepare('SELECT correlation_json FROM control_audit WHERE audit_id = ?')
@@ -1119,53 +1059,7 @@ assert.equal(
   (JSON.parse(correlatedAudit.correlation_json) as Record<string, unknown>)['runId'],
   correlatedRun.id
 )
-await qa.execute({ fixtureAction: 'disable', definitionId: qaEventId })
-const cleanupResult = await qa.execute({ fixtureAction: 'cleanup' })
-assert.deepEqual(new Set(cleanupResult.cleanedDefinitionIds), new Set([qaScheduleId, qaEventId]))
-assert.equal(store.getDefinition(qaScheduleId), null)
-assert.equal(store.getDefinition(qaEventId), null)
-assert.ok(store.getDefinition(otherFixture.definition.id))
-
-const qaManagementRows = db
-  .prepare(
-    `SELECT operation_id, principal_kind, consumer, decision, result_code, correlation_json
-     FROM control_audit
-     WHERE operation_id IN (
-       'automations.createDefinition', 'automations.setEnabled', 'automations.deleteDefinition'
-     )
-       AND principal_kind = 'cli'`
-  )
-  .all() as Array<{
-  operation_id: string
-  principal_kind: string
-  consumer: string
-  decision: string
-  result_code: string
-  correlation_json: string
-}>
-assert.ok(qaManagementRows.length >= 6)
-assert.ok(
-  qaManagementRows.some(
-    ({ operation_id, decision, result_code, correlation_json }) =>
-      operation_id === 'automations.deleteDefinition' &&
-      decision === 'allow' &&
-      result_code === 'completed' &&
-      cleanupResult.cleanedDefinitionIds?.includes(
-        String((JSON.parse(correlation_json) as Record<string, unknown>)['definitionId'])
-      ) === true
-  ),
-  'Phase 8 cleanup must persist an exact successful delete-definition audit'
-)
-for (const row of qaManagementRows) {
-  assert.equal(row.consumer, 'cli')
-  const correlation = JSON.parse(row.correlation_json) as Record<string, unknown>
-  if (correlation['principalId'] !== 'phase8-qa:otherprincipal') {
-    assert.equal(correlation['principalId'], qaConfig.principalId)
-  }
-  assert.equal(typeof correlation['definitionId'], 'string')
-  assert.equal(typeof correlation['requestId'], 'string')
-}
-
+await scheduler.setEnabled(bridgedDefinition.id, false, managementContext())
 // Static architectural guard: the subsystem has no child-process, command
 // socket, renderer selector, click, or key-simulation dependency.
 const moduleNames = [

@@ -166,6 +166,8 @@ export type SettingsResourceServiceDeps = {
   audit: WorkspaceAuditPort
   now?: () => number
   generateId?: () => string
+  resourceMetadataCacheTtlMs?: number
+  maxResourceMetadataCacheEntries?: number
 }
 
 type OperationAuditMeta = {
@@ -188,6 +190,8 @@ const SENSITIVE_LOCATION =
 const MAX_METADATA_LENGTH = 512
 const MAX_METADATA_ITEMS = 64
 const MAX_PUBLISHED_RESOURCES = 256
+const RESOURCE_METADATA_CACHE_TTL_MS = 5_000
+const MAX_RESOURCE_METADATA_CACHE_ENTRIES = 128
 const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$/
 const DB_WRITE_EFFECT = 'db.write' as const
 const DIRTY_RECOMPUTE_EFFECT = 'workspace.dirty.recompute' as const
@@ -249,10 +253,24 @@ function auditConsumer(
 export class SettingsResourceService {
   private readonly now: () => number
   private readonly generateId: () => string
+  private readonly resourceMetadataCacheTtlMs: number
+  private readonly maxResourceMetadataCacheEntries: number
+  private readonly resourceMetadataCache = new Map<
+    string,
+    { expiresAt: number; output: ListProjectResourceMetadataOutput }
+  >()
 
   constructor(private readonly deps: SettingsResourceServiceDeps) {
     this.now = deps.now ?? Date.now
     this.generateId = deps.generateId ?? randomUUID
+    this.resourceMetadataCacheTtlMs = Math.max(
+      0,
+      deps.resourceMetadataCacheTtlMs ?? RESOURCE_METADATA_CACHE_TTL_MS
+    )
+    this.maxResourceMetadataCacheEntries = Math.max(
+      1,
+      Math.floor(deps.maxResourceMetadataCacheEntries ?? MAX_RESOURCE_METADATA_CACHE_ENTRIES)
+    )
   }
 
   targetAllowed(operationId: string, input: unknown, context: ControlContext): boolean {
@@ -298,57 +316,12 @@ export class SettingsResourceService {
     try {
       const projectId = this.resolveProject(input.projectId, context)
       const requested = new Set<ProjectResourceKind>(input.kinds ?? RESOURCE_KIND_ORDER)
-      const resources: ProjectResourceMetadata[] = []
-
-      if (requested.has('mcp_server')) {
-        for (const server of this.deps.listProjectMcpServers(projectId)) {
-          resources.push({
-            kind: 'mcp_server',
-            source: 'project',
-            projectId,
-            name: sanitizeMetadataString(server.name) ?? '',
-            transport: server.transport
-          })
-        }
-      }
-      if (requested.has('hook')) {
-        for (const hook of this.deps.listProjectHooks(projectId)) {
-          resources.push({
-            kind: 'hook',
-            source: 'project',
-            projectId,
-            event: sanitizeMetadataString(hook.event) ?? '',
-            matcher: sanitizeMetadataString(hook.matcher),
-            type: sanitizeMetadataString(hook.type) ?? ''
-          })
-        }
-      }
-      if (requested.has('slash_command')) {
-        for (const command of this.deps.listProjectSlashCommands(projectId)) {
-          resources.push({
-            kind: 'slash_command',
-            source: 'project',
-            projectId,
-            name: sanitizeMetadataString(command.name) ?? '',
-            description: sanitizeMetadataString(command.description),
-            allowedTools: sanitizeMetadataStrings(command.allowedTools),
-            argumentHint: sanitizeMetadataString(command.argumentHint)
-          })
-        }
-      }
-      if (requested.has('subagent')) {
-        for (const subagent of this.deps.listProjectSubagents(projectId)) {
-          resources.push({
-            kind: 'subagent',
-            source: 'project',
-            projectId,
-            name: sanitizeMetadataString(subagent.name) ?? '',
-            description: sanitizeMetadataString(subagent.description),
-            tools: sanitizeMetadataStrings(subagent.tools),
-            model: sanitizeMetadataString(subagent.model)
-          })
-        }
-      }
+      const requestedKinds = RESOURCE_KIND_ORDER.filter((kind) => requested.has(kind))
+      const cacheKey = `${projectId}\0${requestedKinds.join(',')}`
+      const observedAt = this.now()
+      const cached = this.cachedProjectMetadata(cacheKey, observedAt)
+      if (cached != null) return cached
+      const resources = this.scanProjectResources(projectId, requested)
 
       const kindRank = (kind: ProjectResourceKind): number => RESOURCE_KIND_ORDER.indexOf(kind)
       resources.sort((a, b) => {
@@ -357,18 +330,108 @@ export class SettingsResourceService {
         return JSON.stringify(a).localeCompare(JSON.stringify(b))
       })
 
-      return {
+      const output: ListProjectResourceMetadataOutput = {
         schemaVersion: 1,
         projectId,
         source: 'project-files',
-        observedAt: this.now(),
+        observedAt,
         truncated: resources.length > MAX_PUBLISHED_RESOURCES,
         resources: resources.slice(0, MAX_PUBLISHED_RESOURCES)
       }
+      this.cacheProjectMetadata(cacheKey, observedAt, output)
+      return output
     } catch (error) {
       if (error instanceof SettingsResourceError) throw error
       throw new SettingsResourceError('unavailable', 'Project resource metadata is unavailable.')
     }
+  }
+
+  private cachedProjectMetadata(
+    cacheKey: string,
+    observedAt: number
+  ): ListProjectResourceMetadataOutput | null {
+    const cached = this.resourceMetadataCache.get(cacheKey)
+    if (cached == null) return null
+    this.resourceMetadataCache.delete(cacheKey)
+    if (observedAt >= cached.expiresAt) return null
+    this.resourceMetadataCache.set(cacheKey, cached)
+    return cached.output
+  }
+
+  private cacheProjectMetadata(
+    cacheKey: string,
+    observedAt: number,
+    output: ListProjectResourceMetadataOutput
+  ): void {
+    for (const [key, entry] of this.resourceMetadataCache) {
+      if (observedAt >= entry.expiresAt) this.resourceMetadataCache.delete(key)
+    }
+    while (this.resourceMetadataCache.size >= this.maxResourceMetadataCacheEntries) {
+      const oldestKey = this.resourceMetadataCache.keys().next().value
+      if (oldestKey == null) break
+      this.resourceMetadataCache.delete(oldestKey)
+    }
+    this.resourceMetadataCache.set(cacheKey, {
+      expiresAt: observedAt + this.resourceMetadataCacheTtlMs,
+      output
+    })
+  }
+
+  private scanProjectResources(
+    projectId: string,
+    requested: ReadonlySet<ProjectResourceKind>
+  ): ProjectResourceMetadata[] {
+    const resources: ProjectResourceMetadata[] = []
+    if (requested.has('mcp_server')) {
+      for (const server of this.deps.listProjectMcpServers(projectId)) {
+        resources.push({
+          kind: 'mcp_server',
+          source: 'project',
+          projectId,
+          name: sanitizeMetadataString(server.name) ?? '',
+          transport: server.transport
+        })
+      }
+    }
+    if (requested.has('hook')) {
+      for (const hook of this.deps.listProjectHooks(projectId)) {
+        resources.push({
+          kind: 'hook',
+          source: 'project',
+          projectId,
+          event: sanitizeMetadataString(hook.event) ?? '',
+          matcher: sanitizeMetadataString(hook.matcher),
+          type: sanitizeMetadataString(hook.type) ?? ''
+        })
+      }
+    }
+    if (requested.has('slash_command')) {
+      for (const command of this.deps.listProjectSlashCommands(projectId)) {
+        resources.push({
+          kind: 'slash_command',
+          source: 'project',
+          projectId,
+          name: sanitizeMetadataString(command.name) ?? '',
+          description: sanitizeMetadataString(command.description),
+          allowedTools: sanitizeMetadataStrings(command.allowedTools),
+          argumentHint: sanitizeMetadataString(command.argumentHint)
+        })
+      }
+    }
+    if (requested.has('subagent')) {
+      for (const subagent of this.deps.listProjectSubagents(projectId)) {
+        resources.push({
+          kind: 'subagent',
+          source: 'project',
+          projectId,
+          name: sanitizeMetadataString(subagent.name) ?? '',
+          description: sanitizeMetadataString(subagent.description),
+          tools: sanitizeMetadataStrings(subagent.tools),
+          model: sanitizeMetadataString(subagent.model)
+        })
+      }
+    }
+    return resources
   }
 
   async patchWorkspace(

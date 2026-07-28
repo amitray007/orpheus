@@ -280,11 +280,11 @@ export class AutomationManagementService {
       automationId == null
         ? this.deps.service.listDefinitions().filter((definition) => owns(definition, binding))
         : [this.requireOwnedDefinition(automationId, binding)]
-    const runs = definitions.flatMap((definition) =>
-      this.deps.service.listRuns(definition.id, limit)
+    const runs = this.deps.service.listRunsForAutomations(
+      definitions.map((definition) => definition.id),
+      limit
     )
-    runs.sort((left, right) => right.queuedAt - left.queuedAt || right.id.localeCompare(left.id))
-    return Promise.all(runs.slice(0, limit).map((run) => this.deps.service.summarizeRun(run)))
+    return this.deps.service.summarizeRuns(runs)
   }
 
   async retryRun(runId: string, context: ControlContext): Promise<AutomationRunWithEligibility> {
