@@ -16,6 +16,8 @@ import {
 } from './types'
 
 const MAX_RECONCILE_ITEMS = 200
+const MAX_BUDGET_DEFERRALS_PER_RECONCILE = 200
+const BUDGET_DEFERRAL_YIELD_MS = 25
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1_000
 const MAX_WAKE_DELAY_MS = 2_147_483_647
 const RETRYABLE_CODES = new Set(['busy', 'unavailable', 'timeout', 'failed'])
@@ -115,6 +117,7 @@ type AttemptOutcome = {
 }
 
 type RunSelection = { definition: AutomationDefinition; run: AutomationRun }
+type BudgetDeferralWork = { remaining: number }
 
 export class AutomationScheduler {
   private readonly clock: AutomationClock
@@ -136,6 +139,7 @@ export class AutomationScheduler {
   private wakeRequested = false
   private started = false
   private lastCleanupAt: number | null = null
+  private budgetDeferralYieldUntil: number | null = null
 
   constructor(private readonly ports: AutomationSchedulerPorts) {
     this.clock = ports.clock ?? { now: Date.now, withTimeout: defaultWithTimeout }
@@ -335,6 +339,21 @@ export class AutomationScheduler {
       return
     }
     let nextWakeAt = this.ports.store.getNextWakeAt()
+    if (
+      nextWakeAt != null &&
+      nextWakeAt <= now &&
+      this.budgetDeferralYieldUntil != null &&
+      this.budgetDeferralYieldUntil > now
+    ) {
+      // A bounded deferral pass can intentionally leave ready rows behind.
+      // Yield briefly instead of scheduling another zero-delay reconciliation,
+      // but preserve any unrelated persisted deadline that arrives sooner.
+      const futureWakeAt = this.ports.store.getNextWakeAt(now)
+      nextWakeAt =
+        futureWakeAt == null
+          ? this.budgetDeferralYieldUntil
+          : Math.min(futureWakeAt, this.budgetDeferralYieldUntil)
+    }
     if (nextWakeAt != null && nextWakeAt <= now && this.occupiedSlots.size > 0) {
       // Ready rows can belong to a definition whose concurrency is already
       // occupied. Ignore those rows for timer purposes without losing a
@@ -402,6 +421,7 @@ export class AutomationScheduler {
   // automation cannot stop unrelated due work from being discovered.
   private reconcile(): readonly Promise<void>[] {
     const now = this.clock.now()
+    this.budgetDeferralYieldUntil = null
     this.enqueuePendingEvents(now)
     if (this.lastCleanupAt == null || now - this.lastCleanupAt >= CLEANUP_INTERVAL_MS) {
       this.ports.store.pruneTerminalRuns(
@@ -448,7 +468,8 @@ export class AutomationScheduler {
       orderedAutomationIds,
       definitions,
       starts,
-      availableGlobalSlots
+      availableGlobalSlots,
+      budgetDeferralWork: { remaining: MAX_BUDGET_DEFERRALS_PER_RECONCILE }
     })
     const lastSelectedId = selected.at(-1)?.definition.id
     const lastSelectedIndex =
@@ -466,6 +487,7 @@ export class AutomationScheduler {
     definitions: ReadonlyMap<string, AutomationDefinition>
     starts: ReadonlyMap<string, number>
     availableGlobalSlots: number
+    budgetDeferralWork: BudgetDeferralWork
   }): RunSelection[] {
     const selected: RunSelection[] = []
     const reserved = new Map<string, number>()
@@ -489,7 +511,8 @@ export class AutomationScheduler {
           alreadyReserved,
           starts: input.starts,
           candidates,
-          globalSlotsRemaining: input.availableGlobalSlots - selected.length
+          globalSlotsRemaining: input.availableGlobalSlots - selected.length,
+          budgetDeferralWork: input.budgetDeferralWork
         })
         if (run == null) {
           blocked.add(automationId)
@@ -511,6 +534,7 @@ export class AutomationScheduler {
     starts: ReadonlyMap<string, number>
     candidates: Map<string, AutomationRun[]>
     globalSlotsRemaining: number
+    budgetDeferralWork: BudgetDeferralWork
   }): AutomationRun | null {
     const { definition, alreadyReserved } = input
     const active = this.activeByAutomation.get(definition.id) ?? 0
@@ -519,21 +543,27 @@ export class AutomationScheduler {
       definition.rollingBudget.maxStarts - (input.starts.get(definition.id) ?? 0) - alreadyReserved
     if (definitionSlots <= 0) return null
     if (budgetSlots <= 0) {
-      // Move a bounded backlog together. Deferring only the oldest row leaves
-      // the next queued row immediately runnable and creates one zero-delay
-      // wake/SQLite round trip per row while the budget remains exhausted.
-      const runs = this.listRunnableNonLingeringRuns(
-        definition.id,
-        input.now,
-        AUTOMATION_LIMITS.maxListLimit
-      )
+      if (input.budgetDeferralWork.remaining <= 0) {
+        this.budgetDeferralYieldUntil = input.now + BUDGET_DEFERRAL_YIELD_MS
+        return null
+      }
+      // Move a globally bounded backlog together. The shared work budget keeps
+      // one reconciliation from updating maxDefinitions * maxListLimit rows,
+      // while the yield deadline prevents larger backlogs from immediately
+      // spinning through another SQLite pass.
+      const limit = Math.min(AUTOMATION_LIMITS.maxListLimit, input.budgetDeferralWork.remaining)
+      const runs = this.listRunnableNonLingeringRuns(definition.id, input.now, limit)
       if (runs.length > 0) {
+        input.budgetDeferralWork.remaining -= runs.length
         this.ports.store.deferRuns(
           runs.map((run) => run.id),
           input.now,
           input.now + definition.rollingBudget.windowMs,
           'rolling_budget'
         )
+        if (input.budgetDeferralWork.remaining === 0) {
+          this.budgetDeferralYieldUntil = input.now + BUDGET_DEFERRAL_YIELD_MS
+        }
       }
       return null
     }

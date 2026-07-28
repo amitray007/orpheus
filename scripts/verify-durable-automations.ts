@@ -1347,6 +1347,7 @@ await scheduler.setEnabled(bridgedDefinition.id, false, managementContext())
   let nextWakeQueries = 0
   let runCleanupCalls = 0
   let eventCleanupCalls = 0
+  let budgetDeferralBatches: number[] = []
   const wakeStore: AutomationStore = {
     ...durableWakeStore,
     getNextWakeAt: (...args) => {
@@ -1360,6 +1361,10 @@ await scheduler.setEnabled(bridgedDefinition.id, false, managementContext())
     pruneDeliveredEventOccurrences: (...args) => {
       eventCleanupCalls++
       durableWakeStore.pruneDeliveredEventOccurrences(...args)
+    },
+    deferRuns: (ids, readyAt, nextAttemptAt, resultCode) => {
+      budgetDeferralBatches.push(ids.length)
+      return durableWakeStore.deferRuns(ids, readyAt, nextAttemptAt, resultCode)
     }
   }
   const wakeAudit = createAutomationAuditStore(wakeDb)
@@ -1599,7 +1604,157 @@ await scheduler.setEnabled(bridgedDefinition.id, false, managementContext())
     1_000,
     'a budget-blocked backlog must bulk-defer behind one future wake without zero-delay churn'
   )
+
+  budgetDeferralBatches = []
+  for (let index = 0; index < AUTOMATION_LIMITS.maxListLimit + 5; index++) {
+    assert.equal(
+      wakeStore.insertRun({
+        id: `wake-large-budget-run-${index}`,
+        automationId: budgetWakeDefinition.id,
+        trigger: {
+          kind: 'event',
+          key: `wake-large-budget-${index}`,
+          occurredAt: wakeNow
+        },
+        idempotencyKey: `wake-large-budget-key-${index}`,
+        status: 'queued',
+        attempt: 0,
+        queuedAt: wakeNow + index,
+        startedAt: null,
+        finishedAt: null,
+        nextAttemptAt: null,
+        resultCode: null,
+        result: null,
+        error: null,
+        requestId: null,
+        auditId: null
+      }),
+      true
+    )
+  }
+  await wakeScheduler.tick(false)
+  assert.deepEqual(
+    budgetDeferralBatches,
+    [AUTOMATION_LIMITS.maxListLimit],
+    'one reconciliation must never defer more than its global row-work budget'
+  )
+  assert.equal(
+    liveWake()?.delayMs,
+    25,
+    'ready rows beyond one deferral batch must yield instead of rearming at zero delay'
+  )
+  assert.equal(
+    wakeStore
+      .listRuns({
+        automationId: budgetWakeDefinition.id,
+        statuses: ['queued'],
+        limit: AUTOMATION_LIMITS.maxListLimit + 10
+      })
+      .filter(({ id }) => id.startsWith('wake-large-budget-run-')).length,
+    5
+  )
+  wakeNow += 25
+  await fireWake()
+  assert.deepEqual(budgetDeferralBatches, [AUTOMATION_LIMITS.maxListLimit, 5])
+  const largeBudgetRuns = wakeStore
+    .listRuns({
+      automationId: budgetWakeDefinition.id,
+      statuses: ['retry_wait'],
+      limit: AUTOMATION_LIMITS.maxListLimit + 10
+    })
+    .filter(({ id }) => id.startsWith('wake-large-budget-run-'))
+  assert.equal(largeBudgetRuns.length, AUTOMATION_LIMITS.maxListLimit + 5)
+  assert.ok(
+    largeBudgetRuns.every(({ nextAttemptAt }) => nextAttemptAt != null && nextAttemptAt > wakeNow),
+    'yielded budget work must remain durably pending at a future deadline'
+  )
+  assert.ok((liveWake()?.delayMs ?? 0) > 0, 'draining the overflow batch must not spin at zero')
+
   await wakeService.setEnabled(budgetWakeDefinition.id, false, managementContext())
+  await flushImmediateWakes()
+  assertMaintenanceWake()
+
+  const manyBudgetDefinitions: AutomationDefinition[] = []
+  const manyBudgetRunIds: string[] = []
+  for (let index = 0; index < AUTOMATION_LIMITS.maxListLimit + 5; index++) {
+    const definition = await wakeService.createDefinition(
+      draft({
+        name: `Globally bounded budget ${index}`,
+        rollingBudget: { windowMs: 1_000, maxStarts: 1 }
+      }),
+      managementContext()
+    )
+    manyBudgetDefinitions.push(definition)
+    assert.equal(
+      wakeStore.insertRun({
+        id: `wake-many-budget-seed-${index}`,
+        automationId: definition.id,
+        trigger: { kind: 'event', key: `wake-many-budget-seed-${index}`, occurredAt: wakeNow },
+        idempotencyKey: `wake-many-budget-seed-key-${index}`,
+        status: 'succeeded',
+        attempt: 1,
+        queuedAt: wakeNow,
+        startedAt: wakeNow,
+        finishedAt: wakeNow,
+        nextAttemptAt: null,
+        resultCode: 'completed',
+        result: null,
+        error: null,
+        requestId: `wake-many-budget-seed-request-${index}`,
+        auditId: null
+      }),
+      true
+    )
+    const runId = `wake-many-budget-run-${index}`
+    manyBudgetRunIds.push(runId)
+    assert.equal(
+      wakeStore.insertRun({
+        id: runId,
+        automationId: definition.id,
+        trigger: { kind: 'event', key: runId, occurredAt: wakeNow },
+        idempotencyKey: `wake-many-budget-key-${index}`,
+        status: 'queued',
+        attempt: 0,
+        queuedAt: wakeNow + index,
+        startedAt: null,
+        finishedAt: null,
+        nextAttemptAt: null,
+        resultCode: null,
+        result: null,
+        error: null,
+        requestId: null,
+        auditId: null
+      }),
+      true
+    )
+  }
+  budgetDeferralBatches = []
+  await wakeScheduler.tick(false)
+  assert.equal(
+    budgetDeferralBatches.reduce((total, count) => total + count, 0),
+    AUTOMATION_LIMITS.maxListLimit,
+    'many blocked definitions must share one global deferral-work budget'
+  )
+  assert.ok(
+    budgetDeferralBatches.every((count) => count === 1),
+    'one-row definitions must not be combined across automation boundaries'
+  )
+  assert.equal(manyBudgetRunIds.filter((id) => wakeStore.getRun(id)?.status === 'queued').length, 5)
+  assert.equal(liveWake()?.delayMs, 25)
+  wakeNow += 25
+  await fireWake()
+  assert.equal(
+    budgetDeferralBatches.reduce((total, count) => total + count, 0),
+    AUTOMATION_LIMITS.maxListLimit + 5
+  )
+  assert.ok(
+    manyBudgetRunIds.every((id) => wakeStore.getRun(id)?.status === 'retry_wait'),
+    'bounded multi-definition deferral must preserve every pending run'
+  )
+  assert.ok((liveWake()?.delayMs ?? 0) > 0)
+  for (const definition of manyBudgetDefinitions) {
+    await wakeService.setEnabled(definition.id, false, managementContext())
+  }
   await flushImmediateWakes()
   assertMaintenanceWake()
 
