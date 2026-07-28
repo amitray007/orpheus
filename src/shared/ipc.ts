@@ -190,6 +190,7 @@ export interface InvokeChannelMap {
   'window:openDevTools': { req: []; res: void }
   'window:reload': { req: []; res: void }
   'window:isVisible': { req: []; res: boolean }
+  'window:getNativeOcclusionVisible': { req: []; res: boolean | null }
   'config:openFolder': { req: []; res: string | null }
   'orpheusConfig:get': {
     req: [{ projectId: string }]

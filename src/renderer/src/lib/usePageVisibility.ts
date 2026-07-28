@@ -15,17 +15,20 @@ export type BrowserWindowVisibilityState = Readonly<{
 
 export type AppKitOcclusionVisibilityState = Readonly<{
   visible: boolean
+  pendingSnapshotGeneration: number | null
 }>
 
-export const INITIAL_VISIBILITY_SNAPSHOT_GENERATION = 1
+export const INITIAL_BROWSER_WINDOW_SNAPSHOT_GENERATION = 1
+export const INITIAL_APPKIT_OCCLUSION_SNAPSHOT_GENERATION = 1
 
 export const INITIAL_BROWSER_WINDOW_VISIBILITY: BrowserWindowVisibilityState = {
   visible: false,
-  pendingSnapshotGeneration: INITIAL_VISIBILITY_SNAPSHOT_GENERATION
+  pendingSnapshotGeneration: INITIAL_BROWSER_WINDOW_SNAPSHOT_GENERATION
 }
 
 export const INITIAL_APPKIT_OCCLUSION_VISIBILITY: AppKitOcclusionVisibilityState = {
-  visible: true
+  visible: false,
+  pendingSnapshotGeneration: INITIAL_APPKIT_OCCLUSION_SNAPSHOT_GENERATION
 }
 
 export function applyBrowserWindowVisibilityPush(
@@ -49,7 +52,17 @@ export function applyAppKitOcclusionVisibility(
   state: AppKitOcclusionVisibilityState,
   visible: boolean
 ): AppKitOcclusionVisibilityState {
-  return state.visible === visible ? state : { visible }
+  if (state.pendingSnapshotGeneration === null && state.visible === visible) return state
+  return { visible, pendingSnapshotGeneration: null }
+}
+
+export function applyInitialAppKitOcclusionVisibility(
+  state: AppKitOcclusionVisibilityState,
+  visible: boolean | null,
+  snapshotGeneration: number
+): AppKitOcclusionVisibilityState {
+  if (visible === null || state.pendingSnapshotGeneration !== snapshotGeneration) return state
+  return { visible, pendingSnapshotGeneration: null }
 }
 
 /**
@@ -99,7 +112,7 @@ export function usePageVisibility(): boolean {
             applyInitialBrowserWindowVisibility(
               state,
               visible,
-              INITIAL_VISIBILITY_SNAPSHOT_GENERATION
+              INITIAL_BROWSER_WINDOW_SNAPSHOT_GENERATION
             )
           )
         }
@@ -107,6 +120,23 @@ export function usePageVisibility(): boolean {
       .catch(() => {
         // Fail closed: the static running indicator remains visible, but no
         // animation starts without an authoritative presentation snapshot.
+      })
+    void window.api.window
+      .getNativeOcclusionVisible()
+      .then((visible) => {
+        if (active) {
+          setAppKitOcclusionVisibility((state) =>
+            applyInitialAppKitOcclusionVisibility(
+              state,
+              visible,
+              INITIAL_APPKIT_OCCLUSION_SNAPSHOT_GENERATION
+            )
+          )
+        }
+      })
+      .catch(() => {
+        // Fail closed until the native attachment publishes current AppKit
+        // occlusion through onSleepStateChanged.
       })
 
     return () => {

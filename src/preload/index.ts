@@ -191,6 +191,8 @@ const api = {
     openDevTools: (): Promise<void> => invoke('window:openDevTools'),
     reload: (): Promise<void> => invoke('window:reload'),
     isVisible: (): Promise<boolean> => invoke('window:isVisible'),
+    getNativeOcclusionVisible: (): Promise<boolean | null> =>
+      invoke('window:getNativeOcclusionVisible'),
     onVisibilityChanged: (cb: (event: { visible: boolean }) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.windowVisibilityChanged, cb)
   },

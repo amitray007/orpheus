@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import {
   INITIAL_APPKIT_OCCLUSION_VISIBILITY,
+  INITIAL_APPKIT_OCCLUSION_SNAPSHOT_GENERATION,
   INITIAL_BROWSER_WINDOW_VISIBILITY,
-  INITIAL_VISIBILITY_SNAPSHOT_GENERATION,
+  INITIAL_BROWSER_WINDOW_SNAPSHOT_GENERATION,
   applyAppKitOcclusionVisibility,
   applyBrowserWindowVisibilityPush,
+  applyInitialAppKitOcclusionVisibility,
   applyInitialBrowserWindowVisibility,
   shouldAnimatePage
 } from '../src/renderer/src/lib/usePageVisibility'
@@ -44,7 +46,7 @@ assert.equal(
   applyInitialBrowserWindowVisibility(
     INITIAL_BROWSER_WINDOW_VISIBILITY,
     false,
-    INITIAL_VISIBILITY_SNAPSHOT_GENERATION
+    INITIAL_BROWSER_WINDOW_SNAPSHOT_GENERATION
   ).visible,
   false,
   'mounting while hidden must remain non-animated after the initial snapshot'
@@ -53,7 +55,16 @@ assert.equal(
 const browserVisible = applyInitialBrowserWindowVisibility(
   INITIAL_BROWSER_WINDOW_VISIBILITY,
   true,
-  INITIAL_VISIBILITY_SNAPSHOT_GENERATION
+  INITIAL_BROWSER_WINDOW_SNAPSHOT_GENERATION
+)
+assert.equal(
+  applyInitialAppKitOcclusionVisibility(
+    INITIAL_APPKIT_OCCLUSION_VISIBILITY,
+    false,
+    INITIAL_APPKIT_OCCLUSION_SNAPSHOT_GENERATION
+  ).visible,
+  false,
+  'mounting after an already-occluded native attachment must remain non-animated'
 )
 const appKitOccluded = applyAppKitOcclusionVisibility(INITIAL_APPKIT_OCCLUSION_VISIBILITY, false)
 const browserRestored = applyBrowserWindowVisibilityPush(browserVisible, true)
@@ -86,7 +97,7 @@ assert.strictEqual(
   applyInitialBrowserWindowVisibility(
     matchingHiddenPush,
     true,
-    INITIAL_VISIBILITY_SNAPSHOT_GENERATION
+    INITIAL_BROWSER_WINDOW_SNAPSHOT_GENERATION
   ),
   matchingHiddenPush,
   'a stale visible snapshot must not override an already-received hidden push'
@@ -95,7 +106,7 @@ assert.strictEqual(
 const matchingVisibleSnapshot = applyInitialBrowserWindowVisibility(
   INITIAL_BROWSER_WINDOW_VISIBILITY,
   true,
-  INITIAL_VISIBILITY_SNAPSHOT_GENERATION
+  INITIAL_BROWSER_WINDOW_SNAPSHOT_GENERATION
 )
 assert.strictEqual(
   applyBrowserWindowVisibilityPush(matchingVisibleSnapshot, true),
@@ -104,9 +115,33 @@ assert.strictEqual(
 )
 const visiblePush = applyBrowserWindowVisibilityPush(INITIAL_BROWSER_WINDOW_VISIBILITY, true)
 assert.strictEqual(
-  applyInitialBrowserWindowVisibility(visiblePush, false, INITIAL_VISIBILITY_SNAPSHOT_GENERATION),
+  applyInitialBrowserWindowVisibility(
+    visiblePush,
+    false,
+    INITIAL_BROWSER_WINDOW_SNAPSHOT_GENERATION
+  ),
   visiblePush,
   'a stale hidden snapshot must not override an already-received visible push'
+)
+
+const nativeVisiblePush = applyAppKitOcclusionVisibility(INITIAL_APPKIT_OCCLUSION_VISIBILITY, true)
+assert.strictEqual(
+  applyInitialAppKitOcclusionVisibility(
+    nativeVisiblePush,
+    false,
+    INITIAL_APPKIT_OCCLUSION_SNAPSHOT_GENERATION
+  ),
+  nativeVisiblePush,
+  'a native push received during the AppKit snapshot must win over stale stored state'
+)
+assert.strictEqual(
+  applyInitialAppKitOcclusionVisibility(
+    INITIAL_APPKIT_OCCLUSION_VISIBILITY,
+    null,
+    INITIAL_APPKIT_OCCLUSION_SNAPSHOT_GENERATION
+  ),
+  INITIAL_APPKIT_OCCLUSION_VISIBILITY,
+  'no attached native surface must remain fail-closed and pending'
 )
 
 assert.match(
@@ -172,10 +207,16 @@ assert.match(
   'document, BrowserWindow, and AppKit visibility must remain independent predicates'
 )
 assert.match(pageVisibility, /window\.api\.window\s*\.isVisible\(\)/)
+assert.match(pageVisibility, /window\.api\.window\s*\.getNativeOcclusionVisible\(\)/)
 assert.ok(
   pageVisibility.indexOf('window.api.window.onVisibilityChanged') <
     pageVisibility.indexOf('.isVisible()'),
   'the hook must subscribe before requesting its initial visibility snapshot'
+)
+assert.ok(
+  pageVisibility.indexOf('window.api.terminal.onSleepStateChanged') <
+    pageVisibility.indexOf('.getNativeOcclusionVisible()'),
+  'the hook must subscribe before requesting its initial native occlusion snapshot'
 )
 assert.doesNotMatch(
   pageVisibility,
@@ -183,6 +224,10 @@ assert.doesNotMatch(
   'DOM focus must not stand in for BrowserWindow focus when Ghostty owns first responder'
 )
 assert.match(preload, /isVisible: \(\): Promise<boolean> => invoke\('window:isVisible'\)/)
+assert.match(
+  preload,
+  /getNativeOcclusionVisible: \(\): Promise<boolean \| null> =>\s*invoke\('window:getNativeOcclusionVisible'\)/
+)
 assert.match(preload, /subscribe\(PUSH_CHANNELS\.windowVisibilityChanged, cb\)/)
 assert.match(
   miscIpc,
@@ -193,7 +238,11 @@ assert.match(main, /mainWindow\.on\('hide', pushWindowVisibility\)/)
 assert.match(main, /mainWindow\.on\('minimize', pushWindowVisibility\)/)
 assert.match(main, /mainWindow\.on\('restore', pushWindowVisibility\)/)
 assert.match(sharedIpc, /'window:isVisible': \{ req: \[\]; res: boolean \}/)
+assert.match(sharedIpc, /'window:getNativeOcclusionVisible': \{ req: \[\]; res: boolean \| null \}/)
 assert.match(sharedIpc, /'window:visibilityChanged': \{ visible: boolean \}/)
+assert.match(main, /nativeWindowOcclusionVisible = !occluded/)
+assert.match(main, /getNativeWindowOcclusionVisible: \(\) => nativeWindowOcclusionVisible/)
+assert.match(miscIpc, /deps\.getNativeWindowOcclusionVisible\(\)/)
 
 const teardownMarker = paneCell.match(
   /\/\/ True teardown marker[\s\S]*?useEffect\(\(\) => \{([\s\S]*?)\n[ ]{2}\}, \[\]\)/

@@ -108,6 +108,7 @@
 // can reference them. Mirrored from the title TSFN pattern further below.
 static Napi::ThreadSafeFunction g_occlusionTSFN;
 static bool g_occlusionTSFNActive = false;
+static void orpheusPushOcclusion(const std::string& workspaceId, bool occluded);
 
 // Liveness-tick globals — declared before the class so keyDown:, mouseDown:,
 // and handleOcclusionChange: can reference them.
@@ -1213,10 +1214,20 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
         }
     }
 
-    // Fire callback to JS
+    // Fire callback to JS.
     std::string wsId = [self.workspaceId UTF8String];
-    bool isOccluded = (bool)occluded;
-    auto* occData = new std::pair<std::string, bool>(wsId, isOccluded);
+    orpheusPushOcclusion(wsId, (bool)occluded);
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+@end
+
+static void orpheusPushOcclusion(const std::string& workspaceId, bool occluded) {
+    if (!g_occlusionTSFNActive) return;
+    auto* occData = new std::pair<std::string, bool>(workspaceId, occluded);
     napi_status occSt = g_occlusionTSFN.NonBlockingCall(
         occData,
         [](Napi::Env env, Napi::Function jsCb, std::pair<std::string, bool>* data) {
@@ -1229,12 +1240,6 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
     );
     if (occSt != napi_ok) { delete occData; }
 }
-
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-}
-
-@end
 
 // GhosttySurfaceEntry + g_surfaces are declared above @implementation
 // OrpheusGhosttyView (search "GhosttySurfaceEntry + g_surfaces") so the view's
@@ -3046,6 +3051,17 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             entry.isAttached = NO;
         }
         // Already hidden — no-op.
+    }
+
+    // Publish the current AppKit state on every attach/reconcile. The main
+    // process retains this as the authoritative initial snapshot for renderer
+    // consumers that subscribe after an earlier occlusion edge.
+    if (entry.isAttached) {
+        NSWindow* window = entry.view.window;
+        const bool occluded =
+            window == nil ||
+            (window.occlusionState & NSWindowOcclusionStateVisible) == 0;
+        orpheusPushOcclusion(workspaceId, occluded);
     }
 
     reconcileTerminalActivities();

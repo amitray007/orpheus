@@ -311,6 +311,7 @@ function reconcileHooks(): void {
 // Cached main window reference — avoids BrowserWindow.getAllWindows() in hot paths.
 let mainWindowRef: BrowserWindow | null = null
 let rendererWorkspaceOpenReady = false
+let nativeWindowOcclusionVisible: boolean | null = null
 const workspaceOpenRequests = new WorkspaceOpenRequestQueue()
 
 function getMainWindow(): BrowserWindow | null {
@@ -502,6 +503,7 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
     }
   })
   addon.setOcclusionCallback((workspaceId: string, occluded: boolean) => {
+    nativeWindowOcclusionVisible = !occluded
     getMainWindow()?.webContents.send(PUSH_CHANNELS.terminalSleepStateChanged, {
       workspaceId,
       sleeping: occluded
@@ -792,6 +794,7 @@ function kickActiveTerminal(): void {
 }
 
 function createWindow(): void {
+  nativeWindowOcclusionVisible = null
   // ---------------------------------------------------------------------------
   // Restore saved window geometry
   // ---------------------------------------------------------------------------
@@ -1112,7 +1115,10 @@ async function checkClaude(): Promise<{
 // IPC handlers
 // ---------------------------------------------------------------------------
 
-registerMiscIpc({ getProject })
+registerMiscIpc({
+  getProject,
+  getNativeWindowOcclusionVisible: () => nativeWindowOcclusionVisible
+})
 
 // ---------------------------------------------------------------------------
 // Projects IPC

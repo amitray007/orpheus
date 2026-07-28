@@ -21,6 +21,7 @@ import { handle } from './handle'
 
 export interface MiscIpcDeps {
   getProject: (id: string) => ProjectRecord | null
+  getNativeWindowOcclusionVisible: () => boolean | null
 }
 
 export function registerMiscIpc(deps: MiscIpcDeps): void {
@@ -90,6 +91,8 @@ export function registerMiscIpc(deps: MiscIpcDeps): void {
     const win = BrowserWindow.fromWebContents(e.sender)
     return win != null && !win.isDestroyed() && win.isVisible() && !win.isMinimized()
   })
+
+  handle('window:getNativeOcclusionVisible', () => deps.getNativeWindowOcclusionVisible())
 
   // ---------------------------------------------------------------------------
   // Notifications IPC

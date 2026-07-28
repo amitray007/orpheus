@@ -104,12 +104,35 @@ assert.ok(
   'native power state must reconcile on occlusion even without a JS listener'
 )
 
+const occlusionPush = between(
+  'static void orpheusPushOcclusion(const std::string& workspaceId, bool occluded) {',
+  '// GhosttySurfaceEntry + g_surfaces'
+)
+assert.match(occlusionPush, /g_occlusionTSFNActive/)
+assert.match(occlusionPush, /g_occlusionTSFN\.NonBlockingCall/)
+assert.match(
+  source,
+  /std::string wsId = \[self\.workspaceId UTF8String\];\s*orpheusPushOcclusion\(wsId, \(bool\)occluded\);/,
+  'occlusion edges must continue publishing through the shared native helper'
+)
+
 const reconcileSurface = between(
   'static void reconcileSurface(const std::string& workspaceId, NSView* contentView, bool forceWake) {',
   '// setVisibleWorkspace'
 )
 assert.match(reconcileSurface, /entry\.isAttached = YES;/)
 assert.match(reconcileSurface, /entry\.isAttached = NO;/)
+assert.match(reconcileSurface, /NSWindow\* window = entry\.view\.window;/)
+assert.match(
+  reconcileSurface,
+  /orpheusPushOcclusion\(workspaceId, occluded\);/,
+  'every native attachment reconciliation must publish its current AppKit occlusion snapshot'
+)
+assert.ok(
+  reconcileSurface.indexOf('entry.isAttached = YES;') <
+    reconcileSurface.indexOf('orpheusPushOcclusion(workspaceId, occluded);'),
+  'reattachment must be recorded before publishing the current AppKit state'
+)
 assert.match(
   reconcileSurface,
   /reconcileTerminalActivities\(\);\s*}/,
