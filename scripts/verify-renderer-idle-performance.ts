@@ -255,6 +255,24 @@ assert.match(
   'addon loading must register lifecycle callbacks before publishing the singleton'
 )
 
+const titleCallbackStart = main.indexOf(
+  'addon.setTitleCallback((surfaceKey: string, title: string) => {'
+)
+const titleCallbackEnd = main.indexOf('addon.setOcclusionCallback(', titleCallbackStart)
+assert.notEqual(titleCallbackStart, -1, 'main must retain native title callback wiring')
+assert.notEqual(titleCallbackEnd, -1, 'main must retain native occlusion callback wiring')
+const titleCallback = main.slice(titleCallbackStart, titleCallbackEnd)
+const paneTitleGuard = titleCallback.indexOf('if (isPaneSlotId(surfaceKey)) return')
+assert.notEqual(paneTitleGuard, -1, 'pane surface titles must be explicitly ignored')
+assert.ok(
+  paneTitleGuard < titleCallback.indexOf('const cleaned ='),
+  'pane title churn must be rejected before title normalization work'
+)
+assert.ok(
+  paneTitleGuard < titleCallback.indexOf('const workspaceId = surfaceKey'),
+  'pane title churn must never enter workspace title persistence or event routing'
+)
+
 const paneMountStart = main.indexOf('function mountPaneBackground(')
 const paneMountEnd = main.indexOf('/** Local leaf-id walk over SplitTree', paneMountStart)
 assert.notEqual(paneMountStart, -1, 'main must retain the pane background mount helper')

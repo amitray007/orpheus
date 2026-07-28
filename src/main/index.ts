@@ -449,6 +449,12 @@ function ensureLoadingOverlayWiring(addon: GhosttySurfaceAddon): void {
 function ensureTerminalCallbackWiring(addon: GhosttySurfaceAddon): void {
   if (terminalCallbacksRegistered) return
   addon.setTitleCallback((surfaceKey: string, title: string) => {
+    // Panes have persisted user-authored names in paneStore; their shell title
+    // is not a workspace title. Ignore it before normalization so command
+    // title churn cannot populate workspaceResources or broadcast events for
+    // synthetic `pane:<layoutId>:<paneId>` keys.
+    if (isPaneSlotId(surfaceKey)) return
+
     // Claude Code prefixes titles with a cycling spinner glyph (✱ ✶ ✻ ✺ ✦ …)
     // and a space. Strip leading non-letter/non-digit characters so the
     // sidebar shows clean text and so our own loader UI can layer in front.
@@ -2053,6 +2059,10 @@ handle('workbench:destroy', (_e, { workspaceId, terminalId }): void => {
 
 function paneSlotId(workspaceId: string, paneId: string): string {
   return `pane:${workspaceId}:${paneId}`
+}
+
+function isPaneSlotId(surfaceKey: string): boolean {
+  return surfaceKey.startsWith('pane:')
 }
 
 /** Resolves the orpheus-pane.sh wrapper's absolute path — same packaged-vs-
