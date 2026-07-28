@@ -312,7 +312,7 @@ function patchOutputSchema(): ControlSchema {
           required: ['effect', 'status'],
           properties: {
             effect: { enum: ['db.write', 'workspace.dirty.recompute'] },
-            status: { const: 'applied' }
+            status: { enum: ['applied', 'skipped'] }
           }
         }
       },

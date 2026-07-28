@@ -84,7 +84,7 @@ export type PatchWorkspaceSettingsOutput = {
   restartRequired: boolean
   effects: Array<{
     effect: 'db.write' | 'workspace.dirty.recompute'
-    status: 'applied'
+    status: 'applied' | 'skipped'
   }>
   auditId: string
 }
@@ -200,6 +200,7 @@ const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$/
 const DB_WRITE_EFFECT = 'db.write' as const
 const DIRTY_RECOMPUTE_EFFECT = 'workspace.dirty.recompute' as const
 const APPLIED = 'applied' as const
+const SKIPPED = 'skipped' as const
 
 export class SettingsResourceError extends Error {
   constructor(
@@ -503,14 +504,20 @@ export class SettingsResourceService {
       workspace = this.resolveWorkspace(input.workspaceId, context, true)
       decision = 'allow'
       const storePatch = this.storePatch(input.patch, workspace)
-
-      this.deps.updateWorkspaceSettings(workspace.id, storePatch)
-      receipts.push({ effect: DB_WRITE_EFFECT, status: APPLIED, workspaceId: workspace.id })
-      dirtyRecomputeStarted = true
-      this.deps.recomputeDirty()
+      const effectStatus = this.storePatchChangesSettings(workspace.id, storePatch)
+        ? APPLIED
+        : SKIPPED
+      if (effectStatus === APPLIED) {
+        this.deps.updateWorkspaceSettings(workspace.id, storePatch)
+        receipts.push({ effect: DB_WRITE_EFFECT, status: APPLIED, workspaceId: workspace.id })
+        dirtyRecomputeStarted = true
+        this.deps.recomputeDirty()
+      } else {
+        receipts.push({ effect: DB_WRITE_EFFECT, status: SKIPPED, workspaceId: workspace.id })
+      }
       receipts.push({
         effect: DIRTY_RECOMPUTE_EFFECT,
-        status: APPLIED,
+        status: effectStatus,
         workspaceId: workspace.id
       })
       const effective = this.effectiveForWorkspace(workspace)
@@ -524,8 +531,8 @@ export class SettingsResourceService {
         effective,
         restartRequired: effective.restartRequired,
         effects: [
-          { effect: DB_WRITE_EFFECT, status: APPLIED },
-          { effect: DIRTY_RECOMPUTE_EFFECT, status: APPLIED }
+          { effect: DB_WRITE_EFFECT, status: effectStatus },
+          { effect: DIRTY_RECOMPUTE_EFFECT, status: effectStatus }
         ],
         auditId
       }
@@ -720,6 +727,16 @@ export class SettingsResourceService {
       if (reconciled.effort !== undefined) storePatch.effort = reconciled.effort
     }
     return storePatch
+  }
+
+  private storePatchChangesSettings(
+    workspaceId: string,
+    patch: ClaudeWorkspaceSettingsOverrides
+  ): boolean {
+    const current = this.deps.getWorkspaceSettings(workspaceId).overrides
+    return (['model', 'effort'] as const).some(
+      (key) => Object.hasOwn(patch, key) && patch[key] !== current[key]
+    )
   }
 
   private async appendAudit(

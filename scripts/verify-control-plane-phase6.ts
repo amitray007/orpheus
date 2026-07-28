@@ -111,6 +111,7 @@ let workspaceSettings: ClaudeWorkspaceSettings = {
   overrides: { effort: 'high' },
   updatedAt: 300
 }
+let nextWorkspaceSettingsUpdatedAt = 400
 const siblingSettings: ClaudeWorkspaceSettings = {
   workspaceId: sibling.id,
   overrides: {},
@@ -180,7 +181,7 @@ const serviceDeps = {
     workspaceSettings = {
       workspaceId,
       overrides: merged,
-      updatedAt: 400
+      updatedAt: nextWorkspaceSettingsUpdatedAt++
     }
     return workspaceSettings
   },
@@ -489,6 +490,16 @@ const automatedPatch = await registry.invoke({
   context: automationContext('automation-patch', patchBinding)
 })
 assert.equal(automatedPatch.ok, true)
+if (automatedPatch.ok) {
+  const value = automatedPatch.value as Awaited<ReturnType<typeof service.patchWorkspace>>
+  assert.deepEqual(value.effects, [
+    { effect: 'db.write', status: 'applied' },
+    { effect: 'workspace.dirty.recompute', status: 'applied' }
+  ])
+}
+const automatedPatchRevision = workspaceSettings.updatedAt
+const automatedPatchUpdateCount = updates.length
+const automatedPatchRecomputeCount = recomputeCalls
 const replayedAutomatedPatch = await registry.invoke({
   id: SETTINGS_PATCH_WORKSPACE_ID,
   input: { workspaceId: workspace.id, patch: { effort: 'low' } },
@@ -499,6 +510,38 @@ assert.equal(
   true,
   'replaying a naturally idempotent exact-workspace patch must remain successful'
 )
+if (replayedAutomatedPatch.ok) {
+  const value = replayedAutomatedPatch.value as Awaited<ReturnType<typeof service.patchWorkspace>>
+  assert.deepEqual(value.effects, [
+    { effect: 'db.write', status: 'skipped' },
+    { effect: 'workspace.dirty.recompute', status: 'skipped' }
+  ])
+}
+assert.equal(
+  workspaceSettings.updatedAt,
+  automatedPatchRevision,
+  'a no-op replay must preserve the stored workspace settings revision'
+)
+assert.equal(
+  updates.length,
+  automatedPatchUpdateCount,
+  'a no-op replay must not write workspace settings'
+)
+assert.equal(
+  recomputeCalls,
+  automatedPatchRecomputeCount,
+  'a no-op replay must not trigger the global dirty recomputation'
+)
+const replayedPatchAudit = audits.at(-1)
+assert.ok(replayedPatchAudit)
+assert.deepEqual(replayedPatchAudit.receipts, [
+  { effect: 'db.write', status: 'skipped', workspaceId: workspace.id },
+  {
+    effect: 'workspace.dirty.recompute',
+    status: 'skipped',
+    workspaceId: workspace.id
+  }
+])
 const automatedPatchSibling = await registry.invoke({
   id: SETTINGS_PATCH_WORKSPACE_ID,
   input: { workspaceId: sibling.id, patch: { effort: 'low' } },
@@ -796,7 +839,7 @@ assert.deepEqual(updates.at(-1), { model: undefined, effort: 'medium' })
 failNextRecompute = true
 const dirtyFailure = await registry.invoke({
   id: SETTINGS_PATCH_WORKSPACE_ID,
-  input: { patch: { effort: 'medium' } },
+  input: { patch: { effort: 'high' } },
   context: grantedContext
 })
 assert.deepEqual(dirtyFailure, {
@@ -818,7 +861,7 @@ assert.deepEqual(dirtyFailureAudit.receipts, [
 failNextUpdate = true
 const failedPatch = await registry.invoke({
   id: SETTINGS_PATCH_WORKSPACE_ID,
-  input: { patch: { effort: 'high' } },
+  input: { patch: { effort: 'low' } },
   context: grantedContext
 })
 assert.deepEqual(failedPatch, {
