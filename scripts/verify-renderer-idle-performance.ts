@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import {
-  INITIAL_WINDOW_VISIBILITY,
-  applyInitialWindowVisibility,
-  applyWindowVisibilityPush,
+  INITIAL_APPKIT_OCCLUSION_VISIBILITY,
+  INITIAL_BROWSER_WINDOW_VISIBILITY,
+  INITIAL_VISIBILITY_SNAPSHOT_GENERATION,
+  applyAppKitOcclusionVisibility,
+  applyBrowserWindowVisibilityPush,
+  applyInitialBrowserWindowVisibility,
   shouldAnimatePage
 } from '../src/renderer/src/lib/usePageVisibility'
 
@@ -28,20 +31,81 @@ const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'u
 const miscIpc = await readFile(new URL('../src/main/ipc/misc.ts', import.meta.url), 'utf8')
 const sharedIpc = await readFile(new URL('../src/shared/ipc.ts', import.meta.url), 'utf8')
 
-assert.equal(shouldAnimatePage(true, true), true)
-assert.equal(shouldAnimatePage(false, true), false)
-assert.equal(shouldAnimatePage(true, false), false)
-assert.equal(INITIAL_WINDOW_VISIBILITY.visible, false, 'mounts must fail closed before snapshot')
-assert.equal(applyInitialWindowVisibility(INITIAL_WINDOW_VISIBILITY, false).visible, false)
-assert.equal(applyInitialWindowVisibility(INITIAL_WINDOW_VISIBILITY, true).visible, true)
-assert.deepEqual(
-  applyInitialWindowVisibility(applyWindowVisibilityPush(INITIAL_WINDOW_VISIBILITY, false), true),
-  { visible: false, pushVersion: 1 },
+assert.equal(shouldAnimatePage(true, true, true), true)
+assert.equal(shouldAnimatePage(false, true, true), false)
+assert.equal(shouldAnimatePage(true, false, true), false)
+assert.equal(shouldAnimatePage(true, true, false), false)
+assert.equal(
+  INITIAL_BROWSER_WINDOW_VISIBILITY.visible,
+  false,
+  'mounts must fail closed before the BrowserWindow snapshot'
+)
+assert.equal(
+  applyInitialBrowserWindowVisibility(
+    INITIAL_BROWSER_WINDOW_VISIBILITY,
+    false,
+    INITIAL_VISIBILITY_SNAPSHOT_GENERATION
+  ).visible,
+  false,
+  'mounting while hidden must remain non-animated after the initial snapshot'
+)
+
+const browserVisible = applyInitialBrowserWindowVisibility(
+  INITIAL_BROWSER_WINDOW_VISIBILITY,
+  true,
+  INITIAL_VISIBILITY_SNAPSHOT_GENERATION
+)
+const appKitOccluded = applyAppKitOcclusionVisibility(INITIAL_APPKIT_OCCLUSION_VISIBILITY, false)
+const browserRestored = applyBrowserWindowVisibilityPush(browserVisible, true)
+assert.equal(
+  shouldAnimatePage(true, browserRestored.visible, appKitOccluded.visible),
+  false,
+  'a BrowserWindow restore must not override an independently occluded AppKit window'
+)
+
+let repeatedOcclusion = appKitOccluded
+for (let index = 0; index < 20; index += 1) {
+  repeatedOcclusion = applyAppKitOcclusionVisibility(repeatedOcclusion, false)
+}
+assert.strictEqual(
+  repeatedOcclusion,
+  appKitOccluded,
+  'duplicate per-pane native occlusion pushes must reuse state and skip rerenders'
+)
+
+const matchingHiddenPush = applyBrowserWindowVisibilityPush(
+  INITIAL_BROWSER_WINDOW_VISIBILITY,
+  false
+)
+assert.notStrictEqual(
+  matchingHiddenPush,
+  INITIAL_BROWSER_WINDOW_VISIBILITY,
+  'the first in-flight BrowserWindow push must settle the pending snapshot even when equal'
+)
+assert.strictEqual(
+  applyInitialBrowserWindowVisibility(
+    matchingHiddenPush,
+    true,
+    INITIAL_VISIBILITY_SNAPSHOT_GENERATION
+  ),
+  matchingHiddenPush,
   'a stale visible snapshot must not override an already-received hidden push'
 )
-assert.deepEqual(
-  applyInitialWindowVisibility(applyWindowVisibilityPush(INITIAL_WINDOW_VISIBILITY, true), false),
-  { visible: true, pushVersion: 1 },
+
+const matchingVisibleSnapshot = applyInitialBrowserWindowVisibility(
+  INITIAL_BROWSER_WINDOW_VISIBILITY,
+  true,
+  INITIAL_VISIBILITY_SNAPSHOT_GENERATION
+)
+assert.strictEqual(
+  applyBrowserWindowVisibilityPush(matchingVisibleSnapshot, true),
+  matchingVisibleSnapshot,
+  'duplicate settled BrowserWindow pushes must reuse state and skip rerenders'
+)
+const visiblePush = applyBrowserWindowVisibilityPush(INITIAL_BROWSER_WINDOW_VISIBILITY, true)
+assert.strictEqual(
+  applyInitialBrowserWindowVisibility(visiblePush, false, INITIAL_VISIBILITY_SNAPSHOT_GENERATION),
+  visiblePush,
   'a stale hidden snapshot must not override an already-received visible push'
 )
 
@@ -97,10 +161,16 @@ assert.match(
 )
 assert.match(
   pageVisibility,
-  /applyWindowVisibilityPush\(state, !sleeping\)/,
+  /applyAppKitOcclusionVisibility\(state, !sleeping\)/,
   'native terminal sleep must disable presentation-only animation without changing liveness'
 )
-assert.match(pageVisibility, /useState\(INITIAL_WINDOW_VISIBILITY\)/)
+assert.match(pageVisibility, /useState\(\s*INITIAL_BROWSER_WINDOW_VISIBILITY\s*\)/)
+assert.match(pageVisibility, /useState\(\s*INITIAL_APPKIT_OCCLUSION_VISIBILITY\s*\)/)
+assert.match(
+  pageVisibility,
+  /shouldAnimatePage\(\s*documentVisible,\s*browserWindowVisibility\.visible,\s*appKitOcclusionVisibility\.visible\s*\)/,
+  'document, BrowserWindow, and AppKit visibility must remain independent predicates'
+)
 assert.match(pageVisibility, /window\.api\.window\s*\.isVisible\(\)/)
 assert.ok(
   pageVisibility.indexOf('window.api.window.onVisibilityChanged') <
