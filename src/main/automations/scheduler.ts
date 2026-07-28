@@ -328,6 +328,9 @@ export class AutomationScheduler {
       this.lastCleanupAt = now
     }
     this.enqueueDueSchedules(now)
+    const availableGlobalSlots = Math.max(0, this.maxGlobalConcurrency - this.occupiedSlots.size)
+    if (availableGlobalSlots === 0) return []
+
     const runnableAutomationIds = this.ports.store.listRunnableAutomationIds(
       now,
       AUTOMATION_LIMITS.maxDefinitions
@@ -347,8 +350,6 @@ export class AutomationScheduler {
         since: now - definition.rollingBudget.windowMs
       }))
     )
-    const availableGlobalSlots = Math.max(0, this.maxGlobalConcurrency - this.occupiedSlots.size)
-    if (availableGlobalSlots === 0) return []
 
     const cursor = this.automationCursor % runnableAutomationIds.length
     const orderedAutomationIds = [
@@ -431,7 +432,7 @@ export class AutomationScheduler {
       definition.rollingBudget.maxStarts - (input.starts.get(definition.id) ?? 0) - alreadyReserved
     if (definitionSlots <= 0) return null
     if (budgetSlots <= 0) {
-      const [run] = this.ports.store.listRunnableRunsForAutomation(definition.id, input.now, 1)
+      const [run] = this.listRunnableNonLingeringRuns(definition.id, input.now, 1)
       if (run != null) {
         this.ports.store.deferRun(
           run.id,
@@ -444,7 +445,7 @@ export class AutomationScheduler {
     }
     let definitionCandidates = input.candidates.get(definition.id)
     if (definitionCandidates == null) {
-      definitionCandidates = this.ports.store.listRunnableRunsForAutomation(
+      definitionCandidates = this.listRunnableNonLingeringRuns(
         definition.id,
         input.now,
         Math.min(definitionSlots, budgetSlots, input.globalSlotsRemaining)
@@ -452,7 +453,20 @@ export class AutomationScheduler {
       input.candidates.set(definition.id, definitionCandidates)
     }
     const run = definitionCandidates[alreadyReserved]
-    return run == null || this.lingeringRunIds.has(run.id) ? null : run
+    return run ?? null
+  }
+
+  private listRunnableNonLingeringRuns(
+    automationId: string,
+    now: number,
+    limit: number
+  ): AutomationRun[] {
+    if (limit <= 0) return []
+    const fetchLimit = Math.min(AUTOMATION_LIMITS.maxListLimit, limit + this.lingeringRunIds.size)
+    return this.ports.store
+      .listRunnableRunsForAutomation(automationId, now, fetchLimit)
+      .filter((run) => !this.lingeringRunIds.has(run.id))
+      .slice(0, limit)
   }
 
   private enqueuePendingEvents(now: number): void {

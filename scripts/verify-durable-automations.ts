@@ -789,6 +789,72 @@ await scheduler.tick()
 assert.equal(persistedRun(lingeringDefinition.id).status, 'succeeded')
 await scheduler.setEnabled(lingeringDefinition.id, false, managementContext())
 
+// A lingering retry must not hide later runnable work when the definition still
+// has another concurrency slot. The oldest retry remains protected from
+// duplicate execution while the later queued run uses the free slot.
+const lingeringCandidateDefinition = await create({ concurrencyLimit: 2 })
+const lingeringCandidateRunId = generateId()
+assert.equal(
+  store.insertRun({
+    id: lingeringCandidateRunId,
+    automationId: lingeringCandidateDefinition.id,
+    trigger: { kind: 'event', key: 'lingering-candidate', occurredAt: now },
+    idempotencyKey: 'lingering-candidate-key',
+    status: 'queued',
+    attempt: 0,
+    queuedAt: now,
+    startedAt: null,
+    finishedAt: null,
+    nextAttemptAt: null,
+    resultCode: null,
+    result: null,
+    error: null,
+    requestId: null,
+    auditId: null
+  }),
+  true
+)
+blockNext = true
+releaseBlocked = null
+timeoutNext = true
+await scheduler.tick()
+const lingeringCandidateRun = store.getRun(lingeringCandidateRunId)
+assert.equal(lingeringCandidateRun?.status, 'retry_wait')
+const runnableBehindLingeringId = generateId()
+assert.equal(
+  store.insertRun({
+    id: runnableBehindLingeringId,
+    automationId: lingeringCandidateDefinition.id,
+    trigger: { kind: 'event', key: 'behind-lingering', occurredAt: now },
+    idempotencyKey: 'behind-lingering-key',
+    status: 'queued',
+    attempt: 0,
+    queuedAt: now + 1,
+    startedAt: null,
+    finishedAt: null,
+    nextAttemptAt: null,
+    resultCode: null,
+    result: null,
+    error: null,
+    requestId: null,
+    auditId: null
+  }),
+  true
+)
+now = lingeringCandidateRun?.nextAttemptAt ?? now
+await scheduler.tick()
+assert.equal(
+  store.getRun(runnableBehindLingeringId)?.status,
+  'succeeded',
+  'a lingering oldest run must not block a later candidate when concurrency remains'
+)
+assert.equal(store.getRun(lingeringCandidateRunId)?.attempt, 1)
+assert.ok(releaseBlocked)
+releaseBlocked()
+await scheduler.waitForIdle()
+await scheduler.setEnabled(lingeringCandidateDefinition.id, false, managementContext())
+maxActiveHandlers = 0
+
 // A concurrent tick cannot exceed a definition's concurrency limit. The second
 // event stays queued until the first handler releases.
 const concurrentDefinition = await create()
@@ -909,8 +975,28 @@ const lingeringCapRunIds = lingeringCapDefinitions.map((definition, index) => {
   )
   return id
 })
+let saturatedSelectionQueries = 0
+const saturatedStore: AutomationStore = {
+  ...store,
+  listRunnableAutomationIds: (...args) => {
+    saturatedSelectionQueries++
+    return store.listRunnableAutomationIds(...args)
+  },
+  listDefinitionsByIds: (...args) => {
+    saturatedSelectionQueries++
+    return store.listDefinitionsByIds(...args)
+  },
+  countStartsSinceMany: (...args) => {
+    saturatedSelectionQueries++
+    return store.countStartsSinceMany(...args)
+  },
+  listRunnableRunsForAutomation: (...args) => {
+    saturatedSelectionQueries++
+    return store.listRunnableRunsForAutomation(...args)
+  }
+}
 const lingeringCapScheduler = new AutomationScheduler({
-  store,
+  store: saturatedStore,
   service,
   registry,
   audit: auditStore,
@@ -923,8 +1009,14 @@ releaseBlocked = null
 timeoutNext = true
 await lingeringCapScheduler.tick()
 assert.ok(releaseBlocked)
+const selectionQueriesBeforeSaturatedTick = saturatedSelectionQueries
 await lingeringCapScheduler.tick(false)
 assert.equal(store.getRun(lingeringCapRunIds[1]!)?.status, 'queued')
+assert.equal(
+  saturatedSelectionQueries,
+  selectionQueriesBeforeSaturatedTick,
+  'a saturated scheduler must skip runnable selection queries until a slot is free'
+)
 releaseBlocked()
 await lingeringCapScheduler.waitForIdle()
 await lingeringCapScheduler.tick()

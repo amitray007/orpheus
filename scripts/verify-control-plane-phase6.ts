@@ -22,7 +22,8 @@ import {
   RESOURCES_LIST_PROJECT_METADATA_ID,
   SETTINGS_GET_EFFECTIVE_ID,
   SETTINGS_PATCH_WORKSPACE_ID,
-  SettingsResourceService
+  SettingsResourceService,
+  type SettingsResourceServiceDeps
 } from '../src/main/controlPlane/settingsResourceService.ts'
 import type {
   ControlContext,
@@ -145,7 +146,7 @@ function composeLaunch(projectId?: string, workspaceId?: string): ClaudeLaunch {
   return { flags: tokens.join(FLAG_DELIMITER), settingsJson: '', env: {}, model }
 }
 
-const service = new SettingsResourceService({
+const serviceDeps = {
   getWorkspace: (workspaceId) => workspaces.get(workspaceId) ?? null,
   getProject: (projectId) =>
     projectId === 'project-1'
@@ -278,9 +279,10 @@ const service = new SettingsResourceService({
   now: () => now,
   maxResourceMetadataCacheEntries: 2,
   maxResourceMetadataCacheBytes: 2_048,
-  maxResourceMetadataCacheResources: 128,
+  maxResourceMetadataCacheResources: 512,
   generateId: () => `audit-${++idCounter}`
-})
+} satisfies SettingsResourceServiceDeps
+const service = new SettingsResourceService(serviceDeps)
 
 const reviewHandlers: ReviewCapabilityHandlers = {
   listByWorkspace: () => [],
@@ -466,6 +468,30 @@ scopedHookCalls = 0
 scopedCommandCalls = 0
 scopedSubagentCalls = 0
 
+// Byte pressure is independent from the entry and resource-count limits. Each
+// small result fits alone, but caching the second kind must evict the first
+// least-recently-used entry when their combined serialized size exceeds 300 B.
+const byteBoundedService = new SettingsResourceService({
+  ...serviceDeps,
+  maxResourceMetadataCacheEntries: 8,
+  maxResourceMetadataCacheBytes: 300,
+  maxResourceMetadataCacheResources: 512
+})
+byteBoundedService.listProjectMetadata({ kinds: ['mcp_server'] }, grantedContext)
+byteBoundedService.listProjectMetadata({ kinds: ['mcp_server'] }, grantedContext)
+assert.equal(scopedMcpCalls, 1, 'an individually cacheable MCP result must be reused')
+byteBoundedService.listProjectMetadata({ kinds: ['hook'] }, grantedContext)
+byteBoundedService.listProjectMetadata({ kinds: ['hook'] }, grantedContext)
+assert.equal(scopedHookCalls, 1, 'an individually cacheable hook result must be reused')
+byteBoundedService.listProjectMetadata({ kinds: ['mcp_server'] }, grantedContext)
+assert.equal(
+  scopedMcpCalls,
+  2,
+  'combined cache bytes must evict the least-recently-used individually cacheable result'
+)
+scopedMcpCalls = 0
+scopedHookCalls = 0
+
 bulkMcp = true
 const boundedResources = await registry.invoke({
   id: RESOURCES_LIST_PROJECT_METADATA_ID,
@@ -476,6 +502,7 @@ assert.equal(boundedResources.ok, true)
 if (boundedResources.ok) {
   const value = boundedResources.value as ReturnType<typeof service.listProjectMetadata>
   assert.equal(value.resources.length, 256)
+  assert.equal(value.resources.length < serviceDeps.maxResourceMetadataCacheResources, true)
   assert.equal(value.truncated, true)
   assert.equal(value.resources[0]?.kind, 'mcp_server')
   assert.equal(value.resources.at(-1)?.kind, 'mcp_server')
