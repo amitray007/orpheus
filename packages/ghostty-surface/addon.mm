@@ -155,6 +155,8 @@ static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
 // ownership on that same thread if a future lifecycle caller arrives elsewhere.
 static __strong id<NSObject> g_terminalLiveActivity = nil;
 static __strong id<NSObject> g_terminalVisibleLatencyActivity = nil;
+static __strong NSTimer* g_terminalSafetyTimer = nil;
+static void reconcileTerminalSafetyTimer(bool hasAttachedVisibleSurface);
 
 static void reconcileTerminalActivities() {
     if (![NSThread isMainThread]) {
@@ -171,12 +173,17 @@ static void reconcileTerminalActivities() {
             const GhosttySurfaceEntry& entry = pair.second;
             return entry.surface != nullptr;
         });
-    const bool hasAttachedLiveSurface = std::any_of(
+    const bool hasAttachedVisibleSurface = std::any_of(
         g_surfaces.begin(),
         g_surfaces.end(),
         [](const auto& pair) {
             const GhosttySurfaceEntry& entry = pair.second;
-            return entry.surface != nullptr && entry.isAttached && entry.view != nil;
+            if (entry.surface == nullptr || !entry.isAttached || entry.view == nil) {
+                return false;
+            }
+            NSWindow* window = entry.view.window;
+            return window != nil &&
+                   (window.occlusionState & NSWindowOcclusionStateVisible) != 0;
         });
 
     if (hasLiveSurface && !g_terminalLiveActivity) {
@@ -186,11 +193,11 @@ static void reconcileTerminalActivities() {
                               reason:@"Live terminal processing"];
     }
 
-    if (hasAttachedLiveSurface && !g_terminalVisibleLatencyActivity) {
+    if (hasAttachedVisibleSurface && !g_terminalVisibleLatencyActivity) {
         g_terminalVisibleLatencyActivity = [[NSProcessInfo processInfo]
             beginActivityWithOptions:NSActivityLatencyCritical
                               reason:@"Visible terminal rendering"];
-    } else if (!hasAttachedLiveSurface && g_terminalVisibleLatencyActivity) {
+    } else if (!hasAttachedVisibleSurface && g_terminalVisibleLatencyActivity) {
         [[NSProcessInfo processInfo] endActivity:g_terminalVisibleLatencyActivity];
         g_terminalVisibleLatencyActivity = nil;
     }
@@ -199,6 +206,8 @@ static void reconcileTerminalActivities() {
         [[NSProcessInfo processInfo] endActivity:g_terminalLiveActivity];
         g_terminalLiveActivity = nil;
     }
+
+    reconcileTerminalSafetyTimer(hasAttachedVisibleSurface);
 }
 
 // Screen text is sensitive and intentionally remains ephemeral: this cache is
@@ -1167,6 +1176,10 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
 }
 
 - (void)handleOcclusionChange:(NSNotification*)note {
+    // NSView attachment does not change when the whole window is minimized or
+    // occluded. Reconcile the visible-only activity and damage timer from the
+    // window's current AppKit visibility before any optional JS notification.
+    reconcileTerminalActivities();
     if (!g_occlusionTSFNActive) return;
     if (!self.workspaceId) return;
 
@@ -2095,12 +2108,41 @@ static uv_async_t g_tickAsync;
 static std::atomic<bool> g_tickAsyncInited{false};
 
 // Safety-net damage flag. Set (from wakeup_cb on Ghostty's IO thread) whenever
-// Ghostty has IO activity that should produce a frame. Drained by a 10Hz
-// NSTimer on the main thread that issues one ghostty_surface_draw per attached
-// surface when the flag is set. Guarantees any damage presents within 100ms
-// even if the internal display link misses it (e.g. right after a re-attach).
-// At true idle the flag stays 0 → zero GPU work.
+// Ghostty has IO activity that should produce a frame. Drained by a
+// lifecycle-owned 10Hz NSTimer on the main thread that issues one
+// ghostty_surface_draw per attached, non-occluded surface when the flag is set.
+// Guarantees visible damage presents within 100ms even if the internal display
+// link misses it (e.g. right after a re-attach). The timer is invalidated when
+// no surface is visible; hidden shell/PTY processing does not depend on it.
 static std::atomic<uint32_t> g_damageFlag{0};
+
+static void reconcileTerminalSafetyTimer(bool hasAttachedVisibleSurface) {
+    if (hasAttachedVisibleSurface && !g_terminalSafetyTimer) {
+        g_terminalSafetyTimer = [NSTimer timerWithTimeInterval:0.1
+                                                       repeats:YES
+                                                         block:^(NSTimer* /*timer*/) {
+            if (!g_damageFlag.exchange(0, std::memory_order_acq_rel)) return;
+            for (auto& pair : g_surfaces) {
+                GhosttySurfaceEntry& entry = pair.second;
+                NSWindow* window = entry.view ? entry.view.window : nil;
+                const bool shouldDraw =
+                    entry.surface != nullptr &&
+                    entry.isAttached &&
+                    window != nil &&
+                    (window.occlusionState & NSWindowOcclusionStateVisible) != 0;
+                if (!shouldDraw) continue;
+                ghostty_surface_draw(entry.surface);
+                entry.liveTick++;
+                orpheusPushLiveness(pair.first, false);
+            }
+        }];
+        [[NSRunLoop mainRunLoop] addTimer:g_terminalSafetyTimer
+                                  forMode:NSRunLoopCommonModes];
+    } else if (!hasAttachedVisibleSurface && g_terminalSafetyTimer) {
+        [g_terminalSafetyTimer invalidate];
+        g_terminalSafetyTimer = nil;
+    }
+}
 
 static void tick_async_cb(uv_async_t* /*handle*/) {
     if (g_inited.load(std::memory_order_acquire) && g_app) {
@@ -2535,31 +2577,9 @@ static bool ensureApp() {
     g_inited.store(true, std::memory_order_release);
     NSLog(@"[ghostty-surface] ghostty app ready");
 
-    // Safety-net 10Hz timer: if g_damageFlag was raised by wakeup_cb (meaning
-    // Ghostty has IO activity), issue one synchronous draw per attached surface
-    // on the main thread. This guarantees any missed frame from the internal
-    // display link presents within 100ms. At idle g_damageFlag==0 → no GPU
-    // work. Added to NSRunLoopCommonModes so it fires during scroll/tracking.
-    // g_surfaces is only mutated on the main thread; the timer fires on main
-    // (same thread), so iteration is safe without additional locking.
-    NSTimer* safetyTimer = [NSTimer timerWithTimeInterval:0.1
-                                                  repeats:YES
-                                                    block:^(NSTimer* /*t*/) {
-        if (!g_damageFlag.exchange(0, std::memory_order_acq_rel)) return;
-        for (auto& kv : g_surfaces) {
-            GhosttySurfaceEntry& e = kv.second;
-            if (e.isAttached && e.surface) {
-                ghostty_surface_draw(e.surface);
-                kv.second.liveTick++;
-                orpheusPushLiveness(kv.first, false);
-            }
-        }
-    }];
-    [[NSRunLoop mainRunLoop] addTimer:safetyTimer forMode:NSRunLoopCommonModes];
-
-    // Activity ownership starts lazily with the first live surface. Hidden
-    // shells retain baseline non-throttling activity; only attached surfaces
-    // add the latency-critical assertion.
+    // Activity and the damage safety timer start lazily with the first surface.
+    // Hidden/occluded shells keep baseline processing but own no render timer
+    // or latency-critical assertion until they are actually visible again.
 
     return true;
 }

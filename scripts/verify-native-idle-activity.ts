@@ -23,8 +23,17 @@ assert.match(activityHelper, /dispatch_get_main_queue\(\)/)
 assert.match(activityHelper, /g_surfaces\.begin\(\)/)
 assert.match(activityHelper, /const bool hasLiveSurface = std::any_of/)
 assert.match(activityHelper, /return entry\.surface != nullptr;/)
-assert.match(activityHelper, /const bool hasAttachedLiveSurface = std::any_of/)
-assert.match(activityHelper, /entry\.surface != nullptr && entry\.isAttached && entry\.view != nil/)
+assert.match(activityHelper, /const bool hasAttachedVisibleSurface = std::any_of/)
+assert.match(
+  activityHelper,
+  /entry\.surface == nullptr \|\| !entry\.isAttached \|\| entry\.view == nil/
+)
+assert.match(activityHelper, /NSWindow\* window = entry\.view\.window/)
+assert.match(
+  activityHelper,
+  /\(window\.occlusionState & NSWindowOcclusionStateVisible\) != 0/,
+  'attached surfaces must own visible-only power assertions only while their window is visible'
+)
 assert.match(
   activityHelper,
   /g_terminalLiveActivity = \[\[NSProcessInfo processInfo\]\s+beginActivityWithOptions:\(NSActivityUserInitiated \|\s+NSActivityIdleSystemSleepDisabled\)/,
@@ -37,6 +46,11 @@ assert.match(
 )
 assert.match(activityHelper, /endActivity:g_terminalVisibleLatencyActivity/)
 assert.match(activityHelper, /endActivity:g_terminalLiveActivity/)
+assert.match(
+  activityHelper,
+  /reconcileTerminalSafetyTimer\(hasAttachedVisibleSurface\)/,
+  'the damage timer must share the same actual-visibility lifecycle'
+)
 assert.ok(
   activityHelper.indexOf('endActivity:g_terminalVisibleLatencyActivity') <
     activityHelper.indexOf('g_terminalVisibleLatencyActivity = nil'),
@@ -53,6 +67,41 @@ assert.doesNotMatch(
   ensureApp,
   /beginActivityWithOptions:/,
   'Ghostty initialization must not acquire a process-lifetime activity'
+)
+assert.doesNotMatch(
+  ensureApp,
+  /timerWithTimeInterval:/,
+  'Ghostty initialization must not create a process-lifetime damage timer'
+)
+
+const safetyTimerHelper = between(
+  'static void reconcileTerminalSafetyTimer(bool hasAttachedVisibleSurface) {',
+  'static void tick_async_cb'
+)
+assert.match(safetyTimerHelper, /hasAttachedVisibleSurface && !g_terminalSafetyTimer/)
+assert.match(safetyTimerHelper, /timerWithTimeInterval:0\.1/)
+assert.match(safetyTimerHelper, /forMode:NSRunLoopCommonModes/)
+assert.match(safetyTimerHelper, /entry\.surface != nullptr/)
+assert.match(safetyTimerHelper, /entry\.isAttached/)
+assert.match(
+  safetyTimerHelper,
+  /\(window\.occlusionState & NSWindowOcclusionStateVisible\) != 0/,
+  'the safety timer must never draw an attached but occluded surface'
+)
+assert.ok(
+  safetyTimerHelper.indexOf('[g_terminalSafetyTimer invalidate]') <
+    safetyTimerHelper.indexOf('g_terminalSafetyTimer = nil'),
+  'the safety timer must be invalidated before releasing its ownership token'
+)
+
+const occlusionHandler = between(
+  '- (void)handleOcclusionChange:(NSNotification*)note {',
+  '// Fire callback to JS'
+)
+assert.ok(
+  occlusionHandler.indexOf('reconcileTerminalActivities();') <
+    occlusionHandler.indexOf('if (!g_occlusionTSFNActive) return;'),
+  'native power state must reconcile on occlusion even without a JS listener'
 )
 
 const reconcileSurface = between(
