@@ -151,8 +151,8 @@ type ControlRequest =
 const CONTROL_CATALOG_WAIT_MS = 25_000
 const EMPTY_RUNTIME_RESOURCE_SCOPE = Object.freeze({
   selfOnly: true as const,
-  layoutIds: Object.freeze([]) as readonly string[],
-  surfaceIds: Object.freeze([]) as readonly string[]
+  layoutIds: Object.freeze([]),
+  surfaceIds: Object.freeze([])
 })
 
 const COMMAND_SOCKET_PERMISSIONS = Object.freeze([
