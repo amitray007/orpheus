@@ -598,7 +598,7 @@ interface PanelsSectionProps {
    * their 80ms braille ticker is disabled there so a retained sidebar does not
    * keep the renderer and GPU active while Home or Settings is otherwise idle.
    * PanelsSection also pauses the ticker while this window is hidden or
-   * unfocused; layout liveness and background pane processes remain unchanged.
+   * occluded; layout liveness and background pane processes remain unchanged.
    */
   animateRunningStatus?: boolean
   /** Navigate the main content back to Panes when this retained tree is used

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import { shouldAnimatePage } from '../src/renderer/src/lib/usePageVisibility'
 
 const dashboard = await readFile(
   new URL('../src/renderer/src/components/dashboard/Dashboard.tsx', import.meta.url),
@@ -17,6 +18,9 @@ const pageVisibility = await readFile(
   new URL('../src/renderer/src/lib/usePageVisibility.ts', import.meta.url),
   'utf8'
 )
+assert.equal(shouldAnimatePage(true, true), true)
+assert.equal(shouldAnimatePage(false, true), false)
+assert.equal(shouldAnimatePage(true, false), false)
 
 assert.match(
   dashboard,
@@ -55,18 +59,23 @@ assert.match(
 )
 assert.match(
   pageVisibility,
-  /window\.addEventListener\('focus', onVisibilityChange\)[\s\S]*window\.addEventListener\('blur', onVisibilityChange\)/,
-  'the page visibility hook must react when the Electron window enters or leaves the foreground'
+  /window\.api\.terminal\.onSleepStateChanged/,
+  'the page visibility hook must subscribe to authoritative native window occlusion'
 )
 assert.match(
   pageVisibility,
-  /window\.removeEventListener\('focus', onVisibilityChange\)[\s\S]*window\.removeEventListener\('blur', onVisibilityChange\)/,
-  'the page visibility hook must remove both window listeners during cleanup'
+  /return \(\) => \{\s*unsubscribe\(\)/,
+  'the page visibility hook must remove its native visibility subscription during cleanup'
 )
 assert.match(
   pageVisibility,
-  /document\.visibilityState === 'visible' && document\.hasFocus\(\)/,
-  'the page visibility hook must require both page visibility and a foreground window'
+  /setNativeWindowVisible\(!sleeping\)/,
+  'native terminal sleep must disable presentation-only animation without changing liveness'
+)
+assert.doesNotMatch(
+  pageVisibility,
+  /document\.hasFocus\(\)|window\.addEventListener\('(focus|blur)'/,
+  'DOM focus must not stand in for BrowserWindow focus when Ghostty owns first responder'
 )
 
 const teardownMarker = paneCell.match(
