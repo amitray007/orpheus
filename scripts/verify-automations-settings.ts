@@ -7,12 +7,15 @@ import type {
 } from '../src/shared/types'
 import {
   AUTOMATION_RUN_POLL_MS,
+  automationFormFromDefinition,
   automationFormIsDirty,
+  automationScopeEditorMode,
   buildAutomationDraft,
   emptyAutomationForm,
   nextSelectedAutomationId,
   operationSchemaForm,
   reconcileAutomationDefinitions,
+  resetOperation,
   shouldConfirmAutomationNavigation,
   shouldRefreshSelectedRuns,
   validateAutomationForm
@@ -89,6 +92,11 @@ const state = {
 assert.deepEqual(validateAutomationForm(catalog, state), { valid: true, errors: [] })
 assert.equal(automationFormIsDirty(state, { ...state }), false)
 assert.equal(automationFormIsDirty(state, { ...state, name: 'Changed locally' }), true)
+assert.equal(
+  automationFormIsDirty(state, { ...state, scopeKind: 'workspace' }),
+  true,
+  'changing only the scope level must mark the form dirty'
+)
 assert.deepEqual(buildAutomationDraft(catalog, state), {
   name: 'Metadata refresh',
   operationId: operation.id,
@@ -112,6 +120,106 @@ assert.deepEqual(buildAutomationDraft(catalog, state), {
   },
   rollingBudget: { windowMs: 60_000, maxStarts: 10 }
 })
+const projectDraft = buildAutomationDraft(catalog, state)
+assert.ok(projectDraft != null)
+const workspaceScopedProjectDefinition: AutomationDefinition = {
+  ...projectDraft,
+  id: 'automation-workspace-narrowed',
+  scope: {
+    kind: 'workspace',
+    projectId: 'project-1',
+    workspaceId: 'workspace-1'
+  },
+  enabled: false,
+  operationVersion: 1,
+  nextRunAt: null,
+  createdAt: 10,
+  updatedAt: 11
+}
+const narrowedState = automationFormFromDefinition(workspaceScopedProjectDefinition)
+assert.equal(narrowedState.scopeKind, 'workspace')
+assert.equal(narrowedState.projectId, 'project-1')
+assert.equal(narrowedState.workspaceId, 'workspace-1')
+assert.equal(
+  automationScopeEditorMode(operation, narrowedState),
+  'workspace',
+  'project descriptors must render the persisted narrower workspace controls'
+)
+const narrowedRoundTrip = buildAutomationDraft(catalog, narrowedState)
+assert.deepEqual(narrowedRoundTrip?.scope, workspaceScopedProjectDefinition.scope)
+assert.equal(
+  (narrowedRoundTrip?.params as Record<string, unknown>)['projectId'],
+  'project-1',
+  'project descriptor input binding remains projectId inside a workspace scope'
+)
+const resetNarrowedState = resetOperation(narrowedState, operation)
+assert.equal(resetNarrowedState.scopeKind, 'workspace')
+assert.equal(resetNarrowedState.projectId, 'project-1')
+assert.equal(resetNarrowedState.workspaceId, 'workspace-1')
+assert.equal(automationScopeEditorMode(operation, { scopeKind: 'app' }), 'unsupported')
+
+const secondProjectOperation: AutomationOperationCatalogEntry = {
+  ...operation,
+  id: 'resources.getProjectMetadata'
+}
+const switchedNarrowedState = resetOperation(narrowedState, secondProjectOperation)
+assert.equal(
+  switchedNarrowedState.scopeKind,
+  'workspace',
+  'switching between project descriptors must preserve a narrower workspace scope'
+)
+assert.equal(switchedNarrowedState.projectId, 'project-1')
+assert.equal(switchedNarrowedState.workspaceId, 'workspace-1')
+const switchedProjectState = resetOperation(state, secondProjectOperation)
+assert.equal(
+  switchedProjectState.scopeKind,
+  'project',
+  'switching between project descriptors must preserve project scope'
+)
+assert.equal(switchedProjectState.projectId, 'project-1')
+assert.equal(switchedProjectState.workspaceId, '')
+
+const resourceOperation: AutomationOperationCatalogEntry = {
+  id: 'reviews.setResolved',
+  version: 1,
+  kind: 'mutation',
+  description: 'Set the resolved state of a local review comment.',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id', 'resolved'],
+    properties: {
+      id: { type: 'string', minLength: 1, maxLength: 128 },
+      resolved: { type: 'boolean' }
+    }
+  },
+  outputSchema: { type: 'object' },
+  permission: 'reviews.resolve',
+  scope: { kind: 'resource', inputField: 'id' },
+  risk: { tier: 2, label: 'scoped mutation' },
+  declaredEffects: ['db.write'],
+  idempotency: 'natural'
+}
+const resourceCatalog: AutomationCatalog = {
+  ...catalog,
+  operations: [resourceOperation]
+}
+const resourceState = {
+  ...emptyAutomationForm(resourceCatalog),
+  name: 'Resolve review',
+  projectId: 'project-1',
+  params: { resolved: true }
+}
+assert.equal(
+  automationScopeEditorMode(resourceOperation, resourceState),
+  'unsupported',
+  'real resource descriptors must stay outside the safe scope editor'
+)
+assert.equal(
+  buildAutomationDraft(resourceCatalog, resourceState),
+  null,
+  'resource-scoped operations must fail closed during draft construction'
+)
 
 const workspaceOperation: AutomationOperationCatalogEntry = {
   ...operation,
@@ -141,6 +249,28 @@ assert.deepEqual(workspaceDraft?.scope, {
 assert.deepEqual(workspaceDraft?.params, { workspaceId: 'workspace-1' })
 assert.equal(workspaceDraft?.idempotency, workspaceOperation.idempotency)
 assert.equal(workspaceDraft?.enabled, false)
+assert.equal(
+  automationScopeEditorMode(workspaceOperation, { scopeKind: 'project' }),
+  'unsupported',
+  'workspace descriptors must never be widened to project scope'
+)
+const switchedToWorkspaceState = resetOperation(state, workspaceOperation)
+assert.equal(
+  switchedToWorkspaceState.scopeKind,
+  'workspace',
+  'workspace descriptors must narrow incompatible project scope'
+)
+assert.equal(switchedToWorkspaceState.projectId, 'project-1')
+assert.equal(
+  switchedToWorkspaceState.workspaceId,
+  '',
+  'narrowing must retain an existing workspace ID when available but cannot invent one'
+)
+assert.equal(
+  validateAutomationForm(workspaceCatalog, switchedToWorkspaceState).valid,
+  false,
+  'a newly narrowed workspace scope remains incomplete until a workspace is selected'
+)
 
 const selfOperation: AutomationOperationCatalogEntry = {
   ...operation,
@@ -176,6 +306,14 @@ assert.deepEqual(
   { includeHidden: true },
   'self scope IDs must not be injected without a declared input field'
 )
+const switchedSelfToProjectState = resetOperation(selfState, secondProjectOperation)
+assert.equal(
+  switchedSelfToProjectState.scopeKind,
+  'workspace',
+  'switching from self to project must preserve the compatible workspace scope'
+)
+assert.equal(switchedSelfToProjectState.projectId, 'project-1')
+assert.equal(switchedSelfToProjectState.workspaceId, 'workspace-1')
 
 const fieldBoundSelfOperation: AutomationOperationCatalogEntry = {
   ...selfOperation,
@@ -304,6 +442,15 @@ assert.match(
   /const reconciliation = await refreshDefinitions\(dirtySelection\)/,
   'different-row toggles must reconcile around the dirty selected revision'
 )
+const editorSource = readFileSync(
+  new URL(
+    '../src/renderer/src/components/dashboard/settings/automations/AutomationEditor.tsx',
+    import.meta.url
+  ),
+  'utf8'
+)
+assert.match(editorSource, /automationScopeEditorMode/)
+assert.match(editorSource, /scopeMode === 'workspace'/)
 const recoveryStart = sectionSource.indexOf('const recoverAfterMutationError')
 const recoveryEnd = sectionSource.indexOf('\n  useEffect(', recoveryStart)
 assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart)

@@ -65,6 +65,7 @@ export type AutomationFormState = {
   name: string
   operationId: string
   params: Record<string, unknown>
+  scopeKind: AutomationScope['kind']
   projectId: string
   workspaceId: string
   triggerKind: 'schedule' | 'event'
@@ -93,6 +94,8 @@ export type DefinitionReconciliation = Readonly<{
 export type AutomationNavigationTarget =
   | Readonly<{ kind: 'select'; id: string }>
   | Readonly<{ kind: 'create' | 'cancel-create' | 'runs' }>
+
+export type AutomationScopeEditorMode = 'project' | 'workspace' | 'unsupported'
 
 function isRecord(value: unknown): value is JsonRecord {
   return value != null && typeof value === 'object' && !Array.isArray(value)
@@ -249,6 +252,29 @@ function boundedMinute(limits: AutomationCatalog['limits']['intervalMs']): numbe
   return Math.min(limits.max, Math.max(limits.min, 60_000))
 }
 
+function defaultScopeKind(
+  operation: AutomationOperationCatalogEntry | undefined
+): AutomationScope['kind'] {
+  if (operation?.scope.kind === 'project') return 'project'
+  if (operation?.scope.kind === 'workspace' || operation?.scope.kind === 'self') {
+    return 'workspace'
+  }
+  return 'app'
+}
+
+function acceptsScopeKind(
+  operation: AutomationOperationCatalogEntry,
+  scopeKind: AutomationScope['kind']
+): boolean {
+  if (operation.scope.kind === 'project') {
+    return scopeKind === 'project' || scopeKind === 'workspace'
+  }
+  if (operation.scope.kind === 'workspace' || operation.scope.kind === 'self') {
+    return scopeKind === 'workspace'
+  }
+  return false
+}
+
 export function emptyAutomationForm(
   catalog: AutomationCatalog,
   operationId = catalog.operations[0]?.id ?? ''
@@ -258,6 +284,7 @@ export function emptyAutomationForm(
     name: '',
     operationId: operation?.id ?? '',
     params: operation == null ? {} : initialParams(operation),
+    scopeKind: defaultScopeKind(operation),
     projectId: '',
     workspaceId: '',
     triggerKind: 'schedule',
@@ -284,6 +311,7 @@ export function automationFormFromDefinition(
       isRecord(definition.params) && !Array.isArray(definition.params)
         ? { ...definition.params }
         : {},
+    scopeKind: definition.scope.kind,
     projectId: definition.scope.kind === 'app' ? '' : definition.scope.projectId,
     workspaceId: definition.scope.kind === 'workspace' ? definition.scope.workspaceId : '',
     triggerKind: definition.trigger.kind,
@@ -304,25 +332,42 @@ export function resetOperation(
   state: AutomationFormState,
   operation: AutomationOperationCatalogEntry
 ): AutomationFormState {
+  const scopeKind = acceptsScopeKind(operation, state.scopeKind)
+    ? state.scopeKind
+    : defaultScopeKind(operation)
   return {
     ...state,
     operationId: operation.id,
     params: initialParams(operation),
-    workspaceId:
-      operation.scope.kind === 'workspace' || operation.scope.kind === 'self'
-        ? state.workspaceId
-        : ''
+    scopeKind,
+    workspaceId: scopeKind === 'workspace' ? state.workspaceId : ''
   }
+}
+
+export function automationScopeEditorMode(
+  operation: AutomationOperationCatalogEntry,
+  state: Pick<AutomationFormState, 'scopeKind'>
+): AutomationScopeEditorMode {
+  if (operation.scope.kind === 'project') {
+    return state.scopeKind === 'project' || state.scopeKind === 'workspace'
+      ? state.scopeKind
+      : 'unsupported'
+  }
+  if (operation.scope.kind === 'workspace' || operation.scope.kind === 'self') {
+    return state.scopeKind === 'workspace' ? 'workspace' : 'unsupported'
+  }
+  return 'unsupported'
 }
 
 function scopeFor(
   operation: AutomationOperationCatalogEntry,
   state: AutomationFormState
 ): AutomationScope | null {
-  if (operation.scope.kind === 'project') {
+  const mode = automationScopeEditorMode(operation, state)
+  if (mode === 'project') {
     return state.projectId.length > 0 ? { kind: 'project', projectId: state.projectId } : null
   }
-  if (operation.scope.kind === 'workspace' || operation.scope.kind === 'self') {
+  if (mode === 'workspace') {
     return state.projectId.length > 0 && state.workspaceId.length > 0
       ? {
           kind: 'workspace',
@@ -391,10 +436,11 @@ export function validateAutomationForm(
     errors.push('This operation contains parameters that this safe editor cannot represent.')
   }
   if (scopeFor(operation, state) == null) {
+    const scopeMode = automationScopeEditorMode(operation, state)
     errors.push(
-      operation.scope.kind === 'workspace' || operation.scope.kind === 'self'
+      scopeMode === 'workspace'
         ? 'Choose a project and workspace.'
-        : operation.scope.kind === 'project'
+        : scopeMode === 'project'
           ? 'Choose a project.'
           : 'This operation scope is not supported by the editor.'
     )

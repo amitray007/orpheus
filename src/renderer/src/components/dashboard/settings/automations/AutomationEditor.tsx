@@ -14,6 +14,7 @@ import { Select, Toggle } from '../primitives'
 import {
   automationFormFromDefinition,
   automationFormIsDirty,
+  automationScopeEditorMode,
   buildAutomationDraft,
   emptyAutomationForm,
   operationSchemaForm,
@@ -271,6 +272,7 @@ export function AutomationEditor({
 
   const operation = catalog.operations.find((item) => item.id === state.operationId) ?? null
   const schemaForm = operation == null ? null : operationSchemaForm(operation)
+  const scopeMode = operation == null ? 'unsupported' : automationScopeEditorMode(operation, state)
   const validation = validateAutomationForm(catalog, state)
   const dirty = automationFormIsDirty(initialState, state)
 
@@ -286,8 +288,7 @@ export function AutomationEditor({
   )
 
   useEffect(() => {
-    const workspaceBound = operation?.scope.kind === 'workspace' || operation?.scope.kind === 'self'
-    if (!workspaceBound || state.projectId.length === 0) {
+    if (scopeMode !== 'workspace' || state.projectId.length === 0) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- clearing stale workspace options follows scope selection
       setWorkspaces([])
       return
@@ -308,7 +309,7 @@ export function AutomationEditor({
     return () => {
       cancelled = true
     }
-  }, [operation?.scope.kind, state.projectId])
+  }, [scopeMode, state.projectId])
 
   const projectOptions = useMemo(() => {
     const options = projects.map((project) => ({ value: project.id, label: project.name }))
@@ -451,15 +452,35 @@ export function AutomationEditor({
             <p className="text-xs font-medium uppercase tracking-wider text-text-secondary">
               Scope
             </p>
-            {operation.scope.kind === 'project' ||
-            operation.scope.kind === 'workspace' ||
-            operation.scope.kind === 'self' ? (
+            {scopeMode !== 'unsupported' ? (
               <>
                 {operation.scope.kind === 'self' && (
                   <p className="text-[11px] leading-relaxed text-text-muted">
                     This operation runs as the selected workspace. Scope IDs are only added to
                     parameters when the operation schema declares a scope field.
                   </p>
+                )}
+                {operation.scope.kind === 'project' && (
+                  <Field
+                    label="Scope level"
+                    description="Workspace is narrower than project and preserves that exact binding."
+                  >
+                    <Select
+                      value={scopeMode}
+                      options={[
+                        { value: 'project', label: 'Project' },
+                        { value: 'workspace', label: 'Workspace' }
+                      ]}
+                      onChange={(value) =>
+                        patch({
+                          scopeKind: value,
+                          workspaceId: value === 'workspace' ? state.workspaceId : ''
+                        })
+                      }
+                      ariaLabel="Automation scope level"
+                      disabled={readOnly || pending}
+                    />
+                  </Field>
                 )}
                 <Field label="Project" htmlFor={projectId}>
                   <Select
@@ -474,7 +495,7 @@ export function AutomationEditor({
                     }
                   />
                 </Field>
-                {(operation.scope.kind === 'workspace' || operation.scope.kind === 'self') && (
+                {scopeMode === 'workspace' && (
                   <Field label="Workspace" htmlFor={workspaceId}>
                     <Select
                       id={workspaceId}
@@ -498,7 +519,8 @@ export function AutomationEditor({
               </>
             ) : (
               <div role="alert" className="text-xs text-red-400">
-                This operation’s resource scope cannot be represented by the safe editor.
+                This operation’s scope, or the saved scope attached to it, cannot be represented by
+                the safe editor.
               </div>
             )}
           </section>
