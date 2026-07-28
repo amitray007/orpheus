@@ -40,6 +40,5 @@ export function createAutomationRuntime(config: {
 export { AutomationScheduler } from './scheduler'
 export { AutomationService, AutomationDefinitionError } from './service'
 export { createAutomationStore } from './store'
-export { persistableAutomationResult } from './resultPersistence'
 export { AUTOMATION_DEFAULTS, AUTOMATION_LIMITS } from './types'
 export type * from './types'
