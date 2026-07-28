@@ -277,6 +277,7 @@ export function createAutomationStore(db: DbLike): AutomationStore {
   const runsByShape = new Map<string, PreparedStatement>()
   const startsByCount = new Map<number, PreparedStatement>()
   const latestRunsByCount = new Map<number, PreparedStatement>()
+  const deferRunsByCount = new Map<number, PreparedStatement>()
 
   const rememberDynamicStatement = <K>(
     cache: Map<K, PreparedStatement>,
@@ -733,15 +734,22 @@ export function createAutomationStore(db: DbLike): AutomationStore {
         | undefined
       return row?.status === 'retry_wait' && row.next_attempt_at === input.nextAttemptAt
     },
-    deferRun(id, expected, nextAttemptAt, resultCode) {
-      db.prepare(
-        `UPDATE automation_runs SET status = 'retry_wait', next_attempt_at = ?,
-         result_code = ? WHERE id = ? AND status = ?`
-      ).run(nextAttemptAt, resultCode, id, expected)
-      const row = db
-        .prepare('SELECT status, next_attempt_at FROM automation_runs WHERE id = ?')
-        .get(id) as { status: AutomationRunStatus; next_attempt_at: number | null } | undefined
-      return row?.status === 'retry_wait' && row.next_attempt_at === nextAttemptAt
+    deferRuns(ids, readyAt, nextAttemptAt, resultCode) {
+      if (ids.length === 0) return 0
+      const statement = preparedForCount(
+        deferRunsByCount,
+        ids.length,
+        (placeholders) =>
+          `UPDATE automation_runs
+           SET status = 'retry_wait', next_attempt_at = ?, result_code = ?
+           WHERE id IN (${placeholders})
+             AND status IN ('queued', 'retry_wait')
+             AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`,
+        '?'
+      )
+      statement.run(nextAttemptAt, resultCode, ...ids, readyAt)
+      const changed = db.prepare('SELECT changes() AS count').get() as { count: number } | undefined
+      return changed?.count ?? 0
     },
     cancelPending(automationId, now) {
       const before = db

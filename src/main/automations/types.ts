@@ -163,12 +163,12 @@ export type AutomationStore = {
     error: Record<string, unknown> | null
     auditId: string | null
   }): boolean
-  deferRun(
-    id: string,
-    expected: 'queued' | 'retry_wait',
+  deferRuns(
+    ids: readonly string[],
+    readyAt: number,
     nextAttemptAt: number,
     resultCode: string
-  ): boolean
+  ): number
   cancelPending(automationId: string, now: number): number
   markRunningInterrupted(now: number): AutomationRun[]
   pruneTerminalRuns(finishedBefore: number, retainPerAutomation: number): void

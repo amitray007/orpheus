@@ -326,11 +326,14 @@ export class AutomationScheduler {
       this.armWakeAt(this.clock.now())
       return
     }
+    const now = this.clock.now()
+    // Retention maintenance is itself a low-frequency deadline. This keeps an
+    // otherwise idle app bounded without restoring the old one-second poller.
+    const cleanupWakeAt = (this.lastCleanupAt ?? now) + CLEANUP_INTERVAL_MS
     if (this.occupiedSlots.size >= this.maxGlobalConcurrency) {
-      this.cancelScheduledWake()
+      this.armWakeAt(cleanupWakeAt)
       return
     }
-    const now = this.clock.now()
     let nextWakeAt = this.ports.store.getNextWakeAt()
     if (nextWakeAt != null && nextWakeAt <= now && this.occupiedSlots.size > 0) {
       // Ready rows can belong to a definition whose concurrency is already
@@ -338,11 +341,7 @@ export class AutomationScheduler {
       // different schedule or retry that becomes due while it is running.
       nextWakeAt = this.ports.store.getNextWakeAt(now)
     }
-    if (nextWakeAt == null) {
-      this.cancelScheduledWake()
-      return
-    }
-    this.armWakeAt(nextWakeAt)
+    this.armWakeAt(nextWakeAt == null ? cleanupWakeAt : Math.min(nextWakeAt, cleanupWakeAt))
   }
 
   private armWakeAt(wakeAt: number): void {
@@ -520,11 +519,18 @@ export class AutomationScheduler {
       definition.rollingBudget.maxStarts - (input.starts.get(definition.id) ?? 0) - alreadyReserved
     if (definitionSlots <= 0) return null
     if (budgetSlots <= 0) {
-      const [run] = this.listRunnableNonLingeringRuns(definition.id, input.now, 1)
-      if (run != null) {
-        this.ports.store.deferRun(
-          run.id,
-          run.status as 'queued' | 'retry_wait',
+      // Move a bounded backlog together. Deferring only the oldest row leaves
+      // the next queued row immediately runnable and creates one zero-delay
+      // wake/SQLite round trip per row while the budget remains exhausted.
+      const runs = this.listRunnableNonLingeringRuns(
+        definition.id,
+        input.now,
+        AUTOMATION_LIMITS.maxListLimit
+      )
+      if (runs.length > 0) {
+        this.ports.store.deferRuns(
+          runs.map((run) => run.id),
+          input.now,
           input.now + definition.rollingBudget.windowMs,
           'rolling_budget'
         )
