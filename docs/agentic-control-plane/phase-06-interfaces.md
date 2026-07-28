@@ -23,11 +23,12 @@ Agent Tools exposure refresh is immediate and independent<br>
 | `settings.patchWorkspace` | mutation | `settings.workspace.patch` | 2 | self workspace |
 | `resources.listProjectMetadata` | query | `resources.read` | 0 | same project |
 
-All descriptors are version `1`. `settings.getEffective` allows MCP and
-automation with natural idempotency. `resources.listProjectMetadata` and
-`settings.patchWorkspace` remain MCP-only. Project metadata scanning uses a
-five-second cache keyed by project and requested resource kinds, bounded to
-32 entries and 2 MiB total.
+All descriptors are version `1`. `settings.getEffective` and
+`settings.patchWorkspace` allow MCP and automation with natural idempotency;
+the patch is confined to its exact workspace scope.
+`resources.listProjectMetadata` remains MCP-only. Project metadata scanning
+uses a five-second cache keyed by project and requested resource kinds, bounded
+to 32 entries and 2 MiB total.
 
 ## `settings.getEffective`
 

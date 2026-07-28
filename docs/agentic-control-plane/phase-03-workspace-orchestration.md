@@ -153,6 +153,12 @@ reopen, rename, and archive descriptors required a server-owned grant source to
 add their permissions within the configured maximum risk tier. This is
 historical delivery state; the current aggregate model is linked above.
 
+The current fixed automation policy additionally allows exact-workspace
+`workspaces.getLineage`, `workspaces.reopen`, and `workspaces.rename`.
+Descriptors must match the server-owned permission, tier, effects, workspace
+scope, and natural-idempotency contract exactly; sibling and cross-project
+targets fail closed.
+
 ## Creation and lineage
 
 `workspaces.create` supports `local` and `worktree` modes.

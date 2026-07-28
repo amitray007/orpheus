@@ -1,10 +1,7 @@
 import type { WorkspaceRecord } from '../../shared/types'
 import type { AutomationGrant, AutomationGrantSource } from './automationPolicy'
 import type { AutomationScopeBinding, ControlDescription, ControlPermission } from './types'
-import {
-  RESOURCES_LIST_PROJECT_METADATA_ID,
-  SETTINGS_GET_EFFECTIVE_ID
-} from './settingsResourceService'
+import { SETTINGS_GET_EFFECTIVE_ID, SETTINGS_PATCH_WORKSPACE_ID } from './settingsResourceService'
 
 type SafeAutomationGrantDeps = {
   getProject: (projectId: string) => { id: string } | null | undefined
@@ -13,25 +10,97 @@ type SafeAutomationGrantDeps = {
 
 const SAFE_OPERATIONS = new Map<
   string,
-  Readonly<{ permission: ControlPermission; scope: 'project' | 'workspace' }>
+  Readonly<{
+    kind: 'query' | 'mutation'
+    permission: ControlPermission
+    riskTier: 0 | 1 | 2 | 3
+    effects: readonly string[]
+    surfaces: readonly ('renderer' | 'command-socket' | 'mcp' | 'automation')[]
+    scope: 'workspace'
+    inputField: 'workspaceId'
+  }>
 >([
-  [SETTINGS_GET_EFFECTIVE_ID, { permission: 'settings.read', scope: 'workspace' }],
-  [RESOURCES_LIST_PROJECT_METADATA_ID, { permission: 'resources.read', scope: 'project' }]
+  [
+    SETTINGS_GET_EFFECTIVE_ID,
+    {
+      kind: 'query',
+      permission: 'settings.read',
+      riskTier: 0,
+      effects: [],
+      surfaces: ['mcp', 'automation'],
+      scope: 'workspace',
+      inputField: 'workspaceId'
+    }
+  ],
+  [
+    SETTINGS_PATCH_WORKSPACE_ID,
+    {
+      kind: 'mutation',
+      permission: 'settings.workspace.patch',
+      riskTier: 2,
+      effects: ['db.write', 'workspace.dirty.recompute'],
+      surfaces: ['mcp', 'automation'],
+      scope: 'workspace',
+      inputField: 'workspaceId'
+    }
+  ],
+  [
+    'workspaces.getLineage',
+    {
+      kind: 'query',
+      permission: 'workspaces.read',
+      riskTier: 0,
+      effects: [],
+      surfaces: ['renderer', 'command-socket', 'mcp', 'automation'],
+      scope: 'workspace',
+      inputField: 'workspaceId'
+    }
+  ],
+  [
+    'workspaces.reopen',
+    {
+      kind: 'mutation',
+      permission: 'workspaces.open',
+      riskTier: 1,
+      effects: ['db.write'],
+      surfaces: ['renderer', 'command-socket', 'mcp', 'automation'],
+      scope: 'workspace',
+      inputField: 'workspaceId'
+    }
+  ],
+  [
+    'workspaces.rename',
+    {
+      kind: 'mutation',
+      permission: 'workspaces.rename',
+      riskTier: 2,
+      effects: ['db.write'],
+      surfaces: ['renderer', 'command-socket', 'mcp', 'automation'],
+      scope: 'workspace',
+      inputField: 'workspaceId'
+    }
+  ]
 ])
 
-function descriptorIsSafe(
-  description: ControlDescription,
-  permission: ControlPermission,
-  scope: 'project' | 'workspace'
-): boolean {
+function sameList(actual: readonly string[] | undefined, expected: readonly string[]): boolean {
   return (
-    description.kind === 'query' &&
-    description.permission === permission &&
-    description.risk.tier === 0 &&
-    (description.declaredEffects?.length ?? 0) === 0 &&
-    description.allowedSurfaces.includes('automation') &&
+    actual?.length === expected.length &&
+    actual.every((effect, index) => effect === expected[index])
+  )
+}
+
+function descriptorIsSafe(description: ControlDescription): boolean {
+  const safe = SAFE_OPERATIONS.get(description.id)
+  if (safe == null) return false
+  return (
+    description.kind === safe.kind &&
+    description.permission === safe.permission &&
+    description.risk.tier === safe.riskTier &&
+    sameList(description.declaredEffects, safe.effects) &&
+    sameList(description.allowedSurfaces, safe.surfaces) &&
     description.idempotency === 'natural' &&
-    description.scope.kind === scope
+    description.scope.kind === safe.scope &&
+    description.scope.inputField === safe.inputField
   )
 }
 
@@ -76,19 +145,25 @@ function paramsMatchScope(
 }
 
 /**
- * Fixed Tier-0 policy for the two Phase 6 reads that explicitly opt into
- * automation. The requested scope is re-resolved against main-owned records;
- * definitions cannot carry or widen this grant.
+ * Fixed exact-workspace policy for the small set of naturally idempotent
+ * operations that explicitly opt into automation. Every descriptor field is
+ * matched against server-owned metadata, and the requested scope is
+ * re-resolved against main-owned records; definitions cannot carry or widen
+ * this grant.
  */
 export function createSafeAutomationGrantSource(
   deps: SafeAutomationGrantDeps
 ): AutomationGrantSource {
-  return ({ scope, description, params }): AutomationGrant | null => {
+  const resolve = ({
+    scope,
+    description,
+    params
+  }: Parameters<AutomationGrantSource>[0]): AutomationGrant | null => {
     try {
       const safe = SAFE_OPERATIONS.get(description.id)
       if (
         safe == null ||
-        !descriptorIsSafe(description, safe.permission, safe.scope) ||
+        !descriptorIsSafe(description) ||
         !scopeSupportsOperation(scope, safe.scope) ||
         !scopeExists(scope, deps) ||
         !paramsMatchScope(params, scope, safe.scope)
@@ -97,11 +172,12 @@ export function createSafeAutomationGrantSource(
       }
       return Object.freeze({
         permissions: Object.freeze([safe.permission]),
-        maxRiskTier: 0,
+        maxRiskTier: safe.riskTier,
         scopes: Object.freeze([Object.freeze({ ...scope })])
       })
     } catch {
       return null
     }
   }
+  return Object.freeze(Object.assign(resolve, { supports: descriptorIsSafe }))
 }

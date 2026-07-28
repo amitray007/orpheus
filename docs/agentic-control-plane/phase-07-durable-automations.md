@@ -114,10 +114,13 @@ type AutomationScope =
 
 Definitions cannot contain grants. A server-owned grant source resolves from
 the automation id, already validated params, requested scope, and canonical
-descriptor. Main's fixed default policy grants only the effect-free Phase 6
-read `settings.getEffective`, at Tier 0 and for an exact existing workspace
-scope. Project resource discovery is MCP-only. App/project scope, mutations,
-and all other operations fail closed.
+descriptor. Main's fixed default policy grants five naturally idempotent
+operations for an exact existing workspace: `settings.getEffective`,
+`settings.patchWorkspace`, `workspaces.getLineage`, `workspaces.reopen`, and
+`workspaces.rename`. The grant source requires an exact match on operation kind,
+permission, risk tier, declared effects, scope, surface, and idempotency.
+Project resource discovery, app/project scopes, and all other operations fail
+closed.
 Creation/update, enable, scheduler reconciliation, and immediately-before-
 invoke checks all re-resolve the grant. Absence of a grant fails closed.
 
@@ -279,8 +282,8 @@ Deterministic verification covers:
 - no replay of terminal success;
 - automation principal/context propagation;
 - audit/run correlation and recursive result redaction;
-- real Phase 6 automation discovery, natural idempotency, the exact-workspace
-  grant, and exclusion of resource discovery and mutations;
+- production automation discovery, natural replay behavior, exact-workspace
+  grants, and exclusion of resource discovery and non-allowlisted mutations;
 - production management create/update/enable/delete/list/retry policy, revision,
   audit, and ownership behavior;
 - transactional workspace-event persistence, post-commit delivery, and

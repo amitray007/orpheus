@@ -40,6 +40,8 @@ const PRESENTATION_SCHEMA = { enum: ['background', 'focus'] } as const
 const TEXT_SCHEMA = { type: 'string', minLength: 1, maxLength: 65_536 } as const
 const MUTATION_SURFACES = ['renderer', 'command-socket', 'mcp'] as const
 const QUERY_SURFACES = ['renderer', 'command-socket', 'mcp'] as const
+const AUTOMATION_MUTATION_SURFACES = [...MUTATION_SURFACES, 'automation'] as const
+const AUTOMATION_QUERY_SURFACES = [...QUERY_SURFACES, 'automation'] as const
 
 const WORKSPACE_REF_SCHEMA = {
   type: 'object',
@@ -465,11 +467,12 @@ export function createWorkspaceCapabilities(service: WorkspaceOrchestrationServi
         children: { type: 'array', items: WORKSPACE_REF_SCHEMA }
       }
     },
-    allowedSurfaces: QUERY_SURFACES,
+    allowedSurfaces: AUTOMATION_QUERY_SURFACES,
     permission: 'workspaces.read',
     scope: { kind: 'workspace', inputField: 'workspaceId' },
     risk: { tier: 0, label: 'read' },
     declaredEffects: [],
+    idempotency: 'natural',
     validateInput: isLineageInput,
     handler: (input, context) =>
       service.getLineage(input, workspaceActorFromContext(context, 'workspaces.read'))
@@ -668,11 +671,12 @@ export function createWorkspaceCapabilities(service: WorkspaceOrchestrationServi
     description: 'Clear a workspace closed state without presenting it.',
     inputSchema: requiredWorkspaceSchema,
     outputSchema: receiptSchema(lifecycleValueSchema('closed', false)),
-    allowedSurfaces: MUTATION_SURFACES,
+    allowedSurfaces: AUTOMATION_MUTATION_SURFACES,
     permission: WORKSPACES_OPEN_ID,
     scope: { kind: 'workspace', inputField: 'workspaceId' },
     risk: { tier: 1, label: 'lifecycle' },
     declaredEffects: ['db.write'],
+    idempotency: 'natural',
     validateInput: requiredWorkspaceInput,
     handler: (input, context) =>
       service.reopen(input, workspaceActorFromContext(context, WORKSPACES_OPEN_ID))
@@ -690,11 +694,12 @@ export function createWorkspaceCapabilities(service: WorkspaceOrchestrationServi
       properties: { workspaceId: ID_SCHEMA, name: { type: 'string', minLength: 1, maxLength: 120 } }
     },
     outputSchema: receiptSchema(RENAME_VALUE_SCHEMA),
-    allowedSurfaces: MUTATION_SURFACES,
+    allowedSurfaces: AUTOMATION_MUTATION_SURFACES,
     permission: 'workspaces.rename',
     scope: { kind: 'workspace', inputField: 'workspaceId' },
     risk: { tier: 2, label: 'write' },
     declaredEffects: ['db.write'],
+    idempotency: 'natural',
     validateInput: isRenameInput,
     handler: (input, context) =>
       service.rename(input, workspaceActorFromContext(context, 'workspaces.rename'))

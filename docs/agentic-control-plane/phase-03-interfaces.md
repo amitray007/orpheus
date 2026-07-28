@@ -111,6 +111,12 @@ Mutation descriptors are registered and eligible for MCP, but discovery and
 invocation require a server-owned grant source to add their permissions within
 `maxRiskTier`. Phase 3 has no persisted grant store or user-facing grant UI.
 
+The current fixed automation source also exposes `workspaces.getLineage`,
+`workspaces.reopen`, and `workspaces.rename` for one exact existing workspace.
+All three declare natural idempotency: repeated lineage reads are effect-free,
+while reopen and rename converge with a skipped `db.write` receipt after the
+requested state is already present.
+
 ## `workspaces.getLineage`
 
 Input:

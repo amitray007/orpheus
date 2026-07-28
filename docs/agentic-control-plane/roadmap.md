@@ -337,9 +337,12 @@ registry:
 The historical Phase 6 harness injected exact grants. Current valid managed
 runtimes receive Phase 6 permissions by default, while invalid runtime identity
 and disabled Agent Tools exposure remain fail-closed.
-Automation eligibility is narrower: only `settings.getEffective` declares the
-automation surface and receives a fixed Tier 0, exact-workspace main grant.
-`resources.listProjectMetadata` and the workspace patch remain MCP-only.
+Automation eligibility remains a fixed exact-workspace allowlist:
+`settings.getEffective`, `settings.patchWorkspace`, `workspaces.getLineage`,
+`workspaces.reopen`, and `workspaces.rename`. Each descriptor must declare
+natural idempotency and match the server-owned kind, permission, risk tier,
+effects, and scope metadata before it can be published or invoked.
+`resources.listProjectMetadata` remains MCP-only.
 Project resource metadata's five-second cache is bounded to 32 entries and
 2 MiB total.
 Global and project writes, permission/shell/environment settings, user/global

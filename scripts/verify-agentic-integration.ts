@@ -296,9 +296,21 @@ assert.equal(
   'mcp,automation'
 )
 assert.equal(registry.describe('resources.listProjectMetadata')?.allowedSurfaces.join(','), 'mcp')
-assert.equal(registry.describe('settings.patchWorkspace')?.allowedSurfaces.join(','), 'mcp')
+assert.equal(
+  registry.describe('settings.patchWorkspace')?.allowedSurfaces.join(','),
+  'mcp,automation'
+)
 assert.equal(registry.describe('settings.getEffective')?.idempotency, 'natural')
+assert.equal(registry.describe('settings.patchWorkspace')?.idempotency, 'natural')
 assert.equal(registry.describe('resources.listProjectMetadata')?.idempotency, 'natural')
+for (const operationId of [
+  'workspaces.getLineage',
+  'workspaces.reopen',
+  'workspaces.rename'
+] as const) {
+  assert.equal(registry.describe(operationId)?.allowedSurfaces.includes('automation'), true)
+  assert.equal(registry.describe(operationId)?.idempotency, 'natural')
+}
 
 const settingsInvalid = await registry.invoke({
   id: 'settings.patchWorkspace',
@@ -506,7 +518,13 @@ const automationDescriptions = allDescriptions.filter(({ allowedSurfaces }) =>
 )
 assert.deepEqual(
   automationDescriptions.map(({ id }) => id),
-  ['settings.getEffective']
+  [
+    'settings.getEffective',
+    'settings.patchWorkspace',
+    'workspaces.getLineage',
+    'workspaces.rename',
+    'workspaces.reopen'
+  ]
 )
 console.log(
   JSON.stringify({

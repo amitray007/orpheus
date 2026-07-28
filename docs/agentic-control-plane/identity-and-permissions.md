@@ -308,11 +308,14 @@ user-editable grant store or grant-administration UI; Agent Tools preferences
 only reduce exposure.
 
 Automation authority is separate from runtime authority. Definitions cannot
-grant themselves permissions. Main's fixed automation source permits only
-`settings.getEffective`, an effect-free Tier 0 query with natural idempotency,
-against a server-resolved exact workspace scope. Project resource discovery is
-MCP-only and uses a five-second metadata cache bounded to 32 entries and 2 MiB
-total. App/project scope, mutations, and every other descriptor fail closed.
+grant themselves permissions. Main's fixed automation source permits five
+naturally idempotent operations against a server-resolved exact workspace:
+`settings.getEffective`, `settings.patchWorkspace`, `workspaces.getLineage`,
+`workspaces.reopen`, and `workspaces.rename`. Each descriptor must exactly
+match its server-owned kind, permission, tier, effects, scope, and idempotency
+contract. Project resource discovery remains MCP-only and uses a five-second
+metadata cache bounded to 32 entries and 2 MiB total. App/project scope and
+every non-allowlisted descriptor fail closed.
 
 The retired Phase 8 QA command credential was fixture authentication, never a
 runtime or automation grant. No current command-server action accepts it.

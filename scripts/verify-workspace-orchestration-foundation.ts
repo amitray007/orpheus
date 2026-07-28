@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
+import type { WorkspaceRecord } from '../src/shared/types.ts'
+import {
+  AutomationGrantPolicy,
+  withAutomationPolicy
+} from '../src/main/controlPlane/automationPolicy.ts'
 import { ControlRegistry } from '../src/main/controlPlane/registry.ts'
 import { bootControlRegistry } from '../src/main/controlPlane/boot.ts'
 import { createConfiguredControlRegistry } from '../src/main/controlPlane/configuredRegistry.ts'
+import { createSafeAutomationGrantSource } from '../src/main/controlPlane/safeAutomationGrants.ts'
 import {
   createWorkspaceCapabilities,
   createWorkspaceRejectionAuditor,
@@ -24,6 +30,8 @@ import type {
 import type {
   ControlAuthorizationPolicy,
   ControlContext,
+  ControlDescription,
+  TrustedAutomationBinding,
   ControlPermission
 } from '../src/main/controlPlane/types.ts'
 
@@ -269,6 +277,149 @@ assert.deepEqual(descriptions.find(({ id }) => id === 'workspaces.archive')?.dec
   'workspace.delete',
   'db.write'
 ])
+for (const [operationId, riskTier, effects] of [
+  ['workspaces.getLineage', 0, []],
+  ['workspaces.reopen', 1, ['db.write']],
+  ['workspaces.rename', 2, ['db.write']]
+] as const) {
+  const description = descriptions.find(({ id }) => id === operationId)
+  assert.ok(description)
+  assert.equal(description.kind, riskTier === 0 ? 'query' : 'mutation')
+  assert.equal(description.risk.tier, riskTier)
+  assert.deepEqual(description.declaredEffects, effects)
+  assert.deepEqual(description.allowedSurfaces, ['renderer', 'command-socket', 'mcp', 'automation'])
+  assert.equal(description.idempotency, 'natural')
+}
+
+// Production automation grants bind every operation to one existing workspace,
+// reject sibling targets and descriptor drift, and preserve automation
+// identity/correlation when natural retries converge.
+workspaces.set('automation-sibling', workspace('automation-sibling'))
+const safeGrantSource = createSafeAutomationGrantSource({
+  getProject: (projectId) => (projectId === project.projectId ? { id: projectId } : null),
+  getWorkspace: (workspaceId) => {
+    const candidate = workspaces.get(workspaceId)
+    return candidate == null
+      ? null
+      : ({ id: candidate.workspaceId, projectId: candidate.projectId } as WorkspaceRecord)
+  }
+})
+const automationGrants = new AutomationGrantPolicy(safeGrantSource)
+const automationRegistry = new ControlRegistry(
+  withAutomationPolicy(withWorkspaceMutationPolicy(allowLocal)),
+  createWorkspaceRejectionAuditor(service)
+)
+for (const capability of createWorkspaceCapabilities(service))
+  automationRegistry.register(capability)
+const automationScope = {
+  kind: 'workspace' as const,
+  projectId: project.projectId,
+  workspaceId: 'self'
+}
+const automationDescription = (operationId: string): ControlDescription => {
+  const description = automationRegistry.describe(operationId)
+  assert.ok(description)
+  return description
+}
+const automationBinding = async (
+  operationId: string,
+  input: unknown
+): Promise<TrustedAutomationBinding> => {
+  const binding = await automationGrants.resolve(
+    `automation-${operationId}`,
+    automationScope,
+    automationDescription(operationId),
+    input
+  )
+  assert.ok(binding)
+  return binding
+}
+const automationContext = async (operationId: string, input: unknown): Promise<ControlContext> => ({
+  principal: { type: 'automation', id: `automation-${operationId}` },
+  consumer: 'automation',
+  workspaceId: 'hostile-ambient-workspace',
+  projectId: 'hostile-ambient-project',
+  requestId: `automation-request-${operationId}`,
+  trustedAutomation: await automationBinding(operationId, input),
+  automationRunId: `automation-run-${operationId}`,
+  idempotencyKey: `automation-key-${operationId}`
+})
+assert.equal(
+  await automationGrants.resolve(
+    'automation-sibling-denied',
+    automationScope,
+    automationDescription('workspaces.rename'),
+    { workspaceId: 'automation-sibling', name: 'Denied' }
+  ),
+  null
+)
+assert.equal(
+  await automationGrants.resolve(
+    'automation-drift-denied',
+    automationScope,
+    {
+      ...automationDescription('workspaces.rename'),
+      declaredEffects: ['db.write', 'surface.mount']
+    },
+    { workspaceId: 'self', name: 'Denied' }
+  ),
+  null
+)
+
+const lineageInput = { workspaceId: 'self' }
+const lineageResult = await automationRegistry.invoke({
+  id: 'workspaces.getLineage',
+  input: lineageInput,
+  context: await automationContext('workspaces.getLineage', lineageInput)
+})
+assert.equal(lineageResult.ok, true)
+
+const renameInput = { name: 'Automation renamed' }
+const renameContext = await automationContext('workspaces.rename', renameInput)
+const renamedOnce = await automationRegistry.invoke({
+  id: 'workspaces.rename',
+  input: renameInput,
+  context: renameContext
+})
+const renamedTwice = await automationRegistry.invoke({
+  id: 'workspaces.rename',
+  input: renameInput,
+  context: { ...renameContext, requestId: 'automation-request-workspaces.rename-replay' }
+})
+assert.equal(renamedOnce.ok, true)
+assert.equal(renamedTwice.ok, true)
+if (!renamedTwice.ok) throw new Error('automation rename replay unexpectedly failed')
+assert.equal(renamedTwice.value.value.workspace.name, renameInput.name)
+assert.equal(renamedTwice.value.effects.at(-1)?.status, 'skipped')
+
+workspaces.set('self', { ...workspaces.get('self')!, closedAt: now })
+const reopenInput = { workspaceId: 'self' }
+const reopenContext = await automationContext('workspaces.reopen', reopenInput)
+const reopenedOnce = await automationRegistry.invoke({
+  id: 'workspaces.reopen',
+  input: reopenInput,
+  context: reopenContext
+})
+const reopenedTwice = await automationRegistry.invoke({
+  id: 'workspaces.reopen',
+  input: reopenInput,
+  context: { ...reopenContext, requestId: 'automation-request-workspaces.reopen-replay' }
+})
+assert.equal(reopenedOnce.ok, true)
+assert.equal(reopenedTwice.ok, true)
+if (!reopenedTwice.ok) throw new Error('automation reopen replay unexpectedly failed')
+assert.equal(reopenedTwice.value.value.closed, false)
+assert.equal(reopenedTwice.value.effects.at(-1)?.status, 'skipped')
+const automationAudit = audits.find(
+  ({ requestId }) => requestId === 'automation-request-workspaces.rename'
+)
+assert.equal(automationAudit?.principal.kind, 'automation')
+assert.deepEqual(automationAudit?.correlation, {
+  requestId: 'automation-request-workspaces.rename',
+  automationId: 'automation-workspaces.rename',
+  runId: 'automation-run-workspaces.rename',
+  idempotencyKey: 'automation-key-workspaces.rename'
+})
 
 // Configuring workspace orchestration composes mutation authorization and
 // rejection auditing automatically; boot registers every frozen descriptor.

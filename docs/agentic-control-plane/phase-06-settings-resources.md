@@ -60,6 +60,10 @@ The operation is self-only for MCP. It writes through
 the model changes, calls `recomputeDirty`, and returns the freshly composed
 effective values plus the resulting restart-to-apply state.
 
+Settings → Automations represents this operation only through bounded model
+and effort controls with explicit unchanged, clear, and set states; it never
+accepts or emits an arbitrary settings JSON object.
+
 ### Project resource metadata
 
 `resources.listProjectMetadata` reads only the bound project and returns
@@ -83,11 +87,12 @@ authoritative sources produce a stable `unavailable` result.
 ## Identity and policy
 
 MCP access to all three operations requires a valid Phase 2 runtime lease.
-Only `settings.getEffective` additionally accepts a server-resolved automation
-binding. `resources.listProjectMetadata` and the workspace patch remain
-MCP-only. Project metadata results use a five-second cache keyed by project and
-requested kinds, bounded to 32 entries and 2 MiB total, so repeated MCP reads
-do not continuously rescan project files or retain unbounded metadata.
+`settings.getEffective` and `settings.patchWorkspace` additionally accept a
+server-resolved exact-workspace automation binding.
+`resources.listProjectMetadata` remains MCP-only. Project metadata results use
+a five-second cache keyed by project and requested kinds, bounded to 32 entries
+and 2 MiB total, so repeated MCP reads do not continuously rescan project files
+or retain unbounded metadata.
 
 - Reads may target the bound workspace/project or an explicitly named
   same-project workspace/project.
@@ -99,10 +104,11 @@ do not continuously rescan project files or retain unbounded metadata.
   MCP identity or authority.
 - Current valid, main-observed live runtimes receive the Phase 6 permissions.
   Invalid/stale identity and disabled Agent Tools exposure fail closed.
-- Main's automation policy grants only the effect-free
-  `settings.getEffective` read, at Tier 0, for the exact existing workspace
-  scope. It never grants app scope, resource discovery, or
-  `settings.patchWorkspace`.
+- Main's automation policy grants the Tier 0 `settings.getEffective` read and
+  Tier 2 `settings.patchWorkspace` mutation for the exact existing workspace
+  scope. It never grants app/project scope or resource discovery.
+- The workspace patch is naturally idempotent: replaying the same model/effort
+  patch converges without widening the editable settings surface.
 
 The permission vocabulary is:
 
