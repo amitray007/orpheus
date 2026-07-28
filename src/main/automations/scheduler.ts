@@ -90,7 +90,14 @@ function abortedCode(controller: AbortController): string {
 
 function resultAuditId(result: unknown): string | null {
   if (result == null || typeof result !== 'object' || Array.isArray(result)) return null
-  const auditId = (result as Record<string, unknown>)['auditId']
+  let auditId: unknown
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(result, 'auditId')
+    auditId =
+      descriptor != null && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined
+  } catch {
+    return null
+  }
   return typeof auditId === 'string' && SAFE_AUDIT_ID.test(auditId) ? auditId : null
 }
 

@@ -265,19 +265,85 @@ assert.ok(
     AUTOMATION_LIMITS.maxPersistedResultBytes
 )
 assert.deepEqual(boundedResult, persistableAutomationResult(oversizedPayload))
-assert.deepEqual(boundedResult['value'], {
-  truncated: true,
-  reason: 'persisted_result_byte_limit',
-  originalByteLength: Buffer.byteLength(JSON.stringify({ value: oversizedPayload }), 'utf8'),
-  sha256: (boundedResult['value'] as Record<string, unknown>)['sha256']
-})
-assert.match(
-  String((boundedResult['value'] as Record<string, unknown>)['sha256']),
-  /^[a-f0-9]{64}$/
-)
+const boundedReceipt = boundedResult['value'] as Record<string, unknown>
+assert.equal(boundedReceipt['truncated'], true)
+assert.equal(boundedReceipt['reason'], 'persisted_result_safety_limit')
+assert.equal(boundedReceipt['stoppedBy'], 'container_item_limit')
+assert.equal(boundedReceipt['maxBytes'], AUTOMATION_LIMITS.maxPersistedResultBytes - 10)
+assert.match(String(boundedReceipt['sha256']), /^[a-f0-9]{64}$/)
 assert.deepEqual(persistableAutomationResult({ token: 'secret', ok: true }), {
   value: { token: '[REDACTED]', ok: true }
 })
+const secretBearingKeyResult = persistableAutomationResult({
+  'token=must-never-persist': 'hidden'
+})
+assert.equal(
+  (secretBearingKeyResult['value'] as Record<string, unknown>)['stoppedBy'],
+  'secret_bearing_key'
+)
+assert.doesNotMatch(JSON.stringify(secretBearingKeyResult), /must-never-persist/)
+
+const hugeStringSecret = `token=must-never-persist ${'x'.repeat(2 * 1_024 * 1_024)}`
+const hugeStringResult = persistableAutomationResult({ payload: hugeStringSecret })
+assert.equal(
+  (hugeStringResult['value'] as Record<string, unknown>)['stoppedBy'],
+  'string_length_limit'
+)
+assert.doesNotMatch(JSON.stringify(hugeStringResult), /must-never-persist/)
+
+const hugeSparseArray: unknown[] = []
+hugeSparseArray.length = 1_000_000_000
+assert.equal(
+  (persistableAutomationResult(hugeSparseArray)['value'] as Record<string, unknown>)['stoppedBy'],
+  'container_item_limit'
+)
+
+const highCardinality: Record<string, number> = {}
+for (let index = 0; index < 1_000; index++) highCardinality[`field-${index}`] = index
+const highCardinalityResult = persistableAutomationResult(highCardinality)
+assert.equal(
+  (highCardinalityResult['value'] as Record<string, unknown>)['stoppedBy'],
+  'container_item_limit'
+)
+assert.deepEqual(highCardinalityResult, persistableAutomationResult(highCardinality))
+
+const deepResult: Record<string, unknown> = {}
+let deepCursor = deepResult
+for (let depth = 0; depth < 32; depth++) {
+  const next: Record<string, unknown> = {}
+  deepCursor['next'] = next
+  deepCursor = next
+}
+assert.equal(
+  (persistableAutomationResult(deepResult)['value'] as Record<string, unknown>)['stoppedBy'],
+  'depth_limit'
+)
+
+const cyclicResult: Record<string, unknown> = { ok: true }
+cyclicResult['self'] = cyclicResult
+assert.deepEqual(persistableAutomationResult(cyclicResult), {
+  value: { ok: true, self: '[CIRCULAR]' }
+})
+assert.deepEqual(persistableAutomationResult({ count: 2n ** 4_096n }), {
+  value: { count: '[bigint]' }
+})
+
+let getterReads = 0
+const accessorResult: Record<string, unknown> = {}
+Object.defineProperty(accessorResult, 'payload', {
+  enumerable: true,
+  get() {
+    getterReads++
+    return hugeStringSecret
+  }
+})
+const boundedAccessorResult = persistableAutomationResult(accessorResult)
+assert.equal(getterReads, 0, 'result persistence must never invoke accessors')
+assert.equal(
+  (boundedAccessorResult['value'] as Record<string, unknown>)['stoppedBy'],
+  'accessor_property'
+)
+assert.doesNotMatch(JSON.stringify(boundedAccessorResult), /must-never-persist/)
 
 // Declarative migration created the durable definitions, runs, and event
 // outbox tables plus their critical indexes.
@@ -597,6 +663,82 @@ assert.deepEqual(oversizedRun.result, boundedResult)
 assert.ok(
   Buffer.byteLength(JSON.stringify(oversizedRun.result), 'utf8') <=
     AUTOMATION_LIMITS.maxPersistedResultBytes
+)
+assert.ok(oversizedRun.auditId)
+const oversizedAudit = db
+  .prepare(
+    `SELECT correlation_json, receipts_json FROM control_audit
+     WHERE audit_id = ?`
+  )
+  .get(oversizedRun.auditId) as {
+  correlation_json: string
+  receipts_json: string
+}
+assert.ok(
+  Buffer.byteLength(oversizedAudit.correlation_json, 'utf8') <=
+    AUTOMATION_LIMITS.maxPersistedResultBytes
+)
+assert.ok(
+  Buffer.byteLength(oversizedAudit.receipts_json, 'utf8') <=
+    AUTOMATION_LIMITS.maxPersistedResultBytes
+)
+assert.doesNotMatch(oversizedAudit.correlation_json, /must-never-persist/)
+assert.equal(
+  (
+    (JSON.parse(oversizedAudit.correlation_json) as Record<string, unknown>)['outcome'] as Record<
+      string,
+      unknown
+    >
+  )['truncated'],
+  true
+)
+
+Object.defineProperties(accessorResult, {
+  auditId: {
+    enumerable: true,
+    get() {
+      getterReads++
+      return 'must-never-persist'
+    }
+  },
+  effects: {
+    enumerable: true,
+    get() {
+      getterReads++
+      return [{ token: 'must-never-persist' }]
+    }
+  }
+})
+auditStore.appendAttempt({
+  auditId: 'adversarial-result-audit',
+  requestId: 'adversarial-result-request',
+  occurredAt: now,
+  definition: oversizedDefinition,
+  run: oversizedRun,
+  description: registry.describe(oversizedDescriptor.id)!,
+  decision: 'allow',
+  resultCode: 'completed',
+  result: accessorResult,
+  error: null
+})
+assert.equal(getterReads, 0, 'audit persistence must never invoke result accessors')
+const adversarialAudit = db
+  .prepare(
+    `SELECT correlation_json, receipts_json FROM control_audit
+     WHERE audit_id = 'adversarial-result-audit'`
+  )
+  .get() as { correlation_json: string; receipts_json: string }
+assert.ok(
+  Buffer.byteLength(adversarialAudit.correlation_json, 'utf8') <=
+    AUTOMATION_LIMITS.maxPersistedResultBytes
+)
+assert.ok(
+  Buffer.byteLength(adversarialAudit.receipts_json, 'utf8') <=
+    AUTOMATION_LIMITS.maxPersistedResultBytes
+)
+assert.doesNotMatch(
+  `${adversarialAudit.correlation_json}${adversarialAudit.receipts_json}`,
+  /must-never-persist/
 )
 await scheduler.setEnabled(oversizedDefinition.id, false, managementContext())
 
