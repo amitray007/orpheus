@@ -1149,6 +1149,11 @@ export const schema: SchemaDef = {
       trigger_key: TEXT_NOT_NULL,
       trigger_occurred_at: INTEGER_NOT_NULL,
       idempotency_key: TEXT_NOT_NULL,
+      // Scheduler-owned occurrences are generation zero. Manual retries keep
+      // the same logical idempotency key and append a new generation row so
+      // the original terminal history remains immutable.
+      retry_generation: { type: 'INTEGER', notNull: true, default: '0' },
+      retry_of_run_id: 'TEXT',
       status: {
         type: 'TEXT',
         notNull: true,
@@ -1174,7 +1179,7 @@ export const schema: SchemaDef = {
       idx_automation_runs_request: ['request_id'],
       idx_automation_runs_audit: ['audit_id'],
       idx_automation_runs_idempotency: {
-        columns: ['automation_id', 'idempotency_key'],
+        columns: ['automation_id', 'idempotency_key', 'retry_generation'],
         unique: true
       }
     }

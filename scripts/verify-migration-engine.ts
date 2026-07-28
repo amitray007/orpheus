@@ -289,6 +289,78 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
   sync(ref, schema, { dbPath: ':memory:', legacyVersion: 0 })
   const refShape = normalizedShape(ref)
 
+  // Automation management adds append-only manual retry generations. A DB
+  // from the durable-automation foundation has neither lineage columns and
+  // still has the old two-column unique index. Reconcile it in place: the
+  // existing logical occurrence must become generation zero, and the index
+  // must widen so later retry generations can retain the same logical key.
+  {
+    const adb = new Database(':memory:')
+    adb.exec('PRAGMA foreign_keys = OFF')
+    for (const [tableName, def] of Object.entries(schema)) {
+      if (tableName === 'automation_runs') continue
+      adb.exec(renderCreateTable(tableName, def))
+      for (const [idxName, idxDef] of Object.entries(def.indexes ?? {})) {
+        adb.exec(renderIndex(tableName, idxName, idxDef))
+      }
+    }
+    adb.exec(`CREATE TABLE automation_runs (
+      id TEXT PRIMARY KEY NOT NULL,
+      automation_id TEXT NOT NULL,
+      trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('schedule','event')),
+      trigger_key TEXT NOT NULL,
+      trigger_occurred_at INTEGER NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN (
+        'queued','running','retry_wait','succeeded','failed','timed_out',
+        'interrupted','cancelled','budget_exhausted'
+      )),
+      attempt INTEGER NOT NULL,
+      queued_at INTEGER NOT NULL,
+      started_at INTEGER,
+      finished_at INTEGER,
+      next_attempt_at INTEGER,
+      result_code TEXT,
+      result_json TEXT,
+      error_json TEXT,
+      request_id TEXT,
+      audit_id TEXT,
+      FOREIGN KEY (automation_id) REFERENCES automation_definitions(id) ON DELETE CASCADE
+    )`)
+    adb.exec(
+      `CREATE UNIQUE INDEX idx_automation_runs_idempotency
+       ON automation_runs (automation_id, idempotency_key)`
+    )
+    adb.exec(`INSERT INTO automation_runs (
+      id, automation_id, trigger_kind, trigger_key, trigger_occurred_at,
+      idempotency_key, status, attempt, queued_at
+    ) VALUES (
+      'run-legacy', 'automation-legacy', 'event', 'event-legacy', 1,
+      'logical-key', 'failed', 1, 1
+    )`)
+
+    sync(adb, schema, { dbPath: ':memory:', legacyVersion: 0 })
+
+    assert.deepEqual(
+      adb
+        .prepare(
+          `SELECT retry_generation, retry_of_run_id
+           FROM automation_runs WHERE id = 'run-legacy'`
+        )
+        .get(),
+      { retry_generation: 0, retry_of_run_id: null },
+      'legacy automation runs must migrate to retry generation zero'
+    )
+    const retryIndexColumns = (
+      adb.prepare(`PRAGMA index_info("idx_automation_runs_idempotency")`).all() as Array<{
+        name: string
+      }>
+    ).map(({ name }) => name)
+    assert.deepEqual(retryIndexColumns, ['automation_id', 'idempotency_key', 'retry_generation'])
+    assert.deepEqual(normalizedShape(adb), refShape, 'automation retry schema did not converge')
+    assert.deepEqual(planSync(adb, schema), [], 'automation retry schema is not idempotent')
+  }
+
   // --- Fixture (a): a "v21-ish" workspaces DB -----------------------------
   // Hand-built legacy shape: workspaces has the OLD CHECK that allows the
   // retired 'in_review' value. Other tables are created fresh-shaped (the

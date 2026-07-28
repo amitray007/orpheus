@@ -1,9 +1,18 @@
+import type { ControlContext, ControlDescription, ControlResult } from '../controlPlane/types'
 import type {
-  AutomationScopeBinding,
-  ControlContext,
-  ControlDescription,
-  ControlResult
-} from '../controlPlane/types'
+  AutomationDefinition as SharedAutomationDefinition,
+  AutomationDefinitionDraft as SharedAutomationDefinitionDraft,
+  AutomationIdempotency as SharedAutomationIdempotency,
+  AutomationEditorConfiguration as SharedAutomationEditorConfiguration,
+  AutomationManualRetryReason as SharedAutomationManualRetryReason,
+  AutomationRetryBudget as SharedAutomationRetryBudget,
+  AutomationRollingBudget as SharedAutomationRollingBudget,
+  AutomationRun as SharedAutomationRun,
+  AutomationRunStatus as SharedAutomationRunStatus,
+  AutomationScope as SharedAutomationScope,
+  AutomationTrigger as SharedAutomationTrigger,
+  AutomationTriggerOccurrence as SharedAutomationTriggerOccurrence
+} from '../../shared/types'
 
 export const AUTOMATION_LIMITS = Object.freeze({
   minIntervalMs: 1_000,
@@ -30,83 +39,39 @@ export const AUTOMATION_LIMITS = Object.freeze({
   maxEventRetryDelayMs: 60 * 60 * 1_000
 })
 
-export type AutomationTrigger =
-  | Readonly<{ kind: 'schedule'; intervalMs: number; startAt?: number }>
-  | Readonly<{ kind: 'event'; eventType: string }>
+export const AUTOMATION_DEFAULTS = Object.freeze({
+  timeoutMs: 30_000,
+  concurrencyLimit: 1,
+  retry: Object.freeze({
+    maxAttempts: 3,
+    baseDelayMs: 1_000,
+    maxDelayMs: 60_000,
+    maxElapsedMs: 15 * 60 * 1_000
+  }),
+  rollingBudget: Object.freeze({
+    windowMs: 60_000,
+    maxStarts: 60
+  })
+})
 
-export type AutomationScope = AutomationScopeBinding
-export type AutomationIdempotency = 'none' | 'keyed' | 'natural'
-
-export type AutomationRetryBudget = Readonly<{
-  maxAttempts: number
-  baseDelayMs: number
-  maxDelayMs: number
-  maxElapsedMs: number
-}>
-
-export type AutomationRollingBudget = Readonly<{
-  windowMs: number
-  maxStarts: number
-}>
-
-export type AutomationDefinitionDraft = Readonly<{
-  name: string
-  trigger: AutomationTrigger
-  operationId: string
-  params: unknown
-  scope: AutomationScope
-  enabled?: boolean
-  idempotency: AutomationIdempotency
-  timeoutMs: number
-  concurrencyLimit: number
-  retry: AutomationRetryBudget
-  rollingBudget: AutomationRollingBudget
-}>
-
-export type AutomationDefinition = AutomationDefinitionDraft &
+export type AutomationTrigger = SharedAutomationTrigger
+export type AutomationScope = SharedAutomationScope
+export type AutomationIdempotency = SharedAutomationIdempotency
+export type AutomationRetryBudget = SharedAutomationRetryBudget
+export type AutomationRollingBudget = SharedAutomationRollingBudget
+export type AutomationDefinitionDraft = SharedAutomationDefinitionDraft
+export type AutomationDefinition = SharedAutomationDefinition
+export type AutomationRunStatus = SharedAutomationRunStatus
+export type AutomationTriggerOccurrence = SharedAutomationTriggerOccurrence
+export type AutomationRun = Omit<SharedAutomationRun, 'retryGeneration' | 'retryOfRunId'> &
   Readonly<{
-    id: string
-    operationVersion: 1
-    enabled: boolean
-    nextRunAt: number | null
-    createdAt: number
-    updatedAt: number
+    /** Generation zero is the scheduler-owned logical occurrence. */
+    retryGeneration?: number
+    /** Present only for a user-requested retry generation. */
+    retryOfRunId?: string | null
   }>
-
-export type AutomationRunStatus =
-  | 'queued'
-  | 'running'
-  | 'retry_wait'
-  | 'succeeded'
-  | 'failed'
-  | 'timed_out'
-  | 'interrupted'
-  | 'cancelled'
-  | 'budget_exhausted'
-
-export type AutomationTriggerOccurrence = Readonly<{
-  kind: 'schedule' | 'event'
-  key: string
-  occurredAt: number
-}>
-
-export type AutomationRun = Readonly<{
-  id: string
-  automationId: string
-  trigger: AutomationTriggerOccurrence
-  idempotencyKey: string
-  status: AutomationRunStatus
-  attempt: number
-  queuedAt: number
-  startedAt: number | null
-  finishedAt: number | null
-  nextAttemptAt: number | null
-  resultCode: string | null
-  result: Record<string, unknown> | null
-  error: Record<string, unknown> | null
-  requestId: string | null
-  auditId: string | null
-}>
+export type AutomationEditorConfiguration = SharedAutomationEditorConfiguration
+export type AutomationManualRetryReason = SharedAutomationManualRetryReason
 
 export type AutomationEvent = Readonly<{
   id: string
@@ -127,7 +92,12 @@ export type AutomationEventOccurrence = AutomationEvent &
 export type AutomationStore = {
   transaction<T>(work: () => T): T
   insertDefinition(definition: AutomationDefinition): void
-  deleteDefinition(id: string): boolean
+  updateDefinition(
+    definition: AutomationDefinition,
+    expectedUpdatedAt: number,
+    beforeCommit?: () => void
+  ): boolean
+  deleteDefinition(id: string, expectedUpdatedAt: number, beforeCommit?: () => void): boolean
   getDefinition(id: string): AutomationDefinition | null
   listDefinitions(enabledOnly?: boolean): AutomationDefinition[]
   setDefinitionEnabled(
@@ -144,6 +114,7 @@ export type AutomationStore = {
   insertRun(run: AutomationRun): boolean
   getRun(id: string): AutomationRun | null
   getRunByIdempotencyKey(automationId: string, idempotencyKey: string): AutomationRun | null
+  getLatestRunByIdempotencyKey(automationId: string, idempotencyKey: string): AutomationRun | null
   listRuns(input: {
     automationId?: string
     statuses?: readonly AutomationRunStatus[]
@@ -230,8 +201,10 @@ export type AutomationAuditPort = {
     occurredAt: number
     action:
       | 'automations.createDefinition'
+      | 'automations.updateDefinition'
       | 'automations.setEnabled'
       | 'automations.deleteDefinition'
+      | 'automations.retryRun'
     definitionId: string
     principal: AutomationManagementContext['principal']
     consumer: AutomationManagementContext['consumer']

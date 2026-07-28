@@ -6,12 +6,15 @@ import type {
   TrustedAutomationBinding
 } from '../controlPlane/types'
 import {
+  AUTOMATION_DEFAULTS,
   AUTOMATION_LIMITS,
   type AutomationAuditPort,
   type AutomationDefinition,
   type AutomationDefinitionDraft,
   type AutomationEvent,
+  type AutomationEditorConfiguration,
   type AutomationManagementContext,
+  type AutomationManualRetryReason,
   type AutomationRegistry,
   type AutomationRun,
   type AutomationScope,
@@ -23,6 +26,25 @@ import {
   validateAutomationDraft,
   validateAutomationScope
 } from './validation'
+
+const MANUAL_RETRY_STATUSES = new Set<AutomationRun['status']>([
+  'failed',
+  'timed_out',
+  'interrupted',
+  'budget_exhausted'
+])
+const CONCURRENT_DEFINITION_CHANGE = 'Automation definition changed concurrently.'
+
+function definitionAuditMetadata(
+  draft: Pick<AutomationDefinitionDraft, 'operationId' | 'trigger' | 'scope' | 'idempotency'>
+): Readonly<Record<string, unknown>> {
+  return {
+    operationId: draft.operationId,
+    triggerKind: draft.trigger.kind,
+    scopeKind: draft.scope.kind,
+    idempotency: draft.idempotency
+  }
+}
 
 function validationContext(
   automationId: string,
@@ -89,7 +111,7 @@ export class AutomationService {
         definitionId: id,
         management,
         scope: validateAutomationScope(draft.scope) ? draft.scope : null,
-        params: { definition: draft },
+        params: definitionAuditMetadata(draft),
         error,
         effectStatus: 'skipped'
       })
@@ -110,7 +132,7 @@ export class AutomationService {
           scope: definition.scope,
           decision: 'allow',
           resultCode: 'completed',
-          params: { definition: draft },
+          params: definitionAuditMetadata(definition),
           receipts: [{ effect: 'db.write', status: 'applied', resourceId: id }],
           correlation: { created: true, enabled: definition.enabled }
         })
@@ -122,7 +144,7 @@ export class AutomationService {
         definitionId: id,
         management,
         scope: definition.scope,
-        params: { definition: draft },
+        params: definitionAuditMetadata(definition),
         error,
         effectStatus: 'failed'
       })
@@ -192,35 +214,172 @@ export class AutomationService {
     return this.ports.store.listRuns({ automationId, order: 'recent', limit })
   }
 
-  deleteDefinition(id: string, management: AutomationManagementContext): AutomationDefinition {
+  editorConfiguration(): AutomationEditorConfiguration {
+    return {
+      eventTypes: [...this.ports.allowedEventTypes].sort(),
+      limits: {
+        intervalMs: {
+          min: AUTOMATION_LIMITS.minIntervalMs,
+          max: AUTOMATION_LIMITS.maxIntervalMs
+        },
+        timeoutMs: {
+          min: AUTOMATION_LIMITS.minTimeoutMs,
+          max: AUTOMATION_LIMITS.maxTimeoutMs
+        },
+        concurrencyLimit: { min: 1, max: AUTOMATION_LIMITS.maxConcurrency },
+        retryMaxAttempts: { min: 1, max: AUTOMATION_LIMITS.maxAttempts },
+        retryBaseDelayMs: {
+          min: AUTOMATION_LIMITS.minRetryDelayMs,
+          max: AUTOMATION_LIMITS.maxRetryBaseDelayMs
+        },
+        retryMaxDelayMs: {
+          min: AUTOMATION_LIMITS.minRetryDelayMs,
+          max: AUTOMATION_LIMITS.maxRetryDelayMs
+        },
+        runMaxElapsedMs: {
+          min: AUTOMATION_LIMITS.minTimeoutMs,
+          max: AUTOMATION_LIMITS.maxRunElapsedMs
+        },
+        rollingWindowMs: {
+          min: AUTOMATION_LIMITS.minRollingWindowMs,
+          max: AUTOMATION_LIMITS.maxRollingWindowMs
+        },
+        rollingMaxStarts: { min: 1, max: AUTOMATION_LIMITS.maxRollingStarts }
+      },
+      defaults: AUTOMATION_DEFAULTS
+    }
+  }
+
+  async manualRetryEligibility(
+    run: AutomationRun
+  ): Promise<{ eligible: boolean; reason: AutomationManualRetryReason }> {
+    const definition = this.ports.store.getDefinition(run.automationId)
+    if (definition == null) return { eligible: false, reason: 'definition_not_found' }
+    if (!definition.enabled) return { eligible: false, reason: 'definition_disabled' }
+    if (definition.idempotency === 'none') {
+      return { eligible: false, reason: 'idempotency_unsupported' }
+    }
+    if (!MANUAL_RETRY_STATUSES.has(run.status)) {
+      return { eligible: false, reason: 'run_not_terminal_failure' }
+    }
+    const latest = this.ports.store.getLatestRunByIdempotencyKey(
+      run.automationId,
+      run.idempotencyKey
+    )
+    if (latest?.id !== run.id) return { eligible: false, reason: 'not_latest_generation' }
+    try {
+      await this.resolveBinding(definition)
+      return { eligible: true, reason: 'eligible' }
+    } catch {
+      return { eligible: false, reason: 'definition_not_current' }
+    }
+  }
+
+  async updateDefinition(
+    id: string,
+    expectedUpdatedAt: number,
+    draft: AutomationDefinitionDraft,
+    management: AutomationManagementContext
+  ): Promise<AutomationDefinition> {
     this.validateManagementContext(management)
+    this.validateExpectedUpdatedAt(expectedUpdatedAt)
     let current: AutomationDefinition | null = null
+    let updated: AutomationDefinition | null = null
     try {
       current = this.getDefinition(id)
-      const now = this.now()
-      this.ports.store.transaction(() => {
-        if (!this.ports.store.deleteDefinition(id)) {
-          throw new AutomationDefinitionError(
-            'conflict',
-            'Automation definition changed concurrently.'
-          )
-        }
+      if (current.updatedAt !== expectedUpdatedAt) {
+        throw new AutomationDefinitionError('conflict', CONCURRENT_DEFINITION_CHANGE)
+      }
+      if (current.enabled) {
+        throw new AutomationDefinitionError(
+          'conflict',
+          'Disable the automation before updating it.'
+        )
+      }
+      const updatedAt = this.nextUpdatedAt(current.updatedAt)
+      const prepared = await this.prepareDefinition({ ...draft, enabled: false }, id, updatedAt)
+      updated = {
+        ...prepared,
+        enabled: false,
+        createdAt: current.createdAt,
+        updatedAt
+      }
+      const changed = this.ports.store.updateDefinition(updated, current.updatedAt, () => {
         this.ports.audit.appendManagement({
           auditId: this.generateId(),
           requestId: management.requestId,
-          occurredAt: now,
-          action: 'automations.deleteDefinition',
+          occurredAt: updatedAt,
+          action: 'automations.updateDefinition',
           definitionId: id,
           principal: management.principal,
           consumer: management.consumer,
-          scope: current?.scope ?? null,
+          scope: updated?.scope ?? null,
           decision: 'allow',
           resultCode: 'completed',
-          params: {},
+          params: definitionAuditMetadata(updated ?? draft),
           receipts: [{ effect: 'db.write', status: 'applied', resourceId: id }],
-          correlation: { deleted: true }
+          correlation: { previousUpdatedAt: current?.updatedAt, updatedAt }
         })
       })
+      if (!changed) {
+        throw new AutomationDefinitionError('conflict', CONCURRENT_DEFINITION_CHANGE)
+      }
+      return updated
+    } catch (error) {
+      this.auditManagementFailure({
+        action: 'automations.updateDefinition',
+        definitionId: id,
+        management,
+        scope: updated?.scope ?? current?.scope ?? null,
+        params: definitionAuditMetadata(updated ?? draft),
+        error,
+        effectStatus: 'skipped'
+      })
+      throw this.normalizeError(error)
+    }
+  }
+
+  deleteDefinition(
+    id: string,
+    management: AutomationManagementContext,
+    expectedUpdatedAt?: number
+  ): AutomationDefinition {
+    this.validateManagementContext(management)
+    if (expectedUpdatedAt !== undefined) this.validateExpectedUpdatedAt(expectedUpdatedAt)
+    let current: AutomationDefinition | null = null
+    try {
+      current = this.getDefinition(id)
+      if (expectedUpdatedAt !== undefined && current.updatedAt !== expectedUpdatedAt) {
+        throw new AutomationDefinitionError('conflict', CONCURRENT_DEFINITION_CHANGE)
+      }
+      if (current.enabled) {
+        throw new AutomationDefinitionError(
+          'conflict',
+          'Disable the automation before deleting it.'
+        )
+      }
+      const now = this.now()
+      if (
+        !this.ports.store.deleteDefinition(id, current.updatedAt, () => {
+          this.ports.audit.appendManagement({
+            auditId: this.generateId(),
+            requestId: management.requestId,
+            occurredAt: now,
+            action: 'automations.deleteDefinition',
+            definitionId: id,
+            principal: management.principal,
+            consumer: management.consumer,
+            scope: current?.scope ?? null,
+            decision: 'allow',
+            resultCode: 'completed',
+            params: {},
+            receipts: [{ effect: 'db.write', status: 'applied', resourceId: id }],
+            correlation: { deleted: true, previousUpdatedAt: current?.updatedAt }
+          })
+        })
+      ) {
+        throw new AutomationDefinitionError('conflict', CONCURRENT_DEFINITION_CHANGE)
+      }
       return current
     } catch (error) {
       this.auditManagementFailure({
@@ -239,12 +398,17 @@ export class AutomationService {
   async setEnabled(
     id: string,
     enabled: boolean,
-    management: AutomationManagementContext
+    management: AutomationManagementContext,
+    expectedUpdatedAt?: number
   ): Promise<AutomationDefinition> {
     this.validateManagementContext(management)
+    if (expectedUpdatedAt !== undefined) this.validateExpectedUpdatedAt(expectedUpdatedAt)
     let current: AutomationDefinition | null = null
     try {
       current = this.getDefinition(id)
+      if (expectedUpdatedAt !== undefined && current.updatedAt !== expectedUpdatedAt) {
+        throw new AutomationDefinitionError('conflict', CONCURRENT_DEFINITION_CHANGE)
+      }
       if (current.enabled === enabled) return current
       if (enabled) await this.resolveBinding(current)
     } catch (error) {
@@ -262,7 +426,7 @@ export class AutomationService {
     if (current == null) {
       throw new AutomationDefinitionError('not_found', 'Automation definition was not found.')
     }
-    const now = this.now()
+    const now = this.nextUpdatedAt(current.updatedAt)
     const nextRunAt =
       enabled && current.trigger.kind === 'schedule'
         ? (current.nextRunAt ?? now + current.trigger.intervalMs)
@@ -311,10 +475,7 @@ export class AutomationService {
       throw this.normalizeError(error)
     }
     if (!changed) {
-      const conflict = new AutomationDefinitionError(
-        'conflict',
-        'Automation definition changed concurrently.'
-      )
+      const conflict = new AutomationDefinitionError('conflict', CONCURRENT_DEFINITION_CHANGE)
       this.auditManagementFailure({
         action: 'automations.setEnabled',
         definitionId: id,
@@ -329,6 +490,126 @@ export class AutomationService {
     return this.getDefinition(id)
   }
 
+  async retryRun(runId: string, management: AutomationManagementContext): Promise<AutomationRun> {
+    this.validateManagementContext(management)
+    let source: AutomationRun | null = null
+    let definition: AutomationDefinition | null = null
+    const retryId = this.generateId()
+    try {
+      source = this.ports.store.getRun(runId)
+      if (source == null) {
+        throw new AutomationDefinitionError('not_found', 'Automation run was not found.')
+      }
+      definition = this.getDefinition(source.automationId)
+      this.assertManualRetryEligible(source, definition)
+      await this.resolveBinding(definition)
+      const now = this.now()
+      const retryGeneration = (source.retryGeneration ?? 0) + 1
+      const retry: AutomationRun = {
+        id: retryId,
+        automationId: definition.id,
+        trigger: source.trigger,
+        idempotencyKey: source.idempotencyKey,
+        retryGeneration,
+        retryOfRunId: source.id,
+        status: 'queued',
+        attempt: 0,
+        queuedAt: now,
+        startedAt: null,
+        finishedAt: null,
+        nextAttemptAt: null,
+        resultCode: null,
+        result: null,
+        error: null,
+        requestId: null,
+        auditId: null
+      }
+      const expectedDefinitionUpdatedAt = definition.updatedAt
+      const retryDefinition = definition
+      const retrySource = source
+      this.ports.store.transaction(() => {
+        const currentDefinition = this.ports.store.getDefinition(retryDefinition.id)
+        const latest = this.ports.store.getLatestRunByIdempotencyKey(
+          retrySource.automationId,
+          retrySource.idempotencyKey
+        )
+        if (
+          currentDefinition == null ||
+          !currentDefinition.enabled ||
+          currentDefinition.updatedAt !== expectedDefinitionUpdatedAt ||
+          latest == null ||
+          latest.id !== retrySource.id ||
+          !MANUAL_RETRY_STATUSES.has(latest.status)
+        ) {
+          throw new AutomationDefinitionError(
+            'conflict',
+            'Automation or run changed before retry could be queued.'
+          )
+        }
+        if (!this.ports.store.insertRun(retry)) {
+          throw new AutomationDefinitionError('conflict', 'Automation run was already retried.')
+        }
+        this.ports.audit.appendManagement({
+          auditId: this.generateId(),
+          requestId: management.requestId,
+          occurredAt: now,
+          action: 'automations.retryRun',
+          definitionId: retryDefinition.id,
+          principal: management.principal,
+          consumer: management.consumer,
+          scope: retryDefinition.scope,
+          decision: 'allow',
+          resultCode: 'completed',
+          params: { runId },
+          receipts: [{ effect: 'db.write', status: 'applied', resourceId: retry.id }],
+          correlation: {
+            retryRunId: retry.id,
+            retryOfRunId: retrySource.id,
+            retryGeneration,
+            idempotencyMode: retryDefinition.idempotency
+          }
+        })
+      })
+      return retry
+    } catch (error) {
+      this.auditManagementFailure({
+        action: 'automations.retryRun',
+        definitionId: definition?.id ?? source?.automationId ?? 'unknown',
+        management,
+        scope: definition?.scope ?? null,
+        params: { runId },
+        error,
+        effectStatus: 'skipped'
+      })
+      throw this.normalizeError(error)
+    }
+  }
+
+  private assertManualRetryEligible(run: AutomationRun, definition: AutomationDefinition): void {
+    if (!definition.enabled) {
+      throw new AutomationDefinitionError('forbidden', 'Automation definition is disabled.')
+    }
+    if (definition.idempotency === 'none') {
+      throw new AutomationDefinitionError(
+        'forbidden',
+        'Manual retry requires keyed or natural idempotency.'
+      )
+    }
+    if (!MANUAL_RETRY_STATUSES.has(run.status)) {
+      throw new AutomationDefinitionError('conflict', 'Automation run is not retryable.')
+    }
+    const latest = this.ports.store.getLatestRunByIdempotencyKey(
+      run.automationId,
+      run.idempotencyKey
+    )
+    if (latest?.id !== run.id) {
+      throw new AutomationDefinitionError(
+        'conflict',
+        'Only the latest run generation can be retried.'
+      )
+    }
+  }
+
   private validateManagementContext(context: AutomationManagementContext): void {
     const validId = (value: string): boolean =>
       value.length >= 1 && value.length <= 128 && value.trim() === value
@@ -337,11 +618,23 @@ export class AutomationService {
     }
   }
 
+  private validateExpectedUpdatedAt(value: number): void {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new AutomationDefinitionError('invalid', 'Expected update revision is invalid.')
+    }
+  }
+
+  private nextUpdatedAt(previous: number): number {
+    return Math.max(this.now(), previous + 1)
+  }
+
   private auditManagementFailure(input: {
     action:
       | 'automations.createDefinition'
+      | 'automations.updateDefinition'
       | 'automations.setEnabled'
       | 'automations.deleteDefinition'
+      | 'automations.retryRun'
     definitionId: string
     management: AutomationManagementContext
     scope: AutomationScope | null

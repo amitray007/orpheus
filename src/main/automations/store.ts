@@ -40,6 +40,8 @@ type RunRow = {
   trigger_key: string
   trigger_occurred_at: number
   idempotency_key: string
+  retry_generation: number
+  retry_of_run_id: string | null
   status: AutomationRunStatus
   attempt: number
   queued_at: number
@@ -72,9 +74,9 @@ const DEFINITION_COLUMNS = `id, name, trigger_kind, trigger_json, operation_id,
   rolling_max_starts, next_run_at, created_at, updated_at`
 
 const RUN_COLUMNS = `id, automation_id, trigger_kind, trigger_key,
-  trigger_occurred_at, idempotency_key, status, attempt, queued_at, started_at,
-  finished_at, next_attempt_at, result_code, result_json, error_json, request_id,
-  audit_id`
+  trigger_occurred_at, idempotency_key, retry_generation, retry_of_run_id,
+  status, attempt, queued_at, started_at, finished_at, next_attempt_at,
+  result_code, result_json, error_json, request_id, audit_id`
 const EVENT_OCCURRENCE_COLUMNS = `id, event_type, occurred_at, project_id,
   workspace_id, delivery_attempts, next_attempt_at, delivered_at, created_at`
 
@@ -160,6 +162,8 @@ function runFromRow(row: RunRow): AutomationRun {
       occurredAt: row.trigger_occurred_at
     },
     idempotencyKey: row.idempotency_key,
+    retryGeneration: row.retry_generation,
+    retryOfRunId: row.retry_of_run_id,
     status: row.status,
     attempt: row.attempt,
     queuedAt: row.queued_at,
@@ -200,7 +204,7 @@ export function createAutomationStore(db: DbLike): AutomationStore {
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
   const insertRun = db.prepare(`INSERT OR IGNORE INTO automation_runs (
     ${RUN_COLUMNS}
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
   const insertEventOccurrence = db.prepare(`INSERT OR IGNORE INTO automation_event_occurrences (
     id, event_type, occurred_at, project_id, workspace_id, delivery_attempts,
     next_attempt_at, delivered_at, created_at
@@ -250,10 +254,88 @@ export function createAutomationStore(db: DbLike): AutomationStore {
         definition.updatedAt
       )
     },
-    deleteDefinition(id) {
-      db.prepare('DELETE FROM automation_definitions WHERE id = ?').run(id)
-      const changed = db.prepare('SELECT changes() AS count').get() as { count: number } | undefined
-      return changed?.count === 1
+    updateDefinition(definition, expectedUpdatedAt, beforeCommit) {
+      const [projectId, workspaceId] = scopeColumns(definition.scope)
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        db.prepare(
+          `UPDATE automation_definitions
+           SET name = ?, trigger_kind = ?, trigger_json = ?, operation_id = ?,
+               operation_version = ?, params_json = ?, scope_kind = ?,
+               project_id = ?, workspace_id = ?, idempotency_mode = ?,
+               timeout_ms = ?, concurrency_limit = ?, retry_max_attempts = ?,
+               retry_base_delay_ms = ?, retry_max_delay_ms = ?,
+               run_max_elapsed_ms = ?, rolling_window_ms = ?,
+               rolling_max_starts = ?, next_run_at = ?, updated_at = ?
+           WHERE id = ? AND enabled = 0 AND updated_at = ?`
+        ).run(
+          definition.name,
+          definition.trigger.kind,
+          JSON.stringify(definition.trigger),
+          definition.operationId,
+          definition.operationVersion,
+          JSON.stringify(definition.params),
+          definition.scope.kind,
+          projectId,
+          workspaceId,
+          definition.idempotency,
+          definition.timeoutMs,
+          definition.concurrencyLimit,
+          definition.retry.maxAttempts,
+          definition.retry.baseDelayMs,
+          definition.retry.maxDelayMs,
+          definition.retry.maxElapsedMs,
+          definition.rollingBudget.windowMs,
+          definition.rollingBudget.maxStarts,
+          definition.nextRunAt,
+          definition.updatedAt,
+          definition.id,
+          expectedUpdatedAt
+        )
+        const changed = db.prepare('SELECT changes() AS count').get() as
+          | { count: number }
+          | undefined
+        if (changed?.count !== 1) {
+          db.exec('ROLLBACK')
+          return false
+        }
+        beforeCommit?.()
+        db.exec('COMMIT')
+        return true
+      } catch (error) {
+        try {
+          db.exec('ROLLBACK')
+        } catch {
+          // Preserve the original transaction failure.
+        }
+        throw error
+      }
+    },
+    deleteDefinition(id, expectedUpdatedAt, beforeCommit) {
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        db.prepare(
+          `DELETE FROM automation_definitions
+           WHERE id = ? AND enabled = 0 AND updated_at = ?`
+        ).run(id, expectedUpdatedAt)
+        const changed = db.prepare('SELECT changes() AS count').get() as
+          | { count: number }
+          | undefined
+        if (changed?.count !== 1) {
+          db.exec('ROLLBACK')
+          return false
+        }
+        beforeCommit?.()
+        db.exec('COMMIT')
+        return true
+      } catch (error) {
+        try {
+          db.exec('ROLLBACK')
+        } catch {
+          // Preserve the original transaction failure.
+        }
+        throw error
+      }
     },
     getDefinition(id) {
       const row = db
@@ -347,6 +429,8 @@ export function createAutomationStore(db: DbLike): AutomationStore {
         run.trigger.key,
         run.trigger.occurredAt,
         run.idempotencyKey,
+        run.retryGeneration ?? 0,
+        run.retryOfRunId ?? null,
         run.status,
         run.attempt,
         run.queuedAt,
@@ -360,8 +444,13 @@ export function createAutomationStore(db: DbLike): AutomationStore {
         run.auditId
       )
       const persisted = db
-        .prepare('SELECT id FROM automation_runs WHERE automation_id = ? AND idempotency_key = ?')
-        .get(run.automationId, run.idempotencyKey) as { id: string } | undefined
+        .prepare(
+          `SELECT id FROM automation_runs
+           WHERE automation_id = ? AND idempotency_key = ? AND retry_generation = ?`
+        )
+        .get(run.automationId, run.idempotencyKey, run.retryGeneration ?? 0) as
+        | { id: string }
+        | undefined
       return persisted?.id === run.id
     },
     getRun(id) {
@@ -374,7 +463,17 @@ export function createAutomationStore(db: DbLike): AutomationStore {
       const row = db
         .prepare(
           `SELECT ${RUN_COLUMNS} FROM automation_runs
-           WHERE automation_id = ? AND idempotency_key = ?`
+           WHERE automation_id = ? AND idempotency_key = ? AND retry_generation = 0`
+        )
+        .get(automationId, idempotencyKey) as RunRow | undefined
+      return row == null ? null : runFromRow(row)
+    },
+    getLatestRunByIdempotencyKey(automationId, idempotencyKey) {
+      const row = db
+        .prepare(
+          `SELECT ${RUN_COLUMNS} FROM automation_runs
+           WHERE automation_id = ? AND idempotency_key = ?
+           ORDER BY retry_generation DESC LIMIT 1`
         )
         .get(automationId, idempotencyKey) as RunRow | undefined
       return row == null ? null : runFromRow(row)

@@ -125,7 +125,12 @@ import type {
   OAuthPollResult,
   ControlToolsSettings,
   ControlToolsUpdate,
-  ControlToolsReset
+  ControlToolsReset,
+  AutomationDefinition,
+  AutomationDefinitionDraft,
+  AutomationCatalog,
+  AutomationRunWithEligibility,
+  AutomationChangedEvent
 } from './types'
 import type { RendererControlAck, RendererControlRequest } from './workbenchControl'
 
@@ -145,6 +150,33 @@ export interface InvokeChannelMap {
   'controlTools:get': { req: []; res: ControlToolsSettings }
   'controlTools:update': { req: [ControlToolsUpdate]; res: ControlToolsSettings }
   'controlTools:reset': { req: [ControlToolsReset]; res: ControlToolsSettings }
+  'automations:list': {
+    req: [{ enabledOnly?: boolean }]
+    res: AutomationDefinition[]
+  }
+  'automations:get': { req: [{ id: string }]; res: AutomationDefinition }
+  'automations:catalog': { req: []; res: AutomationCatalog }
+  'automations:create': {
+    req: [{ draft: AutomationDefinitionDraft }]
+    res: AutomationDefinition
+  }
+  'automations:update': {
+    req: [{ id: string; expectedUpdatedAt: number; draft: AutomationDefinitionDraft }]
+    res: AutomationDefinition
+  }
+  'automations:setEnabled': {
+    req: [{ id: string; expectedUpdatedAt: number; enabled: boolean }]
+    res: AutomationDefinition
+  }
+  'automations:delete': {
+    req: [{ id: string; expectedUpdatedAt: number }]
+    res: AutomationDefinition
+  }
+  'automations:listRuns': {
+    req: [{ automationId?: string; limit?: number }]
+    res: AutomationRunWithEligibility[]
+  }
+  'automations:retryRun': { req: [{ runId: string }]; res: AutomationRunWithEligibility }
   'app:getVersion': { req: []; res: string }
   'app:getPaths': { req: []; res: { userData: string; logs: string } }
   'app:offeredModes': {
@@ -921,6 +953,7 @@ export type Res<C extends InvokeChannel> = InvokeChannelMap[C]['res']
  */
 export interface RendererPushMap {
   'control:rendererCommand': RendererControlRequest
+  'automations:changed': AutomationChangedEvent
   'addon:actionTrace': { tagName: string }
   'terminal:canInjectChanged': { workspaceId: string; canInject: boolean }
   'terminal:sleepStateChanged': { workspaceId: string; sleeping: boolean }
@@ -1026,6 +1059,7 @@ export type PushPayload<C extends PushChannel> = RendererPushMap[C]
  */
 export const PUSH_CHANNELS = {
   controlRendererCommand: 'control:rendererCommand',
+  automationsChanged: 'automations:changed',
   addonActionTrace: 'addon:actionTrace',
   terminalCanInjectChanged: 'terminal:canInjectChanged',
   terminalSleepStateChanged: 'terminal:sleepStateChanged',

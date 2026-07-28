@@ -1,4 +1,5 @@
 import type { ControlDescription } from '../controlPlane/types'
+import type { AutomationOperationCatalogEntry } from '../../shared/types'
 import {
   AUTOMATION_LIMITS,
   type AutomationDefinitionDraft,
@@ -10,6 +11,7 @@ const SECRET_FIELD =
   /(?:token|secret|password|authorization|cookie|lease|credential|api[_-]?key|access[_-]?key|private[_-]?key|environment|env|bytes|sequence|keycode)/i
 const SECRET_VALUE =
   /(?:bearer\s+\S+|(?:api[_-]?key|token|secret|password|authorization|cookie|lease)\s*[:=]\s*\S+|(?:sk|ghp|github_pat|xox[aboprs])[-_][A-Za-z0-9_-]{8,})/i
+const MAX_CATALOG_SCHEMA_BYTES = 256 * 1024
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value)
@@ -36,6 +38,45 @@ function isSafeIntegerBetween(value: number, minimum: number, maximum: number): 
 
 function validId(value: string): boolean {
   return value.length >= 1 && value.length <= 128 && value.trim() === value
+}
+
+function safeSchema(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+  const serialized = JSON.stringify(value)
+  if (
+    serialized === undefined ||
+    Buffer.byteLength(serialized, 'utf8') > MAX_CATALOG_SCHEMA_BYTES
+  ) {
+    throw new Error('Automation operation schema is not safely serializable.')
+  }
+  const parsed: unknown = JSON.parse(serialized)
+  if (!isRecord(parsed)) throw new Error('Automation operation schema is invalid.')
+  return parsed
+}
+
+export function automationCatalogEntry(
+  description: ControlDescription
+): AutomationOperationCatalogEntry | null {
+  if (!description.allowedSurfaces.includes('automation') || description.idempotency == null) {
+    return null
+  }
+  return {
+    id: description.id,
+    version: description.version,
+    kind: description.kind,
+    description: description.description,
+    inputSchema: safeSchema(description.inputSchema),
+    outputSchema: safeSchema(description.outputSchema),
+    permission: description.permission,
+    scope: {
+      kind: description.scope.kind,
+      ...('inputField' in description.scope && description.scope.inputField !== undefined
+        ? { inputField: description.scope.inputField }
+        : {})
+    },
+    risk: { ...description.risk },
+    declaredEffects: [...(description.declaredEffects ?? [])],
+    idempotency: description.idempotency
+  }
 }
 
 export function validateAutomationScope(scope: AutomationScope): boolean {
@@ -143,6 +184,10 @@ export function isAutomationDraft(
   value: unknown,
   allowedEventTypes: ReadonlySet<string>
 ): value is AutomationDefinitionDraft {
+  return isAutomationDraftShape(value) && validateAutomationDraft(value, allowedEventTypes) == null
+}
+
+export function isAutomationDraftShape(value: unknown): value is AutomationDefinitionDraft {
   if (
     !isRecord(value) ||
     !onlyKeys(value, [
@@ -186,7 +231,9 @@ export function isAutomationDraft(
   const scope = value['scope']
   if (
     !onlyKeys(scope, ['kind', 'projectId', 'workspaceId']) ||
-    !['app', 'project', 'workspace'].includes(String(scope['kind']))
+    !['app', 'project', 'workspace'].includes(String(scope['kind'])) ||
+    (scope['projectId'] !== undefined && typeof scope['projectId'] !== 'string') ||
+    (scope['workspaceId'] !== undefined && typeof scope['workspaceId'] !== 'string')
   ) {
     return false
   }
@@ -203,7 +250,7 @@ export function isAutomationDraft(
   ) {
     return false
   }
-  return validateAutomationDraft(value as AutomationDefinitionDraft, allowedEventTypes) == null
+  return true
 }
 
 export function validateAutomationDescriptor(

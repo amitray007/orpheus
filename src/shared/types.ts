@@ -67,6 +67,179 @@ export type ControlToolsReset =
   | { target: 'category'; id: ControlToolCategory }
   | { target: 'tool'; id: string }
 
+// ---------------------------------------------------------------------------
+// Durable automations
+// ---------------------------------------------------------------------------
+
+export type AutomationTrigger =
+  | Readonly<{ kind: 'schedule'; intervalMs: number; startAt?: number }>
+  | Readonly<{ kind: 'event'; eventType: string }>
+
+export type AutomationScope =
+  | Readonly<{ kind: 'app' }>
+  | Readonly<{ kind: 'project'; projectId: string }>
+  | Readonly<{ kind: 'workspace'; projectId: string; workspaceId: string }>
+
+export type AutomationIdempotency = 'none' | 'keyed' | 'natural'
+
+export type AutomationRetryBudget = Readonly<{
+  maxAttempts: number
+  baseDelayMs: number
+  maxDelayMs: number
+  maxElapsedMs: number
+}>
+
+export type AutomationRollingBudget = Readonly<{
+  windowMs: number
+  maxStarts: number
+}>
+
+export type AutomationDefinitionDraft = Readonly<{
+  name: string
+  trigger: AutomationTrigger
+  operationId: string
+  params: unknown
+  scope: AutomationScope
+  enabled?: boolean
+  idempotency: AutomationIdempotency
+  timeoutMs: number
+  concurrencyLimit: number
+  retry: AutomationRetryBudget
+  rollingBudget: AutomationRollingBudget
+}>
+
+export type AutomationDefinition = AutomationDefinitionDraft &
+  Readonly<{
+    id: string
+    operationVersion: 1
+    enabled: boolean
+    nextRunAt: number | null
+    createdAt: number
+    updatedAt: number
+  }>
+
+export type AutomationRunStatus =
+  | 'queued'
+  | 'running'
+  | 'retry_wait'
+  | 'succeeded'
+  | 'failed'
+  | 'timed_out'
+  | 'interrupted'
+  | 'cancelled'
+  | 'budget_exhausted'
+
+export type AutomationTriggerOccurrence = Readonly<{
+  kind: 'schedule' | 'event'
+  key: string
+  occurredAt: number
+}>
+
+export type AutomationRun = Readonly<{
+  id: string
+  automationId: string
+  trigger: AutomationTriggerOccurrence
+  idempotencyKey: string
+  retryGeneration: number
+  retryOfRunId: string | null
+  status: AutomationRunStatus
+  attempt: number
+  queuedAt: number
+  startedAt: number | null
+  finishedAt: number | null
+  nextAttemptAt: number | null
+  resultCode: string | null
+  result: Record<string, unknown> | null
+  error: Record<string, unknown> | null
+  requestId: string | null
+  auditId: string | null
+}>
+
+export type AutomationOperationCatalogEntry = Readonly<{
+  id: string
+  version: 1
+  kind: 'query' | 'mutation'
+  description: string
+  inputSchema: Readonly<Record<string, unknown>>
+  outputSchema: Readonly<Record<string, unknown>>
+  permission: string
+  scope: Readonly<{
+    kind: 'self' | 'project' | 'workspace' | 'resource'
+    inputField?: string
+  }>
+  risk: Readonly<{ tier: 0 | 1 | 2 | 3; label: string }>
+  declaredEffects: readonly string[]
+  idempotency: AutomationIdempotency
+}>
+
+export type AutomationEditorConfiguration = Readonly<{
+  eventTypes: readonly string[]
+  limits: Readonly<{
+    intervalMs: Readonly<{ min: number; max: number }>
+    timeoutMs: Readonly<{ min: number; max: number }>
+    concurrencyLimit: Readonly<{ min: 1; max: number }>
+    retryMaxAttempts: Readonly<{ min: 1; max: number }>
+    retryBaseDelayMs: Readonly<{ min: number; max: number }>
+    retryMaxDelayMs: Readonly<{ min: number; max: number }>
+    runMaxElapsedMs: Readonly<{ min: number; max: number }>
+    rollingWindowMs: Readonly<{ min: number; max: number }>
+    rollingMaxStarts: Readonly<{ min: 1; max: number }>
+  }>
+  defaults: Readonly<{
+    timeoutMs: number
+    concurrencyLimit: number
+    retry: AutomationRetryBudget
+    rollingBudget: AutomationRollingBudget
+  }>
+}>
+
+export type AutomationCatalog = AutomationEditorConfiguration &
+  Readonly<{ operations: readonly AutomationOperationCatalogEntry[] }>
+
+export type AutomationManualRetryReason =
+  | 'eligible'
+  | 'definition_not_found'
+  | 'definition_disabled'
+  | 'idempotency_unsupported'
+  | 'run_not_terminal_failure'
+  | 'not_latest_generation'
+  | 'definition_not_current'
+
+export type AutomationRunSummary = Readonly<{
+  id: string
+  automationId: string
+  trigger: Readonly<{
+    kind: 'schedule' | 'event'
+    occurredAt: number
+  }>
+  retryGeneration: number
+  retryOfRunId: string | null
+  status: AutomationRunStatus
+  attempt: number
+  queuedAt: number
+  startedAt: number | null
+  finishedAt: number | null
+  nextAttemptAt: number | null
+  resultCode: string | null
+  hasResult: boolean
+  hasError: boolean
+}>
+
+export type AutomationRunWithEligibility = AutomationRunSummary &
+  Readonly<{
+    manualRetry: Readonly<{
+      eligible: boolean
+      reason: AutomationManualRetryReason
+    }>
+  }>
+
+export type AutomationChangedEvent = Readonly<{
+  kind: 'created' | 'updated' | 'enabled' | 'deleted' | 'run-retried'
+  definitionId: string
+  updatedAt: number
+  runId?: string
+}>
+
 export interface UpdateSnapshot {
   kind: 'idle' | 'checking' | 'up_to_date' | 'available' | 'installing' | 'installed' | 'error'
   latest: string | null

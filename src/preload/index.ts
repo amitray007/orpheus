@@ -105,7 +105,12 @@ import type {
   TerminalRect,
   ControlToolsSettings,
   ControlToolsUpdate,
-  ControlToolsReset
+  ControlToolsReset,
+  AutomationDefinition,
+  AutomationDefinitionDraft,
+  AutomationCatalog,
+  AutomationRunWithEligibility,
+  AutomationChangedEvent
 } from '../shared/types'
 import type { RendererControlAck, RendererControlRequest } from '../shared/workbenchControl'
 
@@ -144,6 +149,37 @@ const api = {
       invoke('controlTools:update', update),
     reset: (reset: ControlToolsReset): Promise<ControlToolsSettings> =>
       invoke('controlTools:reset', reset)
+  },
+  automations: {
+    list: (enabledOnly = false): Promise<AutomationDefinition[]> =>
+      invoke('automations:list', { enabledOnly }),
+    get: (id: string): Promise<AutomationDefinition> => invoke('automations:get', { id }),
+    catalog: (): Promise<AutomationCatalog> => invoke('automations:catalog'),
+    create: (draft: AutomationDefinitionDraft): Promise<AutomationDefinition> =>
+      invoke('automations:create', { draft }),
+    update: (
+      id: string,
+      expectedUpdatedAt: number,
+      draft: AutomationDefinitionDraft
+    ): Promise<AutomationDefinition> =>
+      invoke('automations:update', { id, expectedUpdatedAt, draft }),
+    setEnabled: (
+      id: string,
+      expectedUpdatedAt: number,
+      enabled: boolean
+    ): Promise<AutomationDefinition> =>
+      invoke('automations:setEnabled', { id, expectedUpdatedAt, enabled }),
+    delete: (id: string, expectedUpdatedAt: number): Promise<AutomationDefinition> =>
+      invoke('automations:delete', { id, expectedUpdatedAt }),
+    listRuns: (automationId?: string, limit?: number): Promise<AutomationRunWithEligibility[]> =>
+      invoke('automations:listRuns', {
+        ...(automationId === undefined ? {} : { automationId }),
+        ...(limit === undefined ? {} : { limit })
+      }),
+    retryRun: (runId: string): Promise<AutomationRunWithEligibility> =>
+      invoke('automations:retryRun', { runId }),
+    onChanged: (cb: (event: AutomationChangedEvent) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.automationsChanged, cb)
   },
   app: {
     getVersion: (): Promise<string> => invoke('app:getVersion'),
