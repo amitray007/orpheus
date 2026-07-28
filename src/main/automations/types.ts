@@ -124,6 +124,7 @@ export type AutomationStore = {
   ): boolean
   updateNextRunAt(id: string, expected: number | null, next: number | null): boolean
   listDueSchedules(now: number, limit: number): AutomationDefinition[]
+  getNextWakeAt(after?: number): number | null
   insertRun(run: AutomationRun): boolean
   getRun(id: string): AutomationRun | null
   getRunByIdempotencyKey(automationId: string, idempotencyKey: string): AutomationRun | null

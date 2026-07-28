@@ -91,10 +91,27 @@ export type AutomationServicePorts = {
 export class AutomationService {
   private readonly now: () => number
   private readonly generateId: () => string
+  private readonly mutationListeners = new Set<() => void>()
 
   constructor(private readonly ports: AutomationServicePorts) {
     this.now = ports.now ?? Date.now
     this.generateId = ports.generateId ?? randomUUID
+  }
+
+  subscribeMutations(listener: () => void): () => void {
+    this.mutationListeners.add(listener)
+    return () => this.mutationListeners.delete(listener)
+  }
+
+  private notifyMutation(): void {
+    for (const listener of this.mutationListeners) {
+      try {
+        listener()
+      } catch {
+        // A scheduler wakeup is advisory. Never turn a committed management
+        // mutation into a reported failure because a listener misbehaved.
+      }
+    }
   }
 
   async createDefinition(
@@ -145,6 +162,7 @@ export class AutomationService {
           correlation: { created: true, enabled: definition.enabled }
         })
       })
+      this.notifyMutation()
       return definition
     } catch (error) {
       this.auditManagementFailure({
@@ -422,6 +440,7 @@ export class AutomationService {
       if (!changed) {
         throw new AutomationDefinitionError('conflict', CONCURRENT_DEFINITION_CHANGE)
       }
+      this.notifyMutation()
       return updated
     } catch (error) {
       this.auditManagementFailure({
@@ -478,6 +497,7 @@ export class AutomationService {
       ) {
         throw new AutomationDefinitionError('conflict', CONCURRENT_DEFINITION_CHANGE)
       }
+      this.notifyMutation()
       return current
     } catch (error) {
       this.auditManagementFailure({
@@ -585,7 +605,9 @@ export class AutomationService {
       })
       throw conflict
     }
-    return this.getDefinition(id)
+    const definition = this.getDefinition(id)
+    this.notifyMutation()
+    return definition
   }
 
   async retryRun(runId: string, management: AutomationManagementContext): Promise<AutomationRun> {
@@ -668,6 +690,7 @@ export class AutomationService {
           }
         })
       })
+      this.notifyMutation()
       return retry
     } catch (error) {
       this.auditManagementFailure({

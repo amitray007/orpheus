@@ -231,6 +231,26 @@ export function createAutomationStore(db: DbLike): AutomationStore {
        AND next_run_at IS NOT NULL AND next_run_at <= ?
      ORDER BY next_run_at ASC, id ASC LIMIT ?`
   )
+  const wakeCandidatesSql = `
+    SELECT next_run_at AS wake_at
+    FROM automation_definitions
+    WHERE enabled = 1 AND trigger_kind = 'schedule' AND next_run_at IS NOT NULL
+    UNION ALL
+    SELECT COALESCE(runs.next_attempt_at, 0) AS wake_at
+    FROM automation_runs AS runs
+    INNER JOIN automation_definitions AS definitions
+      ON definitions.id = runs.automation_id AND definitions.enabled = 1
+    WHERE runs.status IN ('queued', 'retry_wait')
+    UNION ALL
+    SELECT COALESCE(next_attempt_at, 0) AS wake_at
+    FROM automation_event_occurrences
+    WHERE delivered_at IS NULL`
+  const nextWakeAtStatement = db.prepare(
+    `SELECT MIN(wake_at) AS wake_at FROM (${wakeCandidatesSql})`
+  )
+  const nextWakeAfterStatement = db.prepare(
+    `SELECT MIN(wake_at) AS wake_at FROM (${wakeCandidatesSql}) WHERE wake_at > ?`
+  )
   const listRunnableAutomationIdsStatement = db.prepare(
     `SELECT runs.automation_id AS automation_id, MIN(runs.queued_at) AS first_queued_at
      FROM automation_runs AS runs
@@ -503,6 +523,12 @@ export function createAutomationStore(db: DbLike): AutomationStore {
         const definition = definitionFromRow(row)
         return definition == null ? [] : [definition]
       })
+    },
+    getNextWakeAt(after) {
+      const row = (
+        after == null ? nextWakeAtStatement.get() : nextWakeAfterStatement.get(after)
+      ) as { wake_at: number | null } | undefined
+      return row?.wake_at ?? null
     },
     insertRun(run) {
       insertRun.run(

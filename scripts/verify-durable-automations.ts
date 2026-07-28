@@ -1335,6 +1335,215 @@ assert.equal(
   correlatedRun.id
 )
 await scheduler.setEnabled(bridgedDefinition.id, false, managementContext())
+
+// The production scheduler parks without an interval when no persisted work
+// exists, wakes promptly for service/event mutations, and arms exactly one
+// timeout for the next schedule or retry deadline.
+{
+  const wakeDb = new Database(':memory:')
+  wakeDb.exec('PRAGMA foreign_keys = ON')
+  runMigrations(wakeDb, { dbPath: ':memory:' })
+  const durableWakeStore = createAutomationStore(wakeDb)
+  let nextWakeQueries = 0
+  const wakeStore: AutomationStore = {
+    ...durableWakeStore,
+    getNextWakeAt: (...args) => {
+      nextWakeQueries++
+      return durableWakeStore.getNextWakeAt(...args)
+    }
+  }
+  const wakeAudit = createAutomationAuditStore(wakeDb)
+  let wakeNow = 50_000
+  let wakeId = 0
+  let wakeTimeoutNext = false
+  const wakeService = new AutomationService({
+    store: wakeStore,
+    registry,
+    grants,
+    audit: wakeAudit,
+    allowedEventTypes: new Set(['workspace.completed']),
+    now: () => wakeNow,
+    generateId: () => `wake-generated-${++wakeId}`
+  })
+  const scheduledWakes: Array<{
+    callback: () => void
+    delayMs: number
+    cancelled: boolean
+    fired: boolean
+    unref: () => void
+  }> = []
+  const liveWake = (): (typeof scheduledWakes)[number] | null => {
+    const live = scheduledWakes.filter((wake) => !wake.cancelled && !wake.fired)
+    assert.ok(live.length <= 1, 'the scheduler must retain at most one live wake timer')
+    return live[0] ?? null
+  }
+  const wakeScheduler = new AutomationScheduler({
+    store: wakeStore,
+    service: wakeService,
+    registry,
+    audit: wakeAudit,
+    clock: {
+      now: () => wakeNow,
+      withTimeout: async (promise, _timeoutMs, controller) => {
+        if (wakeTimeoutNext) {
+          wakeTimeoutNext = false
+          controller.abort()
+          return { timedOut: true }
+        }
+        return { timedOut: false, value: await promise }
+      }
+    },
+    generateId: () => `wake-generated-${++wakeId}`,
+    scheduleWake: (callback, delayMs) => {
+      const wake = {
+        callback,
+        delayMs,
+        cancelled: false,
+        fired: false,
+        unref: () => undefined
+      }
+      scheduledWakes.push(wake)
+      return wake
+    },
+    cancelWake: (handle) => {
+      const wake = handle as (typeof scheduledWakes)[number]
+      wake.cancelled = true
+    }
+  })
+  const fireWake = async (waitForExecutions = true): Promise<void> => {
+    const wake = liveWake()
+    assert.ok(wake)
+    wake.fired = true
+    wake.callback()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    if (waitForExecutions) await wakeScheduler.waitForIdle()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+  const flushImmediateWakes = async (waitForExecutions = true): Promise<void> => {
+    for (let remaining = 20; remaining > 0; remaining--) {
+      const wake = liveWake()
+      if (wake == null || wake.delayMs > 0) return
+      await fireWake(waitForExecutions)
+    }
+    assert.fail('automation scheduler did not finish its immediate wakeup work')
+  }
+
+  await wakeScheduler.start()
+  assert.equal(liveWake(), null, 'an empty scheduler must park without a polling timer')
+  const parkedWakeQueries = nextWakeQueries
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(nextWakeQueries, parkedWakeQueries, 'an idle scheduler must not poll SQLite')
+
+  const wakeSchedule = await wakeService.createDefinition(
+    draft({
+      name: 'Deadline wake schedule',
+      trigger: { kind: 'schedule', intervalMs: 1_000, startAt: wakeNow + 1_000 }
+    }),
+    managementContext()
+  )
+  assert.equal(liveWake()?.delayMs, 0, 'a definition mutation must request a prompt reschedule')
+  await flushImmediateWakes()
+  assert.equal(liveWake()?.delayMs, 1_000)
+  assert.equal(wakeStore.getNextWakeAt(), wakeNow + 1_000)
+
+  wakeNow += 1_000
+  await fireWake()
+  await flushImmediateWakes()
+  assert.equal(
+    wakeStore.listRuns({ automationId: wakeSchedule.id, limit: 10 })[0]?.status,
+    'succeeded'
+  )
+  assert.equal(liveWake()?.delayMs, 1_000, 'a schedule must re-arm at its next actual deadline')
+
+  await wakeService.setEnabled(wakeSchedule.id, false, managementContext())
+  await flushImmediateWakes()
+  assert.equal(liveWake(), null)
+  const wakeEventDefinition = await wakeService.createDefinition(draft(), managementContext())
+  await flushImmediateWakes()
+  assert.equal(liveWake(), null, 'an enabled event definition without work must remain parked')
+
+  wakeScheduler.persistEvent({
+    id: 'wake-event',
+    type: 'workspace.completed',
+    occurredAt: wakeNow,
+    projectId: 'project-1'
+  })
+  assert.equal(liveWake()?.delayMs, 0, 'a persisted event must wake the parked scheduler')
+  await flushImmediateWakes()
+  assert.equal(
+    wakeStore.listRuns({ automationId: wakeEventDefinition.id, limit: 10 })[0]?.status,
+    'succeeded'
+  )
+  assert.equal(liveWake(), null)
+
+  const scheduleBehindBlockedRun = await wakeService.createDefinition(
+    draft({
+      name: 'Independent deadline wake',
+      trigger: { kind: 'schedule', intervalMs: 1_000, startAt: wakeNow + 150 }
+    }),
+    managementContext()
+  )
+  await flushImmediateWakes()
+  assert.equal(liveWake()?.delayMs, 150)
+  blockNext = true
+  releaseBlocked = null
+  wakeTimeoutNext = true
+  wakeScheduler.persistEvent({
+    id: 'wake-retry-event',
+    type: 'workspace.completed',
+    occurredAt: wakeNow,
+    projectId: 'project-1'
+  })
+  await flushImmediateWakes(false)
+  const retryWakeRun = wakeStore.listRuns({
+    automationId: wakeEventDefinition.id,
+    order: 'recent',
+    limit: 10
+  })[0]
+  assert.equal(retryWakeRun?.status, 'retry_wait')
+  assert.equal(liveWake()?.delayMs, 100, 'a retry must sleep until its persisted deadline')
+  assert.equal(wakeStore.getNextWakeAt(), retryWakeRun?.nextAttemptAt)
+  wakeNow += 100
+  await fireWake(false)
+  await flushImmediateWakes(false)
+  assert.equal(
+    liveWake()?.delayMs,
+    50,
+    'a concurrency-blocked ready row must not hide another definition deadline'
+  )
+  wakeNow += 50
+  await fireWake(false)
+  await flushImmediateWakes(false)
+  assert.equal(
+    wakeStore.listRuns({ automationId: scheduleBehindBlockedRun.id, limit: 10 })[0]?.status,
+    'succeeded'
+  )
+  assert.equal(wakeStore.getRun(retryWakeRun!.id)?.status, 'retry_wait')
+  assert.ok(releaseBlocked)
+  releaseBlocked()
+  await wakeScheduler.waitForIdle()
+  await flushImmediateWakes()
+  assert.equal(wakeStore.getRun(retryWakeRun!.id)?.status, 'succeeded')
+  assert.equal(liveWake()?.delayMs, 1_000)
+
+  await wakeService.setEnabled(wakeEventDefinition.id, false, managementContext())
+  await wakeService.setEnabled(scheduleBehindBlockedRun.id, false, managementContext())
+  const stoppedSchedule = await wakeService.createDefinition(
+    draft({
+      name: 'Cancelled deadline wake',
+      trigger: { kind: 'schedule', intervalMs: 1_000, startAt: wakeNow + 1_000 }
+    }),
+    managementContext()
+  )
+  await flushImmediateWakes()
+  const wakeCancelledByStop = liveWake()
+  assert.equal(wakeCancelledByStop?.delayMs, 1_000)
+  wakeScheduler.stop()
+  assert.equal(wakeCancelledByStop?.cancelled, true, 'stop must cancel the pending deadline wake')
+  await wakeService.setEnabled(stoppedSchedule.id, false, managementContext())
+  wakeDb.close()
+}
+
 // Static architectural guard: the subsystem has no child-process, command
 // socket, renderer selector, click, or key-simulation dependency.
 const moduleNames = [
@@ -1350,6 +1559,7 @@ for (const moduleName of moduleNames) {
     source,
     /child_process|commandServer|querySelector|webContents|sendKeys|click\(/
   )
+  assert.doesNotMatch(source, /setInterval/, 'durable automations must not use interval polling')
 }
 
 console.log('✓ durable automations')

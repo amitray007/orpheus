@@ -16,8 +16,8 @@ import {
 } from './types'
 
 const MAX_RECONCILE_ITEMS = 200
-const DEFAULT_TICK_MS = 1_000
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1_000
+const MAX_WAKE_DELAY_MS = 2_147_483_647
 const RETRYABLE_CODES = new Set(['busy', 'unavailable', 'timeout', 'failed'])
 const SAFE_AUDIT_ID = /^[A-Za-z0-9._:-]{1,128}$/
 
@@ -99,9 +99,12 @@ export type AutomationSchedulerPorts = {
   audit: AutomationAuditPort
   clock?: AutomationClock
   generateId?: () => string
-  tickMs?: number
   maxGlobalConcurrency?: number
+  scheduleWake?: (callback: () => void, delayMs: number) => AutomationWakeHandle
+  cancelWake?: (handle: AutomationWakeHandle) => void
 }
+
+export type AutomationWakeHandle = Readonly<{ unref?: () => void }>
 
 type AttemptOutcome = {
   resultCode: string
@@ -116,8 +119,9 @@ type RunSelection = { definition: AutomationDefinition; run: AutomationRun }
 export class AutomationScheduler {
   private readonly clock: AutomationClock
   private readonly generateId: () => string
-  private readonly tickMs: number
   private readonly maxGlobalConcurrency: number
+  private readonly scheduleWake: NonNullable<AutomationSchedulerPorts['scheduleWake']>
+  private readonly cancelWake: NonNullable<AutomationSchedulerPorts['cancelWake']>
   private readonly activeByAutomation = new Map<string, number>()
   private readonly activeTasks = new Set<Promise<void>>()
   private readonly occupiedSlots = new Set<symbol>()
@@ -125,31 +129,42 @@ export class AutomationScheduler {
   private readonly controllers = new Map<string, Set<AbortController>>()
   private readonly lingeringRunIds = new Set<string>()
   private automationCursor = 0
-  private timer: NodeJS.Timeout | null = null
+  private timer: AutomationWakeHandle | null = null
+  private scheduledWakeAt: number | null = null
   private tickInFlight: Promise<readonly Promise<void>[]> | null = null
+  private unsubscribeMutations: (() => void) | null = null
+  private wakeRequested = false
   private started = false
   private lastCleanupAt: number | null = null
 
   constructor(private readonly ports: AutomationSchedulerPorts) {
     this.clock = ports.clock ?? { now: Date.now, withTimeout: defaultWithTimeout }
     this.generateId = ports.generateId ?? randomUUID
-    this.tickMs = ports.tickMs ?? DEFAULT_TICK_MS
     this.maxGlobalConcurrency = ports.maxGlobalConcurrency ?? AUTOMATION_LIMITS.maxGlobalConcurrency
+    this.scheduleWake =
+      ports.scheduleWake ??
+      ((callback, delayMs) => {
+        return setTimeout(callback, delayMs)
+      })
+    this.cancelWake =
+      ports.cancelWake ??
+      ((handle) => {
+        clearTimeout(handle as NodeJS.Timeout)
+      })
   }
 
   async start(): Promise<void> {
     if (this.started) return
     this.started = true
+    this.unsubscribeMutations = this.ports.service.subscribeMutations(() => this.requestWake())
     try {
       await this.recover()
       if (!this.started) return
       await this.tick(false, true)
-      if (!this.started) return
-      this.timer = setInterval(() => void this.tick(false, true), this.tickMs)
-      this.timer.unref?.()
     } catch (error) {
-      if (this.timer != null) clearInterval(this.timer)
-      this.timer = null
+      this.cancelScheduledWake()
+      this.unsubscribeMutations?.()
+      this.unsubscribeMutations = null
       this.started = false
       throw error
     }
@@ -157,8 +172,10 @@ export class AutomationScheduler {
 
   stop(): void {
     this.started = false
-    if (this.timer != null) clearInterval(this.timer)
-    this.timer = null
+    this.wakeRequested = false
+    this.cancelScheduledWake()
+    this.unsubscribeMutations?.()
+    this.unsubscribeMutations = null
     for (const controllers of this.controllers.values()) {
       for (const controller of controllers) controller.abort('shutdown')
     }
@@ -189,7 +206,10 @@ export class AutomationScheduler {
    */
   persistEvent(event: AutomationEvent): void {
     this.ports.service.validateEvent(event)
-    if (this.ports.store.insertEventOccurrence(event, this.clock.now())) return
+    if (this.ports.store.insertEventOccurrence(event, this.clock.now())) {
+      this.requestWake()
+      return
+    }
     const existing = this.ports.store.getEventOccurrence(event.id)
     if (
       existing == null ||
@@ -208,6 +228,7 @@ export class AutomationScheduler {
   drainEvents(): Promise<void> {
     return Promise.resolve().then(() => {
       this.enqueuePendingEvents(this.clock.now())
+      this.requestWake()
     })
   }
 
@@ -267,10 +288,12 @@ export class AutomationScheduler {
 
   async tick(waitForExecutions = true, requireStarted = false): Promise<void> {
     if (this.tickInFlight == null) {
+      this.cancelScheduledWake()
       this.tickInFlight = Promise.resolve()
         .then(() => (requireStarted && !this.started ? [] : this.reconcile()))
         .finally(() => {
           this.tickInFlight = null
+          this.rescheduleWake()
         })
     }
     const dispatched = await this.tickInFlight
@@ -281,6 +304,69 @@ export class AutomationScheduler {
     while (this.activeTasks.size > 0 || this.lingeringTasks.size > 0) {
       await Promise.allSettled([...this.activeTasks, ...this.lingeringTasks])
     }
+  }
+
+  private requestWake(): void {
+    if (!this.started) return
+    if (this.tickInFlight != null) {
+      this.wakeRequested = true
+      return
+    }
+    this.wakeRequested = false
+    this.armWakeAt(this.clock.now())
+  }
+
+  private rescheduleWake(): void {
+    if (!this.started) {
+      this.cancelScheduledWake()
+      return
+    }
+    if (this.wakeRequested) {
+      this.wakeRequested = false
+      this.armWakeAt(this.clock.now())
+      return
+    }
+    if (this.occupiedSlots.size >= this.maxGlobalConcurrency) {
+      this.cancelScheduledWake()
+      return
+    }
+    const now = this.clock.now()
+    let nextWakeAt = this.ports.store.getNextWakeAt()
+    if (nextWakeAt != null && nextWakeAt <= now && this.occupiedSlots.size > 0) {
+      // Ready rows can belong to a definition whose concurrency is already
+      // occupied. Ignore those rows for timer purposes without losing a
+      // different schedule or retry that becomes due while it is running.
+      nextWakeAt = this.ports.store.getNextWakeAt(now)
+    }
+    if (nextWakeAt == null) {
+      this.cancelScheduledWake()
+      return
+    }
+    this.armWakeAt(nextWakeAt)
+  }
+
+  private armWakeAt(wakeAt: number): void {
+    if (!this.started) return
+    if (this.timer != null && this.scheduledWakeAt != null && this.scheduledWakeAt <= wakeAt) {
+      return
+    }
+    this.cancelScheduledWake()
+    const delayMs = Math.min(MAX_WAKE_DELAY_MS, Math.max(0, wakeAt - this.clock.now()))
+    const timer = this.scheduleWake(() => {
+      if (this.timer !== timer) return
+      this.timer = null
+      this.scheduledWakeAt = null
+      void this.tick(false, true)
+    }, delayMs)
+    this.timer = timer
+    this.scheduledWakeAt = wakeAt
+    timer.unref?.()
+  }
+
+  private cancelScheduledWake(): void {
+    if (this.timer != null) this.cancelWake(this.timer)
+    this.timer = null
+    this.scheduledWakeAt = null
   }
 
   private dispatch(definition: AutomationDefinition, run: AutomationRun): Promise<void> {
@@ -297,11 +383,13 @@ export class AutomationScheduler {
       void lingering.finally(() => {
         this.lingeringTasks.delete(lingering)
         this.occupiedSlots.delete(slot)
+        this.requestWake()
       })
     }
     const task = this.execute(definition, run, holdSlotUntilSettled).finally(() => {
       this.activeTasks.delete(task)
       if (!slotTransferred) this.occupiedSlots.delete(slot)
+      this.requestWake()
     })
     this.activeTasks.add(task)
     void task.catch(() => {
