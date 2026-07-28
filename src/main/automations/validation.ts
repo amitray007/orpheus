@@ -1,5 +1,7 @@
+import { isDeepStrictEqual } from 'node:util'
+import { CLAUDE_EFFORT_VALUES, type AutomationOperationCatalogEntry } from '../../shared/types'
+import { SETTINGS_PATCH_WORKSPACE_ID } from '../controlPlane/settingsResourceService'
 import type { ControlDescription } from '../controlPlane/types'
-import type { AutomationOperationCatalogEntry } from '../../shared/types'
 import {
   AUTOMATION_LIMITS,
   type AutomationDefinitionDraft,
@@ -12,6 +14,35 @@ const SECRET_FIELD =
 const SECRET_VALUE =
   /(?:bearer\s+\S+|(?:api[_-]?key|token|secret|password|authorization|cookie|lease)\s*[:=]\s*\S+|(?:sk|ghp|github_pat|xox[aboprs])[-_][A-Za-z0-9_-]{8,})/i
 const MAX_CATALOG_SCHEMA_BYTES = 256 * 1024
+const SETTINGS_PATCH_WORKSPACE_INPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['patch'],
+  properties: {
+    workspaceId: { type: 'string', minLength: 1, maxLength: 128 },
+    patch: {
+      type: 'object',
+      additionalProperties: false,
+      minProperties: 1,
+      properties: {
+        model: {
+          anyOf: [
+            {
+              type: 'string',
+              minLength: 1,
+              maxLength: 255,
+              pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$'
+            },
+            { type: 'null' }
+          ]
+        },
+        effort: {
+          anyOf: [{ enum: [...CLAUDE_EFFORT_VALUES] }, { type: 'null' }]
+        }
+      }
+    }
+  }
+} as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value)
@@ -77,8 +108,15 @@ function editorSupportsField(schema: unknown): boolean {
  * safe form language. A descriptor may remain automation-invocable by an
  * already persisted definition while being withheld from new-definition UI.
  */
-export function automationEditorSupportsDescription(description: ControlDescription): boolean {
+function automationEditorSupportsDescription(description: ControlDescription): boolean {
   if (!['self', 'project', 'workspace'].includes(description.scope.kind)) return false
+  if (description.id === SETTINGS_PATCH_WORKSPACE_ID) {
+    return (
+      description.scope.kind === 'workspace' &&
+      description.scope.inputField === 'workspaceId' &&
+      isDeepStrictEqual(description.inputSchema, SETTINGS_PATCH_WORKSPACE_INPUT_SCHEMA)
+    )
+  }
   const schema = description.inputSchema
   if (
     schema['type'] !== 'object' ||

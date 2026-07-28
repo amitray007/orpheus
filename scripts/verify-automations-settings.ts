@@ -5,6 +5,12 @@ import type {
   AutomationDefinition,
   AutomationOperationCatalogEntry
 } from '../src/shared/types'
+import { automationCatalogEntry } from '../src/main/automations/validation'
+import { createSettingsResourceCapabilities } from '../src/main/controlPlane/settingsResourceCapabilities'
+import {
+  SETTINGS_PATCH_WORKSPACE_ID,
+  type SettingsResourceService
+} from '../src/main/controlPlane/settingsResourceService'
 import {
   AUTOMATION_RUN_POLL_MS,
   automationFormFromDefinition,
@@ -273,47 +279,32 @@ assert.equal(
   'a newly narrowed workspace scope remains incomplete until a workspace is selected'
 )
 
-const settingsPatchOperation: AutomationOperationCatalogEntry = {
-  id: SETTINGS_PATCH_WORKSPACE_OPERATION_ID,
-  version: 1,
-  kind: 'mutation',
-  description: 'Patch exact workspace settings.',
-  inputSchema: {
-    type: 'object',
-    additionalProperties: false,
-    required: ['patch'],
-    properties: {
-      workspaceId: { type: 'string', minLength: 1, maxLength: 128 },
-      patch: {
-        type: 'object',
-        additionalProperties: false,
-        minProperties: 1,
-        properties: {
-          model: {
-            anyOf: [
-              {
-                type: 'string',
-                minLength: 1,
-                maxLength: 255,
-                pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$'
-              },
-              { type: 'null' }
-            ]
-          },
-          effort: {
-            anyOf: [{ enum: ['low', 'medium', 'high'] }, { type: 'null' }]
-          }
-        }
-      }
-    }
-  },
-  outputSchema: { type: 'object' },
-  permission: 'settings.workspace.patch',
-  scope: { kind: 'workspace', inputField: 'workspaceId' },
-  risk: { tier: 2, label: 'write' },
-  declaredEffects: ['db.write', 'workspace.dirty.recompute'],
-  idempotency: 'natural'
-}
+assert.equal(SETTINGS_PATCH_WORKSPACE_ID, SETTINGS_PATCH_WORKSPACE_OPERATION_ID)
+const settingsPatchDescription = createSettingsResourceCapabilities(
+  {} as SettingsResourceService
+).find(({ id }) => id === SETTINGS_PATCH_WORKSPACE_ID)
+assert.ok(settingsPatchDescription)
+const settingsPatchOperation = automationCatalogEntry(settingsPatchDescription)
+assert.ok(
+  settingsPatchOperation,
+  'the exact backend descriptor must survive catalog gating before reaching the renderer'
+)
+assert.equal(
+  automationCatalogEntry({
+    ...settingsPatchDescription,
+    inputSchema: { ...settingsPatchDescription.inputSchema, required: [] }
+  }),
+  null,
+  'the settings patch exception must reject schema drift'
+)
+assert.equal(
+  automationCatalogEntry({
+    ...settingsPatchDescription,
+    id: 'settings.unsafeObject'
+  }),
+  null,
+  'the settings patch exception must not enable arbitrary nested-object operations'
+)
 const settingsPatchCatalog: AutomationCatalog = {
   ...catalog,
   operations: [settingsPatchOperation]
