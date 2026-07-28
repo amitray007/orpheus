@@ -217,6 +217,7 @@ import { registerWorkspacesIpc } from './ipc/workspaces'
 import { registerActionsIpc } from './ipc/actions'
 import { registerOverlayIpc } from './ipc/overlay'
 import { registerControlToolsIpc } from './ipc/controlTools'
+import { registerAutomationsIpc } from './ipc/automations'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
 import { WorkspaceControlAdapter } from './workspaceControlAdapter'
@@ -2803,6 +2804,11 @@ if (!app.requestSingleInstanceLock()) {
           getWorkspace
         }),
         allowedEventTypes: new Set([WORKSPACE_COMPLETED_EVENT])
+      })
+      registerAutomationsIpc(automations.service, listRegisteredControl, (event) => {
+        const win = getMainWindow()
+        if (win == null || win.isDestroyed() || win.webContents.isDestroyed()) return
+        win.webContents.send(PUSH_CHANNELS.automationsChanged, event)
       })
       automationScheduler = automations.scheduler
       automationEventCleanup = wireWorkspaceAutomationEvents({
