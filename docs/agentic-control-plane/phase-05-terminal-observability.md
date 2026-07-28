@@ -1,8 +1,8 @@
 # Phase 5: Terminal Observability
 
-**Status:** exact scoped pane observation historically live-validated; bounded
-native Ghostty screen/scrollback tail implemented and deterministically tested,
-with fresh packaged-live output validation pending<br>
+**Status:** exact scoped pane observation live-validated; bounded native Ghostty
+screen/scrollback tail implemented, deterministically tested, and positively
+packaged-live validated for a newly created pane on 2026-07-28<br>
 **Roadmap:** [roadmap.md](roadmap.md)<br>
 **Depends on:** [Phase 2: Self Identity + Read-only MCP](phase-02-self-identity-readonly-mcp.md)
 and the Phase 3 same-project policy contract
@@ -214,16 +214,16 @@ events.
 
 ## Source mapping
 
-| Field | Authority |
-| --- | --- |
-| Workspace and pane configuration | SQLite domain stores |
-| Workbench shell command/cwd | Main's configured runtime behavior plus owning workspace |
-| Surface existence and phase | Main native-surface registries plus `getSurfacePhase` |
-| Claude runtime identity/pid | Runtime lease registry corroborated by session files |
-| Claude running/readiness/raw status | `sessionState.ts` |
-| Orpheus activity | `orpheusNotify.ts` committed status store |
-| Transcript and last turn | Existing bounded Claude JSONL reader |
-| Output tail | Registered authoritative text-stream provider only |
+| Field                               | Authority                                                |
+| ----------------------------------- | -------------------------------------------------------- |
+| Workspace and pane configuration    | SQLite domain stores                                     |
+| Workbench shell command/cwd         | Main's configured runtime behavior plus owning workspace |
+| Surface existence and phase         | Main native-surface registries plus `getSurfacePhase`    |
+| Claude runtime identity/pid         | Runtime lease registry corroborated by session files     |
+| Claude running/readiness/raw status | `sessionState.ts`                                        |
+| Orpheus activity                    | `orpheusNotify.ts` committed status store                |
+| Transcript and last turn            | Existing bounded Claude JSONL reader                     |
+| Output tail                         | Registered authoritative text-stream provider only       |
 
 ## Deterministic acceptance
 
@@ -271,10 +271,13 @@ native surface; the subsequent list omitted it and direct get returned the
 expected non-enumerating `not_found`.
 
 That `unsupported` result remains valid historical live evidence for the source
-state tested in that batch. It is not current proof of the new native
-screen/scrollback provider. A fresh packaged run must confirm bounded text,
-byte/line truncation, unavailable behavior after surface loss, and secret-safe
-result handling before the new output path is marked current-live.
+state tested in that batch. On 2026-07-28, a fresh packaged build used the
+canonical observation target returned by `panes.createWorkspaceTerminal`
+directly with `terminals.getOutputTail` and read the pane's RED/GREEN output.
+After exact dual-CAS deletion, the same pane target returned `not_found`, while
+the workspace Claude terminal remained available. Byte/line truncation,
+unavailable-provider behavior, and secret-safe hostile-output handling remain
+deterministic-only.
 
 ## Rollback
 

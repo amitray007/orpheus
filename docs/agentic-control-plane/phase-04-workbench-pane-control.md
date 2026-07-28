@@ -1,9 +1,9 @@
 # Phase 4: Workbench and Pane Control
 
 **Status:** existing controls implemented and deterministically tested; core
-live MCP/renderer controls validated. The workspace-terminal create/delete
-delta is deterministically verified; packaged-live validation remains
-pending.<br>
+live MCP/renderer controls validated. The positive workspace-terminal
+create/observe/delete path was packaged-live validated on 2026-07-28; remaining
+negative and recovery paths are deterministic-only.<br>
 **Roadmap:** [roadmap.md](roadmap.md)<br>
 **Interfaces:** [phase-04-interfaces.md](phase-04-interfaces.md)<br>
 **Depends on:** Phase 3 workspace orchestration
@@ -52,25 +52,28 @@ clean up its own usable pane without receiving general pane CRUD.
 
 ## Permission and effects
 
-| Operation | Permission | Tier | Maximum effects |
-| --- | --- | ---: | --- |
-| `workbench.getState` | `ui.workbench.control` | 0 | none |
-| `workbench.selectTab` | `ui.workbench.control` | 1 | `ui.present` |
-| `workbench.openFile` | `ui.workbench.control` | 1 | `filesystem.read`, `ui.present` |
-| `workbench.openDiff` | `ui.workbench.control` | 1 | `git.read`, `process.spawn`, `ui.present` |
-| `panes.getState` | `ui.workbench.control` | 0 | none |
-| `panes.selectLayout` | `ui.workbench.control` | 1 | `db.write`, `ui.present` |
-| `panes.startTerminal` | `terminals.control` | 2 | `surface.mount`, `process.spawn` |
-| `panes.stopTerminal` | `terminals.control` | 2 | `surface.destroy`, `process.terminate` |
-| `panes.focusTerminal` | `terminals.control` | 1 | `ui.present`, `ui.focus` |
-| `panes.createWorkspaceTerminal` | `panes.manage` | 3 | `db.write`, `surface.mount`, `process.spawn`, `shell.execute`, `ui.present`, `ui.focus` |
-| `panes.deleteTerminalLayout` | `panes.manage` | 3 | `surface.destroy`, `process.terminate`, `db.write`, `ui.reconcile` |
+| Operation                       | Permission             | Tier | Maximum effects                                                                         |
+| ------------------------------- | ---------------------- | ---: | --------------------------------------------------------------------------------------- |
+| `workbench.getState`            | `ui.workbench.control` |    0 | none                                                                                    |
+| `workbench.selectTab`           | `ui.workbench.control` |    1 | `ui.present`                                                                            |
+| `workbench.openFile`            | `ui.workbench.control` |    1 | `filesystem.read`, `ui.present`                                                         |
+| `workbench.openDiff`            | `ui.workbench.control` |    1 | `git.read`, `process.spawn`, `ui.present`                                               |
+| `panes.getState`                | `ui.workbench.control` |    0 | none                                                                                    |
+| `panes.selectLayout`            | `ui.workbench.control` |    1 | `db.write`, `ui.present`                                                                |
+| `panes.startTerminal`           | `terminals.control`    |    2 | `surface.mount`, `process.spawn`                                                        |
+| `panes.stopTerminal`            | `terminals.control`    |    2 | `surface.destroy`, `process.terminate`                                                  |
+| `panes.focusTerminal`           | `terminals.control`    |    1 | `ui.present`, `ui.focus`                                                                |
+| `panes.createWorkspaceTerminal` | `panes.manage`         |    3 | `db.write`, `surface.mount`, `process.spawn`, `shell.execute`, `ui.present`, `ui.focus` |
+| `panes.deleteTerminalLayout`    | `panes.manage`         |    3 | `surface.destroy`, `process.terminate`, `db.write`, `ui.reconcile`                      |
 
 Current valid, main-observed live runtimes receive all three permissions by
 default. Invalid or stale runtime identity fails closed, and targeted pane calls
 still require exact DB-derived layout/surface scope immediately before effects.
 Settings → Orpheus Agent Tools may suppress discovery/invocation but cannot
-widen that scope. There is no per-call permission prompt.
+widen that scope. There is no Orpheus per-call permission prompt. Claude Code
+may independently prompt before invoking an MCP tool according to its own
+permission mode; that does not change Orpheus exposure, grants, or exact-scope
+policy.
 
 `openDiff` v1 supports only working-tree files and Orpheus local review targets.
 PR/GitHub targets are excluded because opening them may cross account and
@@ -169,5 +172,17 @@ The two dedicated lifecycle operations above were added after that historical
 batch. The focused Workbench/pane lifecycle verifier, node and web typechecks,
 and aggregate agentic harness pass. The aggregate harness reports 48
 registered, 48 MCP, 48 default-exposed, 48 in the explicit Phase 4–6 scope, and
-2 automation-eligible operations. Packaged-live lifecycle validation remains
-pending.
+2 automation-eligible operations.
+
+On 2026-07-28, a fresh packaged build exposed all 48 tools. Two
+`panes.createWorkspaceTerminal` calls produced visible QA layouts; one rendered
+RED/GREEN initial-command output followed by an interactive zsh at normal
+Retina scale. The returned
+`observationTarget: { kind: "pane", layoutId, paneId }` was passed unchanged to
+`terminals.getOutputTail` and returned that output. Both layouts were then
+removed with their exact layout/terminal CAS timestamps. The deleted targets
+returned `not_found`, while the workspace Claude terminal remained available.
+This confirms the positive packaged lifecycle, scale handoff, observation
+handoff, scope removal, and isolation paths. Capacity, conflict, partial
+failure, ownership transfer, and owner-lifecycle teardown remain
+deterministic-only.

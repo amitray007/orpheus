@@ -16,13 +16,13 @@ inference** is separate from **authentication and authorization**.
 
 These identifiers are related, but they are not interchangeable.
 
-| Identity | Lifetime and meaning | Important non-equivalences |
-| --- | --- | --- |
-| `projectId` | Persistent ID for a registered project root. A project owns many workspaces. | A matching `cwd` is not a project identity or grant. A Panes “Project” panel is not an Orpheus project. |
-| `workspaceId` | Persistent ID for one Orpheus exploration unit. It owns a cwd, settings, lineage, one Claude surface, and zero or more Workbench terminals. | It is not a process, conversation, or native surface ID. |
-| `claudeConversationId` | Stable Claude transcript/conversation UUID, currently `WorkspaceRecord.claudeSessionId`. It is pre-assigned at workspace creation and survives `--resume`. | It is not a live PID. A conversation may have no live runtime. |
-| `runtimeId` | Orpheus-issued ID for one live execution instance, such as a Claude process or plain shell. It changes after restart. | PID is only observed runtime metadata; PIDs are recycled and must not be used as identity. |
-| `surfaceId` | Opaque ID for one terminal presentation surface. A sticky surface can outlive or host more than one runtime over time. | It is not necessarily a workspace. It must not be parsed to infer authority. |
+| Identity               | Lifetime and meaning                                                                                                                                       | Important non-equivalences                                                                              |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `projectId`            | Persistent ID for a registered project root. A project owns many workspaces.                                                                               | A matching `cwd` is not a project identity or grant. A Panes “Project” panel is not an Orpheus project. |
+| `workspaceId`          | Persistent ID for one Orpheus exploration unit. It owns a cwd, settings, lineage, one Claude surface, and zero or more Workbench terminals.                | It is not a process, conversation, or native surface ID.                                                |
+| `claudeConversationId` | Stable Claude transcript/conversation UUID, currently `WorkspaceRecord.claudeSessionId`. It is pre-assigned at workspace creation and survives `--resume`. | It is not a live PID. A conversation may have no live runtime.                                          |
+| `runtimeId`            | Orpheus-issued ID for one live execution instance, such as a Claude process or plain shell. It changes after restart.                                      | PID is only observed runtime metadata; PIDs are recycled and must not be used as identity.              |
+| `surfaceId`            | Opaque ID for one terminal presentation surface. A sticky surface can outlive or host more than one runtime over time.                                     | It is not necessarily a workspace. It must not be parsed to infer authority.                            |
 
 The native adapter currently uses keys such as a plain `workspaceId`,
 `workbench:<workspaceId>:<terminalId>`, and
@@ -102,7 +102,8 @@ type TrustedRuntimeContext = {
   runtimeId: string
   runtimeKind: 'claude' | 'workbench_shell' | 'pane_shell'
   surfaceId: string
-  workspaceId: string | null; projectId: string | null
+  workspaceId: string | null
+  projectId: string | null
   claudeConversationId: string | null
   issuedAt: number
 }
@@ -164,30 +165,30 @@ project the default project. Cross-project creation requires an explicit grant.
 Capabilities use versioned dotted names. Their meaning does not broaden in place;
 new authority is introduced additively.
 
-| Capability | Covers |
-| --- | --- |
-| `identity.read` | `self.get` and the caller's resolved identity graph |
-| `projects.read` | Project metadata and listing |
-| `workspaces.read` | Workspace metadata, status, lineage, and transcript-derived summaries |
-| `workspaces.create` | Create or fork a workspace and apply creation-time settings |
-| `workspaces.open` | Mount or focus a workspace |
-| `workspaces.send` | Send text, keys, or submit to a Claude workspace surface |
-| `workspaces.wait` | Subscribe to workspace completion or blocked states |
-| `reviews.read` | Read local review comments |
-| `reviews.resolve` | Change a local review comment's resolved state |
-| `github.account.read` | Read a cached account-wide GitHub snapshot or contribution window |
-| `github.account.refresh` | Explicitly refresh account-wide GitHub data through bounded source requests |
-| `activity.read` | Read a cached app-global Claude activity snapshot or window |
-| `activity.refresh` | Explicitly rescan the app-global Claude transcript source and update its cache |
-| `providers.usage.read` | Read a cached provider-neutral usage snapshot |
-| `providers.usage.refresh` | Explicitly probe provider sources and update the usage cache |
-| `ui.workbench.control` | Open/focus Workbench UI and select or create its terminal |
-| `terminals.control` | Send input or run a command in an authorized plain terminal |
-| `terminals.read` | Read bounded authoritative terminal/session observations |
-| `panes.manage` | Create and delete the caller workspace's constrained, agent-owned terminal layout |
-| `settings.read` | Read allowlisted effective workspace settings and provenance |
-| `settings.workspace.patch` | Change workspace-scoped Claude settings |
-| `resources.read` | Read sanitized same-project resource metadata |
+| Capability                 | Covers                                                                            |
+| -------------------------- | --------------------------------------------------------------------------------- |
+| `identity.read`            | `self.get` and the caller's resolved identity graph                               |
+| `projects.read`            | Project metadata and listing                                                      |
+| `workspaces.read`          | Workspace metadata, status, lineage, and transcript-derived summaries             |
+| `workspaces.create`        | Create or fork a workspace and apply creation-time settings                       |
+| `workspaces.open`          | Mount or focus a workspace                                                        |
+| `workspaces.send`          | Send text, keys, or submit to a Claude workspace surface                          |
+| `workspaces.wait`          | Subscribe to workspace completion or blocked states                               |
+| `reviews.read`             | Read local review comments                                                        |
+| `reviews.resolve`          | Change a local review comment's resolved state                                    |
+| `github.account.read`      | Read a cached account-wide GitHub snapshot or contribution window                 |
+| `github.account.refresh`   | Explicitly refresh account-wide GitHub data through bounded source requests       |
+| `activity.read`            | Read a cached app-global Claude activity snapshot or window                       |
+| `activity.refresh`         | Explicitly rescan the app-global Claude transcript source and update its cache    |
+| `providers.usage.read`     | Read a cached provider-neutral usage snapshot                                     |
+| `providers.usage.refresh`  | Explicitly probe provider sources and update the usage cache                      |
+| `ui.workbench.control`     | Open/focus Workbench UI and select or create its terminal                         |
+| `terminals.control`        | Send input or run a command in an authorized plain terminal                       |
+| `terminals.read`           | Read bounded authoritative terminal/session observations                          |
+| `panes.manage`             | Create and delete the caller workspace's constrained, agent-owned terminal layout |
+| `settings.read`            | Read allowlisted effective workspace settings and provenance                      |
+| `settings.workspace.patch` | Change workspace-scoped Claude settings                                           |
+| `resources.read`           | Read sanitized same-project resource metadata                                     |
 
 `workspaces.send` and `terminals.control` are deliberately separate. The former
 talks to Claude's interactive input; the latter controls a shell. Neither implies
@@ -207,9 +208,14 @@ type Grant = {
   id: string
   subject: { runtimeId?: string; workspaceId?: string; kind?: 'unbound_local' }
   capability: string
-  scope: { projectIds?: string[]; workspaceIds?: string[]
-    surfaceIds?: string[]; accountIds?: string[]; appWide?: boolean
-    selfOnly?: boolean }
+  scope: {
+    projectIds?: string[]
+    workspaceIds?: string[]
+    surfaceIds?: string[]
+    accountIds?: string[]
+    appWide?: boolean
+    selfOnly?: boolean
+  }
   decision: 'allow' | 'ask' | 'deny'
   maxRiskTier: 0 | 1 | 2 | 3
   expiresAt: number | null
@@ -278,6 +284,10 @@ changes increment a process-local catalog revision and notify connected MCP
 bridges through `tools.listChanged`, so they do not require a runtime restart.
 There is no per-call permission prompt: valid live managed runtimes receive the
 full vocabulary by default, and exposure preferences can only remove tools.
+This statement is about Orpheus. Claude Code may still display its normal MCP
+tool approval prompt according to Claude's permission mode; that independent
+client prompt neither adds an Orpheus gate nor changes Orpheus grants or
+exposure.
 Before the automation-management descriptors landed on 2026-07-28, the
 all-enabled deterministic snapshot contained 37 of 37 MCP-eligible descriptors;
 the post-pane-lifecycle harness snapshot reports 48 registered, 48 MCP, 48
@@ -309,11 +319,11 @@ or SQL.
 
 ## Risk tiers
 
-| Tier | Meaning | Examples |
-| --- | --- | --- |
-| 0 — observe | No durable or presentation state change | `self.get`, list projects, read status |
-| 1 — present | Reversible UI or lifecycle presentation | Focus Workbench, mount/open an existing surface |
-| 2 — act | Scoped mutation or arbitrary execution | Create workspace, resolve review, send Claude input, run a shell command |
+| Tier                                 | Meaning                                                     | Examples                                                                  |
+| ------------------------------------ | ----------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 0 — observe                          | No durable or presentation state change                     | `self.get`, list projects, read status                                    |
+| 1 — present                          | Reversible UI or lifecycle presentation                     | Focus Workbench, mount/open an existing surface                           |
+| 2 — act                              | Scoped mutation or arbitrary execution                      | Create workspace, resolve review, send Claude input, run a shell command  |
 | 3 — destructive or boundary-changing | Irreversible, broad, secret-bearing, or permission-changing | Archive/delete, force dirty teardown, widen grants, credential operations |
 
 A shell command is at least tier 2 even when it looks read-only because shell

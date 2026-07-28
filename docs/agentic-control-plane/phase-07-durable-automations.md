@@ -3,8 +3,9 @@
 **Status:** implemented and deterministically verified; packaged schedule,
 event, restart-recovery, and cleanup paths historically live-validated.
 Production renderer/MCP management APIs, the Settings renderer surface, and
-manual retry generations are source-complete; packaged/manual management
-validation pending<br>
+manual retry generations are source-complete. A Settings no-op round-trip save
+was packaged-live validated on 2026-07-28; material field edits and remaining
+management paths are pending<br>
 **Roadmap:** [roadmap.md](roadmap.md)<br>
 **Validation ledger:** [Phase 8](roadmap.md#8-integrated-validation)<br>
 **Depends on:** the canonical control registry and declarative database migration engine
@@ -218,8 +219,12 @@ Creation/update persists a definition disabled until an explicit enable action.
 Settings → Automations is source-complete. It provides the server-owned safe
 operation catalog, a definition list/editor, explicit confirmations before
 enable, delete, or retry, and bounded redacted run history. The run view
-refreshes from push events and a visibility-aware four-second poll. A packaged
-manual renderer pass has not yet exercised this surface.
+refreshes from push events and a visibility-aware four-second poll. On
+2026-07-28, a packaged manual renderer pass selected an existing MCP-created
+project-descriptor/workspace definition and performed a no-op Save. It continued
+to display `Workspace` scope and its revision advanced. Material field edits,
+enable/delete/retry confirmations, and run-history behavior remain untested
+through the packaged renderer.
 
 Nine matching managed-MCP descriptors are also source-complete:
 
@@ -305,4 +310,6 @@ fixture before the production management API was added:
   completed.
 
 These remain packaged fixture results, not current-live evidence for the
-production renderer/MCP management APIs or manual retry generations.
+production MCP management API or manual retry generations. The separate
+2026-07-28 Settings save proves only the no-op round trip, retained
+workspace-scope, and revision-advance path described above.

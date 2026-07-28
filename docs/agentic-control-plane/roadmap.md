@@ -1,10 +1,10 @@
 # Agentic Control Plane Roadmap
 
-**Status:** Phases 1–8 implemented. The packaged evidence below records the
-earlier integration batch. A 2026-07-28 source/deterministic delta adds full
-valid-runtime permissions, user-controlled deny-only tool exposure, dynamic MCP
-catalog refresh, review mutation, native output tails, and production
-automation management APIs; those additions remain packaged-live pending.<br>
+**Status:** Phases 1–8 implemented. In addition to the earlier integration
+batch, a fresh 2026-07-28 packaged build confirms the 48-tool catalog, the
+positive self-workspace pane create/observe/delete flow, and one Settings
+automation no-op round-trip save. Unlisted negative and recovery paths remain
+pending.<br>
 **Companion documents:** [README.md](README.md),
 [architecture.md](architecture.md),
 [identity-and-permissions.md](identity-and-permissions.md),
@@ -56,13 +56,18 @@ renderer IPC/preload automation-management API with manual retry generations.
 Nine matching `automations.*` MCP operations are restricted to the caller's
 exact bound workspace, are MCP-only, and are never automation-eligible.
 Settings → Automations is source-complete for definition editing, explicit
-enable/delete/retry confirmations, and redacted run history; packaged/manual
-renderer validation is pending. Phase 6 model/effort mutations retain their
-separate `restartRequired` behavior.
+enable/delete/retry confirmations, and redacted run history. A fresh packaged
+pass selected an existing MCP-created project-descriptor/workspace definition
+and performed a no-op Save: `Workspace` scope remained and its revision
+advanced. Material field edits and the remaining management paths are pending.
+Phase 6 model/effort mutations retain their separate `restartRequired`
+behavior.
 
 Two additional source-present Phase 4 descriptors provide constrained
 self-workspace pane creation and exact-owner deletion. Deterministic validation
-passes; packaged-live validation remains pending.
+passes. A fresh packaged pass confirmed the positive create, Retina rendering,
+direct output observation, exact dual-CAS delete, post-delete scope removal, and
+workspace-terminal isolation paths.
 
 ## Delivery rules
 
@@ -84,16 +89,16 @@ Every phase:
 
 ## Phase summary
 
-| Phase                            | Delivery status                   | Outcome                                                                                         | Primary review boundary                                   |
-| -------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| 1. Control Foundation            | Implemented and statically tested | Add a transport-neutral capability registry and prove it with the two review-comment operations | Registry contract plus preserved IPC/socket adapters      |
-| 2. Self Identity + Read-only MCP | Implemented and historically live-validated | Ship managed MCP discovery with identity and the initial read-only tools                         | MCP bootstrap, contextual tool filtering, read schemas    |
-| 3. Workspace Orchestration       | Implemented; background open and terminal color live-reconfirmed, three focused paths pending | Add semantic workspace creation, task start, wait, and lifecycle control | One orchestration service, strict schemas, archive safety |
-| 4. Self Workbench/Panes Control  | Existing controls live-validated; dedicated create/delete deterministic pass, packaged-live pending | Let an agent control its own workbench and panes semantically | Self-scoped UI commands and constrained durable pane lifecycle |
-| 5. Terminal Observability        | Historical scoped-pane live pass retained; native screen-tail source/deterministic pass, packaged-live pending | Add authoritative terminal/session observation | Source/freshness contract and explicit absence states |
-| 6. Settings/Resources            | Implemented; core live reads/patch validated, restart-required path pending | Expose allowlisted non-secret settings and resources                              | Layering, validation, dirty-state, and secret boundaries  |
-| 7. Durable Automations           | Historical fixture live pass retained; production renderer API/manual retry source-complete | Persist bounded triggers, internal-event outbox, runs, and management APIs | Scheduler, crash recovery, idempotency, budgets, retries  |
-| 8. Integrated Validation         | Deterministic suite, exact-source rebuild, and major packaged paths complete; residual limitations recorded | Prove parity, recovery, policy, and compatibility across all adapters | Cross-surface contract and live validation matrix         |
+| Phase                            | Delivery status                                                                                                                                 | Outcome                                                                                         | Primary review boundary                                        |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| 1. Control Foundation            | Implemented and statically tested                                                                                                               | Add a transport-neutral capability registry and prove it with the two review-comment operations | Registry contract plus preserved IPC/socket adapters           |
+| 2. Self Identity + Read-only MCP | Implemented and historically live-validated                                                                                                     | Ship managed MCP discovery with identity and the initial read-only tools                        | MCP bootstrap, contextual tool filtering, read schemas         |
+| 3. Workspace Orchestration       | Implemented; background open and terminal color live-reconfirmed, three focused paths pending                                                   | Add semantic workspace creation, task start, wait, and lifecycle control                        | One orchestration service, strict schemas, archive safety      |
+| 4. Self Workbench/Panes Control  | Positive dedicated create/observe/delete path packaged-live validated                                                                           | Let an agent control its own workbench and panes semantically                                   | Self-scoped UI commands and constrained durable pane lifecycle |
+| 5. Terminal Observability        | Native pane output-tail positive path packaged-live validated; remaining negatives deterministic-only                                           | Add authoritative terminal/session observation                                                  | Source/freshness contract and explicit absence states          |
+| 6. Settings/Resources            | Implemented; core live reads/patch validated, restart-required path pending                                                                     | Expose allowlisted non-secret settings and resources                                            | Layering, validation, dirty-state, and secret boundaries       |
+| 7. Durable Automations           | Historical fixture live pass retained; Settings no-op Save packaged-live validated; material field edits and remaining management paths pending | Persist bounded triggers, internal-event outbox, runs, and management APIs                      | Scheduler, crash recovery, idempotency, budgets, retries       |
+| 8. Integrated Validation         | Deterministic suite, exact-source rebuild, and major packaged paths complete; residual limitations recorded                                     | Prove parity, recovery, policy, and compatibility across all adapters                           | Cross-surface contract and live validation matrix              |
 
 ## 1. Control Foundation
 
@@ -283,7 +288,9 @@ persisted owner ID. Rows may remain for later cleanup/remount, but no process
 survives lease revocation; owner cleanup and the four-layout cap ignore
 transferred layouts.
 
-Deterministic verification passes; packaged-live results remain pending.
+Deterministic verification passes. The 2026-07-28 packaged evidence below
+confirms the positive lifecycle subset; capacity, conflict, partial failure,
+ownership transfer, and owner-lifecycle teardown remain pending live.
 
 ## 5. Terminal Observability
 
@@ -381,8 +388,10 @@ enable/disable, run history, and manual retry generations. MCP management is
 non-enumerating outside the calling runtime's exact bound workspace and is
 never automation-eligible. Settings → Automations is source-complete for
 definition editing, explicit enable/delete/retry confirmations, and redacted
-run history; packaged/manual renderer validation is pending. There remains no
-grant-administration surface. See
+run history. A fresh packaged pass round-tripped one existing MCP-created
+project-descriptor/workspace definition through a no-op Save: it remained
+`Workspace` scoped and its revision advanced. Material field edits and the other
+management paths remain pending. There remains no grant-administration surface. See
 [phase-07-durable-automations.md](phase-07-durable-automations.md).
 
 ## 8. Integrated Validation
@@ -428,6 +437,22 @@ a current packaged/live run.
   exercised through the real app surface.
 - **Pending** means no success claim is made.
 
+### 2026-07-28 current packaged/live evidence
+
+- A fresh build installed and launched, and managed MCP listed 48 tools.
+- `panes.createWorkspaceTerminal` rendered RED/GREEN and an interactive zsh at
+  normal Retina scale. Its returned `observationTarget` worked directly with
+  `terminals.getOutputTail`.
+- Exact dual-CAS deletion succeeded for both QA layouts. Both deleted pane
+  targets then returned `not_found`; the workspace Claude terminal remained.
+- Settings → Automations selected an existing MCP-created
+  project-descriptor/workspace definition and performed a no-op Save. It
+  remained `Workspace` scoped and its revision advanced.
+
+Orpheus exposes valid-runtime tools by default and adds no per-call approval
+gate. Claude Code may still show its own MCP approval prompt according to its
+permission mode; that is independent of Orpheus Agent Tools exposure.
+
 ### Historical packaged evidence ledger
 
 The table and checklists below are retained verbatim as evidence for the
@@ -435,18 +460,18 @@ recorded pre-2026-07-28 packaged batch. They do not prove the current-source
 delta above. Add a new packaged row/checklist after rebuilding instead of
 rewriting these results.
 
-| Area | Deterministic/source evidence | Packaged/live evidence | Recorded status |
-| --- | --- | --- | --- |
-| Phase 1 registry and review adapters | Dedicated control-plane harness and adapter guards pass | Exercised indirectly by later packaged runs | Deterministic pass; no new direct live proof required |
-| Phase 2 identity and default MCP reads | Runtime-lease, policy, bridge, and schema harnesses pass | Historical bound-identity/denial run retained; current batch discovered exactly 11 default tools and 28 exact-scoped tools | Current discovery passed; a fresh final-build `self.get` refresh remains |
-| Phase 3 workspace orchestration and CLI compatibility | Foundation, main, CLI, and renderer-action harnesses pass | Historical lifecycle/fork/archive/audit evidence retained; current packaged `open --background` mounted an unmounted Dev workspace while Home stayed visible | Background-mount and terminal-color repairs live-reconfirmed; three focused paths remain deterministic-only |
-| Phase 4 Workbench/Panes | Domain, policy, renderer-broker, and exact-scope QA grant harnesses pass | Current batch exercised state, tab/file/diff/layout control and pane start/focus/stop with real acknowledgements | Core positive paths current-batch live; unavailable/partial live paths pending |
-| Phase 5 terminal observation | Source/freshness, bounds, subscription, exact scoped pane, unsupported-tail, de-duplication, and denial harnesses pass after repair | Rebuilt app exposed the mounted exact-scoped pane through list/get/tail/subscribe, then omitted it and returned `not_found` after stop | Current-batch live |
-| Phase 6 settings/resources | Layering, allowlist, grant, scope, redaction, and restart-to-apply harnesses pass | Current batch exercised effective settings, sanitized metadata, patch, and restore to effective `high` | Core positive paths current-batch live; native restart-required path pending |
-| Phase 7 automations | Persistence, scheduler, outbox, recovery, idempotency, budget, grant, audit, and QA-fixture harnesses pass | Current batch exercised schedule/event runs, duplicate reuse, restart recovery, disable, audit correlation, and cleanup | Current-batch live |
-| Phase 8 QA authentication and aggregate inventory | Strict parsing, separate credential, environment scrub, catalog, surface/idempotency, and grant-omission harnesses pass | Current batch rejected missing QA auth and malformed action, discovered default/scoped inventories, ran packaged fixtures, and rebuilt the final source | Major current-batch paths passed; residual negatives recorded below |
-| CLI preservation | Compatibility harness covers live envelopes; offline readers remain independent of the app | Historical lifecycle evidence retained; current packaged background-open and app-stopped project/workspace/transcript reads passed | Existing CLI retained |
-| Audit/log redaction | Dedicated redaction, exhaustive legacy purge, hostile-input, export, and operation-audit checks pass | Packaged main logs emitted structural counts/key names rather than values; automation runs carried audit correlation; Gitleaks found no staged-diff leaks | Current source and run evidence passed |
+| Area                                                  | Deterministic/source evidence                                                                                                       | Packaged/live evidence                                                                                                                                       | Recorded status                                                                                             |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| Phase 1 registry and review adapters                  | Dedicated control-plane harness and adapter guards pass                                                                             | Exercised indirectly by later packaged runs                                                                                                                  | Deterministic pass; no new direct live proof required                                                       |
+| Phase 2 identity and default MCP reads                | Runtime-lease, policy, bridge, and schema harnesses pass                                                                            | Historical bound-identity/denial run retained; current batch discovered exactly 11 default tools and 28 exact-scoped tools                                   | Current discovery passed; a fresh final-build `self.get` refresh remains                                    |
+| Phase 3 workspace orchestration and CLI compatibility | Foundation, main, CLI, and renderer-action harnesses pass                                                                           | Historical lifecycle/fork/archive/audit evidence retained; current packaged `open --background` mounted an unmounted Dev workspace while Home stayed visible | Background-mount and terminal-color repairs live-reconfirmed; three focused paths remain deterministic-only |
+| Phase 4 Workbench/Panes                               | Domain, policy, renderer-broker, and exact-scope QA grant harnesses pass                                                            | Current batch exercised state, tab/file/diff/layout control and pane start/focus/stop with real acknowledgements                                             | Core positive paths current-batch live; unavailable/partial live paths pending                              |
+| Phase 5 terminal observation                          | Source/freshness, bounds, subscription, exact scoped pane, unsupported-tail, de-duplication, and denial harnesses pass after repair | Rebuilt app exposed the mounted exact-scoped pane through list/get/tail/subscribe, then omitted it and returned `not_found` after stop                       | Current-batch live                                                                                          |
+| Phase 6 settings/resources                            | Layering, allowlist, grant, scope, redaction, and restart-to-apply harnesses pass                                                   | Current batch exercised effective settings, sanitized metadata, patch, and restore to effective `high`                                                       | Core positive paths current-batch live; native restart-required path pending                                |
+| Phase 7 automations                                   | Persistence, scheduler, outbox, recovery, idempotency, budget, grant, audit, and QA-fixture harnesses pass                          | Current batch exercised schedule/event runs, duplicate reuse, restart recovery, disable, audit correlation, and cleanup                                      | Current-batch live                                                                                          |
+| Phase 8 QA authentication and aggregate inventory     | Strict parsing, separate credential, environment scrub, catalog, surface/idempotency, and grant-omission harnesses pass             | Current batch rejected missing QA auth and malformed action, discovered default/scoped inventories, ran packaged fixtures, and rebuilt the final source      | Major current-batch paths passed; residual negatives recorded below                                         |
+| CLI preservation                                      | Compatibility harness covers live envelopes; offline readers remain independent of the app                                          | Historical lifecycle evidence retained; current packaged background-open and app-stopped project/workspace/transcript reads passed                           | Existing CLI retained                                                                                       |
+| Audit/log redaction                                   | Dedicated redaction, exhaustive legacy purge, hostile-input, export, and operation-audit checks pass                                | Packaged main logs emitted structural counts/key names rather than values; automation runs carried audit correlation; Gitleaks found no staged-diff leaks    | Current source and run evidence passed                                                                      |
 
 The aggregate `test:agentic-integration` script composes the Phase 4–6 QA grant,
 Phase 8 QA action-authentication, durable-automation, cross-phase inventory, and
@@ -468,7 +493,7 @@ repeated after the final Phase 5 source repair.
 - [x] Repeat `test:agentic-integration` for the exact post-repair source
 - [x] final diff/secret review (`git diff --check` and Gitleaks staged scan)
 
-### Current-source pending checklist
+### Current-source validation checklist
 
 These items describe the dedicated pane lifecycle delta and do not alter the
 historical evidence above.
@@ -478,10 +503,19 @@ historical evidence above.
 - [x] Repeat the aggregate agentic integration harness with the two descriptors
       registered; it reports 48 registered/MCP/default/explicit Phase 4–6 and 2
       automation-eligible operations.
-- [ ] Repeat the full repository check with the two descriptors registered.
+- [x] Repeat the full repository check with the two descriptors registered.
+- [x] Package and launch the exact source; confirm 48 managed MCP tools.
+- [x] Exercise two positive self-workspace pane create flows, normal Retina
+      rendering, direct output observation, exact dual-CAS deletion,
+      post-delete `not_found`, and preservation of the workspace Claude
+      terminal.
+- [x] Round-trip one existing MCP-created Settings automation
+      project-descriptor/workspace definition through a no-op Save; confirm it
+      remains `Workspace` scoped and its revision advances.
 - [ ] Package the exact source and exercise create, authoritative start,
-      initial-command non-persistence/at-most-once/no-replay, presentation/focus,
-      next-request exact-scope discovery, dual-CAS conflict,
+      initial-command non-persistence/at-most-once/no-replay beyond the positive
+      command run, next-request exact-scope discovery beyond the observed
+      target, dual-CAS conflict,
       post-detach DB-failure recovery, post-delete scope removal, per-owner/global
       capacity, strict renderer teardown, renderer-delete-before-MCP
       conflict/not-found behavior, material UI ownership transfer, owner

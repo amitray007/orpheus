@@ -1,10 +1,11 @@
 # Orpheus Agentic Control Plane
 
-**Status:** Phases 1–8 implemented. The recorded packaged integration batch
-live-validated Phase 3 background open, Phase 4 controls, Phase 5 exact scoped
-pane observation, Phase 6 reads/patch, and Phase 7–8 automation recovery.
-The 2026-07-28 current-source delta below is deterministic/source evidence and
-still needs a fresh packaged live pass.<br>
+**Status:** Phases 1–8 implemented. A fresh 2026-07-28 packaged build confirms
+the 48-tool catalog, the positive self-workspace pane create/observe/delete
+flow, and one Settings automation no-op round-trip save. Earlier packaged evidence covers
+Phase 3 background open, broader Phase 4 controls, Phase 6 reads/patch, and
+Phase 7–8 fixture recovery. Unlisted negative and recovery paths remain
+pending.<br>
 **Scope:** local Orpheus app, its renderer, bundled CLI, managed Claude sessions, and durable automations
 
 The Agentic Control Plane makes Orpheus programmable through stable, semantic
@@ -36,15 +37,19 @@ deprecation, or compatibility-removal phase in this plan.
 - `reviews.setResolved` is now a scoped Tier 2 MCP mutation with target
   revalidation and redacted audit records.
 - Ghostty exposes a bounded authoritative screen/scrollback tail. Source and
-  deterministic coverage pass; a fresh packaged-live output-tail result is
-  pending.
+  deterministic coverage pass. The fresh packaged pane flow returned its
+  RED/GREEN output through `terminals.getOutputTail`; truncation and
+  unavailable-provider paths remain deterministic-only.
 - Production renderer IPC/preload and nine MCP-only `automations.*` management
   operations now cover catalog/list/get/create/update/enable/delete, run
   history, and manual retry generations. MCP management is restricted to the
   caller's exact bound workspace and is never automation-eligible. Settings →
   Automations is source-complete for definition editing, explicit
-  enable/delete/retry confirmations, and redacted run history; packaged/manual
-  renderer validation is pending.
+  enable/delete/retry confirmations, and redacted run history. The fresh
+  packaged pass selected an existing MCP-created project-descriptor/workspace
+  definition and performed a no-op round-trip Save: its scope remained
+  `Workspace` and its revision advanced. Material field edits and the remaining
+  management flows are pending.
 - Source now includes two constrained Tier 3 pane lifecycle descriptors:
   `panes.createWorkspaceTerminal` creates one durable terminal rooted at the
   trusted self workspace, and `panes.deleteTerminalLayout` removes only that
@@ -52,9 +57,28 @@ deprecation, or compatibility-removal phase in this plan.
   Creation is capped at four layouts per owner and 12 terminals globally in
   `General`. An optional one-shot initial command is never persisted, is
   attempted at most once, and cannot replay. Deterministic verification passes;
-  packaged-live validation is pending. Material trusted-UI edits transfer
+  the fresh packaged pass created two layouts, observed one directly, and
+  deleted both through exact dual CAS. Material trusted-UI edits transfer
   ownership, while owner-workspace close/archive/removal tears down all live
   still-owned surfaces so no process survives lease revocation.
+
+### 2026-07-28 packaged-live evidence
+
+A fresh Orpheus Dev build installed and launched with 48 managed MCP tools
+visible. `panes.createWorkspaceTerminal` rendered RED/GREEN command output and
+an interactive zsh at normal Retina scale. Its returned `observationTarget`
+worked unchanged with `terminals.getOutputTail`. Exact dual-CAS deletion
+succeeded for both QA layouts; deleted pane targets then returned `not_found`,
+while the workspace Claude terminal remained available. Settings → Automations
+also round-tripped an existing MCP-created project-descriptor/workspace
+definition through a no-op Save: its scope remained `Workspace` and its revision
+advanced.
+
+Orpheus adds no per-call approval gate: valid live runtimes receive the
+default-exposed catalog, subject to deny-only Agent Tools settings and normal
+scope/policy checks. Claude Code may still show its own MCP tool approval prompt
+according to Claude's permission mode; that prompt is not an Orpheus exposure
+permission.
 
 Tool-exposure refresh is independent of Phase 6 launch settings:
 model/effort patches still report `restartRequired` through the existing
@@ -105,21 +129,21 @@ The control plane must:
 This inventory describes the current repository, not the June 2026 design
 snapshot.
 
-| Area                    | Current state                                                                                                                                                                                              | Current paths                                                                                                                               |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bundled CLI             | Exists, with workspace/project lifecycle, read, wait, send, reviews, and agent-facing help/schema commands                                                                                                 | `packages/orpheus-cli/src/`, `resources/bin/orpheus`                                                                                        |
-| Offline reads           | Exists; opens SQLite read-only and parses Claude JSONL/session files without launching the app                                                                                                             | `packages/orpheus-cli/src/reads/db.ts`, `reads/transcript.ts`, `reads/session-status.ts`                                                    |
-| Live CLI transport      | Exists; authenticated HTTP over `cmd.sock`, with request/response and status subscriptions                                                                                                                 | `src/main/commandServer.ts`, `packages/orpheus-cli/src/socket-client.ts`                                                                    |
-| Quick Actions           | Exists as a separate in-process registry used by renderer IPC; descriptors currently expose only id/kind externally                                                                                        | `src/main/actions/registry.ts`, `actions/index.ts`, `ipc/actions.ts`, `src/preload/index.ts`                                                |
-| Audit trail             | Exists for Quick Action mutators                                                                                                                                                                           | `src/main/actions/audit.ts`, `src/main/db/schema.ts`                                                                                        |
-| Domain state            | Projects, workspaces, lineage, worktrees, sessions, and declarative SQLite migrations exist                                                                                                                | `src/main/projects.ts`, `workspaces.ts`, `worktrees.ts`, `sessions.ts`, `db/`                                                               |
-| Activity/transcripts    | File-authoritative Claude status and JSONL-derived session reads exist                                                                                                                                     | `src/main/sessionState.ts`, `sessionStatusMap.ts`, `sessions.ts`, `actions/session.ts`                                                      |
-| Home dashboard          | Exists with Overview, Limits, and Insights views over account-wide GitHub work, provider usage, Claude activity windows, recent sessions, model activity, and GitHub contribution windows                  | `src/renderer/src/components/dashboard/DashboardView.tsx`, `dashboard/dashboard-home/`                                                      |
-| Dashboard data services | Typed renderer IPC and main-process domain modules provide GitHub account snapshots, provider-neutral usage, activity/contribution windows, persisted stale-while-revalidate caches, and background pushes | `src/shared/ipc.ts`, `src/main/githubDashboard.ts`, `providerUsage.ts`, `claudeActivityWindow.ts`, `db/dashboardCache.ts`, `usagePoller.ts` |
-| Review/workbench        | Diff viewing and local review comments exist                                                                                                                                                               | `src/main/gitDiff.ts`, `reviewStore.ts`, `ipc/reviews.ts`, `src/renderer/src/components/workbench/`                                         |
-| Panes                   | Persisted panel/layout/terminal hierarchy and native surfaces exist. Two semantic operations constrain self-workspace creation and exact-owner single-layout deletion; deterministic validation passes and packaged-live validation is pending. | `src/main/paneStore.ts`, `src/main/controlPlane/workbenchCapabilities.ts`, `src/renderer/src/components/panes/` |
-| MCP                     | A bundled stdio bridge and runtime-lease-scoped `/control` protocol are implemented. Valid current managed runtimes receive the registered permission vocabulary; Settings can only suppress MCP exposure. Revisioned `tools/listChanged` refresh updates connected bridges without restart | `packages/orpheus-mcp/`, `src/main/controlPlane/`, `src/main/commandServer.ts` |
-| Automations             | Durable bounded schedules/events invoke the canonical registry in-process. Two effect-free Phase 6 reads retain fixed Tier 0 exact-scope automation grants. Renderer IPC/preload, Settings → Automations, and nine MCP-only exact-bound-workspace operations support definitions, state, runs, and manual retry generations; MCP management is never automation-eligible. Packaged/manual management-surface validation is pending | `src/main/automations/`, `src/main/ipc/automations.ts`, `src/main/controlPlane/automationManagementCapabilities.ts`, `src/main/controlPlane/safeAutomationGrants.ts`, `src/renderer/src/components/dashboard/settings/OrpheusAutomationsSection.tsx` |
+| Area                    | Current state                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Current paths                                                                                                                                                                                                                                        |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bundled CLI             | Exists, with workspace/project lifecycle, read, wait, send, reviews, and agent-facing help/schema commands                                                                                                                                                                                                                                                                                                                                                                                                                  | `packages/orpheus-cli/src/`, `resources/bin/orpheus`                                                                                                                                                                                                 |
+| Offline reads           | Exists; opens SQLite read-only and parses Claude JSONL/session files without launching the app                                                                                                                                                                                                                                                                                                                                                                                                                              | `packages/orpheus-cli/src/reads/db.ts`, `reads/transcript.ts`, `reads/session-status.ts`                                                                                                                                                             |
+| Live CLI transport      | Exists; authenticated HTTP over `cmd.sock`, with request/response and status subscriptions                                                                                                                                                                                                                                                                                                                                                                                                                                  | `src/main/commandServer.ts`, `packages/orpheus-cli/src/socket-client.ts`                                                                                                                                                                             |
+| Quick Actions           | Exists as a separate in-process registry used by renderer IPC; descriptors currently expose only id/kind externally                                                                                                                                                                                                                                                                                                                                                                                                         | `src/main/actions/registry.ts`, `actions/index.ts`, `ipc/actions.ts`, `src/preload/index.ts`                                                                                                                                                         |
+| Audit trail             | Exists for Quick Action mutators                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `src/main/actions/audit.ts`, `src/main/db/schema.ts`                                                                                                                                                                                                 |
+| Domain state            | Projects, workspaces, lineage, worktrees, sessions, and declarative SQLite migrations exist                                                                                                                                                                                                                                                                                                                                                                                                                                 | `src/main/projects.ts`, `workspaces.ts`, `worktrees.ts`, `sessions.ts`, `db/`                                                                                                                                                                        |
+| Activity/transcripts    | File-authoritative Claude status and JSONL-derived session reads exist                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `src/main/sessionState.ts`, `sessionStatusMap.ts`, `sessions.ts`, `actions/session.ts`                                                                                                                                                               |
+| Home dashboard          | Exists with Overview, Limits, and Insights views over account-wide GitHub work, provider usage, Claude activity windows, recent sessions, model activity, and GitHub contribution windows                                                                                                                                                                                                                                                                                                                                   | `src/renderer/src/components/dashboard/DashboardView.tsx`, `dashboard/dashboard-home/`                                                                                                                                                               |
+| Dashboard data services | Typed renderer IPC and main-process domain modules provide GitHub account snapshots, provider-neutral usage, activity/contribution windows, persisted stale-while-revalidate caches, and background pushes                                                                                                                                                                                                                                                                                                                  | `src/shared/ipc.ts`, `src/main/githubDashboard.ts`, `providerUsage.ts`, `claudeActivityWindow.ts`, `db/dashboardCache.ts`, `usagePoller.ts`                                                                                                          |
+| Review/workbench        | Diff viewing and local review comments exist                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `src/main/gitDiff.ts`, `reviewStore.ts`, `ipc/reviews.ts`, `src/renderer/src/components/workbench/`                                                                                                                                                  |
+| Panes                   | Persisted panel/layout/terminal hierarchy and native surfaces exist. Two semantic operations constrain self-workspace creation and exact-owner single-layout deletion; deterministic validation and the positive packaged create/observe/delete path pass.                                                                                                                                                                                                                                                                  | `src/main/paneStore.ts`, `src/main/controlPlane/workbenchCapabilities.ts`, `src/renderer/src/components/panes/`                                                                                                                                      |
+| MCP                     | A bundled stdio bridge and runtime-lease-scoped `/control` protocol are implemented. Valid current managed runtimes receive the registered permission vocabulary; Settings can only suppress MCP exposure. Revisioned `tools/listChanged` refresh updates connected bridges without restart                                                                                                                                                                                                                                 | `packages/orpheus-mcp/`, `src/main/controlPlane/`, `src/main/commandServer.ts`                                                                                                                                                                       |
+| Automations             | Durable bounded schedules/events invoke the canonical registry in-process. Two effect-free Phase 6 reads retain fixed Tier 0 exact-scope automation grants. Renderer IPC/preload, Settings → Automations, and nine MCP-only exact-bound-workspace operations support definitions, state, runs, and manual retry generations; MCP management is never automation-eligible. A packaged no-op definition Save retained Workspace scope and advanced revision; material field edits and remaining management paths are pending. | `src/main/automations/`, `src/main/ipc/automations.ts`, `src/main/controlPlane/automationManagementCapabilities.ts`, `src/main/controlPlane/safeAutomationGrants.ts`, `src/renderer/src/components/dashboard/settings/OrpheusAutomationsSection.tsx` |
 
 The control registry is now authoritative for the Phase 1 review proof, the
 Phase 2 managed read catalog, and Phase 3 workspace orchestration. Split
@@ -244,8 +268,8 @@ the native UI adapter. Automations invoke the core in-process.
    still await focused packaged reconfirmation. See
    [phase-03-workspace-orchestration.md](phase-03-workspace-orchestration.md)
    and [phase-03-interfaces.md](phase-03-interfaces.md).
-4. **Self Workbench/Panes Control — existing controls live-validated; dedicated
-   create/delete deterministic validation passed, packaged-live pending.**
+4. **Self Workbench/Panes Control — positive dedicated create/observe/delete
+   path packaged-live validated.**
    Managed MCP and a real renderer
    acknowledgement exercised state, tab selection, file/diff open, layout
    selection, and pane start/focus/stop through exact scope.
@@ -258,8 +282,12 @@ the native UI adapter. Automations invoke the core in-process.
    native teardown that blocks database removal on destroy failure, while the
    trusted UI remains able to edit or remove agent-owned layouts and make later
    MCP cleanup conflict or return `not_found`. Both semantic operations require
-   the default-enabled Tier 3 `panes.manage` permission, remain suppressible
-   through Agent Tools, and still await packaged-live results. See
+   the default-enabled Tier 3 `panes.manage` permission and remain suppressible
+   through Agent Tools. The fresh packaged pass confirmed two successful
+   creates, normal Retina rendering, direct output observation, exact dual-CAS
+   deletion, post-delete `not_found`, and preservation of the workspace Claude
+   terminal. Negative/partial and ownership-transfer paths remain
+   deterministic-only. See
    [phase-04-workbench-pane-control.md](phase-04-workbench-pane-control.md) and
    [phase-04-interfaces.md](phase-04-interfaces.md).
 5. **Terminal Observability — implemented and rebuilt live-validated.** Five
@@ -267,7 +295,8 @@ the native UI adapter. Automations invoke the core in-process.
    command/cwd, status, session/transcript, and bounded output-tail data where
    it exists. The recorded packaged batch returned explicit `unsupported`
    output tails. Current source now reads bounded authoritative Ghostty
-   screen/scrollback text; that new native path remains packaged-live pending. The
+   screen/scrollback text; the fresh packaged pane flow returned RED/GREEN
+   output through that path. The
    packaged batch exposed a pane-discovery/lookup defect after a native pane
    mounted; exact layout/surface scope is now honored in source, bounded-list
    harnesses, and the rebuilt app. Live start/list/get/tail/subscribe/stop
@@ -299,8 +328,10 @@ the native UI adapter. Automations invoke the core in-process.
    definitions, enable/disable, run history, and manual retry generations.
    Those operations are never automation-eligible. Settings → Automations is
    source-complete for definition editing, explicit enable/delete/retry
-   confirmations, and redacted run history; packaged/manual renderer
-   validation is pending. See
+   confirmations, and redacted run history. The fresh packaged pass confirmed
+   one existing MCP-created project-descriptor/workspace definition no-op Save
+   retained `Workspace` scope and advanced its revision; material field edits,
+   enable/delete/retry, and run-history flows remain pending. See
    [phase-07-durable-automations.md](phase-07-durable-automations.md).
 8. **Integrated Validation — deterministic suite and major packaged paths
    exercised.** Verify parity across MCP,
