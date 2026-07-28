@@ -4,6 +4,7 @@ import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from
 import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
 import { removeWorktree, withRepoLock } from './worktrees'
 import { PUSH_CHANNELS } from '../shared/ipc'
+import { markRuntimeResourceScopeChanged } from './controlPlane/runtimeResourceScopeRevision'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -48,6 +49,9 @@ type ProjectRow = {
   github_repo: string | null
   github_avatar_url: string | null
   github_checked_at: number | null
+  // v66
+  classified: number
+  hidden: number
 }
 
 function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
@@ -88,7 +92,10 @@ function rowToProjectRecord(row: ProjectRow): ProjectRecord {
     githubOwner: row.github_owner ?? null,
     githubRepo: row.github_repo ?? null,
     githubAvatarUrl: row.github_avatar_url ?? null,
-    githubCheckedAt: row.github_checked_at ?? null
+    githubCheckedAt: row.github_checked_at ?? null,
+    // v66
+    classified: (row.classified ?? 0) === 1,
+    hidden: (row.hidden ?? 0) === 1
   }
 }
 
@@ -175,16 +182,22 @@ function broadcastWorkspaceArchived(workspaceId: string, projectId: string): voi
 }
 
 export function createWorkspace({
+  id = crypto.randomUUID(),
   projectId,
   name,
+  nameIsAuto = true,
   cwd,
   forkedFromSessionId = null,
   parentWorkspaceId = null,
   worktreeParentCwd = null,
   worktreeBranch = null
 }: {
+  /** Optional server-owned id used by orchestration transactions. */
+  id?: string
   projectId: string
   name: string
+  /** Explicitly named workspaces are manual from their first persisted row. */
+  nameIsAuto?: boolean
   cwd: string
   /** When creating a forked workspace, pass the parent session ID so the
    *  record is written before broadcastWorkspaceCreated fires. Avoids a race
@@ -199,7 +212,6 @@ export function createWorkspace({
   worktreeBranch?: string | null
 }): WorkspaceRecord {
   const db = getDb()
-  const id = crypto.randomUUID()
   const createdAt = Date.now()
   const sanitizedName = sanitizeWorkspaceName(name)
 
@@ -222,13 +234,14 @@ export function createWorkspace({
 
   const row = db
     .prepare(
-      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order, forked_from_session_id, parent_workspace_id, worktree_parent_cwd, worktree_branch)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+      `INSERT INTO workspaces (id, project_id, name, name_is_auto, cwd, created_at, claude_session_id, sort_order, forked_from_session_id, parent_workspace_id, worktree_parent_cwd, worktree_branch)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
     )
     .get(
       id,
       projectId,
       sanitizedName,
+      nameIsAuto ? 1 : 0,
       cwd,
       createdAt,
       claudeSessionId,
@@ -240,6 +253,7 @@ export function createWorkspace({
     ) as WorkspaceRow | undefined
   if (!row) throw new Error(`createWorkspace: INSERT RETURNING returned nothing`)
   const workspace = rowToWorkspaceRecord(row)
+  markRuntimeResourceScopeChanged()
   broadcastWorkspaceCreated(workspace)
   return workspace
 }
@@ -347,7 +361,8 @@ export async function archiveWorkspace(
     wasDirty = r.wasDirty
   }
 
-  db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
+  const removed = db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
+  if (removed.changes > 0) markRuntimeResourceScopeChanged()
   // Evict the settings cache entry so a stale value can't be served after the
   // row is gone.
   invalidateClaudeWorkspaceSettingsCache(id)
@@ -357,6 +372,27 @@ export async function archiveWorkspace(
     broadcastWorkspaceArchived(ws.id, ws.project_id)
   }
   return { archived: true, wasDirty }
+}
+
+/**
+ * Delete only the persisted workspace record.
+ *
+ * WorkspaceOrchestrationService owns native/runtime and worktree teardown
+ * ordering, so its adapter needs a DB-only final step. Existing renderer
+ * archive paths continue to use archiveWorkspace() above.
+ */
+export function removeWorkspaceRecord(id: string): boolean {
+  const db = getDb()
+  const ws = db.prepare('SELECT id, project_id FROM workspaces WHERE id = ?').get(id) as
+    | { id: string; project_id: string }
+    | undefined
+  if (!ws) return false
+  const result = db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
+  if (result.changes === 0) return false
+  markRuntimeResourceScopeChanged()
+  invalidateClaudeWorkspaceSettingsCache(id)
+  broadcastWorkspaceArchived(ws.id, ws.project_id)
+  return true
 }
 
 export function closeWorkspace(id: string, lastTitle: string | null): WorkspaceRecord | undefined {
@@ -394,7 +430,9 @@ export function renameWorkspace(id: string, name: string): WorkspaceRecord {
     .prepare('UPDATE workspaces SET name = ?, name_is_auto = 0 WHERE id = ? RETURNING *')
     .get(sanitizedName, id) as WorkspaceRow | undefined
   if (!row) throw new Error(`workspace not found: ${id}`)
-  return rowToWorkspaceRecord(row)
+  const record = rowToWorkspaceRecord(row)
+  broadcastWorkspaceChanged(record)
+  return record
 }
 
 export function reorderWorkspaces(projectId: string, orderedIds: string[]): void {
@@ -467,30 +505,50 @@ export function archivedAtForStatus(status: string, now: number): number | null 
   return status === 'archived' ? now : null
 }
 
-export function setWorkspaceStatus(id: string, status: WorkspaceStatus): WorkspaceRecord {
+export function setWorkspaceStatus(
+  id: string,
+  status: WorkspaceStatus,
+  beforeCommit?: (oldStatus: WorkspaceStatus, workspace: WorkspaceRecord) => void
+): WorkspaceRecord {
   if (!VALID_STATUSES.includes(status)) {
     throw new Error(`Invalid status: ${status}`)
   }
   const db = getDb()
-  // Sync archived_at with status. Transitioning to 'archived' sets archived_at;
-  // transitioning AWAY from 'archived' clears it.
-  let row: WorkspaceRow | undefined
-  if (status === 'archived') {
-    // COALESCE preserves the original archived_at on idempotent re-archive;
-    // archivedAtForStatus('archived', now) is just `now` here, used only as
-    // the COALESCE fallback for a first-time archive.
-    row = db
-      .prepare(
-        'UPDATE workspaces SET status = ?, archived_at = COALESCE(archived_at, ?) WHERE id = ? RETURNING *'
-      )
-      .get(status, archivedAtForStatus(status, Date.now()), id) as WorkspaceRow | undefined
-  } else {
-    row = db
-      .prepare('UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ? RETURNING *')
-      .get(status, id) as WorkspaceRow | undefined
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const existing = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as
+      | WorkspaceRow
+      | undefined
+    if (!existing) throw new Error(`workspace not found: ${id}`)
+
+    // Sync archived_at with status. Transitioning to 'archived' sets archived_at;
+    // transitioning AWAY from 'archived' clears it.
+    let row: WorkspaceRow | undefined
+    if (status === 'archived') {
+      // COALESCE preserves the original archived_at on idempotent re-archive.
+      row = db
+        .prepare(
+          'UPDATE workspaces SET status = ?, archived_at = COALESCE(archived_at, ?) WHERE id = ? RETURNING *'
+        )
+        .get(status, archivedAtForStatus(status, Date.now()), id) as WorkspaceRow | undefined
+    } else {
+      row = db
+        .prepare('UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ? RETURNING *')
+        .get(status, id) as WorkspaceRow | undefined
+    }
+    if (!row) throw new Error(`workspace not found: ${id}`)
+    const workspace = rowToWorkspaceRecord(row)
+    beforeCommit?.(existing.status, workspace)
+    db.exec('COMMIT')
+    return workspace
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK')
+    } catch {
+      // Preserve the status or outbox failure that triggered rollback.
+    }
+    throw error
   }
-  if (!row) throw new Error(`workspace not found: ${id}`)
-  return rowToWorkspaceRecord(row)
 }
 
 // ---------------------------------------------------------------------------
@@ -540,7 +598,8 @@ export function listWorktreeWorkspaces(
  */
 export function setWorkspaceCwd(id: string, cwd: string): void {
   const db = getDb()
-  db.prepare('UPDATE workspaces SET cwd = ? WHERE id = ?').run(cwd, id)
+  const result = db.prepare('UPDATE workspaces SET cwd = ? WHERE id = ?').run(cwd, id)
+  if (result.changes > 0) markRuntimeResourceScopeChanged()
 }
 
 /**
@@ -569,6 +628,7 @@ export function convertWorktreeToLocal(id: string): WorkspaceRecord {
     .get(parentCwd, id) as WorkspaceRow | undefined
   if (!row) throw new Error(`convertWorktreeToLocal: UPDATE returned nothing for id: ${id}`)
   const record = rowToWorkspaceRecord(row)
+  markRuntimeResourceScopeChanged()
   broadcastWorkspaceChanged(record)
   return record
 }
@@ -596,7 +656,9 @@ export function listAllPinned(): PinnedItem[] {
               p.added_at as p_added_at, p.last_opened_at as p_last_opened_at,
               p.expanded_in_sidebar as p_expanded_in_sidebar,
               p.sort_order as p_sort_order,
-              p.pinned_at as p_pinned_at
+              p.pinned_at as p_pinned_at,
+              p.classified as p_classified,
+              p.hidden as p_hidden
        FROM workspaces w
        JOIN projects p ON p.id = w.project_id
        WHERE w.pinned_at IS NOT NULL
@@ -613,6 +675,8 @@ export function listAllPinned(): PinnedItem[] {
     p_expanded_in_sidebar: number
     p_sort_order: number | null
     p_pinned_at: number | null
+    p_classified: number
+    p_hidden: number
   })[]
 
   return rows.map((row) => ({
@@ -630,7 +694,9 @@ export function listAllPinned(): PinnedItem[] {
       github_owner: null,
       github_repo: null,
       github_avatar_url: null,
-      github_checked_at: null
+      github_checked_at: null,
+      classified: row.p_classified,
+      hidden: row.p_hidden
     })
   }))
 }

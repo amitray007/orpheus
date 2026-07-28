@@ -30,20 +30,23 @@ import {
   listPanels,
   createPanel,
   updatePanel,
-  deletePanel,
   setPanelExpanded,
   listLayouts,
   createLayout,
   updateLayout,
-  deleteLayout,
   setLayoutAutoStart,
   listTerminals,
   createTerminal,
-  updateTerminal,
-  deleteTerminal
+  updateTerminal
 } from '../paneStore'
 
-export function registerPanesIpc(): void {
+export type PaneDeleteIpcDeps = {
+  deletePanel: (id: string) => void
+  deleteLayout: (id: string) => void
+  deleteTerminal: (id: string) => void
+}
+
+export function registerPanesIpc(deps: PaneDeleteIpcDeps): void {
   // Panels
   handle('panes:listPanels', () => listPanels())
   handle('panes:createPanel', (_e, { kind, name, dir, position }) =>
@@ -53,7 +56,7 @@ export function registerPanesIpc(): void {
     updatePanel(id, { name, dir, position })
   )
   handle('panes:deletePanel', (_e, { id }) => {
-    deletePanel(id)
+    deps.deletePanel(id)
   })
   handle('panes:setPanelExpanded', (_e, { id, expanded }) => {
     setPanelExpanded(id, expanded)
@@ -68,7 +71,7 @@ export function registerPanesIpc(): void {
     updateLayout(id, { name, dir, splitTree, position })
   )
   handle('panes:deleteLayout', (_e, { id }) => {
-    deleteLayout(id)
+    deps.deleteLayout(id)
   })
   handle('panes:setLayoutAutoStart', (_e, { id, autoStart }) => setLayoutAutoStart(id, autoStart))
 
@@ -81,7 +84,7 @@ export function registerPanesIpc(): void {
     updateTerminal(id, { command, name, position })
   )
   handle('panes:deleteTerminal', (_e, { id }) => {
-    deleteTerminal(id)
+    deps.deleteTerminal(id)
   })
 
   // Folder picker (KTD8) — Panes-only, never registers a project.

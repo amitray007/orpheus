@@ -21,9 +21,12 @@ import { PUSH_CHANNELS } from '../../shared/ipc'
 import { handle } from './handle'
 
 export function registerActionsIpc(): void {
-  handle('actions:invoke', (_e, { actionId, params, workspaceId, consumerHint }) => {
+  handle('actions:invoke', (e, { actionId, params, workspaceId, consumerHint }) => {
     const invocation: ActionInvocation = { id: actionId, params, workspaceId }
-    return actionsInvoke(invocation, consumerHint ?? 'ipc')
+    return actionsInvoke(invocation, {
+      consumerHint: consumerHint ?? 'ipc',
+      senderId: e.sender.id
+    })
   })
 
   handle('actions:list', () => actionsList())

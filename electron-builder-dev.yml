@@ -45,6 +45,10 @@ extraResources:
   # Lives at Contents/Resources/cli/cli.cjs; executed by the bin/orpheus shim.
   - from: packages/orpheus-cli/dist/cli.cjs
     to: cli/cli.cjs
+  - from: resources/bin/orpheus-mcp
+    to: bin/orpheus-mcp
+  - from: packages/orpheus-mcp/dist/mcp.cjs
+    to: mcp/mcp.cjs
 mac:
   icon: build/icon-dev.icns
   entitlementsInherit: build/entitlements.mac.plist

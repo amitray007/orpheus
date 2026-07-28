@@ -25,6 +25,7 @@ import {
   upsertProviderRow
 } from '../routingProxy/providers/storage'
 import { getRoutingProxySnapshot, regenerateConfigNow } from '../routingProxy/manager'
+import { getCachedProviderUsage, getProviderUsage } from '../providerUsage'
 import { handle } from './handle'
 
 function toDescriptorSummary(id: string): ProviderDescriptorSummary | null {
@@ -75,6 +76,9 @@ function buildProviderSummaries(): ProviderConfigSummary[] {
 }
 
 export function registerProvidersIpc(): void {
+  handle('providers:usage', (_e, { force }) => getProviderUsage(force === true))
+  handle('providers:usage:cached', () => getCachedProviderUsage())
+
   handle('providers:descriptors', () => {
     return PROVIDERS.map((p) => toDescriptorSummary(p.id)).filter(
       (d): d is ProviderDescriptorSummary => d !== null

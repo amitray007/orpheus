@@ -13,6 +13,7 @@ concurrency:
 jobs:
   check:
     name: typecheck + lint + format + quality gates
+    timeout-minutes: 15
     # typecheck + lint + the quality gates below don't need the native
     # xcframework or compiled addons, so we skip the postinstall
     # (--ignore-scripts below). This also decouples CI from the third-party
@@ -66,6 +67,11 @@ jobs:
       - name: Architecture / dependency-cruiser check
         run: bun run check:arch
 
+      - name: Agentic regression suite
+        # Runs the focused control-plane, MCP, pane, terminal, settings, and
+        # automation harnesses. The aggregate builds CLI/MCP transports once.
+        run: bun run test:agentic
+
       # Advisory: overlay-discipline guard currently has pre-existing findings
       # in the tree (src/renderer/src/overlay/kinds/ChipPrompt.tsx and
       # ChipTooltip.tsx trip the raw-primitive heuristic on comment text, not
@@ -96,9 +102,6 @@ jobs:
         run: |
           git fetch origin ${{ github.base_ref }} --depth=1
           bun run doctor:ci --base origin/${{ github.base_ref }}
-
-      # No tests in this repo yet. When tests land, add `bun test` (or vitest/
-      # playwright equivalents) as another step.
 
   migration-smoke-filter:
     name: Detect DB migration changes

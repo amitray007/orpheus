@@ -16,6 +16,7 @@
 // ---------------------------------------------------------------------------
 
 import * as childProcess from 'node:child_process'
+import { constants as fsConstants } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import * as nodePath from 'node:path'
 import { promisify } from 'node:util'
@@ -323,6 +324,27 @@ function resolveInside(cwd: string, relPath: string): string | null {
   return abs
 }
 
+/** Resolve an existing read target canonically, rejecting symlinks that leave cwd. */
+async function resolveExistingInside(cwd: string, relPath: string): Promise<string | null> {
+  const lexical = resolveInside(cwd, relPath)
+  if (lexical == null) return null
+  try {
+    const [root, candidate] = await Promise.all([fs.realpath(cwd), fs.realpath(lexical)])
+    const relative = nodePath.relative(root, candidate)
+    if (
+      relative === '' ||
+      relative === '..' ||
+      relative.startsWith(`..${nodePath.sep}`) ||
+      nodePath.isAbsolute(relative)
+    ) {
+      return null
+    }
+    return candidate
+  } catch {
+    return null
+  }
+}
+
 /** True if the leading chunk contains a NUL byte (binary heuristic). */
 function looksBinary(buf: Buffer): boolean {
   const end = Math.min(buf.length, BINARY_SNIFF_BYTES)
@@ -334,26 +356,25 @@ function looksBinary(buf: Buffer): boolean {
 
 async function readFileContents(cwd: string, relPath: string): Promise<FileContents> {
   if (!cwd || !relPath) return EMPTY_CONTENTS
-  const abs = resolveInside(cwd, relPath)
+  const abs = await resolveExistingInside(cwd, relPath)
   if (!abs) return EMPTY_CONTENTS // traversal escape — refuse.
 
-  const name = nodePath.basename(abs)
+  const name = nodePath.basename(relPath)
   let buf: Buffer
   let size: number
+  let handle: Awaited<ReturnType<typeof fs.open>> | null = null
   try {
-    const stat = await fs.stat(abs)
+    handle = await fs.open(abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    const stat = await handle.stat()
     if (!stat.isFile()) return { ...EMPTY_CONTENTS, name }
     size = stat.size
     const readBytes = Math.min(size, MAX_READ_BYTES)
-    const handle = await fs.open(abs, 'r')
-    try {
-      buf = Buffer.alloc(readBytes)
-      await handle.read(buf, 0, readBytes, 0)
-    } finally {
-      await handle.close()
-    }
+    buf = Buffer.alloc(readBytes)
+    await handle.read(buf, 0, readBytes, 0)
   } catch {
     return { ...EMPTY_CONTENTS, name } // missing / denied — empty, no throw.
+  } finally {
+    await handle?.close()
   }
 
   if (looksBinary(buf)) {
@@ -410,25 +431,23 @@ function imageMimeFor(relPath: string): string {
  * unreadable path, 'too-large' for an oversized file).
  */
 async function readImageContents(cwd: string, relPath: string): Promise<FileImage> {
-  const abs = resolveInside(cwd, relPath)
+  const abs = await resolveExistingInside(cwd, relPath)
   if (!abs) return { ok: false, error: 'missing' } // traversal escape — refuse.
 
-  let stat: Awaited<ReturnType<typeof fs.stat>>
+  let handle: Awaited<ReturnType<typeof fs.open>> | null = null
   try {
-    stat = await fs.stat(abs)
-  } catch {
-    return { ok: false, error: 'missing' }
-  }
-  if (!stat.isFile()) return { ok: false, error: 'missing' }
-  if (stat.size > MAX_IMAGE_BYTES) return { ok: false, error: 'too-large' }
-
-  try {
-    const buf = await fs.readFile(abs)
-    const mime = imageMimeFor(abs)
+    handle = await fs.open(abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    const stat = await handle.stat()
+    if (!stat.isFile()) return { ok: false, error: 'missing' }
+    if (stat.size > MAX_IMAGE_BYTES) return { ok: false, error: 'too-large' }
+    const buf = await handle.readFile()
+    const mime = imageMimeFor(relPath)
     const dataUrl = `data:${mime};base64,${buf.toString('base64')}`
     return { ok: true, dataUrl, size: stat.size }
   } catch {
     return { ok: false, error: 'denied' }
+  } finally {
+    await handle?.close()
   }
 }
 

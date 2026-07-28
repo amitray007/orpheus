@@ -18,6 +18,229 @@ export interface UpdateProgress {
   line: string
 }
 
+// ---------------------------------------------------------------------------
+// Orpheus control-tool exposure
+// ---------------------------------------------------------------------------
+
+export type ControlToolCategory =
+  | 'identity'
+  | 'projects'
+  | 'workspaces'
+  | 'reviews'
+  | 'workbench'
+  | 'panes'
+  | 'terminals'
+  | 'automations'
+  | 'settings'
+  | 'resources'
+
+export type ControlToolCategoryPreference = {
+  id: ControlToolCategory
+  label: string
+  enabled: boolean
+  override: boolean | null
+  toolCount: number
+}
+
+export type ControlToolPreference = {
+  id: string
+  category: ControlToolCategory
+  description: string
+  kind: 'query' | 'mutation'
+  riskTier: 0 | 1 | 2 | 3
+  enabled: boolean
+  categoryEnabled: boolean
+  override: boolean | null
+}
+
+export type ControlToolsSettings = {
+  categories: ControlToolCategoryPreference[]
+  tools: ControlToolPreference[]
+  updatedAt: number | null
+}
+
+export type ControlToolsUpdate =
+  | { target: 'category'; id: ControlToolCategory; enabled: boolean }
+  | { target: 'tool'; id: string; enabled: boolean }
+
+export type ControlToolsReset =
+  | { target: 'all' }
+  | { target: 'category'; id: ControlToolCategory }
+  | { target: 'tool'; id: string }
+
+// ---------------------------------------------------------------------------
+// Durable automations
+// ---------------------------------------------------------------------------
+
+export type AutomationTrigger =
+  | Readonly<{ kind: 'schedule'; intervalMs: number; startAt?: number }>
+  | Readonly<{ kind: 'event'; eventType: string }>
+
+export type AutomationScope =
+  | Readonly<{ kind: 'app' }>
+  | Readonly<{ kind: 'project'; projectId: string }>
+  | Readonly<{ kind: 'workspace'; projectId: string; workspaceId: string }>
+
+export type AutomationIdempotency = 'none' | 'keyed' | 'natural'
+
+export type AutomationRetryBudget = Readonly<{
+  maxAttempts: number
+  baseDelayMs: number
+  maxDelayMs: number
+  maxElapsedMs: number
+}>
+
+export type AutomationRollingBudget = Readonly<{
+  windowMs: number
+  maxStarts: number
+}>
+
+export type AutomationDefinitionDraft = Readonly<{
+  name: string
+  trigger: AutomationTrigger
+  operationId: string
+  params: unknown
+  scope: AutomationScope
+  enabled?: boolean
+  idempotency: AutomationIdempotency
+  timeoutMs: number
+  concurrencyLimit: number
+  retry: AutomationRetryBudget
+  rollingBudget: AutomationRollingBudget
+}>
+
+export type AutomationDefinition = AutomationDefinitionDraft &
+  Readonly<{
+    id: string
+    operationVersion: 1
+    enabled: boolean
+    nextRunAt: number | null
+    createdAt: number
+    updatedAt: number
+  }>
+
+export type AutomationRunStatus =
+  | 'queued'
+  | 'running'
+  | 'retry_wait'
+  | 'succeeded'
+  | 'failed'
+  | 'timed_out'
+  | 'interrupted'
+  | 'cancelled'
+  | 'budget_exhausted'
+
+export type AutomationTriggerOccurrence = Readonly<{
+  kind: 'schedule' | 'event'
+  key: string
+  occurredAt: number
+}>
+
+export type AutomationRun = Readonly<{
+  id: string
+  automationId: string
+  trigger: AutomationTriggerOccurrence
+  idempotencyKey: string
+  retryGeneration: number
+  retryOfRunId: string | null
+  status: AutomationRunStatus
+  attempt: number
+  queuedAt: number
+  startedAt: number | null
+  finishedAt: number | null
+  nextAttemptAt: number | null
+  resultCode: string | null
+  result: Record<string, unknown> | null
+  error: Record<string, unknown> | null
+  requestId: string | null
+  auditId: string | null
+}>
+
+export type AutomationOperationCatalogEntry = Readonly<{
+  id: string
+  version: 1
+  kind: 'query' | 'mutation'
+  description: string
+  inputSchema: Readonly<Record<string, unknown>>
+  outputSchema: Readonly<Record<string, unknown>>
+  permission: string
+  scope: Readonly<{
+    kind: 'self' | 'project' | 'workspace' | 'resource'
+    inputField?: string
+  }>
+  risk: Readonly<{ tier: 0 | 1 | 2 | 3; label: string }>
+  declaredEffects: readonly string[]
+  idempotency: AutomationIdempotency
+}>
+
+export type AutomationEditorConfiguration = Readonly<{
+  eventTypes: readonly string[]
+  limits: Readonly<{
+    intervalMs: Readonly<{ min: number; max: number }>
+    timeoutMs: Readonly<{ min: number; max: number }>
+    concurrencyLimit: Readonly<{ min: 1; max: number }>
+    retryMaxAttempts: Readonly<{ min: 1; max: number }>
+    retryBaseDelayMs: Readonly<{ min: number; max: number }>
+    retryMaxDelayMs: Readonly<{ min: number; max: number }>
+    runMaxElapsedMs: Readonly<{ min: number; max: number }>
+    rollingWindowMs: Readonly<{ min: number; max: number }>
+    rollingMaxStarts: Readonly<{ min: 1; max: number }>
+  }>
+  defaults: Readonly<{
+    timeoutMs: number
+    concurrencyLimit: number
+    retry: AutomationRetryBudget
+    rollingBudget: AutomationRollingBudget
+  }>
+}>
+
+export type AutomationCatalog = AutomationEditorConfiguration &
+  Readonly<{ operations: readonly AutomationOperationCatalogEntry[] }>
+
+export type AutomationManualRetryReason =
+  | 'eligible'
+  | 'definition_not_found'
+  | 'definition_disabled'
+  | 'idempotency_unsupported'
+  | 'run_not_terminal_failure'
+  | 'not_latest_generation'
+  | 'definition_not_current'
+
+export type AutomationRunSummary = Readonly<{
+  id: string
+  automationId: string
+  trigger: Readonly<{
+    kind: 'schedule' | 'event'
+    occurredAt: number
+  }>
+  retryGeneration: number
+  retryOfRunId: string | null
+  status: AutomationRunStatus
+  attempt: number
+  queuedAt: number
+  startedAt: number | null
+  finishedAt: number | null
+  nextAttemptAt: number | null
+  resultCode: string | null
+  hasResult: boolean
+  hasError: boolean
+}>
+
+export type AutomationRunWithEligibility = AutomationRunSummary &
+  Readonly<{
+    manualRetry: Readonly<{
+      eligible: boolean
+      reason: AutomationManualRetryReason
+    }>
+  }>
+
+export type AutomationChangedEvent = Readonly<{
+  kind: 'created' | 'updated' | 'enabled' | 'deleted' | 'run-retried'
+  definitionId: string
+  updatedAt: number
+  runId?: string
+}>
+
 export interface UpdateSnapshot {
   kind: 'idle' | 'checking' | 'up_to_date' | 'available' | 'installing' | 'installed' | 'error'
   latest: string | null
@@ -99,6 +322,9 @@ export type ProjectRecord = {
   githubRepo: string | null
   githubAvatarUrl: string | null
   githubCheckedAt: number | null
+  // v66
+  classified: boolean
+  hidden: boolean
 }
 
 export type WorkspaceRecord = {
@@ -126,6 +352,27 @@ export type WorkspaceRecord = {
   /** Branch checked out in this worktree; null for a plain workspace (v64). */
   worktreeBranch: string | null
 }
+
+/**
+ * Main-to-renderer workspace mount request.
+ *
+ * Ordinary renderer-handled opens still acknowledge through workspace IPC
+ * before mounting. Orchestration already owns the project mutation lease and
+ * supplies the authoritative cwd, so its background mount must not re-enter
+ * the mutating acknowledgement while that lease is held.
+ */
+export type WorkspaceOpenRequest =
+  | Readonly<{
+      kind: 'renderer-open'
+      workspaceId: string
+      focus: boolean
+    }>
+  | Readonly<{
+      kind: 'orchestration-mount'
+      workspaceId: string
+      focus: false
+      cwd: string
+    }>
 
 /** Params for creating a worktree-backed workspace (v64). When `branch` is
  *  omitted/blank, the handler defaults it to `worktree-<slug-of-name>`. */
@@ -201,6 +448,18 @@ export type SoundPack =
   | 'crisp'
   | 'organic'
   | 'soft'
+
+export type RoutingProxyPortMode = 'automatic' | 'custom'
+export type RoutingProxySource = 'environment' | 'custom' | 'automatic'
+export type RoutingProxyPortConfiguration = { mode: 'automatic' } | { mode: 'custom'; port: number }
+
+export interface RoutingProxyRuntime {
+  source: RoutingProxySource
+  url: string | null
+  host: string | null
+  port: number | null
+  portConfigurationLocked: boolean
+}
 
 export type AppUiState = {
   sidebarCollapsed: boolean
@@ -358,10 +617,16 @@ export type AppUiState = {
   // src/main/index.ts) starts/stops the managed CLIProxyAPI child process
   // when this flips. See src/main/routingProxy/.
   routingProxyEnabled: boolean
+  routingProxyPortMode: RoutingProxyPortMode
+  routingProxyCustomPort: number | null
+  routingProxyEffectivePort: number | null
   // Model-name aliasing (model-routing unit 08) — opt-in, off by default.
   // Master switch for whether any stored routing_proxy_model_aliases row is
   // folded into the generated config.yaml. See src/main/routingProxy/aliases.ts.
   modelAliasesEnabled: boolean
+  // Privacy mode (v66) — when on, projects/workspaces flagged classified/
+  // hidden get redacted/excluded treatment in the UI.
+  privacyMode: boolean
   updatedAt: number
 }
 
@@ -925,6 +1190,9 @@ export type ClaudeUsageLimit = {
   kind: string
   group: string
   percent: number
+  /** False when the upstream response omitted percent; provider-neutral
+   *  consumers must surface that as unknown rather than as zero usage. */
+  percentKnown: boolean
   severity: string // 'normal' | 'warning' | 'critical' | ... (undocumented, tolerate any string)
   resetsAt: string | null
   modelName: string | null // scope?.model?.display_name, null when not model-scoped
@@ -945,6 +1213,60 @@ export type ClaudeUsageUnavailable = { unavailable: 'no-auth' | 'error' }
 export type ClaudeUsageResult = ClaudeUsage | ClaudeUsageUnavailable
 
 // ---------------------------------------------------------------------------
+// Provider-neutral dashboard usage. Claude's existing contract above remains
+// public for compatibility; this is the normalized, multi-provider surface.
+// Providers for which Orpheus has no trustworthy usage source are represented
+// explicitly instead of receiving fabricated zeroes or made-up weekly limits.
+// ---------------------------------------------------------------------------
+
+export type ProviderUsageUnavailableReason =
+  | 'no-auth'
+  | 'not-connected'
+  | 'cli-not-found'
+  | 'protocol-unsupported'
+  | 'usage-unsupported'
+  | 'error'
+
+export type ProviderUsageWindow = {
+  id: string
+  label: string
+  utilization: number | null // 0-100; null when the provider omitted it
+  resetsAt: string | null
+  durationMinutes: number | null
+}
+
+export type ProviderUsageLimit = {
+  id: string
+  label: string
+  utilization: number | null // 0-100; null when the provider omitted it
+  resetsAt: string | null
+  modelName: string | null
+  /** Non-percent values remain explicit; no denominator is invented. */
+  valueKind?: 'percent' | 'count' | 'currency' | 'status'
+  displayValue?: string | null
+}
+
+export type ProviderUsageEntry = {
+  providerId: string
+  label: string
+  configured: boolean
+  enabled: boolean
+  /** Account/auth-file label when the provider exposes one; never inferred. */
+  identityLabel: string | null
+  availability: 'available' | 'unavailable' | 'unsupported'
+  unavailableReason: ProviderUsageUnavailableReason | null
+  windows: ProviderUsageWindow[]
+  limits: ProviderUsageLimit[]
+  /** True when a transient refresh failure retained this provider's last-good metrics. */
+  stale?: boolean
+}
+
+export type ProviderUsageSnapshot = {
+  providers: ProviderUsageEntry[]
+  fetchedAt: number
+}
+
+// ---------------------------------------------------------------------------
 // src/main/claudeActivity.ts — real Claude activity, scanned directly off
 // the on-disk transcript store (~/.claude/projects/**/*.jsonl), NOT the
 // Orpheus-registered `sessions` table (sessions:listAll only covers
@@ -962,6 +1284,27 @@ export type WeeklyActivityDay = {
   weekday: number // 0=Mon..6=Sun
   sessions: number
   messages: number
+}
+
+export type ClaudeRecentSession = {
+  id: string
+  title: string
+  projectLabel: string
+  lastActivity: string
+  /** Count of real top-level user/assistant message events. */
+  messageCount: number | null
+  /** Assistant turns carrying a message payload. */
+  turnCount: number | null
+  tokenTotal: number
+  /** Difference between first and last valid transcript timestamps. */
+  durationMs: number | null
+}
+
+export type ClaudeModelActivityDay = {
+  date: string // local YYYY-MM-DD
+  model: string
+  turns: number
+  tokens: number
 }
 
 export type ClaudeActivitySummary = {
@@ -984,8 +1327,37 @@ export type ClaudeActivitySummary = {
    *  "alive until a full day is skipped" semantics as the renderer's
    *  original computeStreaks — see pulseData.helpers.ts). */
   currentStreak: number
-  /** Distinct calendar days with >=1 session in the last 7 days. */
+  /** Distinct calendar days with >=1 session across today + the previous 6 local days. */
   activeDays: number
+  /** The eight most recently active top-level Claude transcripts. */
+  recentSessions: ClaudeRecentSession[]
+  /** Last-7-day assistant turns/tokens grouped by transcript day + model. */
+  modelActivity7d: ClaudeModelActivityDay[]
+}
+
+export type ClaudeActivityWindowResult = {
+  /** Zero is the current local calendar week; negative values walk backward by whole weeks. */
+  weekOffset: number
+  isCurrentWeek: boolean
+  /** Logical Monday/Sunday display bounds, formatted as local YYYY-MM-DD dates. */
+  rangeStart: string
+  rangeEnd: string
+  /** Exact scan bounds. The current week ends at fetch time; completed weeks end Sunday night. */
+  queryFrom: string
+  queryTo: string
+  weeklyActivity: WeeklyActivityDay[]
+  sessions: number
+  messages: number
+  tokens: number
+  peakHour: number | null
+  activeDays: number
+  /** Maximum consecutive run of active days within this logical week. */
+  longestStreak: number
+  /** Up to 25 top-level transcripts whose mtime falls inside this window. */
+  recentSessions: ClaudeRecentSession[]
+  /** Assistant turns/tokens grouped by transcript date + model within this logical week. */
+  modelActivity: ClaudeModelActivityDay[]
+  fetchedAt: number
 }
 
 // ---------------------------------------------------------------------------
@@ -1053,6 +1425,89 @@ export type GhSearchIssue = {
   repo: string // "owner/name"
   labels: GhLabel[]
   updatedAt: string // ISO
+}
+
+// ---------------------------------------------------------------------------
+// Account-level GitHub dashboard snapshot. Each independently fetched section
+// has its own status so a genuine empty list remains distinguishable from a
+// failed `gh` request, and one degraded section does not erase the others.
+// ---------------------------------------------------------------------------
+
+export type GithubSectionStatus = 'available' | 'unavailable'
+
+export type GithubRepositorySummary = {
+  nameWithOwner: string
+  description: string | null
+  url: string
+  updatedAt: string
+  pushedAt: string | null
+  isPrivate: boolean
+  primaryLanguage: string | null
+  stargazerCount: number
+}
+
+export type GithubWorkflowRunSummary = {
+  id: number
+  repo: string
+  workflowName: string
+  status: string
+  conclusion: string | null
+  event: string
+  headBranch: string | null
+  updatedAt: string
+  url: string
+}
+
+export type GithubActivity7Day = {
+  from: string
+  to: string
+  totalContributions: number
+  commits: number
+  pullRequests: number
+  issues: number
+  reviews: number
+}
+
+export type GithubContributionActivity = {
+  totalContributions: number
+  commits: number
+  pullRequests: number
+  issues: number
+  reviews: number
+}
+
+export type GithubContributionWindowResult = {
+  /** Zero is the current local calendar week; negative values walk backward by whole weeks. */
+  weekOffset: number
+  isCurrentWeek: boolean
+  /** Logical Monday/Sunday display bounds, formatted as local YYYY-MM-DD dates. */
+  rangeStart: string
+  rangeEnd: string
+  /** Exact GraphQL bounds. The current week ends at fetch time; completed weeks end Sunday night. */
+  queryFrom: string
+  queryTo: string
+  activity: GithubContributionActivity | null
+  status: GithubSectionStatus
+  fetchedAt: number
+}
+
+export type GithubAccountSnapshot = {
+  availability: 'available' | 'degraded' | 'unavailable'
+  unavailableReason: 'gh-not-found' | 'not-authenticated' | 'error' | null
+  profile: { login: string; profileUrl: string } | null
+  /** Exact open PR count requesting review from the signed-in user. */
+  reviewRequestedCount: number | null
+  repositories: GithubRepositorySummary[]
+  repositoriesStatus: GithubSectionStatus
+  workflowRuns: GithubWorkflowRunSummary[]
+  workflowRunsStatus: GithubSectionStatus
+  workflowScope: {
+    kind: 'registered-repositories'
+    repositories: string[]
+  }
+  activity7d: GithubActivity7Day | null
+  activityStatus: GithubSectionStatus
+  fetchedAt: number
 }
 
 // ---------------------------------------------------------------------------
@@ -2346,6 +2801,12 @@ export interface RoutingProxyAuthFile {
 /** Rehydratable snapshot the renderer polls/subscribes to — mirrors UpdateSnapshot. */
 export interface RoutingProxySnapshot {
   enabled: boolean
+  source: RoutingProxySource
+  effectiveUrl: string | null
+  effectivePort: number | null
+  portMode: RoutingProxyPortMode
+  customPort: number | null
+  portConfigurationLocked: boolean
   status: RoutingProxyStatus
   /** Installed version (e.g. "7.2.92"), or null if never installed. */
   installedVersion: string | null

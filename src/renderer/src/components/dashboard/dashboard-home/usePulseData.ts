@@ -1,155 +1,226 @@
-// ---------------------------------------------------------------------------
-// usePulseData — sources every "Your pulse" number from the REAL Claude
-// activity scanner (`claude:activity`, src/main/claudeActivity.ts), which
-// scans the on-disk `~/.claude/projects/**/*.jsonl` transcript store
-// directly. This replaced an earlier version that derived these numbers from
-// `sessions:listAll` (the Orpheus-registered-workspace session list) — that
-// undercounted real Claude usage by ~40x, since the vast majority of a
-// user's `claude` invocations never go through an Orpheus workspace.
-//
-// Stale-while-revalidate, mirroring useClaudeUsage.ts exactly: on mount, a
-// disk-backed cached read (`activityCached()`) and the live scan
-// (`activity()`) both kick off in parallel. Whichever resolves first paints
-// the screen — if a cache row exists, the UI paints INSTANTLY with
-// `loading: false`; the live scan then lands and silently overwrites state
-// (no flash, no layout jump). `loading` is only ever true on a genuine
-// first-ever load: no cache row AND the fresh scan hasn't landed yet.
-//
-// No renderer-side polling loop: the main process owns the background
-// re-scan cadence (src/main/claudeActivityPoller.ts, every 3min, cheap
-// steady-state thanks to claudeActivity.ts's per-file mtime/size cache).
-// This hook just subscribes to the poller's pushes and applies them
-// silently.
-//
-// `longestStreak`/`heatmap` from the old sessions:listAll-derived version
-// are gone — the scanner doesn't compute a 6-month heatmap or an all-history
-// "longest streak" (only the current one), and neither field had any
-// consumer outside this file. `allTimeSessions`/`allTimeMessages` are new —
-// free from the scanner's roll-up, for any future "N all-time" anchor UI.
-// ---------------------------------------------------------------------------
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type {
+  ClaudeActivityWindowResult,
+  ClaudeModelActivityDay,
+  ClaudeRecentSession,
+  WeeklyActivityDay
+} from '@shared/types'
 
-import { useEffect, useState } from 'react'
-import type { ClaudeActivitySummary } from '@shared/types'
-import type { WeeklyActivityDay } from './pulseData.helpers'
-
-export type { WeeklyActivityDay }
+interface RequestState {
+  key: string
+  result: ClaudeActivityWindowResult | null
+  error: string | null
+  refreshError: string | null
+  refreshing: boolean
+}
 
 export interface PulseData {
-  loading: boolean
+  result: ClaudeActivityWindowResult | null
+  preparing: boolean
+  refreshing: boolean
   error: string | null
-  /** Real session count in the last 7 days (transcript file count, not
-   *  Orpheus-workspace rows). */
-  sessions: number
-  /** Consecutive-day streak of real Claude activity, ending today or
-   *  yesterday (see claudeActivity.ts's computeCurrentStreak). */
-  currentStreak: number
-  /** Local hour-of-day (0-23) with the most session-file activity in the
-   *  last 7 days. Null when there's no data to compute a peak from. */
-  peakHour: number | null
-  /** Distinct calendar days with >=1 real session in the last 7 days. */
-  activeDays: number
-  /** Trailing 7 calendar days (Mon..Sun) of real sessions+messages — the
-   *  Activity card's small-multiples chart data. */
+  refreshError: string | null
   weeklyActivity: WeeklyActivityDay[]
-  /** Total real session count across ALL history (every `.jsonl` file ever
-   *  scanned), never limited to the 7-day window. */
-  allTimeSessions: number
-  /** Total real message count (summed line counts) across ALL history. */
-  allTimeMessages: number
-  /** Total tokens (input + output + cache read + cache creation) across
-   *  sessions active in the last 7 days. */
-  tokensLast7Days: number
-  /** Same token sum as `tokensLast7Days`, across ALL history. */
-  allTimeTokens: number
+  sessions: number
+  messages: number
+  tokens: number
+  peakHour: number | null
+  activeDays: number
+  longestStreak: number
+  recentSessions: ClaudeRecentSession[]
+  modelActivity: ClaudeModelActivityDay[]
+  refresh: () => void
 }
 
-const EMPTY: Omit<PulseData, 'error'> = {
-  loading: true,
-  sessions: 0,
-  currentStreak: 0,
-  peakHour: null,
-  activeDays: 0,
-  weeklyActivity: [],
-  allTimeSessions: 0,
-  allTimeMessages: 0,
-  tokensLast7Days: 0,
-  allTimeTokens: 0
+const visitedWindows = new Map<string, ClaudeActivityWindowResult>()
+
+function localDateKey(value: Date): string {
+  return [
+    String(value.getFullYear()).padStart(4, '0'),
+    String(value.getMonth() + 1).padStart(2, '0'),
+    String(value.getDate()).padStart(2, '0')
+  ].join('-')
 }
 
-/** Coerces a field that SHOULD be a finite number to one, defaulting to 0.
- *  Guards against a stale disk-cached summary written by an older build
- *  that predates a field (e.g. tokensLast7Days/allTimeTokens didn't exist
- *  before this pass) — `activityCached()` reads whatever JSON is currently
- *  on disk, so a pre-upgrade payload can hand this hook `undefined` for a
- *  newer field. Without this, `undefined` reaches formatCompact and used to
- *  render as literal "NaN" text; better to fall back to 0 than show that. */
-function finiteOrZero(n: number | undefined): number {
-  return typeof n === 'number' && Number.isFinite(n) ? n : 0
+function selectionKey(weekOffset: number, now = new Date()): string {
+  const monday = new Date(now)
+  const daysSinceMonday = (monday.getDay() + 6) % 7
+  monday.setDate(monday.getDate() - daysSinceMonday + weekOffset * 7)
+  monday.setHours(0, 0, 0, 0)
+  return `${weekOffset}:${localDateKey(monday)}`
 }
 
-function fromSummary(summary: ClaudeActivitySummary): Omit<PulseData, 'error'> {
-  return {
-    loading: false,
-    sessions: finiteOrZero(summary.sessionsLast7Days),
-    currentStreak: finiteOrZero(summary.currentStreak),
-    peakHour: summary.peakHour,
-    activeDays: finiteOrZero(summary.activeDays),
-    weeklyActivity: summary.weeklyActivity ?? [],
-    allTimeSessions: finiteOrZero(summary.allTimeSessions),
-    allTimeMessages: finiteOrZero(summary.allTimeMessages),
-    tokensLast7Days: finiteOrZero(summary.tokensLast7Days),
-    allTimeTokens: finiteOrZero(summary.allTimeTokens)
-  }
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : 'Failed to load Claude activity'
 }
 
-/** Takes no range argument (unlike the old sessions:listAll-derived
- *  version) — the real-activity scanner's window is fixed at a trailing 7
- *  days for every tile (see claudeActivity.ts), matching the Dashboard's
- *  own fixed-window design (no user-facing range picker). */
-export function usePulseData(): PulseData {
-  const [data, setData] = useState<Omit<PulseData, 'error'>>(EMPTY)
-  const [error, setError] = useState<string | null>(null)
+export function usePulseData(weekOffset: number): PulseData {
+  const key = selectionKey(weekOffset)
+  const [requestState, setRequestState] = useState<RequestState>(() => ({
+    key,
+    result: visitedWindows.get(key) ?? null,
+    error: null,
+    refreshError: null,
+    refreshing: false
+  }))
+  const requestIdRef = useRef(0)
+  const mountedRef = useRef(true)
+
+  const cached = visitedWindows.get(key) ?? null
+  const result = requestState.key === key ? (requestState.result ?? cached) : cached
+  const error = requestState.key === key ? requestState.error : null
+  const refreshError = requestState.key === key ? requestState.refreshError : null
+  const refreshing = requestState.key === key && requestState.refreshing
+  const preparing = result === null && error === null
 
   useEffect(() => {
-    let cancelled = false
-
-    void (async (): Promise<void> => {
-      try {
-        const cached = await window.api.claude.activityCached()
-        if (cancelled || !cached) return
-        setData(fromSummary(cached.value))
-      } catch {
-        // Cached read is best-effort — the live scan below is authoritative.
-      }
-    })()
-
-    void (async (): Promise<void> => {
-      try {
-        const summary = await window.api.claude.activity()
-        if (cancelled) return
-        setData(fromSummary(summary))
-        setError(null)
-      } catch (err: unknown) {
-        if (cancelled) return
-        setError(err instanceof Error ? err.message : 'Failed to load activity')
-      }
-    })()
-
+    mountedRef.current = true
     return () => {
-      cancelled = true
+      mountedRef.current = false
     }
   }, [])
 
-  // Background poller pushes — silently adopt each fresh result as it
-  // arrives, independent of the initial-load effect above. Purely additive:
-  // never blanks/flashes.
   useEffect(() => {
-    const off = window.api.claude.onActivityPushed((summary) => {
-      setData(fromSummary(summary))
-      setError(null)
-    })
-    return off
-  }, [])
+    const requestId = ++requestIdRef.current
+    const retained = visitedWindows.get(key) ?? null
 
-  return { ...data, error }
+    void (async (): Promise<void> => {
+      try {
+        const next = await window.api.claude.activityWindow(weekOffset, false)
+        if (!mountedRef.current || requestId !== requestIdRef.current) return
+        visitedWindows.set(key, next)
+        setRequestState({
+          key,
+          result: next,
+          error: null,
+          refreshError: null,
+          refreshing: false
+        })
+      } catch (cause: unknown) {
+        if (!mountedRef.current || requestId !== requestIdRef.current) return
+        const message = errorMessage(cause)
+        setRequestState({
+          key,
+          result: retained,
+          error: retained ? null : message,
+          refreshError: retained ? message : null,
+          refreshing: false
+        })
+      }
+    })()
+  }, [key, weekOffset])
+
+  const refresh = useCallback(() => {
+    const requestId = ++requestIdRef.current
+    const activeKey = key
+    const activeOffset = weekOffset
+    const retained = result
+    setRequestState({
+      key: activeKey,
+      result: retained,
+      error: null,
+      refreshError: null,
+      refreshing: true
+    })
+
+    void (async (): Promise<void> => {
+      try {
+        const next = await window.api.claude.activityWindow(activeOffset, true)
+        if (
+          !mountedRef.current ||
+          requestId !== requestIdRef.current ||
+          activeKey !== selectionKey(activeOffset)
+        ) {
+          return
+        }
+        visitedWindows.set(activeKey, next)
+        setRequestState({
+          key: activeKey,
+          result: next,
+          error: null,
+          refreshError: null,
+          refreshing: false
+        })
+      } catch (cause: unknown) {
+        if (
+          !mountedRef.current ||
+          requestId !== requestIdRef.current ||
+          activeKey !== selectionKey(activeOffset)
+        ) {
+          return
+        }
+        const message = errorMessage(cause)
+        setRequestState({
+          key: activeKey,
+          result: retained,
+          error: retained ? null : message,
+          refreshError: retained ? message : null,
+          refreshing: false
+        })
+      }
+    })()
+  }, [key, result, weekOffset])
+
+  useEffect(() => {
+    return window.api.claude.onActivityPushed(() => {
+      if (weekOffset !== 0) return
+      const requestId = ++requestIdRef.current
+      const activeKey = key
+      const retained = result
+      void (async (): Promise<void> => {
+        try {
+          const next = await window.api.claude.activityWindow(0, true)
+          if (
+            !mountedRef.current ||
+            requestId !== requestIdRef.current ||
+            activeKey !== selectionKey(0)
+          ) {
+            return
+          }
+          visitedWindows.set(activeKey, next)
+          setRequestState({
+            key: activeKey,
+            result: next,
+            error: null,
+            refreshError: null,
+            refreshing: false
+          })
+        } catch (cause: unknown) {
+          if (
+            !mountedRef.current ||
+            requestId !== requestIdRef.current ||
+            activeKey !== selectionKey(0)
+          ) {
+            return
+          }
+          const message = errorMessage(cause)
+          setRequestState({
+            key: activeKey,
+            result: retained,
+            error: retained ? null : message,
+            refreshError: retained ? message : null,
+            refreshing: false
+          })
+        }
+      })()
+    })
+  }, [key, result, weekOffset])
+
+  return {
+    result,
+    preparing,
+    refreshing,
+    error,
+    refreshError,
+    weeklyActivity: result?.weeklyActivity ?? [],
+    sessions: result?.sessions ?? 0,
+    messages: result?.messages ?? 0,
+    tokens: result?.tokens ?? 0,
+    peakHour: result?.peakHour ?? null,
+    activeDays: result?.activeDays ?? 0,
+    longestStreak: result?.longestStreak ?? 0,
+    recentSessions: result?.recentSessions ?? [],
+    modelActivity: result?.modelActivity ?? [],
+    refresh
+  }
 }

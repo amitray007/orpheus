@@ -1,11 +1,11 @@
-import { useMemo, memo } from 'react'
+import { useEffect, useMemo, memo, useState } from 'react'
 import type {
   SessionRecord,
   WorkspaceRecord,
   WorkspaceActivityDetail,
   ProjectRecord
 } from '@shared/types'
-import { GitMerge, Kanban } from '@phosphor-icons/react'
+import { GitMerge, Kanban, Lock } from '@phosphor-icons/react'
 import { WorktreeBadge } from './WorktreeBadge'
 import { ActivityIndicator } from './ActivityIndicator'
 import { PrChip } from '../github/PrChip'
@@ -31,6 +31,34 @@ function relativeTime(ms: number): string {
   if (d < 30) return `${d}d ago`
   const mo = Math.floor(d / 30)
   return `${mo}mo ago`
+}
+
+// ---------------------------------------------------------------------------
+// Privacy mode — self-contained subscription (no prop threading through
+// MainContent). Mirrors the pattern used by Sidebar/settings sections.
+// ---------------------------------------------------------------------------
+
+function usePrivacyMode(): boolean {
+  const [privacyMode, setPrivacyMode] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.uiState
+      .get()
+      .then((s) => {
+        if (!cancelled) setPrivacyMode(s.privacyMode)
+      })
+      .catch(console.error)
+    const off = window.api.uiState.onChanged((s) => {
+      if (!cancelled) setPrivacyMode(s.privacyMode)
+    })
+    return () => {
+      cancelled = true
+      off()
+    }
+  }, [])
+
+  return privacyMode
 }
 
 // ---------------------------------------------------------------------------
@@ -92,13 +120,40 @@ interface WorkspaceCardProps {
   projectName: string
   session: SessionRecord | undefined
   onClick: () => void
+  redacted: boolean
+}
+
+// Redaction hatch overlay — reveals nothing: no workspace title, project
+// name, or session summary. Absolutely positioned so it never establishes
+// its own box size; it always fills whatever height the real content (kept
+// mounted alongside it) has established. Opacity-only crossfade against the
+// real content layer, matching the ProjectRow redaction pattern.
+function RedactionOverlay({ redacted }: { redacted: boolean }): React.JSX.Element {
+  return (
+    <div
+      aria-hidden={!redacted}
+      className={[
+        'absolute inset-0 flex items-center justify-center gap-1.5 rounded-md text-text-secondary transition-opacity duration-200',
+        redacted ? 'opacity-100' : 'opacity-0 pointer-events-none'
+      ].join(' ')}
+      style={{
+        backgroundColor: '#2a2a2a',
+        backgroundImage:
+          'repeating-linear-gradient(45deg, rgba(255,255,255,0.035) 0px, rgba(255,255,255,0.035) 2px, transparent 2px, transparent 9px)'
+      }}
+    >
+      <Lock size={11} weight="fill" />
+      <span className="text-xs font-semibold tracking-wide">CLASSIFIED</span>
+    </div>
+  )
 }
 
 const WorkspaceCard = memo(function WorkspaceCard({
   workspace,
   projectName,
   session,
-  onClick
+  onClick,
+  redacted
 }: WorkspaceCardProps): React.JSX.Element {
   // Subscribe to this workspace's data from per-key stores — re-renders only
   // when THIS card's keys change, not when any other workspace changes.
@@ -117,60 +172,85 @@ const WorkspaceCard = memo(function WorkspaceCard({
   const branch = gitStatus?.branch ?? null
   const userPrompt = session?.lastUserMessagePreview ?? null
 
+  // Single container in both states — its height is driven entirely by the
+  // real-content layer below (rows 1-4, variable per-card depending on
+  // branch/PR/userPrompt), which stays mounted (opacity-only) in both
+  // states. The redaction overlay is absolutely positioned on top of it,
+  // so a card's redacted box is structurally guaranteed to match its real
+  // box exactly — no hand-tuned fixed height that could mismatch taller
+  // cards (e.g. ones with a branch/PR row or a prompt preview row).
   return (
     <button
       type="button"
-      onClick={onClick}
-      className="w-full p-3 rounded-md bg-surface-raised border-2 border-dotted border-border-default/70 hover:bg-surface-overlay hover:border-accent/60 transition-colors duration-100 text-left cursor-pointer flex flex-col gap-1.5"
+      onClick={redacted ? undefined : onClick}
+      disabled={redacted}
+      aria-hidden={redacted}
+      className={[
+        'relative w-full p-3 rounded-md bg-surface-raised border-2 border-dotted border-border-default/70 transition-colors duration-100 text-left flex flex-col gap-1.5',
+        redacted
+          ? 'cursor-default'
+          : 'cursor-pointer hover:bg-surface-overlay hover:border-accent/60'
+      ].join(' ')}
     >
-      {/* Row 1: activity glyph + workspace title + worktree badge */}
-      <span className="flex items-center gap-1.5 min-w-0">
-        <span className="flex-shrink-0">
-          <ActivityIndicator detail={effectiveActivity} />
+      {/* Real content — fades out under the hatch overlay when redacted (200ms crossfade). */}
+      <div
+        inert={redacted}
+        className={[
+          'flex flex-col gap-1.5 transition-opacity duration-200',
+          redacted ? 'opacity-0 pointer-events-none' : 'opacity-100'
+        ].join(' ')}
+      >
+        {/* Row 1: activity glyph + workspace title + worktree badge */}
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className="flex-shrink-0">
+            <ActivityIndicator detail={effectiveActivity} />
+          </span>
+          <span
+            className={[
+              'text-sm font-medium truncate leading-snug',
+              dn.muted ? 'text-text-muted italic font-normal' : 'text-text-primary'
+            ].join(' ')}
+            title={dn.text}
+          >
+            {dn.text}
+          </span>
+          <WorktreeBadge workspace={workspace} size={11} />
         </span>
-        <span
-          className={[
-            'text-sm font-medium truncate leading-snug',
-            dn.muted ? 'text-text-muted italic font-normal' : 'text-text-primary'
-          ].join(' ')}
-          title={dn.text}
-        >
-          {dn.text}
-        </span>
-        <WorktreeBadge workspace={workspace} size={11} />
-      </span>
 
-      {/* Row 2: project name (left) + relative time (right) */}
-      <span className="flex items-center justify-between gap-2 min-w-0">
-        <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-secondary truncate min-w-0 max-w-[70%]">
-          {projectName}
+        {/* Row 2: project name (left) + relative time (right) */}
+        <span className="flex items-center justify-between gap-2 min-w-0">
+          <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-secondary truncate min-w-0 max-w-[70%]">
+            {projectName}
+          </span>
+          <span className="text-sm text-text-muted flex-shrink-0">{relativeTime(timestamp)}</span>
         </span>
-        <span className="text-sm text-text-muted flex-shrink-0">{relativeTime(timestamp)}</span>
-      </span>
 
-      {/* Row 3: git branch + (when PR exists for this branch) PR chip on the right */}
-      {(branch || pr) && (
-        <span className="flex items-center gap-2 text-sm text-text-muted min-w-0">
-          {branch && (
-            <span className="flex items-center gap-1 min-w-0">
-              <GitMerge size={11} className="flex-shrink-0 opacity-60" weight="bold" />
-              <span className="truncate font-mono">{branch}</span>
-            </span>
-          )}
-          {pr && (
-            <span className="ml-auto flex-shrink-0">
-              <PrChip pr={pr} variant="chip" />
-            </span>
-          )}
-        </span>
-      )}
+        {/* Row 3: git branch + (when PR exists for this branch) PR chip on the right */}
+        {(branch || pr) && (
+          <span className="flex items-center gap-2 text-sm text-text-muted min-w-0">
+            {branch && (
+              <span className="flex items-center gap-1 min-w-0">
+                <GitMerge size={11} className="flex-shrink-0 opacity-60" weight="bold" />
+                <span className="truncate font-mono">{branch}</span>
+              </span>
+            )}
+            {pr && (
+              <span className="ml-auto flex-shrink-0">
+                <PrChip pr={pr} variant="chip" />
+              </span>
+            )}
+          </span>
+        )}
 
-      {/* Row 4: user prompt preview — up to 2 lines, italic, muted */}
-      {userPrompt && (
-        <span className="text-sm text-text-muted italic line-clamp-2 leading-relaxed">
-          &ldquo;{userPrompt}&rdquo;
-        </span>
-      )}
+        {/* Row 4: user prompt preview — up to 2 lines, italic, muted */}
+        {userPrompt && (
+          <span className="text-sm text-text-muted italic line-clamp-2 leading-relaxed">
+            &ldquo;{userPrompt}&rdquo;
+          </span>
+        )}
+      </div>
+
+      <RedactionOverlay redacted={redacted} />
     </button>
   )
 })
@@ -185,6 +265,7 @@ interface KanbanColumnProps {
   projectsById: Map<string, ProjectRecord>
   sessionsById: Map<string, SessionRecord>
   onNavigateToWorkspace: (workspaceId: string, projectId: string) => void
+  privacyMode: boolean
 }
 
 const KanbanColumn = memo(function KanbanColumn({
@@ -192,7 +273,8 @@ const KanbanColumn = memo(function KanbanColumn({
   workspaces,
   projectsById,
   sessionsById,
-  onNavigateToWorkspace
+  onNavigateToWorkspace,
+  privacyMode
 }: KanbanColumnProps): React.JSX.Element {
   return (
     <div className="flex flex-col min-h-0 bg-surface-raised rounded-lg border border-border-default overflow-hidden">
@@ -221,6 +303,7 @@ const KanbanColumn = memo(function KanbanColumn({
           workspaces.map((ws) => {
             const project = projectsById.get(ws.projectId)
             const session = ws.claudeSessionId ? sessionsById.get(ws.claudeSessionId) : undefined
+            const redacted = privacyMode && (project?.classified ?? false)
             return (
               <WorkspaceCard
                 key={ws.id}
@@ -228,6 +311,7 @@ const KanbanColumn = memo(function KanbanColumn({
                 projectName={project?.name ?? 'Unknown'}
                 session={session}
                 onClick={() => onNavigateToWorkspace(ws.id, ws.projectId)}
+                redacted={redacted}
               />
             )
           })
@@ -256,14 +340,17 @@ export function WorkspacesView({
   workspaces,
   sessions
 }: WorkspacesViewProps): React.JSX.Element {
+  const privacyMode = usePrivacyMode()
+
   // Build fast lookups
   const projectsById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects])
   const sessionsById = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions])
 
-  // Exclude archived workspaces from all views
+  // Exclude archived workspaces, and workspaces belonging to hidden projects
+  // (hidden is a permanent declutter — dropped regardless of privacy mode).
   const activeWorkspaces = useMemo(
-    () => workspaces.filter((w) => w.archivedAt === null),
-    [workspaces]
+    () => workspaces.filter((w) => w.archivedAt === null && !projectsById.get(w.projectId)?.hidden),
+    [workspaces, projectsById]
   )
 
   // Derive column groups from the store snapshot at render time.  This is
@@ -304,9 +391,10 @@ export function WorkspacesView({
           projectsById={projectsById}
           sessionsById={sessionsById}
           onNavigateToWorkspace={onNavigateToWorkspace}
+          privacyMode={privacyMode}
         />
       )),
-    [grouped, projectsById, sessionsById, onNavigateToWorkspace]
+    [grouped, projectsById, sessionsById, onNavigateToWorkspace, privacyMode]
   )
 
   // Empty board: preview the kanban structure blurred behind a centered empty state.

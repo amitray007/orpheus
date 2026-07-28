@@ -39,6 +39,11 @@ import {
   getGithubUsername
 } from '../github'
 import { updateAppUiState } from '../uiState'
+import {
+  getCachedGithubAccountSnapshot,
+  getGithubAccountSnapshot,
+  getGithubContributionWindow
+} from '../githubDashboard'
 import { handle } from './handle'
 
 export type GitIpcDeps = {
@@ -186,12 +191,17 @@ export function registerGitIpc(deps: GitIpcDeps): void {
   // Dashboard Phase 2 (U5) — account-wide search, no workspaceId/cwd
   // resolution needed (unlike every handler above). See github.ts::
   // getMyOpenPrs/getMyIssues.
-  handle('github:myOpenPrs', () => getMyOpenPrs())
-  handle('github:myIssues', () => getMyIssues())
+  handle('github:myOpenPrs', (_e, { force }) => getMyOpenPrs(force === true))
+  handle('github:myIssues', (_e, { force }) => getMyIssues(force === true))
   // Dashboard D2 (stale-while-revalidate) — instant, disk-backed reads that
   // never touch the network. See github.ts::getCachedMyOpenPrs/Issues.
   handle('github:myOpenPrs:cached', () => getCachedMyOpenPrs())
   handle('github:myIssues:cached', () => getCachedMyIssues())
+  handle('github:accountSnapshot', (_e, { force }) => getGithubAccountSnapshot(force === true))
+  handle('github:accountSnapshot:cached', () => getCachedGithubAccountSnapshot())
+  handle('github:contributionWindow', (_e, { weekOffset, force }) =>
+    getGithubContributionWindow(weekOffset, force === true)
+  )
 
   // Dashboard D4 — named greeting. Fired once per app open (DashboardTopBar's
   // background refresh); resolves via getGithubUsername, persists the

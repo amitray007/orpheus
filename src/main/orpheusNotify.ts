@@ -6,11 +6,12 @@ import { app } from 'electron'
 import { setWorkspaceStatus } from './workspaces'
 import { notifyForTransition } from './osNotifications'
 import { getAppUiState } from './uiState'
-import type { WorkspaceStatus, WorkspaceActivityDetail } from '../shared/types'
+import type { WorkspaceStatus, WorkspaceActivityDetail, WorkspaceRecord } from '../shared/types'
 import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 import { stageActivityUpdate } from './activitySink'
 import { UI_STATE_DEFAULTS } from '../shared/uiStateDefaults'
+import { redactErrorForLog, redactLogValue } from './logRedaction'
 
 export type WorkspaceActivityEvent =
   | 'session-start'
@@ -53,13 +54,37 @@ type StatusObserver = (
   oldStatus: WorkspaceStatus | undefined,
   newStatus: WorkspaceStatus
 ) => void
+type PersistingStatusObserver = (
+  workspaceId: string,
+  oldStatus: WorkspaceStatus,
+  newStatus: WorkspaceStatus,
+  workspace: WorkspaceRecord
+) => void
 
 const statusObservers = new Set<StatusObserver>()
+const persistingStatusObservers = new Set<PersistingStatusObserver>()
+const committedStatusObservers = new Set<StatusObserver>()
 
-/** Subscribe to every committed workspace status transition. Returns an unsubscribe fn. */
+/** Subscribe to every in-memory workspace status transition. Returns an unsubscribe fn. */
 export function onWorkspaceStatusChange(cb: StatusObserver): () => void {
   statusObservers.add(cb)
   return () => statusObservers.delete(cb)
+}
+
+/**
+ * Subscribe inside the authoritative workspace-status SQLite transaction.
+ * Throwing aborts the status write, so durable side effects such as outbox
+ * insertion cannot be lost between the workspace commit and process exit.
+ */
+export function onWorkspaceStatusPersisting(cb: PersistingStatusObserver): () => void {
+  persistingStatusObservers.add(cb)
+  return () => persistingStatusObservers.delete(cb)
+}
+
+/** Subscribe only after the corresponding workspace status write succeeds. */
+export function onWorkspaceStatusCommitted(cb: StatusObserver): () => void {
+  committedStatusObservers.add(cb)
+  return () => committedStatusObservers.delete(cb)
 }
 
 /** Snapshot of current in-memory per-workspace statuses. */
@@ -190,15 +215,55 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
     const fileStatus = fileStatusProvider?.(workspaceId)
     if (fileStatus === 'busy' || fileStatus === 'waiting' || fileStatus === 'shell') return
   }
-  const prev = activityMap.get(workspaceId)
-  if (prev === status) return
+  const cachedOldStatus = activityMap.get(workspaceId)
+  let persistedOldStatus: WorkspaceStatus | null = null
+  try {
+    setWorkspaceStatus(workspaceId, status, (oldStatus, workspace) => {
+      persistedOldStatus = oldStatus
+      persistingStatusObservers.forEach((observer) => {
+        observer(workspaceId, oldStatus, status, workspace)
+      })
+    })
+  } catch (err) {
+    console.warn(
+      '[orpheusNotify] setWorkspaceStatus failed for',
+      workspaceId,
+      redactErrorForLog(err)
+    )
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.STATUS_PERSIST_FAILED,
+      workspaceId,
+      data: { err: String(err) }
+    })
+    return
+  }
+  if (persistedOldStatus == null) return
+  const authoritativeOldStatus = persistedOldStatus
   activityMap.set(workspaceId, status)
-  // Fan out to keep-awake / future observers. Errors are isolated.
+
+  if (authoritativeOldStatus !== status) {
+    committedStatusObservers.forEach((obs) => {
+      try {
+        obs(workspaceId, authoritativeOldStatus, status)
+      } catch (err) {
+        console.error('[orpheusNotify] committed status observer error:', redactErrorForLog(err))
+      }
+    })
+  }
+
+  // Renderer/runtime observers follow the in-memory cache transition. This is
+  // deliberately distinct from the persisted transition above:
+  // clearWorkspaceActivity() deletes the cache to force a fresh idle update
+  // even when SQLite already says idle.
+  if (cachedOldStatus === status) return
+
   statusObservers.forEach((obs) => {
     try {
-      obs(workspaceId, prev, status)
+      obs(workspaceId, cachedOldStatus, status)
     } catch (err) {
-      console.error('[orpheusNotify] status observer error:', err)
+      console.error('[orpheusNotify] status observer error:', redactErrorForLog(err))
     }
   })
   logDiagMain({
@@ -207,21 +272,9 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
     event: DIAG_EVENTS.HOOK_ACTIVITY,
     workspaceId,
     message: status,
-    data: { prev }
+    data: { prev: cachedOldStatus }
   })
-  try {
-    setWorkspaceStatus(workspaceId, status)
-  } catch (err) {
-    console.warn('[orpheusNotify] setWorkspaceStatus failed for', workspaceId, err)
-    logDiagMain({
-      category: 'anomaly',
-      level: 'warn',
-      event: DIAG_EVENTS.STATUS_PERSIST_FAILED,
-      workspaceId,
-      data: { err: String(err) }
-    })
-  }
-  notifyForTransition(workspaceId, prev, status)
+  notifyForTransition(workspaceId, cachedOldStatus, status)
 
   // Auto-demote ready→idle after staleAfterMinutes of sitting in awaiting_input.
   if (status === 'awaiting_input') {
@@ -256,7 +309,15 @@ function handleHookEvent(
   if (process.env['ORPHEUS_DEBUG_HOOKS'] === '1') {
     const tn = typeof payload.tool_name === 'string' ? payload.tool_name : null
     const msg = typeof payload.message === 'string' ? payload.message : null
-    console.log('[orpheusNotify] hook', { ev, workspaceId, tool_name: tn, message: msg })
+    console.log(
+      '[orpheusNotify] hook',
+      redactLogValue({
+        ev,
+        workspaceId,
+        tool_name: tn,
+        messageBytes: msg == null ? 0 : Buffer.byteLength(msg, 'utf8')
+      })
+    )
   }
 
   switch (ev) {
@@ -377,7 +438,7 @@ export function ensureManagedHooks(): void {
     if (code !== 'ENOENT') {
       console.warn(
         '[orpheusNotify] could not read ~/.claude/settings.json — skipping hook install:',
-        err
+        redactErrorForLog(err)
       )
       logDiagMain({
         category: 'anomaly',
@@ -508,7 +569,10 @@ export function uninstallManagedHooks(): void {
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ENOENT') return // nothing to clean
-    console.warn('[orpheusNotify] uninstallManagedHooks: could not read settings.json:', err)
+    console.warn(
+      '[orpheusNotify] uninstallManagedHooks: could not read settings.json:',
+      redactErrorForLog(err)
+    )
     logDiagMain({
       category: 'anomaly',
       level: 'warn',
@@ -534,7 +598,10 @@ export function uninstallManagedHooks(): void {
     }
     parsed = p as Record<string, unknown>
   } catch (err) {
-    console.warn('[orpheusNotify] uninstallManagedHooks: failed to parse settings.json:', err)
+    console.warn(
+      '[orpheusNotify] uninstallManagedHooks: failed to parse settings.json:',
+      redactErrorForLog(err)
+    )
     logDiagMain({
       category: 'anomaly',
       level: 'warn',
@@ -605,7 +672,10 @@ export function uninstallManagedHooks(): void {
     fs.writeFileSync(tmp, newContent, 'utf-8')
     fs.renameSync(tmp, settingsPath)
   } catch (err) {
-    console.warn('[orpheusNotify] uninstallManagedHooks: failed to write settings.json:', err)
+    console.warn(
+      '[orpheusNotify] uninstallManagedHooks: failed to write settings.json:',
+      redactErrorForLog(err)
+    )
     logDiagMain({
       category: 'anomaly',
       level: 'warn',
@@ -698,7 +768,7 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
     } catch (err) {
       console.warn(
         '[orpheusNotify] could not chmod notify.sock to 0600 — socket is accessible to all local users:',
-        err
+        redactErrorForLog(err)
       )
     }
   })

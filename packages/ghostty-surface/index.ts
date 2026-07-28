@@ -25,6 +25,24 @@ export type SurfaceRect = {
   h: number
 }
 
+export type ScreenTailReadResult =
+  | {
+      available: true
+      text: string
+      bytes: number
+      lines: number
+      truncated: boolean
+      capturedAt: number
+    }
+  | {
+      available: false
+      text: ''
+      bytes: 0
+      lines: 0
+      truncated: false
+      capturedAt: null
+    }
+
 // ---------------------------------------------------------------------------
 // GhosttySurfaceAddon — generic interface for the native addon
 //
@@ -146,6 +164,12 @@ export type GhosttySurfaceAddon = {
    * Used to gate UI actions that require a running process.
    */
   getSurfacePhase: (workspaceId: string) => string
+
+  /**
+   * Read a bounded UTF-8 tail from Ghostty's authoritative screen/scrollback
+   * text. Missing surfaces return an unavailable result rather than throwing.
+   */
+  readScreenTail: (workspaceId: string, maxBytes: number, maxLines: number) => ScreenTailReadResult
 
   // ---------------------------------------------------------------------------
   // Overlay first-responder primitives (child-window era)

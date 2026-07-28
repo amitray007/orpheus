@@ -62,6 +62,8 @@ type DbWorkspaceRow = {
   forked_from_session_id: string | null
   last_title: string | null
   parent_workspace_id: string | null
+  worktree_parent_cwd: string | null
+  worktree_branch: string | null
 }
 
 type DbProjectRow = {
@@ -78,6 +80,8 @@ type DbProjectRow = {
   github_repo: string | null
   github_avatar_url: string | null
   github_checked_at: number | null
+  classified: number
+  hidden: number
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +105,9 @@ function mapWorkspaceRow(row: DbWorkspaceRow): WorkspaceRecord {
     claudeSessionId: row.claude_session_id ?? null,
     forkedFromSessionId: row.forked_from_session_id ?? null,
     lastTitle: row.last_title ?? null,
-    parentWorkspaceId: row.parent_workspace_id ?? null
+    parentWorkspaceId: row.parent_workspace_id ?? null,
+    worktreeParentCwd: row.worktree_parent_cwd ?? null,
+    worktreeBranch: row.worktree_branch ?? null
   }
 }
 
@@ -119,7 +125,9 @@ function mapProjectRow(row: DbProjectRow): ProjectRecord {
     githubOwner: row.github_owner ?? null,
     githubRepo: row.github_repo ?? null,
     githubAvatarUrl: row.github_avatar_url ?? null,
-    githubCheckedAt: row.github_checked_at ?? null
+    githubCheckedAt: row.github_checked_at ?? null,
+    classified: (row.classified ?? 0) === 1,
+    hidden: (row.hidden ?? 0) === 1
   }
 }
 

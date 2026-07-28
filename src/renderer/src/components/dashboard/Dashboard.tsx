@@ -5,8 +5,8 @@ import { DIAG_EVENTS } from '@shared/diagEvents'
 import { Sidebar as SidebarBase } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
-import { ActivityRail } from './ActivityRail'
 import { PanelsSection } from './PanelsSection'
+import { SidebarNavigation, type SidebarDestination } from './SidebarNavigation'
 import { showConfirmModalReact } from '@/lib/overlayClient'
 import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/activityStore'
 import { setAuthoritativeActiveWorkspace, getActiveRemount } from '@/lib/freezeWatchdog'
@@ -19,7 +19,6 @@ import { setPr, deletePr } from '@/lib/prStore'
 import { removeWorkbenchEntry } from '@/lib/workbenchStore'
 import { removeWorkbenchTerminalsEntry } from '@/lib/workbenchTerminalsStore'
 import { removeFilesTabEntry } from '@/lib/filesTabStore'
-import { useUpdateAvailable } from '@/lib/useUpdateAvailable'
 import { useUiState, updateUiState } from '@/lib/uiStateStore'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { clearFooterActionsCache } from './footer/useFooterActions'
@@ -31,21 +30,28 @@ import {
   nextWorkspaceName,
   reorderById,
   reorderWithTail,
-  deriveSurface,
+  viewToSidebarDestination,
   resolveLandingView
 } from './dashboard.helpers'
 import type {
   PinnedItem,
   ProjectRecord,
   SessionRecord,
+  WorkspaceOpenRequest,
   WorkspaceRecord,
   GitStatus,
   GhPullRequest
 } from '@shared/types'
+import { rendererControlRequiresPresentation } from '@shared/workbenchControl'
 import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
+import { executeRendererControl } from '@/lib/rendererControl'
+import { mountWorkspaceInBackground } from './backgroundWorkspaceMount'
 
 const Sidebar = memo(SidebarBase)
 const MainContent = memo(MainContentBase)
+
+// Timed reveal duration for a classified project's "Reveal this project" peek.
+const PEEK_MS = 60_000
 
 interface DashboardProps {
   claudeInstalled: boolean
@@ -73,6 +79,17 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // Which project rows are expanded in the sidebar
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(new Set())
 
+  // Privacy mode + timed "peek" reveals for classified projects. privacyMode
+  // mirrors uiState.privacyMode (kept as its own piece of state so the
+  // Sidebar/CollapsedProjectList prop doesn't force a re-render on every
+  // unrelated uiState field). peeks maps projectId → expiresAt (epoch ms);
+  // presence in the map means the project is currently un-redacted.
+  const [privacyMode, setPrivacyMode] = useState(false)
+  const [peeks, setPeeks] = useState<Map<string, number>>(new Map())
+  const peekTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const privacyModeRef = useRef(false)
+  const peeksRef = useRef<Map<string, number>>(new Map())
+
   // Sessions list — fetched at Dashboard level so WorkspacesView can look up
   // session metadata (model, msg count, preview) via workspace.claudeSessionId
   const [allSessions, setAllSessions] = useState<SessionRecord[]>([])
@@ -82,6 +99,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   // View routing
   const [view, setView] = useState<View>({ kind: 'panes' })
+  const [sidebarContext, setSidebarContext] = useState<'workspaces' | 'panes'>('panes')
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
 
@@ -108,6 +126,44 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const runWorktreeArchiveFlowRef = useRef<
     (workspace: WorkspaceRecord, projectId: string) => Promise<void>
   >(async () => {})
+
+  useEffect(() => {
+    const unsubscribe = window.api.control.onRendererCommand((request) => {
+      void (async () => {
+        try {
+          const command = request.command
+          if (rendererControlRequiresPresentation(command) && 'workspaceId' in command) {
+            const projectId = Object.entries(workspacesByProjectRef.current).find(([, rows]) =>
+              rows.some((workspace) => workspace.id === command.workspaceId)
+            )?.[0]
+            if (projectId == null) throw new Error('Workspace is unavailable in the renderer.')
+            handleSelectWorkspaceRef.current(command.workspaceId, projectId)
+          } else if (rendererControlRequiresPresentation(command)) {
+            setView({ kind: 'panes' })
+            setSidebarContext('panes')
+          }
+          const value = await executeRendererControl(command)
+          await window.api.control.acknowledgeRendererCommand({
+            requestId: request.requestId,
+            generation: request.generation,
+            status: 'completed',
+            observedAt: Date.now(),
+            value
+          })
+        } catch (error) {
+          await window.api.control.acknowledgeRendererCommand({
+            requestId: request.requestId,
+            generation: request.generation,
+            status: 'failed',
+            observedAt: Date.now(),
+            error: error instanceof Error ? error.message : String(error)
+          })
+        }
+      })()
+    })
+    void window.api.control.markRendererReady()
+    return unsubscribe
+  }, [])
   // De-races the archive navigation double-fire: finishWorktreeArchive (called
   // by the local runWorktreeArchiveFlow, awaited right after the archive IPC
   // resolves) and the workspaces:archived broadcast listener (below, fired for
@@ -129,6 +185,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     selectedProjectIdRef.current = selectedProjectId
     workspacesByProjectRef.current = workspacesByProject
     projectsRef.current = projects
+    privacyModeRef.current = privacyMode
+    peeksRef.current = peeks
   })
 
   // Tracks workspace ids for which we've already issued an imperative git fetch
@@ -166,6 +224,18 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setSoundPack(uiState.soundPack ?? 'core')
     // eslint-disable-next-line react-hooks/exhaustive-deps -- field-level deps are intentional; depending on the whole uiState object would re-run this effect on unrelated uiState changes
   }, [uiState?.soundPack])
+
+  // Bridge the privacyMode uiState field into local state. privacyMode is
+  // driven from two places outside this component — the View → Privacy Mode
+  // app-menu checkbox and the Settings → Privacy toggle — both of which write
+  // through uiState.update and broadcast uiState:changed, so we subscribe
+  // rather than relying solely on the field-level bridge effects above.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- seeding local state from the already-fetched uiState prop, not a cascading derived update
+    if (uiState) setPrivacyMode(uiState.privacyMode)
+    return window.api.uiState.onChanged((s) => setPrivacyMode(s.privacyMode))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- field-level dep is intentional; only the initial hydration should re-run this, the subscription itself is stable
+  }, [uiState?.privacyMode])
 
   // Diagnostic: log every native action_cb tag to the console so we can debug
   // the title flow. Tag 37 = SET_TITLE, 38 = SET_TAB_TITLE in the current
@@ -250,6 +320,17 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             : p
         )
       )
+    })
+  }, [])
+
+  // Classified/hidden flags are toggled from Settings → Privacy, which patches
+  // its own local list from the ProjectRecord returned by setClassified/setHidden.
+  // That local update doesn't reach this component's projects state (the one
+  // driving the Sidebar), so main also broadcasts the updated record — patch it
+  // in-place here, mirroring the onGithubDataUpdated subscription above.
+  useEffect(() => {
+    return window.api.projects.onChanged((rec) => {
+      setProjects((prev) => prev.map((p) => (p.id === rec.id ? rec : p)))
     })
   }, [])
 
@@ -417,6 +498,58 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     }
   }, [])
 
+  // Timed peek reveal for a classified project — un-redacts it in the sidebar
+  // for PEEK_MS, resetting the timer on repeat reveals (re-right-click while
+  // already peeking). Peeks are per-project independent and are a pure
+  // render-time overlay: nothing about expandedProjectIds or persisted state
+  // is touched here.
+  const revealProject = useCallback((projectId: string): void => {
+    const existingTimeout = peekTimeoutsRef.current.get(projectId)
+    if (existingTimeout !== undefined) clearTimeout(existingTimeout)
+    const expiresAt = Date.now() + PEEK_MS
+    setPeeks((prev) => new Map(prev).set(projectId, expiresAt))
+    const timeout = setTimeout(() => {
+      peekTimeoutsRef.current.delete(projectId)
+      setPeeks((prev) => {
+        if (!prev.has(projectId)) return prev
+        const next = new Map(prev)
+        next.delete(projectId)
+        return next
+      })
+    }, PEEK_MS)
+    peekTimeoutsRef.current.set(projectId, timeout)
+  }, [])
+
+  // Privacy mode turning off clears every active peek — there's nothing left
+  // to redact, so the timers/state are just dead weight until the next time
+  // privacy mode is re-enabled.
+  useEffect(() => {
+    if (privacyMode) return
+    for (const timeout of peekTimeoutsRef.current.values()) clearTimeout(timeout)
+    peekTimeoutsRef.current.clear()
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to an external prop flip (privacyMode going false), not a derived/cascading update; guarded to a no-op when already empty
+    setPeeks((prev) => (prev.size === 0 ? prev : new Map()))
+  }, [privacyMode])
+
+  // Clear all pending peek timers on unmount.
+  useEffect(() => {
+    const timeouts = peekTimeoutsRef.current
+    return () => {
+      for (const timeout of timeouts.values()) clearTimeout(timeout)
+    }
+  }, [])
+
+  // Reads refs (not state) so callers can call it from stable, zero/low-dep
+  // callbacks without needing privacyMode/peeks in their dep arrays. A
+  // project is locked when privacy is on, it's classified, and it isn't
+  // currently peeked.
+  const isProjectLocked = useCallback((projectId: string): boolean => {
+    if (!privacyModeRef.current) return false
+    const project = projectsRef.current.find((p) => p.id === projectId)
+    if (!project?.classified) return false
+    return !peeksRef.current.has(projectId)
+  }, [])
+
   // Stable sidebar toggle handler — uses functional setState to avoid capturing
   // sidebarCollapsed in closure (keeps this stable with empty deps).
   const handleToggleSidebarCollapsed = useCallback((): void => {
@@ -431,6 +564,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleSelectWorkspace = useCallback(
     (workspaceId: string, projectId: string): void => {
+      // Classified + redacted: no-op. The sidebar/sessions view already hide
+      // this workspace's row while locked, but guard here too in case a
+      // caller reaches this via a stale reference (e.g. onNavigateTo).
+      if (isProjectLocked(projectId)) return
       const fromId = selectedWorkspaceIdRef.current
       const toId = workspaceId
       if (fromId !== toId) {
@@ -442,6 +579,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           data: { fromId, toId }
         })
       }
+      setSidebarContext('workspaces')
       setSelectedProjectId(projectId)
       setSelectedWorkspaceId(workspaceId)
       setView({ kind: 'workspace', workspaceId, projectId })
@@ -489,7 +627,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           .catch(console.error)
       })()
     },
-    [fetchWorkspacesForProject]
+    [fetchWorkspacesForProject, isProjectLocked]
   )
   // Sync the handleSelectWorkspace ref after the callback is defined — placed
   // here (after declaration) so the linter can confirm no forward-reference
@@ -540,37 +678,13 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // launched claude process inherits Electron's own cwd (effectively the
   // user's home directory) instead of the workspace's project directory —
   // that was a real bug here. WorkspaceView always passes workspace.cwd (see
-  // its own terminal.mount call sites); this path must do the same. Since
-  // onWorkspaceRequestOpen only carries {workspaceId, focus} (no projectId),
-  // and a workspace freshly created via `ws new --background` may not be in
-  // workspacesByProject yet, we resolve cwd via window.api.workspaces.open()
-  // below, which reads the DB row directly and is authoritative regardless of
-  // renderer state.
-  const backgroundMountWorkspace = useCallback((workspaceId: string): void => {
+  // its own terminal.mount call sites); this path must do the same.
+  // Renderer-originated background opens still acknowledge through
+  // workspaces.open before mounting, preserving the close/archive race guard.
+  // Orchestration-originated requests already hold the project mutation lease,
+  // so they carry main's authoritative cwd and skip that re-entrant mutation.
+  const backgroundMountWorkspace = useCallback((request: WorkspaceOpenRequest): void => {
     void (async (): Promise<void> => {
-      // Resolve the workspace's cwd BEFORE mounting. window.api.workspaces.open()
-      // reads straight from the DB (see openWorkspace() in src/main/workspaces.ts),
-      // so it's authoritative even for a workspace the renderer hasn't fetched
-      // into workspacesByProject yet (e.g. one just created by `ws new
-      // --background` from the CLI). This also doubles as the "genuinely open
-      // the workspace" call the code already needed to make (closedAt/
-      // lastOpenedAt), so we just do it first instead of after mount.
-      let cwd: string | undefined
-      try {
-        const opened = await window.api.workspaces.open(workspaceId)
-        cwd = opened.cwd
-        setWorkspacesByProject((prev) => {
-          const projectId = opened.projectId
-          const list = prev[projectId]
-          if (!list) return prev
-          return {
-            ...prev,
-            [projectId]: list.map((w) => (w.id === workspaceId ? opened : w))
-          }
-        })
-      } catch (err) {
-        console.error('[dashboard] background mount: failed to resolve workspace cwd:', err)
-      }
       try {
         const scaleFactor = window.devicePixelRatio ?? 1
         const rect = {
@@ -579,16 +693,28 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           w: Math.max(1, Math.round(window.innerWidth || 1)),
           h: Math.max(1, Math.round(window.innerHeight || 1))
         }
-        await window.api.terminal.mount(workspaceId, rect, scaleFactor, cwd)
-        // Mount can attach the surface as frontmost momentarily; hide it right
-        // away so it never becomes visible/steals draw time while the user is
-        // looking at a different workspace (or no workspace at all).
-        await window.api.terminal.hide(workspaceId).catch(() => {})
+        const opened = await mountWorkspaceInBackground(request, {
+          acknowledgeOpen: (workspaceId) => window.api.workspaces.open(workspaceId),
+          mount: (workspaceId, cwd) =>
+            window.api.terminal.mount(workspaceId, rect, scaleFactor, cwd),
+          hide: (workspaceId) => window.api.terminal.hide(workspaceId)
+        })
+        if (opened != null) {
+          setWorkspacesByProject((prev) => {
+            const projectId = opened.projectId
+            const list = prev[projectId]
+            if (!list) return prev
+            return {
+              ...prev,
+              [projectId]: list.map((w) => (w.id === request.workspaceId ? opened : w))
+            }
+          })
+        }
         // RACE-3: addon.mount unconditionally promotes this background-mounted
         // workspace to native visibility, transiently stealing it from whatever
         // the user is actually looking at. Re-promote the viewed workspace.
         const vid = selectedWorkspaceIdRef.current
-        if (vid && vid !== workspaceId) {
+        if (vid && vid !== request.workspaceId) {
           const remount = getActiveRemount()
           if (remount) remount()
         }
@@ -600,6 +726,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleToggleProjectExpand = useCallback(
     (id: string): void => {
+      // Classified + redacted: expand/collapse is a no-op. The Sidebar
+      // already hides the chevron on a redacted row, but this guard covers
+      // any caller reaching the handler directly.
+      if (isProjectLocked(id)) return
       setExpandedProjectIds((prev) => {
         const next = new Set(prev)
         if (next.has(id)) {
@@ -622,11 +752,14 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         return next
       })
     },
-    [fetchWorkspacesForProject]
+    [fetchWorkspacesForProject, isProjectLocked]
   )
 
   const handleSelectProject = useCallback(
     (id: string): void => {
+      // Classified + redacted: left-click on a redacted row is inert.
+      if (isProjectLocked(id)) return
+      setSidebarContext('workspaces')
       setSelectedProjectId(id)
       setSelectedWorkspaceId(null)
       setView({ kind: 'project', projectId: id })
@@ -643,14 +776,14 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         projectsLastWorkspaceId: null
       })
     },
-    [fetchWorkspacesForProject]
+    [fetchWorkspacesForProject, isProjectLocked]
   )
 
   // Restore the last Projects-surface location: workspace > project > empty
   // state. Reads the DEDICATED projectsLastViewKind/projectsLastProjectId/
   // projectsLastWorkspaceId fields — NOT lastViewKind/lastProjectId/
   // lastWorkspaceId — because handleSelectSurface's dashboard/panes branches
-  // (and handleSelectSettings/handleOpenUpdates) intentionally NULL/overwrite
+  // (and handleSelectSettings) intentionally NULL/overwrite
   // those shared fields for their own top-level-surface bookkeeping whenever
   // the user navigates to Home/Panes/Settings. The projectsLast* fields are
   // written ONLY by Projects navigation (handleSelectWorkspace/
@@ -695,6 +828,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // No resolvable last location — land on the empty state (ProjectsHome,
     // rendered by the 'sessions' view kind) and persist a genuinely-empty
     // selection on both the shared and Projects-scoped fields.
+    setSidebarContext('workspaces')
     setView({ kind: 'sessions' })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
@@ -708,19 +842,18 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [uiState, projects, handleSelectWorkspace, handleSelectProject])
 
-  // Switches the top-level SURFACE (dashboard | projects | panes) — wired
-  // from ActivityRail. Supersedes the old handleSelectNav/handleSelectPanes
-  // pair now that the surface switch lives in the rail instead of Sidebar's
-  // top nav.
+  // Switch the main destination when it also determines the sidebar context.
+  // Home and Settings are handled separately because they intentionally keep
+  // whichever tree the user came from mounted.
   const handleSelectSurface = useCallback(
-    (surface: 'dashboard' | 'projects' | 'panes'): void => {
-      if (surface === 'dashboard') {
+    (surface: 'home' | 'workspaces' | 'panes'): void => {
+      if (surface === 'home') {
         setView({ kind: 'dashboard' })
         setSelectedProjectId(null)
         setSelectedWorkspaceId(null)
         // NOTE: uiState read-coercion maps stored 'dashboard'→'sessions' on read (U1
-        // preserved this for legacy DB rows) — that's fine here: the rail derives the
-        // active surface from the LIVE `view` state (not from persisted lastViewKind),
+        // preserved this for legacy DB rows) — that's fine here: the shared nav derives
+        // its active destination from LIVE `view` state (not persisted lastViewKind),
         // so the dashboard surface still displays correctly during this session even
         // though a relaunch would coerce the persisted value back to sessions/Workspaces
         // (governed instead by defaultSurface, which IS 'dashboard'-aware).
@@ -730,13 +863,15 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         updateUiState({ lastViewKind: 'dashboard', lastProjectId: null, lastWorkspaceId: null })
         return
       }
-      if (surface === 'projects') {
+      if (surface === 'workspaces') {
+        setSidebarContext('workspaces')
         // Restore wherever the user last was within Projects (workspace/project/
         // empty state) instead of hardcoding the empty state and wiping the
         // persisted last-location — see restoreLastProjectsLocation above.
         restoreLastProjectsLocation()
         return
       }
+      setSidebarContext('panes')
       setView({ kind: 'panes' })
       setSelectedProjectId(null)
       setSelectedWorkspaceId(null)
@@ -788,11 +923,12 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   //
   // Uses the same zero-dep ref pattern as onNavigateTo so it never re-subscribes.
   useEffect(() => {
-    return window.api.workspaces.onWorkspaceRequestOpen(({ workspaceId, focus }) => {
-      if (!focus) {
-        backgroundMountWorkspace(workspaceId)
+    return window.api.workspaces.onWorkspaceRequestOpen((request) => {
+      if (!request.focus) {
+        backgroundMountWorkspace(request)
         return
       }
+      const { workspaceId } = request
       const byProject = workspacesByProjectRef.current
       const wsToProject = new Map<string, string>()
       for (const [projectId, wsList] of Object.entries(byProject)) {
@@ -966,7 +1102,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     for (const projectId of expanded) fetchWorkspacesForProject(projectId)
 
     // Honor openAtLastView toggle — when false, ignore the saved view and start at dashboard
-    if (!uiState.openAtLastView) return
+    if (!uiState.openAtLastView) {
+      setSidebarContext('panes')
+      return
+    }
 
     // Restore view: workspace > project > sessions > panes
     //
@@ -996,12 +1135,29 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // No concrete workspace/project to restore — land on the saved top-level
     // view if there is one, else fall back to the configured default surface.
     // See resolveLandingView (dashboard.helpers.ts) for the branch logic.
-    setView(resolveLandingView(uiState))
+    const landingView = resolveLandingView(uiState)
+    setSidebarContext(landingView.kind === 'panes' ? 'panes' : 'workspaces')
+    setView(landingView)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uiState, projectsLoading, projects])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const { available: updateAvailable, latest: updateLatest } = useUpdateAvailable()
+  // Auto-navigate away when privacy mode flips on (or a project is freshly
+  // marked classified) while the active view targets a now-locked project —
+  // same fallback pattern as the archived-workspace listener above (route to
+  // 'sessions' + persist the uiState nulls so a relaunch doesn't restore
+  // straight back into the classified project/workspace).
+  useEffect(() => {
+    if (view.kind !== 'project' && view.kind !== 'workspace') return
+    if (!isProjectLocked(view.projectId)) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to an external flip (privacyMode/project.classified going true), not a derived/cascading update; guarded so it only fires once per lock transition
+    setSelectedProjectId(null)
+    setSelectedWorkspaceId(null)
+    setView({ kind: 'sessions' })
+    window.api.uiState
+      .update({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
+      .catch(console.error)
+  }, [view, privacyMode, isProjectLocked])
 
   const handleSelectSettings = useCallback((): void => {
     setView({ kind: 'settings' })
@@ -1011,13 +1167,16 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
   }, [])
 
-  const handleOpenUpdates = useCallback((): void => {
-    setView({ kind: 'settings', section: 'orpheus-updates' })
-    setSelectedProjectId(null)
-    setSelectedWorkspaceId(null)
-    // Persist as 'sessions' — 'settings' is not in the DB enum; so on restore land on Workspaces
-    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
-  }, [])
+  const handleNavigateSidebar = useCallback(
+    (destination: SidebarDestination): void => {
+      if (destination === 'settings') {
+        handleSelectSettings()
+        return
+      }
+      handleSelectSurface(destination)
+    },
+    [handleSelectSettings, handleSelectSurface]
+  )
 
   const handleAddProject = useCallback(async (): Promise<void> => {
     setAddingProject(true)
@@ -1103,6 +1262,29 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     } catch (err) {
       console.error('[dashboard] project setPinned failed', err)
       window.api.projects.list().then(setProjects).catch(console.error)
+    }
+  }, [])
+
+  // Permanent declutter — hidden projects drop out of the sidebar/sessions
+  // view entirely regardless of privacy mode. Unhide only happens from
+  // Settings → Privacy, so this handler is one-directional.
+  const handleHideProject = useCallback(async (projectId: string): Promise<void> => {
+    try {
+      const updated = await window.api.projects.setHidden(projectId, true)
+      setProjects((arr) => arr.map((p) => (p.id === projectId ? updated : p)))
+      // If the hidden project (or a workspace inside it) was in view, route
+      // back to sessions — same fallback used by the classified auto-navigate
+      // effect, since a hidden project can no longer be rendered anywhere.
+      if (selectedProjectIdRef.current === projectId) {
+        setSelectedProjectId(null)
+        setSelectedWorkspaceId(null)
+        setView({ kind: 'sessions' })
+        window.api.uiState
+          .update({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
+          .catch(console.error)
+      }
+    } catch (err) {
+      console.error('[dashboard] project setHidden failed', err)
     }
   }, [])
 
@@ -1601,19 +1783,25 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const activeView = viewToSidebarActiveView(view)
 
-  // Which top-level surface ActivityRail highlights, and which secondary
-  // sidebar column (if any) renders to its right. null while in Settings —
-  // Sidebar (Projects) is still shown behind Settings so the tree stays
-  // visible/navigable while the settings panel is open.
-  const surface = deriveSurface(view.kind)
+  // Hidden projects are a permanent declutter — filtered out at the
+  // Sidebar/CollapsedProjectList pass-site only, so the raw `projects` state
+  // stays intact for Settings → Privacy (which needs the full list, hidden
+  // included, to drive the "Hidden projects" unhide list).
+  const sidebarProjects = useMemo(() => projects.filter((p) => !p.hidden), [projects])
+
+  // The main destination and sidebar context are intentionally separate:
+  // Home/Settings preserve the tree the user came from, while Workspaces and
+  // Panes switch both the content and the tree.
+  const activeDestination = viewToSidebarDestination(view.kind)
   const resolvedSidebarWidth = uiState?.sidebarWidth ?? UI_STATE_DEFAULTS.sidebarWidth
-  let secondaryColumn: React.JSX.Element | null = null
-  if (surface === 'panes') {
-    // Structural parity with the Projects <Sidebar> aside (Sidebar.tsx
-    // ~1463-1472) is deliberate: both asides must share the exact same
-    // non-width classes and collapsed mechanism (mounted at w-14 rather
-    // than unmounted) so switching Projects<->Panes never shifts the
-    // layout — see the "Sidebar shifts when switching surfaces" fix.
+  const sidebarNavigation = (
+    <SidebarNavigation activeDestination={activeDestination} onNavigate={handleNavigateSidebar} />
+  )
+  let secondaryColumn: React.JSX.Element
+  if (sidebarContext === 'panes') {
+    // Structural parity with the Workspaces <Sidebar> aside is deliberate:
+    // both expanded sidebars use the same width and shell classes. Dashboard
+    // unmounts the whole column below when sidebarCollapsed is true.
     secondaryColumn = (
       <aside
         className={[
@@ -1624,14 +1812,20 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         ].join(' ')}
         style={sidebarCollapsed ? undefined : { width: resolvedSidebarWidth + 'px' }}
       >
-        <PanelsSection collapsed={sidebarCollapsed} />
+        <PanelsSection
+          collapsed={sidebarCollapsed}
+          animateRunningStatus={view.kind === 'panes'}
+          onActivate={() => handleSelectSurface('panes')}
+        />
+        {sidebarNavigation}
       </aside>
     )
-  } else if (surface !== 'dashboard') {
+  } else {
     secondaryColumn = (
       <Sidebar
         collapsed={sidebarCollapsed}
-        projects={projects}
+        footer={sidebarNavigation}
+        projects={sidebarProjects}
         projectsLoading={projectsLoading}
         selectedProjectId={selectedProjectId}
         selectedWorkspaceId={selectedWorkspaceId}
@@ -1642,6 +1836,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         workspaceCountInline={uiState?.workspaceCountInline ?? true}
         sidebarWidth={resolvedSidebarWidth}
         fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
+        privacyMode={privacyMode}
+        peeks={peeks}
         pinnedItems={pinnedItems}
         onSelectProject={handleSelectProject}
         onAddProject={handleAddProject}
@@ -1656,6 +1852,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         onCloseWorkspace={handleCloseWorkspace}
         onTogglePinWorkspace={handleToggleWorkspacePin}
         onTogglePinProject={handleToggleProjectPin}
+        onHideProject={handleHideProject}
+        onRevealProject={revealProject}
         onReorderProjects={handleReorderProjects}
         onReorderProjectsByActivity={handleReorderProjectsByActivity}
         onReorderWorkspaces={handleReorderWorkspaces}
@@ -1673,17 +1871,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       />
 
       <div className="flex flex-1 min-h-0">
-        <ActivityRail
-          activeSurface={surface}
-          settingsActive={view.kind === 'settings'}
-          updateAvailable={updateAvailable}
-          updateLatest={updateLatest}
-          onSelectSurface={handleSelectSurface}
-          onSelectSettings={handleSelectSettings}
-          onOpenUpdates={handleOpenUpdates}
-        />
-
-        {secondaryColumn}
+        {!sidebarCollapsed && secondaryColumn}
 
         <main
           className={

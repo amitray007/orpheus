@@ -26,7 +26,9 @@ import {
   Coffee,
   SquaresFour,
   Compass,
-  ShareNetwork
+  ShareNetwork,
+  EyeSlash,
+  Clock
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -86,6 +88,16 @@ const OrpheusWorkbenchSection = lazy(() =>
     default: m.OrpheusWorkbenchSection
   }))
 )
+const OrpheusAgentToolsSection = lazy(() =>
+  import('./settings/OrpheusAgentToolsSection').then((m) => ({
+    default: m.OrpheusAgentToolsSection
+  }))
+)
+const OrpheusAutomationsSection = lazy(() =>
+  import('./settings/OrpheusAutomationsSection').then((m) => ({
+    default: m.OrpheusAutomationsSection
+  }))
+)
 const OrpheusNavigationSection = lazy(() =>
   import('./settings/OrpheusNavigationSection').then((m) => ({
     default: m.OrpheusNavigationSection
@@ -106,6 +118,9 @@ const OrpheusWorkspacesSection = lazy(() =>
 )
 const OrpheusKeepAwakeSection = lazy(() =>
   import('./settings/OrpheusKeepAwakeSection').then((m) => ({ default: m.OrpheusKeepAwakeSection }))
+)
+const OrpheusPrivacySection = lazy(() =>
+  import('./settings/OrpheusPrivacySection').then((m) => ({ default: m.OrpheusPrivacySection }))
 )
 const OrpheusUpdatesSection = lazy(() =>
   import('./settings/OrpheusUpdatesSection').then((m) => ({ default: m.OrpheusUpdatesSection }))
@@ -169,10 +184,13 @@ export type SectionId =
   | 'orpheus-navigation'
   | 'orpheus-terminal'
   | 'orpheus-workbench'
+  | 'orpheus-agent-tools'
+  | 'orpheus-automations'
   | 'orpheus-window'
   | 'orpheus-notifications'
   | 'orpheus-workspaces'
   | 'orpheus-keep-awake'
+  | 'orpheus-privacy'
   | 'orpheus-updates'
   | 'orpheus-model-routing'
   | 'orpheus-status'
@@ -231,6 +249,18 @@ const GROUPS: SectionGroup[] = [
         icon: SquaresFour,
         Component: OrpheusWorkbenchSection
       },
+      {
+        id: 'orpheus-agent-tools',
+        label: 'Agent Tools',
+        icon: Wrench,
+        Component: OrpheusAgentToolsSection
+      },
+      {
+        id: 'orpheus-automations',
+        label: 'Automations',
+        icon: Clock,
+        Component: OrpheusAutomationsSection
+      },
       { id: 'orpheus-window', label: 'Window', icon: AppWindow, Component: OrpheusWindowSection },
       {
         id: 'orpheus-notifications',
@@ -249,6 +279,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Keep Awake',
         icon: Coffee,
         Component: OrpheusKeepAwakeSection
+      },
+      {
+        id: 'orpheus-privacy',
+        label: 'Privacy',
+        icon: EyeSlash,
+        Component: OrpheusPrivacySection
       },
       {
         id: 'orpheus-updates',

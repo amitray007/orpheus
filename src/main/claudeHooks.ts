@@ -2,7 +2,8 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import type { ClaudeHookEntry, ClaudeHookDraft } from '../shared/types'
-import { listProjects } from './projects'
+import { getProject, listProjects } from './projects'
+import { resolveProjectResourcePath } from './projectResourceScope'
 
 const EVENT_ORDER = [
   'SessionStart',
@@ -15,6 +16,9 @@ const EVENT_ORDER = [
   'PreCompact',
   'Notification'
 ]
+const SETTINGS_FILENAME = 'settings.json'
+const MAX_CONTROL_RESOURCE_FILE_BYTES = 1024 * 1024
+const MAX_CONTROL_RESOURCE_ENTRIES = 256
 
 function eventRank(event: string): number {
   const idx = EVENT_ORDER.indexOf(event)
@@ -82,12 +86,18 @@ function parseHooksFile(
   base: Omit<
     ClaudeHookEntry,
     'event' | 'matcher' | 'type' | 'command' | 'matcherEntryIdx' | 'hookIdx'
-  >
+  >,
+  options: { maxBytes?: number; stableError?: string } = {}
 ): ClaudeHookEntry[] {
   let raw: string
   try {
+    if (options.maxBytes != null && fs.statSync(filePath).size > options.maxBytes) {
+      if (options.stableError != null) throw new Error(options.stableError)
+      return []
+    }
     raw = fs.readFileSync(filePath, 'utf-8')
   } catch {
+    if (options.stableError != null) throw new Error(options.stableError)
     // File missing or unreadable — not an error, just nothing to show
     return []
   }
@@ -96,6 +106,7 @@ function parseHooksFile(
   try {
     parsed = JSON.parse(raw)
   } catch (err) {
+    if (options.stableError != null) throw new Error(options.stableError)
     console.warn('[claudeHooks] failed to parse', filePath, err)
     return []
   }
@@ -121,11 +132,11 @@ function parseHooksFile(
 export function listClaudeHooks(): ClaudeHookEntry[] {
   const all: ClaudeHookEntry[] = []
 
-  const userFilePath = nodePath.join(os.homedir(), '.claude', 'settings.json')
+  const userFilePath = nodePath.join(os.homedir(), '.claude', SETTINGS_FILENAME)
   all.push(...parseHooksFile(userFilePath, { source: 'user', filePath: userFilePath }))
 
   for (const project of listProjects()) {
-    const projFilePath = nodePath.join(project.path, '.claude', 'settings.json')
+    const projFilePath = nodePath.join(project.path, '.claude', SETTINGS_FILENAME)
     all.push(
       ...parseHooksFile(projFilePath, {
         source: 'project',
@@ -156,6 +167,38 @@ export function listClaudeHooks(): ClaudeHookEntry[] {
   })
 }
 
+/**
+ * Read one registered project's hooks file without inspecting user-global or
+ * other-project settings files.
+ */
+export function listProjectClaudeHooks(projectId: string): ClaudeHookEntry[] {
+  const project = getProject(projectId)
+  if (project == null) return []
+  const expectedPath = nodePath.join(project.path, '.claude', SETTINGS_FILENAME)
+  if (!fs.existsSync(expectedPath)) return []
+  const filePath = resolveProjectResourcePath(project.path, ['.claude', SETTINGS_FILENAME], 'file')
+  if (filePath == null) throw new Error('Project hook metadata is unavailable.')
+  return parseHooksFile(
+    filePath,
+    {
+      source: 'project',
+      projectId: project.id,
+      projectName: project.name,
+      filePath
+    },
+    {
+      maxBytes: MAX_CONTROL_RESOURCE_FILE_BYTES,
+      stableError: 'Project hook metadata is unavailable.'
+    }
+  )
+    .sort((a, b) => {
+      const eventOrder = eventRank(a.event) - eventRank(b.event)
+      if (eventOrder !== 0) return eventOrder
+      return (a.matcher ?? '').localeCompare(b.matcher ?? '')
+    })
+    .slice(0, MAX_CONTROL_RESOURCE_ENTRIES)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -168,12 +211,12 @@ function atomicWrite(filePath: string, content: string): void {
 
 function resolveFilePath(draft: Pick<ClaudeHookDraft, 'source' | 'projectId'>): string {
   if (draft.source === 'user') {
-    return nodePath.join(os.homedir(), '.claude', 'settings.json')
+    return nodePath.join(os.homedir(), '.claude', SETTINGS_FILENAME)
   }
   if (!draft.projectId) throw new Error('projectId is required when source is "project"')
   const project = listProjects().find((p) => p.id === draft.projectId)
   if (!project) throw new Error(`Project not found: ${draft.projectId}`)
-  return nodePath.join(project.path, '.claude', 'settings.json')
+  return nodePath.join(project.path, '.claude', SETTINGS_FILENAME)
 }
 
 function readAndParse(filePath: string): Record<string, unknown> {

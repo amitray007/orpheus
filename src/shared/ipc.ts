@@ -30,6 +30,7 @@ import type {
   DoctorResult,
   HealthReport,
   WorkspaceRecord,
+  WorkspaceOpenRequest,
   WorkspaceStatus,
   WorkspaceActivityDetail,
   AppUiState,
@@ -63,7 +64,9 @@ import type {
   ClaudeAuthTestResult,
   ClaudeUsageResult,
   ClaudeUsage,
+  ProviderUsageSnapshot,
   ClaudeActivitySummary,
+  ClaudeActivityWindowResult,
   ClaudeProjectSettings,
   ClaudeProjectSettingsOverrides,
   ClaudeWorkspaceSettingsOverrides,
@@ -110,6 +113,8 @@ import type {
   GhReviewCommentSide,
   GhSearchPr,
   GhSearchIssue,
+  GithubAccountSnapshot,
+  GithubContributionWindowResult,
   LocalReviewComment,
   PanePanel,
   PanePanelKind,
@@ -117,8 +122,17 @@ import type {
   PaneTerminal,
   SplitTree,
   OAuthStartResult,
-  OAuthPollResult
+  OAuthPollResult,
+  ControlToolsSettings,
+  ControlToolsUpdate,
+  ControlToolsReset,
+  AutomationDefinition,
+  AutomationDefinitionDraft,
+  AutomationCatalog,
+  AutomationRunWithEligibility,
+  AutomationChangedEvent
 } from './types'
+import type { RendererControlAck, RendererControlRequest } from './workbenchControl'
 
 // ---------------------------------------------------------------------------
 // Invoke channels (request/response)
@@ -131,6 +145,38 @@ import type {
  * overload) and are migrated domain-by-domain in follow-up commits.
  */
 export interface InvokeChannelMap {
+  'control:ackRendererCommand': { req: [RendererControlAck]; res: boolean }
+  'control:rendererReady': { req: []; res: void }
+  'controlTools:get': { req: []; res: ControlToolsSettings }
+  'controlTools:update': { req: [ControlToolsUpdate]; res: ControlToolsSettings }
+  'controlTools:reset': { req: [ControlToolsReset]; res: ControlToolsSettings }
+  'automations:list': {
+    req: [{ enabledOnly?: boolean }]
+    res: AutomationDefinition[]
+  }
+  'automations:get': { req: [{ id: string }]; res: AutomationDefinition }
+  'automations:catalog': { req: []; res: AutomationCatalog }
+  'automations:create': {
+    req: [{ draft: AutomationDefinitionDraft }]
+    res: AutomationDefinition
+  }
+  'automations:update': {
+    req: [{ id: string; expectedUpdatedAt: number; draft: AutomationDefinitionDraft }]
+    res: AutomationDefinition
+  }
+  'automations:setEnabled': {
+    req: [{ id: string; expectedUpdatedAt: number; enabled: boolean }]
+    res: AutomationDefinition
+  }
+  'automations:delete': {
+    req: [{ id: string; expectedUpdatedAt: number }]
+    res: AutomationDefinition
+  }
+  'automations:listRuns': {
+    req: [{ automationId?: string; limit?: number }]
+    res: AutomationRunWithEligibility[]
+  }
+  'automations:retryRun': { req: [{ runId: string }]; res: AutomationRunWithEligibility }
   'app:getVersion': { req: []; res: string }
   'app:getPaths': { req: []; res: { userData: string; logs: string } }
   'app:offeredModes': {
@@ -143,6 +189,8 @@ export interface InvokeChannelMap {
   'health:get': { req: []; res: HealthReport }
   'window:openDevTools': { req: []; res: void }
   'window:reload': { req: []; res: void }
+  'window:isVisible': { req: []; res: boolean }
+  'window:getNativeOcclusionVisible': { req: []; res: boolean | null }
   'config:openFolder': { req: []; res: string | null }
   'orpheusConfig:get': {
     req: [{ projectId: string }]
@@ -175,6 +223,8 @@ export interface InvokeChannelMap {
   'projects:reorder': { req: [{ orderedIds: string[] }]; res: void }
   'projects:reorderByActivity': { req: []; res: string[] }
   'projects:setPinned': { req: [{ id: string; pinned: boolean }]; res: ProjectRecord }
+  'projects:setClassified': { req: [{ id: string; classified: boolean }]; res: ProjectRecord }
+  'projects:setHidden': { req: [{ id: string; hidden: boolean }]; res: ProjectRecord }
   'projects:refreshGithub': { req: [string]; res: void }
   'workspaces:listForProject': {
     req: [{ projectId: string; scope?: 'active' | 'archived' | 'all' }]
@@ -329,6 +379,11 @@ export interface InvokeChannelMap {
   // only ever stores the success shape, so `value` is `ClaudeUsage`, never
   // `unavailable`. `null` when no cache row exists yet (cold start).
   'claude:usage:cached': { req: []; res: { value: ClaudeUsage; fetchedAt: number } | null }
+  'providers:usage': { req: [{ force?: boolean }]; res: ProviderUsageSnapshot }
+  'providers:usage:cached': {
+    req: []
+    res: { value: ProviderUsageSnapshot; fetchedAt: number } | null
+  }
   // Dashboard "Your pulse" real activity — scanned directly off the on-disk
   // ~/.claude/projects/**/*.jsonl transcript store (src/main/claudeActivity.ts),
   // NOT the Orpheus `sessions` table, so it reflects ALL Claude usage, not
@@ -338,6 +393,10 @@ export interface InvokeChannelMap {
   'claude:activity:cached': {
     req: []
     res: { value: ClaudeActivitySummary; fetchedAt: number } | null
+  }
+  'claude:activityWindow': {
+    req: [{ weekOffset: number; force?: boolean }]
+    res: ClaudeActivityWindowResult
   }
   'claudeProjectSettings:get': { req: [{ projectId: string }]; res: ClaudeProjectSettings }
   'claudeProjectSettings:update': {
@@ -424,13 +483,25 @@ export interface InvokeChannelMap {
   // getMyOpenPrs/getMyIssues for the full field-shape research + cache
   // contract. Total (never rejects) — both resolve to [] on any gh failure
   // mode; the Dashboard tables render their empty state in that case.
-  'github:myOpenPrs': { req: []; res: GhSearchPr[] }
-  'github:myIssues': { req: []; res: GhSearchIssue[] }
+  'github:myOpenPrs': { req: [{ force?: boolean }]; res: GhSearchPr[] }
+  'github:myIssues': { req: [{ force?: boolean }]; res: GhSearchIssue[] }
   // Instant, disk-backed companions to the two channels above — read the
   // last-persisted successful fetch (Dashboard D2 stale-while-revalidate).
   // `null` when no cache row exists yet (cold start).
   'github:myOpenPrs:cached': { req: []; res: { value: GhSearchPr[]; fetchedAt: number } | null }
   'github:myIssues:cached': { req: []; res: { value: GhSearchIssue[]; fetchedAt: number } | null }
+  'github:accountSnapshot': {
+    req: [{ force?: boolean }]
+    res: GithubAccountSnapshot
+  }
+  'github:accountSnapshot:cached': {
+    req: []
+    res: { value: GithubAccountSnapshot; fetchedAt: number } | null
+  }
+  'github:contributionWindow': {
+    req: [{ weekOffset: number; force?: boolean }]
+    res: GithubContributionWindowResult
+  }
   // Dashboard D4 — refresh the signed-in gh user's display name on each app
   // open. Resolves via `gh api user`, persists the result to app_ui_state's
   // github_username column, and returns the resolved display name (name ||
@@ -634,6 +705,10 @@ export interface InvokeChannelMap {
   // Managed routing proxy (model-routing unit 04) — see src/main/routingProxy/.
   'routingProxy:getState': { req: []; res: RoutingProxySnapshot }
   'routingProxy:setEnabled': { req: [{ enabled: boolean }]; res: RoutingProxySnapshot }
+  'routingProxy:setPortConfiguration': {
+    req: [{ mode: 'automatic' } | { mode: 'custom'; port: number }]
+    res: RoutingProxySnapshot
+  }
   'routingProxy:install': { req: []; res: RoutingProxySnapshot }
   'routingProxy:getAssetInfo': { req: []; res: RoutingProxyAssetInfo | null }
   'routingProxy:checkForUpdate': { req: []; res: RoutingProxyUpdateCheckResult }
@@ -879,6 +954,9 @@ export type Res<C extends InvokeChannel> = InvokeChannelMap[C]['res']
  * own `overlayRenderer:*` channels and is out of scope here.)
  */
 export interface RendererPushMap {
+  'control:rendererCommand': RendererControlRequest
+  'automations:changed': AutomationChangedEvent
+  'window:visibilityChanged': { visible: boolean }
   'addon:actionTrace': { tagName: string }
   'terminal:canInjectChanged': { workspaceId: string; canInject: boolean }
   'terminal:sleepStateChanged': { workspaceId: string; sleeping: boolean }
@@ -909,10 +987,11 @@ export interface RendererPushMap {
     detail: WorkspaceActivityDetail
   }>
   'workspace:navigateTo': { workspaceId: string; projectId?: string }
-  'workspace:requestOpen': { workspaceId: string; focus?: boolean }
+  'workspace:requestOpen': WorkspaceOpenRequest
   'workspaces:created': { workspace: WorkspaceRecord }
   'workspaces:archived': { workspaceId: string; projectId: string }
   'workspaces:changed': { workspace: WorkspaceRecord }
+  'projects:changed': { project: ProjectRecord }
   'uiState:changed': AppUiState
   'git:statusChanged': { workspaceId: string; status: GitStatus }
   'github:prChanged': { workspaceId: string; pr: GhPullRequest | null }
@@ -934,6 +1013,7 @@ export interface RendererPushMap {
   // unavailable ticks are NOT pushed — the renderer keeps showing last-good
   // cached data.
   'claude:usagePushed': ClaudeUsage
+  'providers:usagePushed': ProviderUsageSnapshot
   // Dashboard "Your pulse" background poller (see src/main/claudeActivityPoller.ts)
   // — pushed on each successful scan tick so the renderer updates silently
   // in place. Same "don't push on failure" contract as claude:usagePushed.
@@ -981,6 +1061,9 @@ export type PushPayload<C extends PushChannel> = RendererPushMap[C]
  * to compile if the two ever drift apart.
  */
 export const PUSH_CHANNELS = {
+  controlRendererCommand: 'control:rendererCommand',
+  automationsChanged: 'automations:changed',
+  windowVisibilityChanged: 'window:visibilityChanged',
   addonActionTrace: 'addon:actionTrace',
   terminalCanInjectChanged: 'terminal:canInjectChanged',
   terminalSleepStateChanged: 'terminal:sleepStateChanged',
@@ -996,6 +1079,7 @@ export const PUSH_CHANNELS = {
   workspacesCreated: 'workspaces:created',
   workspacesArchived: 'workspaces:archived',
   workspacesChanged: 'workspaces:changed',
+  projectsChanged: 'projects:changed',
   uiStateChanged: 'uiState:changed',
   gitStatusChanged: 'git:statusChanged',
   githubPrChanged: 'github:prChanged',
@@ -1007,6 +1091,7 @@ export const PUSH_CHANNELS = {
   routingProxyRefreshProgress: 'routingProxy:refreshProgress',
   statusChange: 'status:change',
   claudeUsagePushed: 'claude:usagePushed',
+  providerUsagePushed: 'providers:usagePushed',
   claudeActivityPushed: 'claude:activityPushed',
   actionsSubscriptionUpdate: 'actions:subscription-update',
   diagStream: 'diag:stream',

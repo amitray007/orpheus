@@ -1,6 +1,6 @@
 import type React from 'react'
 import { memo, useRef } from 'react'
-import { Plus, PushPin } from '@phosphor-icons/react'
+import { Plus, PushPin, Lock } from '@phosphor-icons/react'
 import type { ProjectRecord, WorkspaceRecord } from '@shared/types'
 import { Identicon } from '../Identicon'
 import {
@@ -30,6 +30,10 @@ interface CollapsedProjectListProps {
   onAddProject: () => void
   /** Non-archived workspaces grouped by projectId — used to build the project popover. */
   workspacesByProject: Record<string, WorkspaceRecord[]>
+  /** Global privacy-mode toggle. Classified projects render as an inert lock tile while on. */
+  privacyMode: boolean
+  /** projectId → expiresAt (epoch ms) for projects currently peeked — peeked tiles behave normally. */
+  peeks: Map<string, number>
 }
 
 // Maps WorkspaceActivityDetail to the state union used by the project popover.
@@ -51,6 +55,8 @@ interface ProjectTileProps {
   workspaces: WorkspaceRecord[]
   onSelectProject: (id: string) => void
   tileClass: string
+  /** True when this project should render as an inert lock tile (privacy on, classified, not peeked). */
+  locked: boolean
 }
 
 const ProjectTile = memo(function ProjectTile({
@@ -59,12 +65,15 @@ const ProjectTile = memo(function ProjectTile({
   fetchGithubAvatars,
   workspaces,
   onSelectProject,
-  tileClass
+  tileClass,
+  locked
 }: ProjectTileProps): React.JSX.Element {
   const buttonRef = useRef<HTMLButtonElement>(null)
   const hoverCard = useOverlayHoverCard({ openDelay: 150, closeDelay: 80 })
 
   function handleMouseEnter(): void {
+    // Locked tile: no hover card — it would leak the project name/workspaces.
+    if (locked) return
     hoverCard.handleMouseEnter(() => {
       if (!buttonRef.current) return
 
@@ -111,29 +120,35 @@ const ProjectTile = memo(function ProjectTile({
     <button
       ref={buttonRef}
       type="button"
-      onClick={() => onSelectProject(p.id)}
+      // Locked tile: click is inert — right-click "Reveal this project" lives
+      // in the expanded sidebar only, matching the redacted ProjectRow.
+      onClick={locked ? undefined : () => onSelectProject(p.id)}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      title={p.name}
-      aria-label={p.name}
+      title={locked ? 'Classified' : p.name}
+      aria-label={locked ? 'Classified project' : p.name}
       className={[
         tileClass,
-        isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay',
-        'cursor-pointer'
+        locked ? 'cursor-default' : isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay',
+        locked ? '' : 'cursor-pointer'
       ].join(' ')}
     >
-      <span className="relative inline-flex items-center flex-shrink-0">
-        <Identicon
-          seed={p.path}
-          size={22}
-          avatarUrl={fetchGithubAvatars ? p.githubAvatarUrl : null}
-        />
-        {p.pinnedAt !== null && (
-          <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-surface-raised border border-border-default flex items-center justify-center pointer-events-none">
-            <PushPin size={6} weight="fill" className="text-accent" />
-          </span>
-        )}
-      </span>
+      {locked ? (
+        <Lock size={16} weight="fill" className="text-text-muted" />
+      ) : (
+        <span className="relative inline-flex items-center flex-shrink-0">
+          <Identicon
+            seed={p.path}
+            size={22}
+            avatarUrl={fetchGithubAvatars ? p.githubAvatarUrl : null}
+          />
+          {p.pinnedAt !== null && (
+            <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-surface-raised border border-border-default flex items-center justify-center pointer-events-none">
+              <PushPin size={6} weight="fill" className="text-accent" />
+            </span>
+          )}
+        </span>
+      )}
     </button>
   )
 })
@@ -150,7 +165,9 @@ export const CollapsedProjectList = memo(function CollapsedProjectList({
   addingProject,
   onSelectProject,
   onAddProject,
-  workspacesByProject
+  workspacesByProject,
+  privacyMode,
+  peeks
 }: CollapsedProjectListProps): React.JSX.Element {
   // Every entry in the collapsed rail renders inside an identical fixed-size
   // tile (TILE square, centered content, shrink-0) so heterogeneous content —
@@ -186,6 +203,7 @@ export const CollapsedProjectList = memo(function CollapsedProjectList({
             workspaces={workspacesByProject[p.id] ?? []}
             onSelectProject={onSelectProject}
             tileClass={TILE}
+            locked={privacyMode && p.classified && !peeks.has(p.id)}
           />
         ))}
     </div>

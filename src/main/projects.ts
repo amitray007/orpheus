@@ -1,3 +1,4 @@
+import { BrowserWindow } from 'electron'
 import { getDb } from './db'
 import type { ProjectRecord } from '../shared/types'
 import { importSessionsForProject } from './sessions'
@@ -6,6 +7,8 @@ import { refreshGithubData } from './githubAvatar'
 import * as nodePath from 'node:path'
 import { invalidateClaudeProjectSettingsCache } from './claudeProjectSettings'
 import { encodePathToClaudeDir } from './claudeProjectDir'
+import { markRuntimeResourceScopeChanged } from './controlPlane/runtimeResourceScopeRevision'
+import { PUSH_CHANNELS } from '../shared/ipc'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -26,6 +29,9 @@ type ProjectRow = {
   github_repo: string | null
   github_avatar_url: string | null
   github_checked_at: number | null
+  // v66
+  classified: number
+  hidden: number
 }
 
 function rowToRecord(row: ProjectRow): ProjectRecord {
@@ -43,7 +49,10 @@ function rowToRecord(row: ProjectRow): ProjectRecord {
     githubOwner: row.github_owner ?? null,
     githubRepo: row.github_repo ?? null,
     githubAvatarUrl: row.github_avatar_url ?? null,
-    githubCheckedAt: row.github_checked_at ?? null
+    githubCheckedAt: row.github_checked_at ?? null,
+    // v66
+    classified: (row.classified ?? 0) === 1,
+    hidden: (row.hidden ?? 0) === 1
   }
 }
 
@@ -182,7 +191,8 @@ export function getProject(id: string): ProjectRecord | null {
 export function deleteProject(id: string): void {
   const db = getDb()
   // ON DELETE CASCADE in the schema removes associated workspaces and sessions.
-  db.prepare('DELETE FROM projects WHERE id = ?').run(id)
+  const result = db.prepare('DELETE FROM projects WHERE id = ?').run(id)
+  if (result.changes > 0) markRuntimeResourceScopeChanged()
   // Evict the settings cache entry so a stale value can't be served after the
   // row (and its CASCADE-deleted workspace settings) is gone.
   invalidateClaudeProjectSettingsCache(id)
@@ -206,4 +216,40 @@ export function setProjectPinned(id: string, pinned: boolean): ProjectRecord {
     .get(pinnedAt, id) as ProjectRow | undefined
   if (!row) throw new Error(`setProjectPinned: project not found: ${id}`)
   return rowToRecord(row)
+}
+
+// Broadcast helper — fan out a projects:changed event to all renderer windows
+// so any component holding its own copy of the projects list (e.g. Dashboard's
+// sidebar-driving state) can patch the record in place, mirroring
+// broadcastWorkspaceChanged in workspaces.ts. Settings → Privacy already
+// patches its own local list from the returned ProjectRecord; this covers
+// every OTHER subscriber.
+function broadcastProjectChanged(project: ProjectRecord): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(PUSH_CHANNELS.projectsChanged, { project })
+    }
+  }
+}
+
+export function setProjectClassified(id: string, classified: boolean): ProjectRecord {
+  const db = getDb()
+  const row = db
+    .prepare('UPDATE projects SET classified = ? WHERE id = ? RETURNING *')
+    .get(classified ? 1 : 0, id) as ProjectRow | undefined
+  if (!row) throw new Error(`setProjectClassified: project not found: ${id}`)
+  const record = rowToRecord(row)
+  broadcastProjectChanged(record)
+  return record
+}
+
+export function setProjectHidden(id: string, hidden: boolean): ProjectRecord {
+  const db = getDb()
+  const row = db
+    .prepare('UPDATE projects SET hidden = ? WHERE id = ? RETURNING *')
+    .get(hidden ? 1 : 0, id) as ProjectRow | undefined
+  if (!row) throw new Error(`setProjectHidden: project not found: ${id}`)
+  const record = rowToRecord(row)
+  broadcastProjectChanged(record)
+  return record
 }

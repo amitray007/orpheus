@@ -21,7 +21,6 @@ import type {
 } from '@shared/types'
 import { TRAFFIC_LIGHT_CLEARANCE } from '@shared/windowChrome'
 import { BRAILLE_FRAMES, useAnimatedFrame } from '@/lib/braille'
-import { ACTIVITY_RAIL_WIDTH } from './ActivityRail'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,10 +32,10 @@ interface TopBarProps {
   sidebarWidth: number
 }
 
-// macOS traffic lights + toggle button + status chip need at least this much
+// macOS traffic lights + toggle button + status chip + Keep Awake chip need at least this much
 // room before the workspace content starts.
-// 64 = two 32px controls (sidebar toggle + status chip) immediately after the spacer.
-const MIN_LEFT_WIDTH = TRAFFIC_LIGHT_CLEARANCE + 64
+// 92 = two 32px controls plus the 28px Keep Awake control after the spacer.
+const MIN_LEFT_WIDTH = TRAFFIC_LIGHT_CLEARANCE + 92
 
 // Components filtered out of the popover and settings list
 const HIDDEN_COMPONENT_NAMES = new Set(['Claude for Government', 'Claude Cowork'])
@@ -537,8 +536,11 @@ function keepAwakeStatusLine(s: KeepAwakeState): string {
   }
   if (s.mode === 'on') return 'On — staying awake.'
   if (s.mode === 'auto') {
-    return s.busyCount > 0
-      ? `Active — ${s.busyCount} agent${s.busyCount === 1 ? '' : 's'} running. Releases when idle.`
+    if (s.busyCount > 0) {
+      return `Active — ${s.busyCount} agent${s.busyCount === 1 ? '' : 's'} running. Releases when idle.`
+    }
+    return s.isHolding
+      ? 'Finishing — releases shortly.'
       : 'Watching — sleeps normally until agents run.'
   }
   return 'Off — normal sleep settings.'
@@ -569,6 +571,11 @@ function KeepAwakeChip({ sidebarWidth }: KeepAwakeChipProps): React.JSX.Element 
     }
   }, [])
 
+  const holding = state?.isHolding ?? false
+  const watching = state?.mode === 'auto' && !holding
+  const status = state ? keepAwakeStatusLine(state) : 'Loading current state.'
+  const tooltip = `Keep awake · ${status}`
+
   return (
     <>
       <button
@@ -578,12 +585,16 @@ function KeepAwakeChip({ sidebarWidth }: KeepAwakeChipProps): React.JSX.Element 
         onMouseDown={() => {
           if (open) suppressDismiss.current = true
         }}
-        aria-label="Keep awake"
-        title="Keep awake"
-        className="w-7 h-7 inline-flex items-center justify-center rounded-md cursor-pointer transition-colors focus-visible:outline-none text-text-secondary hover:bg-surface-overlay"
+        aria-label={tooltip}
+        title={tooltip}
+        aria-expanded={open}
+        className={[
+          'w-7 h-7 inline-flex items-center justify-center rounded-md cursor-pointer transition-colors focus-visible:outline-none hover:bg-surface-overlay',
+          holding ? 'text-accent' : watching ? 'text-text-secondary' : 'text-text-muted'
+        ].join(' ')}
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
-        <Coffee size={16} weight="regular" />
+        <Coffee size={16} weight={holding ? 'fill' : 'regular'} />
       </button>
       {open && state && (
         <KeepAwakePopover
@@ -745,22 +756,22 @@ export function TopBar({
   sidebarCollapsed,
   sidebarWidth
 }: TopBarProps): React.JSX.Element {
-  // Left section width spans the permanent activity rail PLUS the sidebar, so
-  // the workspace title slot (portaled into #topbar-workspace-slot) starts
-  // exactly where the content column below starts (rail + secondary sidebar +
-  // main). Without the rail term the slot sat ACTIVITY_RAIL_WIDTH px too far
-  // left — the "Claude Code" title/terminal-icon misalignment. Driven by
-  // sidebarWidth (not the collapsed flag), so toggling collapse does NOT shift
-  // the top bar; only a deliberate sidebar resize moves it. MIN_LEFT_WIDTH
-  // floors the sidebar term so the controls always fit.
-  const leftWidth = ACTIVITY_RAIL_WIDTH + Math.max(MIN_LEFT_WIDTH, sidebarWidth)
+  // A hidden sidebar contributes no layout width. The controls remain in an
+  // absolute layer, and the title slot gets internal clearance while hidden
+  // so its content stays usable without preserving an obsolete sidebar gap.
+  const sidebarSlotWidth = sidebarCollapsed ? 0 : sidebarWidth
+  const controlsWidth = Math.max(MIN_LEFT_WIDTH, sidebarSlotWidth)
+  const sidebarToggleLabel = sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'
 
   return (
     <header
-      className="h-11 flex items-stretch bg-surface-raised border-b border-border-default flex-shrink-0"
+      className="relative h-11 flex items-stretch bg-surface-raised border-b border-border-default flex-shrink-0"
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
-      <div className="flex items-center flex-shrink-0" style={{ width: leftWidth }}>
+      <div
+        className="absolute inset-y-0 left-0 z-10 flex items-center"
+        style={{ width: controlsWidth }}
+      >
         {/* Traffic-light spacer — reserves exactly TRAFFIC_LIGHT_CLEARANCE (88px) for the
             macOS window buttons. Derived from geometry in src/shared/windowChrome.ts,
             not a magic number. The lights are at a fixed window position that does not
@@ -771,12 +782,21 @@ export function TopBar({
         <button
           type="button"
           onClick={onToggleCollapsed}
-          aria-label="Toggle sidebar"
-          title="Toggle sidebar"
-          className="w-8 h-8 flex items-center justify-center rounded-md text-text-secondary hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          aria-label={sidebarToggleLabel}
+          aria-pressed={sidebarCollapsed}
+          title={sidebarToggleLabel}
+          className={[
+            'w-8 h-8 flex items-center justify-center rounded-md',
+            'transition-[color,background-color,transform] duration-150',
+            'active:scale-[0.97] motion-reduce:transform-none',
+            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+            sidebarCollapsed
+              ? 'text-accent'
+              : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
+          ].join(' ')}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
-          <SidebarSimple size={16} />
+          <SidebarSimple size={16} weight="regular" />
         </button>
 
         {/* Status chip — immediately after sidebar toggle */}
@@ -801,8 +821,15 @@ export function TopBar({
         <div className="flex-1" />
       </div>
 
-      {/* Workspace title bar gets portaled into here when in workspace view */}
-      <div id="topbar-workspace-slot" className="flex-1 flex items-center min-w-0" />
+      {/* Workspace title bar gets portaled into here when in workspace view. */}
+      <div
+        id="topbar-workspace-slot"
+        className="flex-1 flex items-center min-w-0"
+        style={{
+          marginLeft: sidebarSlotWidth,
+          paddingLeft: sidebarCollapsed ? controlsWidth : 0
+        }}
+      />
     </header>
   )
 }

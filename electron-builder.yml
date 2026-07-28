@@ -65,6 +65,12 @@ extraResources:
   # Lives at Contents/Resources/cli/cli.cjs; executed by the bin/orpheus shim.
   - from: packages/orpheus-cli/dist/cli.cjs
     to: cli/cli.cjs
+  # Standalone MCP stdio bridge. It is intentionally separate from the CLI
+  # registry so stdout remains reserved for MCP JSON-RPC frames.
+  - from: resources/bin/orpheus-mcp
+    to: bin/orpheus-mcp
+  - from: packages/orpheus-mcp/dist/mcp.cjs
+    to: mcp/mcp.cjs
 mac:
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:

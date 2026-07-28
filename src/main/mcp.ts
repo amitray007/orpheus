@@ -2,9 +2,12 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import type { DiscoveredMcpServer, McpServerDraft } from '../shared/types'
-import { listProjects } from './projects'
+import { getProject, listProjects } from './projects'
+import { resolveProjectResourcePath } from './projectResourceScope'
 
 const NAME_RE = /^[a-z0-9_-]+$/i
+const MAX_CONTROL_RESOURCE_FILE_BYTES = 1024 * 1024
+const MAX_CONTROL_RESOURCE_ENTRIES = 256
 
 type ProjectContext = { projectId: string; projectName: string }
 
@@ -80,11 +83,19 @@ function parseMcpServers(
   return result
 }
 
-function readJsonFile(path: string): unknown {
+function readJsonFile(
+  path: string,
+  options: { maxBytes?: number; stableError?: string } = {}
+): unknown {
   if (!fs.existsSync(path)) return null
   try {
+    if (options.maxBytes != null && fs.statSync(path).size > options.maxBytes) {
+      if (options.stableError != null) throw new Error(options.stableError)
+      return null
+    }
     return JSON.parse(fs.readFileSync(path, 'utf-8'))
   } catch (err) {
+    if (options.stableError != null) throw new Error(options.stableError)
     console.error('[mcp] failed to read', path, err)
     return null
   }
@@ -122,6 +133,31 @@ export function listMcpServers(): DiscoveredMcpServer[] {
     }
     return a.name.localeCompare(b.name)
   })
+}
+
+/**
+ * Read only one registered project's MCP metadata source. Control-plane
+ * project-scoped reads use this instead of listMcpServers() so they never
+ * inspect another project's .mcp.json as an implementation side effect.
+ */
+export function listProjectMcpServers(projectId: string): DiscoveredMcpServer[] {
+  const project = getProject(projectId)
+  if (project == null) return []
+  const expectedPath = nodePath.join(project.path, '.mcp.json')
+  if (!fs.existsSync(expectedPath)) return []
+  const filePath = resolveProjectResourcePath(project.path, ['.mcp.json'], 'file')
+  if (filePath == null) throw new Error('Project MCP metadata is unavailable.')
+  const parsed = readJsonFile(filePath, {
+    maxBytes: MAX_CONTROL_RESOURCE_FILE_BYTES,
+    stableError: 'Project MCP metadata is unavailable.'
+  })
+  if (parsed == null) return []
+  return parseMcpServers(parsed, 'project', filePath, {
+    projectId: project.id,
+    projectName: project.name
+  })
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, MAX_CONTROL_RESOURCE_ENTRIES)
 }
 
 // ---------------------------------------------------------------------------

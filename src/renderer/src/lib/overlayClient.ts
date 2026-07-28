@@ -760,8 +760,8 @@ export function chipTooltipId(actionId: string): string {
  *
  * `preferredSide` defaults to 'top' (the footer ActionChip/DropdownChip
  * origin usage, opening upward off a bottom-anchored chip). Callers anchored
- * elsewhere — e.g. the far-left ActivityRail, which only has room to open
- * rightward like showProjectCard/showHoverCard above — can override it.
+ * elsewhere — e.g. controls in a collapsed sidebar, which only have room to
+ * open rightward like showProjectCard/showHoverCard above — can override it.
  */
 export function showChipTooltip(
   id: string,

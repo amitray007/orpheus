@@ -97,7 +97,7 @@ import { printLines, printResult, printError } from '../output.js'
  * Accepts plain integers (as ms) or duration strings like '10m', '30s', '1h'.
  * Returns null if the string is invalid or results in a non-positive number.
  */
-function parseDurationMs(input: string): number | null {
+export function parseDurationMs(input: string): number | null {
   const trimmed = input.trim()
   if (trimmed === '') return null
 
@@ -377,7 +377,11 @@ registerCommand('ws wait', {
 
     const onEvent = makeOnEvent(workspaceIds, results)
 
-    let subscription: { close: () => void; done: Promise<void> } | null = null
+    let subscription: {
+      close: () => void
+      done: Promise<void>
+      timedOut: () => boolean
+    } | null = null
 
     try {
       // subscribe() synchronously calls resolveToken(); if AppNotRunningError is thrown
@@ -404,14 +408,21 @@ registerCommand('ws wait', {
       subscription?.close()
     }, timeoutMs)
 
-    // Wait for server to close (or client to force-close via timeout)
-    await subscription.done
-
-    // Clear client timeout if server closed first
-    if (clientTimeoutHandle != null) {
-      clearTimeout(clientTimeoutHandle)
-      clientTimeoutHandle = null
+    try {
+      // Wait for server to close (or client to force-close via timeout).
+      // HTTP/auth/transport failures reject with SubscriptionError and bubble
+      // to the CLI's ordinary error path; they are not workspace "died" events.
+      await subscription.done
+    } finally {
+      // Always clear the defense-in-depth timer, including when the stream
+      // rejects, so a transport error does not keep the CLI alive until the
+      // user-requested (potentially hours-long) wait deadline.
+      if (clientTimeoutHandle != null) {
+        clearTimeout(clientTimeoutHandle)
+        clientTimeoutHandle = null
+      }
     }
+    clientTimedOut ||= subscription.timedOut()
 
     // Fill any ids that never received a frame (should not happen normally but
     // guards against unexpected server closes or filtered frames).

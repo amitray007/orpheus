@@ -11,6 +11,7 @@ import type {
   SessionsPagedRequest,
   SessionsPagedResult,
   WorkspaceRecord,
+  WorkspaceOpenRequest,
   WorkspaceStatus,
   WorkspaceActivityDetail,
   CreateWorktreeParams,
@@ -53,7 +54,11 @@ import type {
   ClaudeAuthTestResult,
   ClaudeUsageResult,
   ClaudeUsage,
+  ProviderUsageSnapshot,
   ClaudeActivitySummary,
+  ClaudeActivityWindowResult,
+  GithubAccountSnapshot,
+  GithubContributionWindowResult,
   DiscoveredMcpServer,
   McpServerDraft,
   ClaudeSlashCommand,
@@ -67,6 +72,7 @@ import type {
   UpdateProgress,
   UpdateSnapshot,
   RoutingProxySnapshot,
+  RoutingProxyPortConfiguration,
   RoutingProxyRefreshProgress,
   RoutingProxyAssetInfo,
   RoutingProxyUpdateCheckResult,
@@ -96,8 +102,17 @@ import type {
   OverlayShowResult,
   OverlayEvent,
   TerminalMountResult,
-  TerminalRect
+  TerminalRect,
+  ControlToolsSettings,
+  ControlToolsUpdate,
+  ControlToolsReset,
+  AutomationDefinition,
+  AutomationDefinitionDraft,
+  AutomationCatalog,
+  AutomationRunWithEligibility,
+  AutomationChangedEvent
 } from '../shared/types'
+import type { RendererControlAck, RendererControlRequest } from '../shared/workbenchControl'
 
 // ---------------------------------------------------------------------------
 // Generic typed IPC helpers. `invoke` and `subscribe` are typed against the
@@ -121,6 +136,51 @@ function subscribe<C extends PushChannel>(
 
 // Custom APIs for renderer
 const api = {
+  control: {
+    markRendererReady: (): Promise<void> => invoke('control:rendererReady'),
+    acknowledgeRendererCommand: (ack: RendererControlAck): Promise<boolean> =>
+      invoke('control:ackRendererCommand', ack),
+    onRendererCommand: (cb: (request: RendererControlRequest) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.controlRendererCommand, cb)
+  },
+  controlTools: {
+    get: (): Promise<ControlToolsSettings> => invoke('controlTools:get'),
+    update: (update: ControlToolsUpdate): Promise<ControlToolsSettings> =>
+      invoke('controlTools:update', update),
+    reset: (reset: ControlToolsReset): Promise<ControlToolsSettings> =>
+      invoke('controlTools:reset', reset)
+  },
+  automations: {
+    list: (enabledOnly = false): Promise<AutomationDefinition[]> =>
+      invoke('automations:list', { enabledOnly }),
+    get: (id: string): Promise<AutomationDefinition> => invoke('automations:get', { id }),
+    catalog: (): Promise<AutomationCatalog> => invoke('automations:catalog'),
+    create: (draft: AutomationDefinitionDraft): Promise<AutomationDefinition> =>
+      invoke('automations:create', { draft }),
+    update: (
+      id: string,
+      expectedUpdatedAt: number,
+      draft: AutomationDefinitionDraft
+    ): Promise<AutomationDefinition> =>
+      invoke('automations:update', { id, expectedUpdatedAt, draft }),
+    setEnabled: (
+      id: string,
+      expectedUpdatedAt: number,
+      enabled: boolean
+    ): Promise<AutomationDefinition> =>
+      invoke('automations:setEnabled', { id, expectedUpdatedAt, enabled }),
+    delete: (id: string, expectedUpdatedAt: number): Promise<AutomationDefinition> =>
+      invoke('automations:delete', { id, expectedUpdatedAt }),
+    listRuns: (automationId?: string, limit?: number): Promise<AutomationRunWithEligibility[]> =>
+      invoke('automations:listRuns', {
+        ...(automationId === undefined ? {} : { automationId }),
+        ...(limit === undefined ? {} : { limit })
+      }),
+    retryRun: (runId: string): Promise<AutomationRunWithEligibility> =>
+      invoke('automations:retryRun', { runId }),
+    onChanged: (cb: (event: AutomationChangedEvent) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.automationsChanged, cb)
+  },
   app: {
     getVersion: (): Promise<string> => invoke('app:getVersion'),
     getPaths: (): Promise<{ userData: string; logs: string }> => invoke('app:getPaths'),
@@ -129,7 +189,12 @@ const api = {
   },
   window: {
     openDevTools: (): Promise<void> => invoke('window:openDevTools'),
-    reload: (): Promise<void> => invoke('window:reload')
+    reload: (): Promise<void> => invoke('window:reload'),
+    isVisible: (): Promise<boolean> => invoke('window:isVisible'),
+    getNativeOcclusionVisible: (): Promise<boolean | null> =>
+      invoke('window:getNativeOcclusionVisible'),
+    onVisibilityChanged: (cb: (event: { visible: boolean }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.windowVisibilityChanged, cb)
   },
   debug: {
     onActionTrace: (cb: (e: { tagName: string }) => void): (() => void) =>
@@ -250,6 +315,10 @@ const api = {
     reorderByActivity: (): Promise<string[]> => invoke('projects:reorderByActivity'),
     setPinned: (id: string, pinned: boolean): Promise<ProjectRecord> =>
       invoke('projects:setPinned', { id, pinned }),
+    setClassified: (id: string, classified: boolean): Promise<ProjectRecord> =>
+      invoke('projects:setClassified', { id, classified }),
+    setHidden: (id: string, hidden: boolean): Promise<ProjectRecord> =>
+      invoke('projects:setHidden', { id, hidden }),
     refreshGithub: (projectId: string): Promise<void> =>
       invoke('projects:refreshGithub', projectId),
     onGithubDataUpdated: (
@@ -260,7 +329,9 @@ const api = {
         githubAvatarUrl: string | null
         githubCheckedAt: number
       }) => void
-    ): (() => void) => subscribe(PUSH_CHANNELS.projectsGithubDataUpdated, cb)
+    ): (() => void) => subscribe(PUSH_CHANNELS.projectsGithubDataUpdated, cb),
+    onChanged: (cb: (project: ProjectRecord) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.projectsChanged, (e) => cb(e.project))
   },
   sessions: {
     listForProject: (
@@ -353,12 +424,8 @@ const api = {
       subscribe(PUSH_CHANNELS.workspacesChanged, cb),
     onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.terminalActiveWorkspaceChanged, cb),
-    onWorkspaceRequestOpen: (
-      cb: (e: { workspaceId: string; focus: boolean }) => void
-    ): (() => void) =>
-      subscribe(PUSH_CHANNELS.workspaceRequestOpen, (e) =>
-        cb({ workspaceId: e.workspaceId, focus: e.focus !== false })
-      ),
+    onWorkspaceRequestOpen: (cb: (e: WorkspaceOpenRequest) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspaceRequestOpen, cb),
     convertToLocal: (id: string): Promise<WorkspaceRecord> =>
       invoke('workspaces:convertToLocal', { id }),
     // Footer Model chip: persists a model override and suppresses the
@@ -447,11 +514,20 @@ const api = {
     // `null` when no cache row exists yet (cold start).
     activityCached: (): Promise<{ value: ClaudeActivitySummary; fetchedAt: number } | null> =>
       invoke('claude:activity:cached'),
+    activityWindow: (weekOffset: number, force = false): Promise<ClaudeActivityWindowResult> =>
+      invoke('claude:activityWindow', { weekOffset, force }),
     // Background poller push (src/main/claudeActivityPoller.ts) — fires on
     // each scan tick so the renderer can update the pulse numbers silently
     // in place, no manual refresh needed.
     onActivityPushed: (cb: (summary: ClaudeActivitySummary) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.claudeActivityPushed, cb)
+  },
+  providerUsage: {
+    get: (force = false): Promise<ProviderUsageSnapshot> => invoke('providers:usage', { force }),
+    cached: (): Promise<{ value: ProviderUsageSnapshot; fetchedAt: number } | null> =>
+      invoke('providers:usage:cached'),
+    onPushed: (cb: (snapshot: ProviderUsageSnapshot) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.providerUsagePushed, cb)
   },
   claudeProjectSettings: {
     get: (projectId: string): Promise<ClaudeProjectSettings> =>
@@ -622,8 +698,8 @@ const api = {
     // Dashboard Phase 2 (U5) — account-wide search, no workspaceId/cwd arg
     // (unlike every method above). See src/main/github.ts::getMyOpenPrs/
     // getMyIssues; total (never rejects), resolves to [] on any gh failure.
-    myOpenPrs: (): Promise<GhSearchPr[]> => invoke('github:myOpenPrs'),
-    myIssues: (): Promise<GhSearchIssue[]> => invoke('github:myIssues'),
+    myOpenPrs: (force = false): Promise<GhSearchPr[]> => invoke('github:myOpenPrs', { force }),
+    myIssues: (force = false): Promise<GhSearchIssue[]> => invoke('github:myIssues', { force }),
     // Dashboard D2 (stale-while-revalidate) — instant, disk-backed reads
     // (no network) for the initial cache-first paint. `null` when no cache
     // row exists yet (cold start).
@@ -631,6 +707,17 @@ const api = {
       invoke('github:myOpenPrs:cached'),
     myIssuesCached: (): Promise<{ value: GhSearchIssue[]; fetchedAt: number } | null> =>
       invoke('github:myIssues:cached'),
+    accountSnapshot: (force = false): Promise<GithubAccountSnapshot> =>
+      invoke('github:accountSnapshot', { force }),
+    accountSnapshotCached: (): Promise<{
+      value: GithubAccountSnapshot
+      fetchedAt: number
+    } | null> => invoke('github:accountSnapshot:cached'),
+    contributionWindow: (
+      weekOffset: number,
+      force = false
+    ): Promise<GithubContributionWindowResult> =>
+      invoke('github:contributionWindow', { weekOffset, force }),
     // Dashboard D4 — refresh the signed-in gh user's display name on each
     // app open (silent, fire-and-forget). Resolves to the resolved display
     // name (name || login), or null on any gh failure.
@@ -838,6 +925,9 @@ const api = {
     getState: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:getState'),
     setEnabled: (enabled: boolean): Promise<RoutingProxySnapshot> =>
       invoke('routingProxy:setEnabled', { enabled }),
+    setPortConfiguration: (
+      configuration: RoutingProxyPortConfiguration
+    ): Promise<RoutingProxySnapshot> => invoke('routingProxy:setPortConfiguration', configuration),
     install: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:install'),
     getAssetInfo: (): Promise<RoutingProxyAssetInfo | null> => invoke('routingProxy:getAssetInfo'),
     checkForUpdate: (): Promise<RoutingProxyUpdateCheckResult> =>

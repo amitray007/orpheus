@@ -18,6 +18,7 @@ import { setDiagCategoryFlags } from '../diagnostics'
 import { invalidateWatchdogCache } from '../orpheusNotify'
 import { rescheduleStatusPoll } from '../claudeStatus'
 import { setOverlayTheme } from '../overlayLayer'
+import { setPrivacyModeChecked } from '../appMenu'
 import { PUSH_CHANNELS } from '../../shared/ipc'
 import type { AppUiStatePatch, Theme } from '../../shared/types'
 import { handle } from './handle'
@@ -57,6 +58,7 @@ export function registerUiStateIpc(deps: UiStateIpcDeps): void {
     if (patch.staleAfterMinutes !== undefined) invalidateWatchdogCache()
     if (patch.autoCloseAfterMinutes !== undefined) invalidateWatchdogCache()
     if (patch.statusPollIntervalSec !== undefined) rescheduleStatusPoll()
+    if (patch.privacyMode !== undefined) setPrivacyModeChecked(result.privacyMode)
     syncDiagFlags()
     // Broadcast the updated state so renderer subscribers (e.g. WorkspaceFooter)
     // can react without polling.

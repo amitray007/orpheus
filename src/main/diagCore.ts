@@ -12,6 +12,8 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import type { DiagEvent, DiagCategory, DiagProcess, DiagLevel } from '../shared/types'
 import { Span, newTraceId, newSpanId } from '../shared/trace'
 import type { TraceContext, TraceRecord } from '../shared/trace'
+import { DIAG_EVENTS } from '../shared/diagEvents'
+import { redactLogRecord, redactLogString, redactLogValue } from './logRedaction'
 
 const RING_CAPACITY = 4000 // bounded; drop-oldest if the flusher falls behind
 
@@ -47,6 +49,136 @@ export function setDiagCategoryFlags(flags: {
 
 function isCategoryEnabled(c: DiagCategory): boolean {
   return categoryFlags[c] === true
+}
+
+const DIAG_CATEGORIES = new Set<DiagCategory>(['error', 'lifecycle', 'perf', 'anomaly', 'trace'])
+const DIAG_LEVELS = new Set<DiagLevel>(['debug', 'info', 'warn', 'error', 'fatal'])
+const DIAG_KINDS = new Set<NonNullable<DiagEvent['kind']>>(['span', 'event', 'mark'])
+const CURATED_EVENTS = new Set<string>(Object.values(DIAG_EVENTS))
+const CURATED_TRACE_NAMES = new Set([
+  'terminal.mount',
+  'terminal.mount:surface-created',
+  'terminal.mount:surface-reattached',
+  'launch.compose'
+])
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const TRACE_ID = /^t[0-9a-z]+$/
+const SPAN_ID = /^s[0-9a-z]+$/
+const MAX_EVENT_LENGTH = 160
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function canonicalPattern(value: unknown, pattern: RegExp): string | null {
+  if (typeof value !== 'string') return null
+  const redacted = redactLogString(value)
+  return redacted === value && pattern.test(redacted) ? redacted : null
+}
+
+function canonicalUuid(value: unknown): string | null {
+  return canonicalPattern(value, UUID)
+}
+
+function canonicalTraceId(value: unknown): string | null {
+  return canonicalPattern(value, TRACE_ID)
+}
+
+function canonicalSpanId(value: unknown): string | null {
+  return canonicalPattern(value, SPAN_ID)
+}
+
+/**
+ * Reconstruct a diagnostic event from an explicit allowlist. Both renderer
+ * and main events pass through this path so neither caller-controlled process
+ * identity/timestamp nor malformed identifiers reach subscribers/storage.
+ */
+function canonicalizeDiagEvent(
+  input: unknown,
+  processIdentity: 'main' | 'renderer',
+  receivedAt = Date.now()
+): DiagEvent | null {
+  try {
+    const normalized = redactLogValue(input)
+    if (!isRecord(normalized)) return null
+    const category = normalized['category']
+    const level = normalized['level']
+    const event = normalized['event']
+    if (
+      typeof category !== 'string' ||
+      !DIAG_CATEGORIES.has(category as DiagCategory) ||
+      typeof level !== 'string' ||
+      !DIAG_LEVELS.has(level as DiagLevel) ||
+      typeof event !== 'string' ||
+      event.length < 1 ||
+      event.length > MAX_EVENT_LENGTH
+    ) {
+      return null
+    }
+    const traceName = normalized['name']
+    if (
+      category === 'trace'
+        ? !CURATED_TRACE_NAMES.has(event) || traceName !== event
+        : !CURATED_EVENTS.has(event)
+    ) {
+      return null
+    }
+
+    const duration =
+      typeof normalized['durationMs'] === 'number' &&
+      Number.isFinite(normalized['durationMs']) &&
+      normalized['durationMs'] >= 0 &&
+      normalized['durationMs'] <= 24 * 60 * 60 * 1_000
+        ? Math.round(normalized['durationMs'])
+        : null
+    const kind = normalized['kind']
+    const canonicalKind =
+      typeof kind === 'string' && DIAG_KINDS.has(kind as NonNullable<DiagEvent['kind']>)
+        ? (kind as NonNullable<DiagEvent['kind']>)
+        : null
+    const data = isRecord(normalized['data']) ? redactLogRecord(normalized['data']) : null
+
+    const traceId = canonicalTraceId(normalized['traceId'])
+    const spanId = canonicalSpanId(normalized['spanId'])
+    if (category === 'trace' && (traceId == null || spanId == null)) return null
+
+    return {
+      ts: Number.isFinite(receivedAt) ? Math.max(0, Math.round(receivedAt)) : Date.now(),
+      process: processIdentity,
+      category: category as DiagCategory,
+      level: level as DiagLevel,
+      event,
+      workspaceId: canonicalUuid(normalized['workspaceId']),
+      sessionId: canonicalUuid(normalized['sessionId']),
+      durationMs: duration,
+      message:
+        typeof normalized['message'] === 'string'
+          ? redactLogString(normalized['message'])
+          : undefined,
+      data,
+      traceId,
+      spanId,
+      parentSpanId: canonicalSpanId(normalized['parentSpanId']),
+      name: category === 'trace' ? event : null,
+      kind: canonicalKind
+    }
+  } catch {
+    return null
+  }
+}
+
+export function canonicalizeRendererDiagEvent(
+  input: unknown,
+  receivedAt = Date.now()
+): DiagEvent | null {
+  return canonicalizeDiagEvent(input, 'renderer', receivedAt)
+}
+
+export function canonicalizeMainDiagEvent(
+  input: unknown,
+  receivedAt = Date.now()
+): DiagEvent | null {
+  return canonicalizeDiagEvent(input, 'main', receivedAt)
 }
 
 function pushRing(evt: DiagEvent): void {
@@ -86,30 +218,17 @@ export function logDiagMain(
 ): void {
   try {
     if (!isCategoryEnabled(evt.category) && diagSubscribers.size === 0) return
-    fanOut({
-      ts: evt.ts ?? Date.now(),
-      process: evt.process ?? 'main',
-      category: evt.category,
-      level: evt.level,
-      event: evt.event,
-      workspaceId: evt.workspaceId ?? null,
-      sessionId: evt.sessionId ?? null,
-      durationMs: evt.durationMs ?? null,
-      message: evt.message,
-      data: evt.data ?? null,
-      traceId: evt.traceId ?? null,
-      spanId: evt.spanId ?? null,
-      parentSpanId: evt.parentSpanId ?? null,
-      name: evt.name ?? null,
-      kind: evt.kind ?? null
-    })
+    const canonical = canonicalizeMainDiagEvent(evt)
+    if (canonical != null) fanOut(canonical)
   } catch {
     /* diagnostics must never throw into app code */
   }
 }
 
-export function ingestDiagEvent(evt: DiagEvent): void {
+export function ingestDiagEvent(input: unknown): void {
   try {
+    const evt = canonicalizeRendererDiagEvent(input)
+    if (evt == null) return
     if (!evt || typeof evt.event !== 'string') return
     if (!isCategoryEnabled(evt.category) && diagSubscribers.size === 0) return
     fanOut(evt)
@@ -124,9 +243,7 @@ const traceStore = new AsyncLocalStorage<TraceContext>()
 function emitTrace(rec: TraceRecord): void {
   try {
     if (!isCategoryEnabled('trace') && diagSubscribers.size === 0) return
-    fanOut({
-      ts: rec.ts,
-      process: 'main',
+    const canonical = canonicalizeMainDiagEvent({
       category: 'trace',
       level: rec.level,
       event: rec.name,
@@ -134,13 +251,14 @@ function emitTrace(rec: TraceRecord): void {
       sessionId: rec.sessionId ?? null,
       durationMs: rec.durationMs ?? null,
       message: undefined,
-      data: rec.data ?? null,
+      data: redactLogRecord(rec.data),
       traceId: rec.traceId,
       spanId: rec.spanId,
       parentSpanId: rec.parentSpanId ?? null,
       name: rec.name,
       kind: rec.kind
     })
+    if (canonical != null) fanOut(canonical)
   } catch {
     /* never throw */
   }

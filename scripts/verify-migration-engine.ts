@@ -196,12 +196,64 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
   for (const t of Object.keys(schema)) {
     assert.ok(introspectTable(sdb, t), `missing ${t}`)
   }
+  const paneOwner = (
+    sdb.prepare('PRAGMA table_info("pane_layouts")').all() as Array<{
+      name: string
+      type: string
+      notnull: number
+      dflt_value: string | null
+    }>
+  ).find((column) => column.name === 'agent_owner_workspace_id')
+  assert.deepEqual(
+    paneOwner == null
+      ? null
+      : {
+          type: paneOwner.type,
+          notnull: paneOwner.notnull,
+          dflt_value: paneOwner.dflt_value
+        },
+    { type: 'TEXT', notnull: 0, dflt_value: null },
+    'agent pane ownership must be nullable, server-owned text with no default owner'
+  )
   // idempotent on a fresh build
   const secondPlan = planSync(sdb, schema)
   if (secondPlan.length !== 0) {
     console.log('schema-fresh: non-empty second plan', JSON.stringify(secondPlan, null, 2))
   }
   assert.deepEqual(secondPlan, [], 'fresh build must be idempotent')
+
+  // Control-tool exposure is opt-out: no seed rows means every current and
+  // future category/tool starts enabled. Explicit rows round-trip through the
+  // declarative schema and converge without a data migration.
+  assert.equal(
+    (
+      sdb.prepare('SELECT COUNT(*) AS count FROM control_tool_category_preferences').get() as {
+        count: number
+      }
+    ).count,
+    0
+  )
+  assert.equal(
+    (
+      sdb.prepare('SELECT COUNT(*) AS count FROM control_tool_preferences').get() as {
+        count: number
+      }
+    ).count,
+    0
+  )
+  sdb
+    .prepare(
+      `INSERT INTO control_tool_category_preferences (category_id, enabled, updated_at)
+       VALUES ('workspaces', 0, 1)`
+    )
+    .run()
+  sdb
+    .prepare(
+      `INSERT INTO control_tool_preferences (operation_id, enabled, updated_at)
+       VALUES ('workspaces.rename', 0, 1)`
+    )
+    .run()
+  assert.deepEqual(planSync(sdb, schema), [], 'control-tool preferences must remain converged')
   console.log('✓ schema-fresh')
 }
 
@@ -255,6 +307,78 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
   const ref = new Database(':memory:')
   sync(ref, schema, { dbPath: ':memory:', legacyVersion: 0 })
   const refShape = normalizedShape(ref)
+
+  // Automation management adds append-only manual retry generations. A DB
+  // from the durable-automation foundation has neither lineage columns and
+  // still has the old two-column unique index. Reconcile it in place: the
+  // existing logical occurrence must become generation zero, and the index
+  // must widen so later retry generations can retain the same logical key.
+  {
+    const adb = new Database(':memory:')
+    adb.exec('PRAGMA foreign_keys = OFF')
+    for (const [tableName, def] of Object.entries(schema)) {
+      if (tableName === 'automation_runs') continue
+      adb.exec(renderCreateTable(tableName, def))
+      for (const [idxName, idxDef] of Object.entries(def.indexes ?? {})) {
+        adb.exec(renderIndex(tableName, idxName, idxDef))
+      }
+    }
+    adb.exec(`CREATE TABLE automation_runs (
+      id TEXT PRIMARY KEY NOT NULL,
+      automation_id TEXT NOT NULL,
+      trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('schedule','event')),
+      trigger_key TEXT NOT NULL,
+      trigger_occurred_at INTEGER NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN (
+        'queued','running','retry_wait','succeeded','failed','timed_out',
+        'interrupted','cancelled','budget_exhausted'
+      )),
+      attempt INTEGER NOT NULL,
+      queued_at INTEGER NOT NULL,
+      started_at INTEGER,
+      finished_at INTEGER,
+      next_attempt_at INTEGER,
+      result_code TEXT,
+      result_json TEXT,
+      error_json TEXT,
+      request_id TEXT,
+      audit_id TEXT,
+      FOREIGN KEY (automation_id) REFERENCES automation_definitions(id) ON DELETE CASCADE
+    )`)
+    adb.exec(
+      `CREATE UNIQUE INDEX idx_automation_runs_idempotency
+       ON automation_runs (automation_id, idempotency_key)`
+    )
+    adb.exec(`INSERT INTO automation_runs (
+      id, automation_id, trigger_kind, trigger_key, trigger_occurred_at,
+      idempotency_key, status, attempt, queued_at
+    ) VALUES (
+      'run-legacy', 'automation-legacy', 'event', 'event-legacy', 1,
+      'logical-key', 'failed', 1, 1
+    )`)
+
+    sync(adb, schema, { dbPath: ':memory:', legacyVersion: 0 })
+
+    assert.deepEqual(
+      adb
+        .prepare(
+          `SELECT retry_generation, retry_of_run_id
+           FROM automation_runs WHERE id = 'run-legacy'`
+        )
+        .get(),
+      { retry_generation: 0, retry_of_run_id: null },
+      'legacy automation runs must migrate to retry generation zero'
+    )
+    const retryIndexColumns = (
+      adb.prepare(`PRAGMA index_info("idx_automation_runs_idempotency")`).all() as Array<{
+        name: string
+      }>
+    ).map(({ name }) => name)
+    assert.deepEqual(retryIndexColumns, ['automation_id', 'idempotency_key', 'retry_generation'])
+    assert.deepEqual(normalizedShape(adb), refShape, 'automation retry schema did not converge')
+    assert.deepEqual(planSync(adb, schema), [], 'automation retry schema is not idempotent')
+  }
 
   // --- Fixture (a): a "v21-ish" workspaces DB -----------------------------
   // Hand-built legacy shape: workspaces has the OLD CHECK that allows the
@@ -516,14 +640,24 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
     // supplied explicitly; last_view_kind is deliberately omitted to exercise
     // its DEFAULT clause.
     adb.exec('INSERT INTO app_ui_state (id, updated_at) VALUES (1, 0)')
-    const row = adb.prepare('SELECT last_view_kind FROM app_ui_state WHERE id = 1').get() as {
+    const row = adb
+      .prepare(
+        'SELECT last_view_kind, routing_proxy_port_mode, routing_proxy_custom_port, routing_proxy_effective_port FROM app_ui_state WHERE id = 1'
+      )
+      .get() as {
       last_view_kind: string
+      routing_proxy_port_mode: string
+      routing_proxy_custom_port: number | null
+      routing_proxy_effective_port: number | null
     }
     assert.equal(
       row.last_view_kind,
       'sessions',
       `expected last_view_kind DEFAULT to be 'sessions', got '${row.last_view_kind}'`
     )
+    assert.equal(row.routing_proxy_port_mode, 'automatic')
+    assert.equal(row.routing_proxy_custom_port, null)
+    assert.equal(row.routing_proxy_effective_port, null)
 
     assert.deepEqual(
       planSync(adb, schema),
@@ -532,12 +666,114 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
     )
   }
 
-  console.log('✓ app_ui_state converges (last_view_kind defaults to sessions, idempotent)')
+  // Legacy app_ui_state rows must gain the durable port columns without
+  // losing unrelated persisted fields, and a second plan must remain empty.
+  {
+    const ldb = new Database(':memory:')
+    ldb.exec('PRAGMA foreign_keys = OFF')
+    for (const [tableName, def] of Object.entries(schema)) {
+      if (tableName === 'app_ui_state') continue
+      ldb.exec(renderCreateTable(tableName, def))
+      for (const [idxName, idxDef] of Object.entries(def.indexes ?? {})) {
+        ldb.exec(renderIndex(tableName, idxName, idxDef))
+      }
+    }
+    ldb.exec(`CREATE TABLE app_ui_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      last_view_kind TEXT NOT NULL DEFAULT 'sessions',
+      sidebar_collapsed INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    )`)
+    ldb.exec(
+      "INSERT INTO app_ui_state (id, last_view_kind, sidebar_collapsed, updated_at) VALUES (1, 'workspace', 1, 42)"
+    )
+
+    sync(ldb, schema, { dbPath: ':memory:', legacyVersion: 0 })
+    const legacy = ldb
+      .prepare(
+        'SELECT last_view_kind, sidebar_collapsed, updated_at, routing_proxy_port_mode, routing_proxy_custom_port, routing_proxy_effective_port FROM app_ui_state WHERE id = 1'
+      )
+      .get() as {
+      last_view_kind: string
+      sidebar_collapsed: number
+      updated_at: number
+      routing_proxy_port_mode: string
+      routing_proxy_custom_port: number | null
+      routing_proxy_effective_port: number | null
+    }
+    assert.deepEqual(legacy, {
+      last_view_kind: 'workspace',
+      sidebar_collapsed: 1,
+      updated_at: 42,
+      routing_proxy_port_mode: 'automatic',
+      routing_proxy_custom_port: null,
+      routing_proxy_effective_port: null
+    })
+    assert.deepEqual(planSync(ldb, schema), [], 'legacy app_ui_state migration must be idempotent')
+  }
+
+  console.log('✓ app_ui_state converges (port defaults, legacy row preservation, idempotent)')
   console.log('✓ convergence')
 }
 
 const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
   await import('../src/main/db/data-steps.ts')
+
+{
+  const diagnosticsStepName = 'diagnostics-pre-redaction-purge'
+  const purgeDb = new Database(':memory:')
+  purgeDb.exec(`
+    CREATE TABLE diagnostics_events (
+      id INTEGER PRIMARY KEY,
+      message TEXT
+    )
+  `)
+  purgeDb.exec(`
+    WITH RECURSIVE legacy_rows(id) AS (
+      VALUES(1)
+      UNION ALL
+      SELECT id + 1 FROM legacy_rows WHERE id < 50001
+    )
+    INSERT INTO diagnostics_events (id, message)
+    SELECT id, 'legacy' FROM legacy_rows
+  `)
+  assert.equal(
+    (purgeDb.prepare('SELECT COUNT(*) AS count FROM diagnostics_events').get() as { count: number })
+      .count,
+    50_001,
+    'the migration fixture must exceed the former 50,000-row cap'
+  )
+  ensureLedger(purgeDb)
+  const markApplied = purgeDb.prepare(
+    'INSERT INTO applied_data_steps (name, hash, applied_at) VALUES (?, ?, ?)'
+  )
+  for (const step of dataSteps) {
+    if (step.name !== diagnosticsStepName) markApplied.run(step.name, 'test', 0)
+  }
+
+  runDataSteps(purgeDb, { preRebuild: false })
+  assert.equal(
+    (purgeDb.prepare('SELECT COUNT(*) AS count FROM diagnostics_events').get() as { count: number })
+      .count,
+    0,
+    'the one-time diagnostics remediation step must purge legacy diagnostic history'
+  )
+  assert.ok(
+    purgeDb.prepare('SELECT 1 FROM applied_data_steps WHERE name = ?').get(diagnosticsStepName),
+    'the diagnostics purge must converge into the applied-data-step ledger'
+  )
+
+  purgeDb
+    .prepare('INSERT INTO diagnostics_events (id, message) VALUES (?, ?)')
+    .run(3, 'post-remediation')
+  runDataSteps(purgeDb, { preRebuild: false })
+  assert.equal(
+    (purgeDb.prepare('SELECT COUNT(*) AS count FROM diagnostics_events').get() as { count: number })
+      .count,
+    1,
+    'a converged diagnostics purge must not rerun on later startups'
+  )
+}
 
 {
   const dsdb = new Database(':memory:')

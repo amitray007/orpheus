@@ -53,12 +53,17 @@ import {
   writeRoutingProxyConfig
 } from '../src/main/routingProxy/config.ts'
 import {
+  canPublishManagedRoutingProxyRunning,
   checkRoutingProxyHealth,
   ensureHealthyForRouting,
-  waitForRoutingProxyReady,
+  probeRoutingProxyTcpReachability,
+  waitForManagedRoutingProxyReady,
+  waitForRoutingProxyTcpDiagnostic,
   type HealthCheckDeps,
+  type ManagedReadinessDeps,
   type RoutingProxyReadyDeps
 } from '../src/main/routingProxy/health.ts'
+import type { RoutingProxySpawnAttempt } from '../src/main/routingProxy/lifecycle.ts'
 import {
   checkRoutingProxyUpdate,
   type UpdateCheckDeps
@@ -70,9 +75,57 @@ import {
   isInstalled
 } from '../src/main/routingProxy/state.ts'
 import {
-  reclaimOrphanRoutingProxyPort,
-  type OrphanReclaimDeps
-} from '../src/main/routingProxy/orphan.ts'
+  isSameVariantRoutingProxy,
+  reclaimProvenOrphan,
+  type ListenerInspectionDeps,
+  type ListeningProcess
+} from '../src/main/routingProxy/inspection.ts'
+import {
+  AUTOMATIC_PORT_MAX,
+  AUTOMATIC_PORT_MIN,
+  assertValidAutomaticRoutingProxyEffectivePort,
+  automaticPortCandidates,
+  getPreferredRoutingProxyPort,
+  getRoutingProxyRuntime,
+  type RoutingProxyVariantContext
+} from '../src/main/routingProxy/runtime.ts'
+import {
+  effectiveAutomaticPortToPersist,
+  startAtResolvedRoutingProxyPort
+} from '../src/main/routingProxy/allocator.ts'
+import {
+  consumeExpectedCandidateExit,
+  markFailedCandidateTermination
+} from '../src/main/routingProxy/candidateExit.ts'
+import type { RoutingProxyPortConfiguration } from '../src/shared/types.ts'
+import {
+  RoutingProxyLifecycleCoordinator,
+  START_SUPERSEDED
+} from '../src/main/routingProxy/lifecycleCoordinator.ts'
+import {
+  respawnBackoffDelayMs,
+  decideRespawnAction,
+  decideWatchdogAction,
+  RoutingProxySupervisor,
+  MAX_CONSECUTIVE_RESPAWN_FAILURES,
+  type RoutingProxySupervisorDeps,
+  type SupervisorLogger
+} from '../src/main/routingProxy/supervisor.ts'
+
+function isValidRoutingProxyCustomPortForTest(port: number | null): boolean {
+  return typeof port === 'number' && Number.isInteger(port) && port >= 1024 && port <= 65535
+}
+
+function isStrictPortTextForTest(value: string): boolean {
+  return /^\d+$/.test(value)
+}
+
+function shouldSyncCustomPortSnapshotForTest(
+  isEditing: boolean,
+  snapshot: { portMode: 'automatic' | 'custom'; portConfigurationLocked: boolean }
+): boolean {
+  return !isEditing || snapshot.portConfigurationLocked || snapshot.portMode !== 'custom'
+}
 
 // ---------------------------------------------------------------------------
 // Test scratch dir — everything this harness writes lives here, never under
@@ -82,6 +135,685 @@ import {
 // ---------------------------------------------------------------------------
 
 const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-proxy-test-'))
+
+// ---------------------------------------------------------------------------
+// 0. Persistent port runtime resolution — pure, current-state contracts.
+// ---------------------------------------------------------------------------
+
+{
+  const production: RoutingProxyVariantContext = { mode: 'production' }
+  const development: RoutingProxyVariantContext = { mode: 'development' }
+  const worktree: RoutingProxyVariantContext = { mode: 'worktree' }
+  assert.equal(getPreferredRoutingProxyPort(production), 18765)
+  assert.equal(getPreferredRoutingProxyPort(development), 18766)
+  assert.equal(getPreferredRoutingProxyPort(worktree), 18767)
+  assert.equal(AUTOMATIC_PORT_MIN, 18765)
+  assert.equal(AUTOMATIC_PORT_MAX, 18799)
+  assert.deepEqual(automaticPortCandidates(18770, 18766).slice(0, 3), [18770, 18766, 18765])
+  assert.equal(
+    new Set(automaticPortCandidates(18766, 18766)).size,
+    AUTOMATIC_PORT_MAX - AUTOMATIC_PORT_MIN + 1
+  )
+
+  const originalOverride = process.env.ORPHEUS_ROUTING_PROXY_URL
+  try {
+    process.env.ORPHEUS_ROUTING_PROXY_URL = 'https://proxy.example.test/path?keep=exact'
+    assert.deepEqual(
+      getRoutingProxyRuntime({
+        routingProxyPortMode: 'custom',
+        routingProxyCustomPort: 4567,
+        routingProxyEffectivePort: 18770
+      }),
+      {
+        source: 'environment',
+        url: 'https://proxy.example.test/path?keep=exact',
+        host: 'proxy.example.test',
+        port: 443,
+        portConfigurationLocked: true
+      }
+    )
+  } finally {
+    if (originalOverride === undefined) delete process.env.ORPHEUS_ROUTING_PROXY_URL
+    else process.env.ORPHEUS_ROUTING_PROXY_URL = originalOverride
+  }
+
+  for (const [url, port] of [
+    ['http://proxy.example.test/path', 80],
+    ['https://proxy.example.test/path', 443],
+    ['http://proxy.example.test:8080/path', 8080],
+    ['https://proxy.example.test:8443/path', 8443]
+  ] as const) {
+    process.env.ORPHEUS_ROUTING_PROXY_URL = url
+    const runtime = getRoutingProxyRuntime({
+      routingProxyPortMode: 'custom',
+      routingProxyCustomPort: 4567,
+      routingProxyEffectivePort: 18770
+    })
+    assert.equal(runtime.url, url, 'valid environment URLs must be retained verbatim for clients')
+    assert.equal(
+      runtime.port,
+      port,
+      'endpoint parsing must honor implicit and explicit scheme ports'
+    )
+  }
+  for (const invalidUrl of ['not a URL', 'wss://proxy.example.test', 'ftp://proxy.example.test']) {
+    process.env.ORPHEUS_ROUTING_PROXY_URL = invalidUrl
+    assert.throws(
+      () =>
+        getRoutingProxyRuntime({
+          routingProxyPortMode: 'custom',
+          routingProxyCustomPort: 4567,
+          routingProxyEffectivePort: 18770
+        }),
+      /valid http: or https: URL|http: or https: scheme/,
+      'an invalid environment endpoint must reject before Custom or Automatic fallback'
+    )
+  }
+
+  if (originalOverride === undefined) delete process.env.ORPHEUS_ROUTING_PROXY_URL
+  else process.env.ORPHEUS_ROUTING_PROXY_URL = originalOverride
+
+  assert.deepEqual(
+    getRoutingProxyRuntime({
+      routingProxyPortMode: 'custom',
+      routingProxyCustomPort: 4567,
+      routingProxyEffectivePort: null
+    }),
+    {
+      source: 'custom',
+      url: 'http://127.0.0.1:4567',
+      host: '127.0.0.1',
+      port: 4567,
+      portConfigurationLocked: false
+    }
+  )
+  assert.deepEqual(
+    getRoutingProxyRuntime({
+      routingProxyPortMode: 'automatic',
+      routingProxyCustomPort: null,
+      routingProxyEffectivePort: null
+    }),
+    { source: 'automatic', url: null, host: null, port: null, portConfigurationLocked: false }
+  )
+  assert.throws(
+    () =>
+      getRoutingProxyRuntime({
+        routingProxyPortMode: 'automatic',
+        routingProxyCustomPort: null,
+        routingProxyEffectivePort: 4567
+      }),
+    /routingProxyEffectivePort must be an integer between 18765 and 18799 or null/
+  )
+  assert.throws(
+    () => assertValidAutomaticRoutingProxyEffectivePort(4567),
+    /routingProxyEffectivePort must be an integer between 18765 and 18799 or null/
+  )
+  assert.equal(assertValidAutomaticRoutingProxyEffectivePort(18765), 18765)
+  assert.equal(assertValidAutomaticRoutingProxyEffectivePort(18799), 18799)
+  assert.throws(
+    () =>
+      getRoutingProxyRuntime({
+        routingProxyPortMode: 'custom',
+        routingProxyCustomPort: null,
+        routingProxyEffectivePort: 18770
+      }),
+    /Custom routing proxy port must be an integer between 1024 and 65535/
+  )
+  console.log('✓ routing-proxy port runtime resolves variants, candidates, and strict precedence')
+}
+
+// ---------------------------------------------------------------------------
+// 0b. Allocation policy. Automatic walks candidates and only reports the
+// proven candidate; Custom/environment are intentionally one-shot.
+// ---------------------------------------------------------------------------
+
+{
+  const attemptedPorts: number[] = []
+  const inspectionDeps: ListenerInspectionDeps = {
+    listListeners: async () => [],
+    signalProcess: () => {},
+    sleep: async () => {}
+  }
+  const automatic = await startAtResolvedRoutingProxyPort({
+    runtime: () => ({
+      source: 'automatic',
+      url: 'http://127.0.0.1:18770',
+      host: '127.0.0.1',
+      port: 18770,
+      portConfigurationLocked: false
+    }),
+    candidates: () => [18770, 18766, 18765],
+    inspect: inspectionDeps,
+    startCandidate: async (runtime) => {
+      attemptedPorts.push(runtime.port!)
+      return runtime.port === 18765
+        ? { ok: true, effectivePort: runtime.port }
+        : { ok: false, reason: 'bind EADDRINUSE' }
+    }
+  })
+  assert.deepEqual(attemptedPorts, [18770, 18766, 18765])
+  assert.deepEqual(automatic, { ok: true, effectivePort: 18765 })
+
+  const strictAttempts: number[] = []
+  const custom = await startAtResolvedRoutingProxyPort({
+    runtime: () => ({
+      source: 'custom',
+      url: 'http://127.0.0.1:4567',
+      host: '127.0.0.1',
+      port: 4567,
+      portConfigurationLocked: false
+    }),
+    candidates: () => {
+      throw new Error('strict custom mode must not request automatic candidates')
+    },
+    inspect: inspectionDeps,
+    startCandidate: async (runtime) => {
+      strictAttempts.push(runtime.port!)
+      return { ok: false, reason: 'bind EADDRINUSE' }
+    }
+  })
+  assert.deepEqual(strictAttempts, [4567])
+  assert.deepEqual(custom, { ok: false, reason: 'bind EADDRINUSE' })
+
+  const exhausted = await startAtResolvedRoutingProxyPort({
+    runtime: () => ({
+      source: 'automatic',
+      url: 'http://127.0.0.1:18765',
+      host: '127.0.0.1',
+      port: 18765,
+      portConfigurationLocked: false
+    }),
+    candidates: () => [18765, 18766],
+    inspect: inspectionDeps,
+    startCandidate: async () => ({ ok: false, reason: 'bind EADDRINUSE on 18766' })
+  })
+  assert.match(exhausted.reason ?? '', /18765–18799.*bind EADDRINUSE on 18766/)
+
+  const supersededAttempts: number[] = []
+  const superseded = await startAtResolvedRoutingProxyPort({
+    runtime: () => ({
+      source: 'automatic',
+      url: 'http://127.0.0.1:18765',
+      host: '127.0.0.1',
+      port: 18765,
+      portConfigurationLocked: false
+    }),
+    candidates: () => [18765, 18766],
+    inspect: inspectionDeps,
+    startCandidate: async (runtime) => {
+      supersededAttempts.push(runtime.port!)
+      return { ok: false, reason: 'start was superseded' }
+    }
+  })
+  assert.deepEqual(supersededAttempts, [18765])
+  assert.equal(superseded.reason, 'start was superseded')
+
+  const automaticRuntime = {
+    source: 'automatic' as const,
+    url: 'http://127.0.0.1:18766',
+    host: '127.0.0.1',
+    port: 18766,
+    portConfigurationLocked: false
+  }
+  assert.equal(
+    effectiveAutomaticPortToPersist(automaticRuntime, { ok: true, effectivePort: 18766 }),
+    18766,
+    'only a strict-ready Automatic candidate may replace the effective port'
+  )
+  assert.equal(
+    effectiveAutomaticPortToPersist(automaticRuntime, { ok: false, reason: 'exhausted' }),
+    null,
+    'failed Automatic exhaustion must preserve the prior effective port'
+  )
+  for (const source of ['custom', 'environment'] as const) {
+    assert.equal(
+      effectiveAutomaticPortToPersist(
+        {
+          source,
+          url: 'http://127.0.0.1:18777',
+          host: '127.0.0.1',
+          port: 18777,
+          portConfigurationLocked: source === 'environment'
+        },
+        { ok: true, effectivePort: 18777 }
+      ),
+      null,
+      `${source} success must not persist an automatic effective port`
+    )
+  }
+  const originalOverride = process.env.ORPHEUS_ROUTING_PROXY_URL
+  let invalidEnvironmentAllocationAttempts = 0
+  try {
+    process.env.ORPHEUS_ROUTING_PROXY_URL = 'wss://proxy.example.test'
+    await assert.rejects(
+      () =>
+        startAtResolvedRoutingProxyPort({
+          runtime: () =>
+            getRoutingProxyRuntime({
+              routingProxyPortMode: 'custom',
+              routingProxyCustomPort: 18777,
+              routingProxyEffectivePort: 18766
+            }),
+          candidates: () => {
+            throw new Error('invalid environment endpoint must not request automatic candidates')
+          },
+          inspect: inspectionDeps,
+          startCandidate: async () => {
+            invalidEnvironmentAllocationAttempts++
+            return { ok: true }
+          }
+        }),
+      /http: or https: scheme/
+    )
+    assert.equal(
+      invalidEnvironmentAllocationAttempts,
+      0,
+      'an invalid environment endpoint must not start a Custom or Automatic candidate'
+    )
+  } finally {
+    if (originalOverride === undefined) delete process.env.ORPHEUS_ROUTING_PROXY_URL
+    else process.env.ORPHEUS_ROUTING_PROXY_URL = originalOverride
+  }
+  console.log('✓ allocator retries automatic candidates while custom mode remains strict')
+}
+
+// ---------------------------------------------------------------------------
+// 0c. Lifecycle coordinator serializes side effects while newer intent
+// invalidates paused work before it can spawn, persist, or publish.
+// ---------------------------------------------------------------------------
+
+{
+  const coordinator = new RoutingProxyLifecycleCoordinator()
+  const effects: string[] = []
+  let releaseA!: () => void
+  const pausedA = new Promise<void>((resolve) => {
+    releaseA = resolve
+  })
+  const generationA = coordinator.beginIntent()
+  const operationA = coordinator.run(generationA, async () => {
+    effects.push('A:config-start')
+    await pausedA
+    if (!coordinator.owns(generationA)) {
+      effects.push('A:cleanup')
+      return START_SUPERSEDED
+    }
+    effects.push('A:spawn')
+    return 'A'
+  })
+  await Promise.resolve()
+  const generationB = coordinator.beginIntent()
+  const operationB = coordinator.run(generationB, async () => {
+    effects.push('B:config')
+    effects.push('B:spawn')
+    effects.push('B:publish')
+    return 'B'
+  })
+  releaseA()
+  assert.equal(await operationA, START_SUPERSEDED)
+  assert.equal(await operationB, 'B')
+  assert.deepEqual(effects, ['A:config-start', 'A:cleanup', 'B:config', 'B:spawn', 'B:publish'])
+  console.log('✓ lifecycle coordinator serializes superseded config/spawn/publication effects')
+}
+
+// ---------------------------------------------------------------------------
+// 0d. Cleanup containment. A timed-out exact candidate cleanup poisons the
+// lifecycle queue. No later operation may reach a side effect until that exact
+// PID has exited and a fresh listener probe proves its release.
+// ---------------------------------------------------------------------------
+
+{
+  const coordinator = new RoutingProxyLifecycleCoordinator()
+  const effects: string[] = []
+  let listenerReleased = false
+  const generationA = coordinator.beginIntent()
+  coordinator.blockUnresolvedCandidate({
+    pid: 4101,
+    generation: generationA,
+    listenerReleased: async () => listenerReleased
+  })
+
+  const generationB = coordinator.beginIntent()
+  const blockedB = await coordinator.run(generationB, async () => {
+    effects.push('B:config')
+    effects.push('B:spawn')
+    effects.push('B:persist')
+    effects.push('B:publish')
+  })
+  assert.equal(blockedB, 'start blocked by unresolved candidate cleanup')
+  assert.deepEqual(effects, [])
+
+  // A stale or unrelated exit cannot release A's guard.
+  coordinator.recordCandidateExit(4102, generationA)
+  coordinator.recordCandidateExit(4101, generationB)
+  const stillBlocked = await coordinator.run(coordinator.beginIntent(), async () => {
+    effects.push('wrong-exit-side-effect')
+  })
+  assert.equal(stillBlocked, 'start blocked by unresolved candidate cleanup')
+  assert.deepEqual(effects, [])
+
+  // The exact exit alone is insufficient until its listener is demonstrably gone.
+  coordinator.recordCandidateExit(4101, generationA)
+  const listenerStillHeld = await coordinator.run(coordinator.beginIntent(), async () => {
+    effects.push('held-listener-side-effect')
+  })
+  assert.equal(listenerStillHeld, 'start blocked by unresolved candidate cleanup')
+  assert.deepEqual(effects, [])
+
+  listenerReleased = true
+  const generationC = coordinator.beginIntent()
+  const allowedC = await coordinator.run(generationC, async () => {
+    effects.push('C:config')
+    effects.push('C:spawn')
+    effects.push('C:persist')
+    effects.push('C:publish')
+    return 'C'
+  })
+  assert.equal(allowedC, 'C')
+  assert.deepEqual(effects, ['C:config', 'C:spawn', 'C:persist', 'C:publish'])
+  console.log(
+    '✓ lifecycle coordinator blocks poisoned cleanup until exact exit and listener release'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 0e. Failed-candidate exit policy. The production manager marks the exact PID
+// expected before clearing its active-start marker, so an exit at that boundary
+// is consumed rather than handed to supervisor respawn policy.
+// ---------------------------------------------------------------------------
+
+{
+  const expectedTerminationPids = new Set<number>()
+  const activeStartingCandidatePids = new Set([5101])
+  markFailedCandidateTermination(expectedTerminationPids, activeStartingCandidatePids, 5101)
+  assert.equal(activeStartingCandidatePids.has(5101), false)
+  assert.equal(expectedTerminationPids.has(5101), true)
+  const expectedExit = consumeExpectedCandidateExit(
+    expectedTerminationPids,
+    activeStartingCandidatePids,
+    5101
+  )
+  assert.equal(expectedExit, true, 'the exact failure PID must consume its expected-exit marker')
+  assert.equal(
+    consumeExpectedCandidateExit(expectedTerminationPids, activeStartingCandidatePids, 5102),
+    false,
+    'a different PID must not consume another candidate marker'
+  )
+  assert.equal(
+    decideRespawnAction({
+      enabled: true,
+      expectedShutdown: expectedExit,
+      restarting: false,
+      consecutiveFailures: 0
+    }).action,
+    'skip',
+    'an exit at the failed-candidate transition must never schedule supervisor respawn'
+  )
+
+  const alreadyConsumedExpectedPids = new Set<number>()
+  const alreadyConsumedActivePids = new Set([5103])
+  assert.equal(
+    consumeExpectedCandidateExit(alreadyConsumedExpectedPids, alreadyConsumedActivePids, 5103),
+    true,
+    'the exit handler consumes the active-start marker when it wins the transition race'
+  )
+  markFailedCandidateTermination(alreadyConsumedExpectedPids, alreadyConsumedActivePids, 5103)
+  assert.deepEqual(
+    [...alreadyConsumedExpectedPids],
+    [],
+    'a readiness failure after exit consumption must not leave a stale expected-exit marker'
+  )
+  console.log(
+    '✓ failed-candidate expected exit is marked before active-start removal and suppresses respawn'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 0f. Typed port-configuration IPC and snapshot-driven Settings UI. These
+// static source contracts protect the Electron boundary without loading
+// Electron or mounting React in this fully-offline harness.
+// ---------------------------------------------------------------------------
+
+{
+  const customRequest: RoutingProxyPortConfiguration = { mode: 'custom', port: 18777 }
+  const automaticRequest: RoutingProxyPortConfiguration = { mode: 'automatic' }
+  assert.deepEqual(customRequest, { mode: 'custom', port: 18777 })
+  assert.deepEqual(automaticRequest, { mode: 'automatic' })
+
+  const repoRoot = path.resolve(import.meta.dirname, '..')
+  const [ipcSource, routingProxyIpcSource, preloadSource, sectionSource] = await Promise.all([
+    fs.readFile(path.join(repoRoot, 'src/shared/ipc.ts'), 'utf8'),
+    fs.readFile(path.join(repoRoot, 'src/main/ipc/routingProxy.ts'), 'utf8'),
+    fs.readFile(path.join(repoRoot, 'src/preload/index.ts'), 'utf8'),
+    fs.readFile(
+      path.join(
+        repoRoot,
+        'src/renderer/src/components/dashboard/settings/OrpheusModelRoutingSection.tsx'
+      ),
+      'utf8'
+    )
+  ])
+
+  assert.match(
+    ipcSource,
+    /'routingProxy:setPortConfiguration':\s*\{\s*req:\s*\[\{ mode: 'automatic' } \| \{ mode: 'custom'; port: number }\]\s*res: RoutingProxySnapshot/s,
+    'the typed invoke map must define the exact port-configuration request and snapshot response'
+  )
+  assert.match(
+    routingProxyIpcSource,
+    /import \{[\s\S]*\bsetPortConfiguration\b[\s\S]*\} from '..\/routingProxy\/manager'/,
+    'the routing-proxy IPC module must import the manager mutation'
+  )
+  assert.match(
+    routingProxyIpcSource,
+    /handle\('routingProxy:setPortConfiguration', async \(_e, configuration\) =>\s*setPortConfiguration\(configuration\)\s*\)/s,
+    'the handler must use the typed handle wrapper and pass the typed request through'
+  )
+  assert.match(
+    preloadSource,
+    /setPortConfiguration:\s*\(\s*configuration: RoutingProxyPortConfiguration\s*\): Promise<RoutingProxySnapshot> =>\s*invoke\('routingProxy:setPortConfiguration', configuration\)/s,
+    'preload must expose the typed generic-invoke port-configuration method'
+  )
+  assert.match(
+    sectionSource,
+    /snapshot\.portConfigurationLocked/,
+    'the Model Routing section must render from the lock state supplied by the snapshot'
+  )
+  assert.match(
+    sectionSource,
+    /snapshot\.effectiveUrl/,
+    'the Model Routing section must render the exact effective URL supplied by the snapshot'
+  )
+  assert.match(
+    sectionSource,
+    /snapshot\.effectivePort/,
+    'the Model Routing section must render the exact effective port supplied by the snapshot'
+  )
+  assert.match(
+    sectionSource,
+    /Port controlled by ORPHEUS_ROUTING_PROXY_URL/,
+    'the locked-mode notice must use the exact environment-variable copy'
+  )
+  assert.match(
+    sectionSource,
+    /portConfigurationRequest\(mode, customPortDraft\.value\)/,
+    'the port controls must build their request from the selected mode and custom input'
+  )
+  assert.match(
+    sectionSource,
+    /setPortConfiguration\(configuration\)/,
+    'the port controls must submit their typed request through the preload API'
+  )
+  assert.match(
+    sectionSource,
+    /function isValidCustomRoutingProxyPort\(port: number \| null\): port is number \{\s*return\s+typeof port === 'number' &&\s*Number\.isInteger\(port\) &&\s*port >= 1024 &&\s*port <= 65535/s,
+    'the settings UI must accept only integer custom ports in the inclusive 1024–65535 range'
+  )
+  assert.match(
+    sectionSource,
+    /function portConfigurationRequest\([\s\S]*if \(!isValidCustomRoutingProxyPort\(customPort\)\) return null/s,
+    'the settings UI must not construct custom requests for invalid ports'
+  )
+  assert.match(
+    sectionSource,
+    /disabled=\{\s*portBusy\s*\|\|\s*!isValidCustomRoutingProxyPort\(customPortDraft\.value\)\s*\|\|\s*customPortDraft\.error !== null\s*\|\|\s*portInputError !== null\s*\}/s,
+    'the Custom action must remain disabled for busy, invalid, or ambiguous input'
+  )
+  assert.match(
+    sectionSource,
+    /role="group"\s+aria-label="Routing proxy port mode"/,
+    'the mode controls must have an accessible group label'
+  )
+  assert.match(
+    sectionSource,
+    /aria-pressed=\{snapshot\.portMode === 'automatic'\}/,
+    'the Automatic action must expose selected state'
+  )
+  assert.match(
+    sectionSource,
+    /aria-pressed=\{snapshot\.portMode === 'custom'\}/,
+    'the Custom action must expose selected state'
+  )
+  assert.match(
+    sectionSource,
+    /portInputError && \([\s\S]*role="alert"/,
+    'invalid custom-port input must render a local validation error'
+  )
+  const primitivesSource = await fs.readFile(
+    path.join(repoRoot, 'src/renderer/src/components/dashboard/settings/primitives.tsx'),
+    'utf8'
+  )
+  assert.match(
+    primitivesSource,
+    /validation\?: \{[\s\S]*min: number[\s\S]*max: number/s,
+    'NumberInput must support bounded validation for strict port entry'
+  )
+  assert.match(
+    primitivesSource,
+    /const isDigitsOnly = \/\^\\d\+\$\//,
+    'strict NumberInput validation must reject ambiguous values such as 1024abc and fractions'
+  )
+  assert.match(
+    primitivesSource,
+    /onDraftChange\?: \(draft: NumberInputDraft\) => void/,
+    'NumberInput must expose a non-persisting draft callback for live validation'
+  )
+  assert.match(
+    primitivesSource,
+    /onEditingChange\?: \(isEditing: boolean\) => void/,
+    'NumberInput must expose editing state so snapshot consumers can preserve active drafts'
+  )
+  assert.match(
+    primitivesSource,
+    /onEditingChange\?\.\(true\)/,
+    'NumberInput must report the start of an active edit'
+  )
+  assert.match(
+    primitivesSource,
+    /onEditingChange\?\.\(false\)/,
+    'NumberInput must report when an active edit finishes'
+  )
+  assert.match(
+    sectionSource,
+    /const customPortEditingRef = useRef\(false\)/,
+    'routing port state must distinguish an active draft from a snapshot value'
+  )
+  assert.match(
+    sectionSource,
+    /const syncCustomPortSnapshot = useCallback\(\(nextSnapshot: RoutingProxySnapshot\): void => \{[\s\S]*if \(customPortEditingRef\.current\) return[\s\S]*setCustomPortInput\(nextSnapshot\.customPort\)[\s\S]*setCustomPortDraft\(\{ value: nextSnapshot\.customPort, error: null \}\)/,
+    'non-editing snapshot updates must synchronize the visible, submitted, and validation port state'
+  )
+  assert.match(
+    sectionSource,
+    /onSnapshot\(\(s\) => \{[\s\S]*syncCustomPortSnapshot\(s\)/,
+    'pushed snapshots must reconcile the custom port state'
+  )
+  assert.match(
+    sectionSource,
+    /setPortConfiguration\(configuration\)[\s\S]*syncCustomPortSnapshot\(nextSnapshot\)/,
+    'returned port-configuration snapshots must reconcile the custom port state'
+  )
+  assert.match(
+    sectionSource,
+    /getState\(\)[\s\S]*syncCustomPortSnapshot\(currentSnapshot\)/,
+    'catch refresh snapshots must reconcile the custom port state'
+  )
+  assert.match(
+    sectionSource,
+    /nextSnapshot\.portConfigurationLocked \|\| nextSnapshot\.portMode !== 'custom'[\s\S]*setCustomPortInputKey/,
+    'mode changes and environment locks must discard a stale active port field'
+  )
+  assert.equal(
+    shouldSyncCustomPortSnapshotForTest(false, {
+      portMode: 'custom',
+      portConfigurationLocked: false
+    }),
+    true,
+    'automatic/null state followed by pushed custom 18777 must synchronize before Custom submits'
+  )
+  assert.equal(
+    shouldSyncCustomPortSnapshotForTest(false, {
+      portMode: 'custom',
+      portConfigurationLocked: false
+    }),
+    true,
+    'a non-editing old draft such as 18000 must synchronize to pushed custom 18777'
+  )
+  assert.equal(
+    shouldSyncCustomPortSnapshotForTest(true, {
+      portMode: 'custom',
+      portConfigurationLocked: false
+    }),
+    false,
+    'a pushed custom snapshot must preserve an active port edit'
+  )
+  assert.equal(
+    shouldSyncCustomPortSnapshotForTest(true, {
+      portMode: 'automatic',
+      portConfigurationLocked: false
+    }),
+    true,
+    'mode changes must synchronize even if a port field was actively edited'
+  )
+  assert.equal(
+    shouldSyncCustomPortSnapshotForTest(true, {
+      portMode: 'custom',
+      portConfigurationLocked: true
+    }),
+    true,
+    'environment locks must synchronize even if a port field was actively edited'
+  )
+  const updateValueSource = primitivesSource.match(
+    /function updateValue\(nextValue: string\): void \{([\s\S]*?)\n {2}\}/
+  )?.[1]
+  assert.ok(updateValueSource, 'NumberInput must retain a local draft update path')
+  assert.match(
+    updateValueSource,
+    /notifyDraft\(nextValue\)/,
+    'local edits must notify only the optional draft callback'
+  )
+  assert.doesNotMatch(
+    updateValueSource,
+    /onChange\(/,
+    'NumberInput must not persist values or emit NaN on every keystroke'
+  )
+  assert.match(
+    primitivesSource,
+    /if \(draft\.error !== null\) \{[\s\S]*setLocal\(value === null \? '' : String\(value\)\)/,
+    'invalid default NumberInput drafts must revert instead of being persisted'
+  )
+  assert.match(
+    sectionSource,
+    /min: 1024,[\s\S]*max: 65535,[\s\S]*step: 1/s,
+    'the custom-port input must enforce the 1024 and 65535 inclusive boundaries'
+  )
+  assert.equal(isValidRoutingProxyCustomPortForTest(1023), false)
+  assert.equal(isValidRoutingProxyCustomPortForTest(65536), false)
+  assert.equal(isValidRoutingProxyCustomPortForTest(1024.5), false)
+  assert.equal(isStrictPortTextForTest('1024abc'), false)
+  assert.equal(isValidRoutingProxyCustomPortForTest(1024), true)
+  assert.equal(isValidRoutingProxyCustomPortForTest(65535), true)
+  console.log('✓ typed port-configuration IPC and snapshot-driven routing settings contracts')
+}
 
 async function cleanup(): Promise<void> {
   await fs.rm(scratchRoot, { recursive: true, force: true })
@@ -420,75 +1152,269 @@ async function cleanup(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Health check — unhealthy when nothing listens; healthy when a stub
-//    responds. All I/O injected via HealthCheckDeps (no real socket/HTTP).
+// 6. Strict managed health and readiness. A routing proxy is healthy only
+//    when its live spawned child is the sole listener and its authenticated
+//    management endpoint returns 2xx. TCP remains diagnostic-only.
 // ---------------------------------------------------------------------------
 
 {
-  const unreachableDeps: HealthCheckDeps = {
-    tcpProbe: async () => false,
-    managementProbe: async () => false
+  const runtime = {
+    source: 'automatic' as const,
+    url: 'http://127.0.0.1:18765',
+    host: '127.0.0.1',
+    port: 18765,
+    portConfigurationLocked: false
   }
-  const unhealthy = await checkRoutingProxyHealth(
-    'http://127.0.0.1:18765',
-    { managementSecret: 'x'.repeat(48) },
-    unreachableDeps
-  )
-  assert.equal(unhealthy.healthy, false, 'must report unhealthy when nothing responds')
-  console.log('✓ checkRoutingProxyHealth reports unhealthy when nothing is listening')
-
-  const reachableDeps: HealthCheckDeps = {
-    tcpProbe: async () => true,
-    managementProbe: async () => true
+  const spawnedAttempt: RoutingProxySpawnAttempt = {
+    pid: 123,
+    managementSecret: 'x'.repeat(48),
+    isAlive: () => true,
+    terminate: () => {}
   }
-  const healthy = await checkRoutingProxyHealth(
-    'http://127.0.0.1:18765',
-    { managementSecret: 'x'.repeat(48) },
-    reachableDeps
-  )
-  assert.equal(healthy.healthy, true, 'must report healthy when the management probe responds')
-  console.log('✓ checkRoutingProxyHealth reports healthy when a stub responds')
+  const listener = { pid: spawnedAttempt.pid, executablePath: '/proxy', argv: [] }
+  const managedDeps = (
+    managementProbe: () => Promise<unknown>,
+    listeners = [listener]
+  ): ManagedReadinessDeps => ({
+    inspectListeners: async () => listeners,
+    managementProbe: async () => (await managementProbe()) === true,
+    sleep: async () => {},
+    now: () => 0
+  })
 
-  // TCP-only fallback path (no management secret supplied yet).
-  const tcpOnlyDeps: HealthCheckDeps = {
-    tcpProbe: async () => true,
-    managementProbe: async () => {
-      throw new Error('managementProbe must not be called without a secret')
+  const ready = await waitForManagedRoutingProxyReady(
+    runtime,
+    spawnedAttempt,
+    {},
+    managedDeps(async () => true)
+  )
+  assert.deepEqual(
+    ready,
+    { healthy: true },
+    'only owned sole listener plus authenticated 2xx is ready'
+  )
+
+  // A child commonly has no listener during its first readiness poll. That is
+  // transient, so startup must back off and reach running once this attempt binds.
+  {
+    let listenerCalls = 0
+    let elapsed = 0
+    const delayedReady = await waitForManagedRoutingProxyReady(
+      runtime,
+      spawnedAttempt,
+      {},
+      {
+        inspectListeners: async () => (listenerCalls++ === 0 ? [] : [listener]),
+        managementProbe: async () => true,
+        sleep: async (ms) => {
+          elapsed += ms
+        },
+        now: () => elapsed
+      }
+    )
+    assert.deepEqual(delayedReady, { healthy: true })
+    assert.equal(listenerCalls, 3, 'startup must re-inspect after authenticated readiness')
+  }
+
+  // Management confirmation is not sufficient on its own: it can race a child
+  // exit or port rebind while the request is outstanding.
+  {
+    let alive = true
+    const exitsDuringProbe: RoutingProxySpawnAttempt = { ...spawnedAttempt, isAlive: () => alive }
+    const result = await waitForManagedRoutingProxyReady(
+      runtime,
+      exitsDuringProbe,
+      { deadlineMs: 0 },
+      {
+        inspectListeners: async () => [listener],
+        managementProbe: async () => {
+          alive = false
+          return true
+        },
+        sleep: async () => {},
+        now: () => 0
+      }
+    )
+    assert.deepEqual(result, { healthy: false, reason: 'spawned child exited' })
+  }
+  {
+    let listenerCalls = 0
+    const result = await waitForManagedRoutingProxyReady(
+      runtime,
+      spawnedAttempt,
+      { deadlineMs: 0 },
+      {
+        inspectListeners: async () =>
+          listenerCalls++ === 0 ? [listener] : [{ ...listener, pid: 999 }],
+        managementProbe: async () => true,
+        sleep: async () => {},
+        now: () => 0
+      }
+    )
+    assert.deepEqual(result, { healthy: false, reason: 'listener is not the spawned child' })
+  }
+  {
+    let alive = true
+    let listenerCalls = 0
+    const exitsDuringFinalInspection: RoutingProxySpawnAttempt = {
+      ...spawnedAttempt,
+      isAlive: () => alive
     }
+    const result = await waitForManagedRoutingProxyReady(
+      runtime,
+      exitsDuringFinalInspection,
+      { deadlineMs: 0 },
+      {
+        inspectListeners: async () => {
+          if (listenerCalls++ > 0) alive = false
+          return [listener]
+        },
+        managementProbe: async () => true,
+        sleep: async () => {},
+        now: () => 0
+      }
+    )
+    assert.deepEqual(result, { healthy: false, reason: 'spawned child exited' })
   }
-  const tcpHealthy = await checkRoutingProxyHealth('http://127.0.0.1:18765', {}, tcpOnlyDeps)
+
+  // Manager startup retains an attempt identity. If stop/disable clears it
+  // while readiness is pending, the old continuation cannot publish running.
   assert.equal(
-    tcpHealthy.healthy,
-    true,
-    'bare TCP reachability must count as healthy when no secret is set'
+    canPublishManagedRoutingProxyRunning(spawnedAttempt, spawnedAttempt, { healthy: true }),
+    true
   )
-  console.log('✓ checkRoutingProxyHealth falls back to a bare TCP probe with no management secret')
-}
+  assert.equal(
+    canPublishManagedRoutingProxyRunning(null, spawnedAttempt, { healthy: true }),
+    false,
+    'stop during readiness clears the current attempt and blocks stale running publication'
+  )
+  assert.equal(
+    canPublishManagedRoutingProxyRunning({ ...spawnedAttempt, pid: 124 }, spawnedAttempt, {
+      healthy: true
+    }),
+    false,
+    'a replacement attempt blocks the older start continuation'
+  )
 
-// ---------------------------------------------------------------------------
-// 7. Fail-closed gate — ensureHealthyForRouting() throws a clear error when
-//    unhealthy, so a caller (the terminal:mount handler) can refuse to mount
-//    a routed workspace instead of hanging ~44-128s against a dead proxy.
-// ---------------------------------------------------------------------------
-
-{
-  const unreachableDeps: HealthCheckDeps = {
-    tcpProbe: async () => false,
-    managementProbe: async () => false
+  const cases: Array<
+    [string, RoutingProxySpawnAttempt, ListeningProcess[], () => Promise<unknown>, string]
+  > = [
+    [
+      'exited child',
+      { ...spawnedAttempt, isAlive: () => false },
+      [listener],
+      async () => true,
+      'spawned child exited'
+    ],
+    ['missing owner', spawnedAttempt, [], async () => true, 'listener is not the spawned child'],
+    [
+      'foreign owner',
+      spawnedAttempt,
+      [{ ...listener, pid: 999 }],
+      async () => true,
+      'listener is not the spawned child'
+    ],
+    [
+      'two owner PIDs',
+      spawnedAttempt,
+      [listener, { ...listener, pid: 124 }],
+      async () => true,
+      'listener ownership is ambiguous'
+    ],
+    [
+      '401',
+      spawnedAttempt,
+      [listener],
+      async () => false,
+      'management API did not return authenticated 2xx'
+    ],
+    [
+      '403',
+      spawnedAttempt,
+      [listener],
+      async () => false,
+      'management API did not return authenticated 2xx'
+    ],
+    [
+      '404',
+      spawnedAttempt,
+      [listener],
+      async () => false,
+      'management API did not return authenticated 2xx'
+    ],
+    [
+      '500',
+      spawnedAttempt,
+      [listener],
+      async () => false,
+      'management API did not return authenticated 2xx'
+    ],
+    [
+      'timeout',
+      spawnedAttempt,
+      [listener],
+      async () => false,
+      'management API did not return authenticated 2xx'
+    ],
+    [
+      'malformed result',
+      spawnedAttempt,
+      [listener],
+      async () => 'not-a-boolean',
+      'management API did not return authenticated 2xx'
+    ]
+  ]
+  for (const [name, attempt, listeners, managementProbe, reason] of cases) {
+    const result = await waitForManagedRoutingProxyReady(
+      runtime,
+      attempt,
+      { deadlineMs: 0 },
+      managedDeps(managementProbe, listeners)
+    )
+    assert.deepEqual(
+      result,
+      { healthy: false, reason },
+      `${name} must never count as managed healthy`
+    )
   }
-  await assert.rejects(
-    () => ensureHealthyForRouting('http://127.0.0.1:18765', {}, unreachableDeps),
-    /not reachable/,
-    'ensureHealthyForRouting must throw a clear, immediate error when unhealthy'
-  )
-  console.log('✓ ensureHealthyForRouting REJECTS (fail-closed) when the proxy is unreachable')
 
-  const reachableDeps: HealthCheckDeps = {
+  const tcpOnly = await probeRoutingProxyTcpReachability('http://127.0.0.1:18765', {
     tcpProbe: async () => true,
-    managementProbe: async () => true
-  }
-  await ensureHealthyForRouting('http://127.0.0.1:18765', {}, reachableDeps) // must resolve, not throw
-  console.log('✓ ensureHealthyForRouting resolves (allows mount) when the proxy is healthy')
+    managementProbe: async () => false
+  })
+  assert.equal(
+    tcpOnly,
+    true,
+    'TCP reachability is retained as a separately named diagnostic helper'
+  )
+
+  const health = await checkRoutingProxyHealth(
+    runtime,
+    spawnedAttempt,
+    {},
+    managedDeps(async () => true)
+  )
+  assert.deepEqual(health, { healthy: true })
+  await ensureHealthyForRouting(
+    runtime,
+    spawnedAttempt,
+    {},
+    managedDeps(async () => true)
+  )
+  await assert.rejects(
+    () =>
+      ensureHealthyForRouting(
+        runtime,
+        spawnedAttempt,
+        { deadlineMs: 0 },
+        managedDeps(async () => false)
+      ),
+    /not healthy/,
+    'routing gate must fail closed when management authentication fails'
+  )
+  console.log(
+    '✓ managed health requires owned sole listener and authenticated 2xx; TCP is diagnostic-only'
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -660,7 +1586,7 @@ async function cleanup(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// 10. Readiness polling (waitForRoutingProxyReady) — the perf fix. A fake
+// 10. TCP diagnostic polling (waitForRoutingProxyTcpDiagnostic). A fake
 //    clock + fake sleep so every assertion is deterministic and instant: real
 //    time never advances, `now()` is driven purely by how many times `sleep`
 //    has been "awaited", and `sleep` itself resolves synchronously (no real
@@ -699,7 +1625,7 @@ async function cleanup(): Promise<void> {
   // with ZERO sleeps recorded.
   {
     const { deps, sleepCalls, probeCallCount } = makeFakeClockDeps(async () => true)
-    const ready = await waitForRoutingProxyReady('http://127.0.0.1:18765', {}, deps)
+    const ready = await waitForRoutingProxyTcpDiagnostic('http://127.0.0.1:18765', {}, deps)
     assert.equal(ready, true, 'must report ready when the very first probe succeeds')
     assert.equal(probeCallCount(), 1, 'exactly one probe when the first one succeeds')
     assert.equal(
@@ -708,7 +1634,7 @@ async function cleanup(): Promise<void> {
       'no sleep must occur before the first probe (or after success)'
     )
     console.log(
-      '✓ waitForRoutingProxyReady probes immediately (no initial sleep) and returns on first success'
+      '✓ waitForRoutingProxyTcpDiagnostic probes immediately (no initial sleep) and returns on first success'
     )
   }
 
@@ -722,7 +1648,7 @@ async function cleanup(): Promise<void> {
       calls++
       return calls >= successOnProbe
     })
-    const ready = await waitForRoutingProxyReady('http://127.0.0.1:18765', {}, deps)
+    const ready = await waitForRoutingProxyTcpDiagnostic('http://127.0.0.1:18765', {}, deps)
     assert.equal(ready, true, 'must eventually report ready once a later probe succeeds')
     assert.equal(probeCallCount(), successOnProbe, `must probe exactly ${successOnProbe} times`)
 
@@ -743,7 +1669,7 @@ async function cleanup(): Promise<void> {
       )
     }
     console.log(
-      `✓ waitForRoutingProxyReady detects an Nth-probe success promptly (total simulated wait ${totalSimulatedWaitMs}ms ` +
+      `✓ waitForRoutingProxyTcpDiagnostic detects an Nth-probe success promptly (total simulated wait ${totalSimulatedWaitMs}ms ` +
         `vs old flat behaviour ${oldFlatBehaviourMs}ms for N=${successOnProbe})`
     )
   }
@@ -758,7 +1684,7 @@ async function cleanup(): Promise<void> {
       calls++
       return calls >= 20 // never succeeds within the deadline below
     })
-    await waitForRoutingProxyReady(
+    await waitForRoutingProxyTcpDiagnostic(
       'http://127.0.0.1:18765',
       { deadlineMs: 5000, initialDelayMs: 50, maxDelayMs, backoffFactor: 2 },
       deps
@@ -774,7 +1700,9 @@ async function cleanup(): Promise<void> {
       sleepCalls[sleepCalls.length - 1]! === maxDelayMs,
       'backoff must actually reach the cap when retried enough times'
     )
-    console.log('✓ waitForRoutingProxyReady backoff is bounded by maxDelayMs and reaches the cap')
+    console.log(
+      '✓ waitForRoutingProxyTcpDiagnostic backoff is bounded by maxDelayMs and reaches the cap'
+    )
   }
 
   // 10d. The overall deadline still terminates a never-reachable proxy —
@@ -784,7 +1712,11 @@ async function cleanup(): Promise<void> {
   {
     const deadlineMs = 15_000
     const { deps, sleepCalls } = makeFakeClockDeps(async () => false)
-    const ready = await waitForRoutingProxyReady('http://127.0.0.1:18765', { deadlineMs }, deps)
+    const ready = await waitForRoutingProxyTcpDiagnostic(
+      'http://127.0.0.1:18765',
+      { deadlineMs },
+      deps
+    )
     assert.equal(ready, false, 'must report NOT ready once the deadline elapses with no success')
     const totalSimulatedWaitMs = sleepCalls.reduce((a, b) => a + b, 0)
     assert.ok(
@@ -792,13 +1724,13 @@ async function cleanup(): Promise<void> {
       'must have waited at least the full deadline before giving up'
     )
     console.log(
-      `✓ waitForRoutingProxyReady still terminates a never-reachable proxy at the ${deadlineMs}ms deadline (simulated)`
+      `✓ waitForRoutingProxyTcpDiagnostic still terminates a never-reachable proxy at the ${deadlineMs}ms deadline (simulated)`
     )
   }
 
   // 10e. Readiness uses the cheap/TCP signal only — the expensive
   // management-API round trip must never be invoked for readiness. Prove it
-  // by asserting waitForRoutingProxyReady's deps shape has no
+  // by asserting waitForRoutingProxyTcpDiagnostic's deps shape has no
   // managementProbe at all (a compile-time guarantee) AND that a tcpProbe
   // returning true is sufficient on its own with no management secret
   // involved anywhere in the call.
@@ -813,7 +1745,7 @@ async function cleanup(): Promise<void> {
         managementProbeCalled = true // would only flip if we ever slept, i.e. tcp failed first
       }
     }
-    const ready = await waitForRoutingProxyReady('http://127.0.0.1:18765', {}, readyDeps)
+    const ready = await waitForRoutingProxyTcpDiagnostic('http://127.0.0.1:18765', {}, readyDeps)
     assert.equal(ready, true)
     assert.equal(
       managementProbeCalled,
@@ -821,16 +1753,18 @@ async function cleanup(): Promise<void> {
       'a bare TCP-accept must be sufficient for readiness — no management round trip required'
     )
     console.log(
-      '✓ waitForRoutingProxyReady is satisfied by the cheap TCP signal alone — no management-API round trip required for readiness'
+      '✓ waitForRoutingProxyTcpDiagnostic is satisfied by the cheap TCP signal alone — no management-API round trip required for readiness'
     )
   }
 
   // 10f. Invalid URL never throws — resolves false.
   {
     const { deps } = makeFakeClockDeps(async () => true)
-    const ready = await waitForRoutingProxyReady('not a url', {}, deps)
+    const ready = await waitForRoutingProxyTcpDiagnostic('not a url', {}, deps)
     assert.equal(ready, false, 'an invalid base URL must resolve false, never throw')
-    console.log('✓ waitForRoutingProxyReady resolves false (never throws) for an invalid URL')
+    console.log(
+      '✓ waitForRoutingProxyTcpDiagnostic resolves false (never throws) for an invalid URL'
+    )
   }
 }
 
@@ -843,263 +1777,186 @@ async function cleanup(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 {
-  const unreachableDeps: HealthCheckDeps = {
-    tcpProbe: async () => false,
-    managementProbe: async () => false
+  const runtime = {
+    source: 'automatic' as const,
+    url: 'http://127.0.0.1:18765',
+    host: '127.0.0.1',
+    port: 18765,
+    portConfigurationLocked: false
+  }
+  const ownedAttempt: RoutingProxySpawnAttempt = {
+    pid: 123,
+    managementSecret: 'x'.repeat(48),
+    isAlive: () => true,
+    terminate: () => {}
+  }
+  const foreignDeps: ManagedReadinessDeps = {
+    inspectListeners: async () => [{ pid: 999, executablePath: '/foreign', argv: [] }],
+    managementProbe: async () => true,
+    sleep: async () => {},
+    now: () => 0
   }
   await assert.rejects(
-    () => ensureHealthyForRouting('http://127.0.0.1:18765', {}, unreachableDeps),
-    /not reachable/,
-    'ensureHealthyForRouting must still reject an unreachable proxy after the readiness-polling change'
+    () => ensureHealthyForRouting(runtime, ownedAttempt, { deadlineMs: 0 }, foreignDeps),
+    /not healthy/,
+    'routing gate must reject a foreign listener even when its TCP port and management API respond'
   )
-  console.log(
-    '✓ (no-regression) ensureHealthyForRouting remains fail-closed after the readiness-polling perf change'
-  )
+  console.log('✓ (no-regression) routing gate remains fail-closed for foreign/unowned listeners')
 }
 
 // ---------------------------------------------------------------------------
-// 12. Orphan-port reclaim (the reported bug's root cause) —
-//    reclaimOrphanRoutingProxyPort(): kill-and-respawn policy, not adopt.
-//    Covers: nothing listening (no-op), something listening with a
-//    discoverable PID (kill it), and something listening with NO
-//    discoverable PID (leave it alone rather than guessing).
+// 12. Listener ownership inspection and proof-only orphan reclaim.
 // ---------------------------------------------------------------------------
 
 {
-  function makeOrphanDeps(opts: { listening: boolean; pids: number[] }): {
-    deps: OrphanReclaimDeps
+  const binary =
+    '/Applications/Orpheus Dev.app/Contents/Resources/routing-proxy/7.2.92/cli-proxy-api'
+  const config =
+    '/Users/example/Library/Application Support/Orpheus Dev/routing-proxy/7.2.92/config.yaml'
+  const otherConfig =
+    '/Users/example/Library/Application Support/Orpheus/routing-proxy/7.2.92/config.yaml'
+  const exact: ListeningProcess = {
+    pid: 41,
+    executablePath: binary,
+    argv: [binary, '-config', config]
+  }
+
+  assert.equal(isSameVariantRoutingProxy(exact, binary, config), true)
+  assert.equal(
+    isSameVariantRoutingProxy(
+      { pid: 42, executablePath: null, argv: [binary, '-config', config] },
+      binary,
+      config
+    ),
+    false,
+    'an unknown executable path is never proof of ownership'
+  )
+  assert.equal(
+    isSameVariantRoutingProxy({ pid: 43, executablePath: binary, argv: null }, binary, config),
+    false,
+    'an unknown argv is never proof of ownership'
+  )
+  assert.equal(
+    isSameVariantRoutingProxy(
+      { pid: 44, executablePath: '/usr/bin/other', argv: [binary, '-config', config] },
+      binary,
+      config
+    ),
+    false,
+    'a foreign executable is never our routing proxy'
+  )
+  assert.equal(
+    isSameVariantRoutingProxy(
+      { pid: 45, executablePath: binary, argv: [binary, '-config', otherConfig] },
+      binary,
+      config
+    ),
+    false,
+    'the same binary using a different config is another variant'
+  )
+  assert.equal(
+    isSameVariantRoutingProxy(
+      { pid: 46, executablePath: binary, argv: [binary, '--config', config] },
+      binary,
+      config
+    ),
+    false,
+    'the config flag and its exact following token are required'
+  )
+  const literalBackslashConfig = config.replace('routing-proxy', 'routing\\proxy')
+  assert.equal(
+    isSameVariantRoutingProxy(
+      { pid: 47, executablePath: binary, argv: null },
+      binary,
+      literalBackslashConfig
+    ),
+    false,
+    'a command line containing a literal backslash is uninspectable, never ownership proof'
+  )
+
+  function makeInspectionDeps(listenersByCall: ListeningProcess[][]): {
+    deps: ListenerInspectionDeps
     killedPids: number[]
     slept: number[]
   } {
+    let calls = 0
     const killedPids: number[] = []
     const slept: number[] = []
     return {
       killedPids,
       slept,
       deps: {
-        tcpProbe: async () => opts.listening,
-        listPortOwners: async () => opts.pids,
-        killPid: (pid) => {
-          killedPids.push(pid)
-        },
-        sleep: async (ms) => {
-          slept.push(ms)
-        }
+        listListeners: async () =>
+          listenersByCall[Math.min(calls++, listenersByCall.length - 1)] ?? [],
+        signalProcess: (pid) => killedPids.push(pid),
+        sleep: async (ms) => slept.push(ms)
       }
     }
   }
 
-  // 12a. Nothing listening — the common clean-boot case. Must be a true
-  // no-op: no PIDs looked up (well, listPortOwners is simply never reached
-  // because tcpProbe short-circuits false), nothing killed, no sleep.
+  // Unknown, foreign, and other-variant processes must remain untouched even
+  // when they are the only listener or share a port with a proven orphan.
+  const unrelated: ListeningProcess[] = [
+    { pid: 42, executablePath: null, argv: [binary, '-config', config] },
+    { pid: 43, executablePath: binary, argv: null },
+    { pid: 44, executablePath: '/usr/bin/other', argv: [binary, '-config', config] },
+    { pid: 45, executablePath: binary, argv: [binary, '-config', otherConfig] }
+  ]
   {
-    let listPortOwnersCalled = false
-    const deps: OrphanReclaimDeps = {
-      tcpProbe: async () => false,
-      listPortOwners: async () => {
-        listPortOwnersCalled = true
-        return []
-      },
-      killPid: () => {
-        throw new Error('killPid must never be called when nothing is listening')
-      },
-      sleep: async () => {
-        throw new Error('sleep must never be called when nothing is listening')
-      }
-    }
-    const result = await reclaimOrphanRoutingProxyPort('127.0.0.1', 18765, deps)
-    assert.equal(result.reclaimed, false, 'no-op when nothing is listening')
+    const { deps, killedPids } = makeInspectionDeps([unrelated])
+    const result = await reclaimProvenOrphan(18766, binary, config, deps)
+    assert.equal(result.reclaimed, false)
+    assert.deepEqual(killedPids, [])
+    assert.match(result.reason ?? '', /exactly one proven same-variant listener/)
+  }
+
+  // `ps command=` cannot safely distinguish a literal backslash from display
+  // escaping. Its argv evidence is null, so it cannot be reclaimed even if
+  // the expected config itself contains that literal character.
+  {
+    const ambiguous: ListeningProcess = { pid: 47, executablePath: binary, argv: null }
+    const { deps, killedPids } = makeInspectionDeps([[ambiguous]])
+    const result = await reclaimProvenOrphan(18766, binary, literalBackslashConfig, deps)
+    assert.equal(result.reclaimed, false)
+    assert.deepEqual(killedPids, [])
+  }
+
+  // Additional listeners make the port occupied, even if one is exactly our
+  // stale process. Signal nobody: ownership proof applies to the whole port.
+  {
+    const foreign = unrelated[0]!
+    const { deps, killedPids } = makeInspectionDeps([[exact, foreign]])
+    const result = await reclaimProvenOrphan(18766, binary, config, deps)
+    assert.equal(result.reclaimed, false)
     assert.deepEqual(result.killedPids, [])
-    assert.equal(
-      listPortOwnersCalled,
-      false,
-      'must not even bother listing port owners when the TCP probe says nothing is listening'
-    )
-    console.log(
-      '✓ reclaimOrphanRoutingProxyPort is a true no-op when nothing is listening on the port'
-    )
+    assert.deepEqual(killedPids, [])
   }
 
-  // 12b. THE REPORTED BUG'S ROOT CAUSE: something is listening (an orphan
-  // proxy from a prior app run — isRunning() is false this run because
-  // lifecycle.ts's child handle resets on every boot, but the OS process
-  // never died) with a discoverable PID. Must be killed so a fresh,
-  // credential-known respawn can happen — this is what unblocks
-  // refreshAuthFiles()/the 30s timer ever getting armed without a Settings
-  // page visit.
+  // Even after signalling one exact listener, any remaining foreign listener
+  // means the port was not reclaimed and cannot be reused.
   {
-    const { deps, killedPids, slept } = makeOrphanDeps({ listening: true, pids: [4242] })
-    const result = await reclaimOrphanRoutingProxyPort('127.0.0.1', 18765, deps)
-    assert.equal(result.reclaimed, true, 'an orphan holding the port must be reclaimed')
-    assert.deepEqual(result.killedPids, [4242])
-    assert.deepEqual(killedPids, [4242], 'killPid must be invoked for the discovered orphan PID')
-    assert.ok(slept.length > 0, 'must pause briefly after killing to let the OS free the socket')
-    console.log(
-      '✓ reclaimOrphanRoutingProxyPort kills a discovered orphan PID (the fix for the reported bug — ' +
-        'an already-listening proxy from a prior run, not spawned by this run, would otherwise never ' +
-        'get authFiles populated because start()/refreshAuthFiles() never run for it)'
-    )
+    const foreign = unrelated[0]!
+    const { deps, killedPids } = makeInspectionDeps([[exact], [foreign]])
+    const result = await reclaimProvenOrphan(18766, binary, config, deps)
+    assert.equal(result.reclaimed, false)
+    assert.deepEqual(result.killedPids, [41])
+    assert.deepEqual(killedPids, [41])
+    assert.match(result.reason ?? '', /remains bound/)
   }
 
-  // 12b-multi. Multiple PIDs on the same port (rare, but lsof can return
-  // more than one) — every one must be killed, not just the first.
+  // A sole exact listener is reclaimable only after the complete listener list
+  // becomes empty.
   {
-    const { deps, killedPids } = makeOrphanDeps({ listening: true, pids: [111, 222, 333] })
-    const result = await reclaimOrphanRoutingProxyPort('127.0.0.1', 18765, deps)
+    const { deps, killedPids, slept } = makeInspectionDeps([[exact], []])
+    const result = await reclaimProvenOrphan(18766, binary, config, deps)
     assert.equal(result.reclaimed, true)
-    assert.deepEqual(killedPids.sort(), [111, 222, 333])
-    console.log('✓ reclaimOrphanRoutingProxyPort kills every discovered PID, not just the first')
+    assert.deepEqual(result.killedPids, [41])
+    assert.deepEqual(killedPids, [41])
+    assert.deepEqual(slept, [150])
   }
 
-  // 12c. Something answers TCP but no PID can be resolved (e.g. lsof itself
-  // failed, or the connection is from a process this uid can't see) — must
-  // NOT guess/kill blindly. Leaves the port alone; the caller's subsequent
-  // start() attempt will surface a clear bind-failure error instead of this
-  // function taking a wild, unsafe kill action.
-  {
-    const { deps, killedPids } = makeOrphanDeps({ listening: true, pids: [] })
-    const result = await reclaimOrphanRoutingProxyPort('127.0.0.1', 18765, deps)
-    assert.equal(
-      result.reclaimed,
-      false,
-      'must not claim reclamation when no PID could be identified'
-    )
-    assert.deepEqual(killedPids, [], 'must never kill blindly when the port owner is unknown')
-    console.log(
-      '✓ reclaimOrphanRoutingProxyPort refuses to guess-kill when something listens but no PID is discoverable'
-    )
-  }
-
-  // 12d. Never throws — a listPortOwners/killPid failure must not propagate
-  // and crash the boot-time reconcile path (this whole thing runs
-  // fire-and-forget off the app's first-frame-paint path — see
-  // manager.ts's reconcileRoutingProxy/index.ts's void hydrateSnapshotAtBoot...).
-  {
-    const throwingDeps: OrphanReclaimDeps = {
-      tcpProbe: async () => true,
-      listPortOwners: async () => [999],
-      killPid: () => {
-        throw new Error('permission denied (simulated EPERM)')
-      },
-      sleep: async () => {}
-    }
-    // killPid itself is documented as swallowing errors in the real impl;
-    // this proves the injected-deps contract doesn't require the CALLER to
-    // defend against a misbehaving killPid either — but since killPid here
-    // throws synchronously inside the for-loop, assert the module's real
-    // production deps (defaultOrphanReclaimDeps' realKillPid) never throws,
-    // which is the actual contract that matters. See separate check below.
-    await assert.rejects(
-      () => reclaimOrphanRoutingProxyPort('127.0.0.1', 18765, throwingDeps),
-      'a deps.killPid that throws synchronously propagates — proving the real realKillPid (which ' +
-        'never throws, see orphan.ts) is what keeps the boot path safe, not a try/catch in this function'
-    )
-    console.log(
-      '✓ reclaimOrphanRoutingProxyPort relies on killPid itself being non-throwing (realKillPid swallows ESRCH/EPERM) — verified deps-contract boundary'
-    )
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 13. Periodic refresh must be armed for the adopted/reclaimed path, not
-//    only inside a fresh start(). This is asserted at the manager-module
-//    level in scripts/verify-model-picker.ts (section: "orphan port reclaim
-//    -> routed models become selectable without visiting Settings") since
-//    manager.ts itself imports `electron` and cannot be loaded by this
-//    offline script — see that script's own new section for the full
-//    reconcileRoutingProxy()-level proof.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// 14. reconcileRoutingProxy()'s control-flow decision — the ACTUAL
-//    reported-bug repro at the decision-branch level. manager.ts itself
-//    can't be loaded here (imports `electron`), so this section mirrors its
-//    exact branch condition as a tiny pure function and proves: (a) the OLD
-//    condition (`if (!isRunning()) await start()`) takes NO action at all
-//    for an orphan-held port, meaning start()/refreshAuthFiles()/the 30s
-//    timer NEVER run for the rest of the session; (b) the NEW condition
-//    (`if (!isRunning()) { await reclaimOrphanIfPresent(); await start() }`)
-//    always reaches start() regardless of the orphan case, because reclaim
-//    always resolves (never throws) before start() is attempted.
-// ---------------------------------------------------------------------------
-
-{
-  // Mirrors the OLD reconcileRoutingProxy() branch, before this fix: the
-  // only gate was isRunning() (this run's own child handle) — completely
-  // blind to a foreign process already holding the port.
-  function oldReconcileDecision(isRunningThisRun: boolean): { calledStart: boolean } {
-    let calledStart = false
-    if (!isRunningThisRun) {
-      calledStart = true // await start() — but see below: this is the ONLY gate
-    }
-    return { calledStart }
-  }
-
-  // Mirrors the NEW reconcileRoutingProxy() branch (manager.ts, this fix):
-  // reclaim always runs before start() whenever isRunning() is false,
-  // regardless of whether an orphan is actually present.
-  async function newReconcileDecision(
-    isRunningThisRun: boolean,
-    orphanDeps: OrphanReclaimDeps
-  ): Promise<{ calledReclaim: boolean; calledStart: boolean; reclaimed: boolean }> {
-    if (isRunningThisRun) return { calledReclaim: false, calledStart: false, reclaimed: false }
-    const result = await reclaimOrphanRoutingProxyPort('127.0.0.1', 18765, orphanDeps)
-    return { calledReclaim: true, calledStart: true, reclaimed: result.reclaimed }
-  }
-
-  // The orphan scenario: isRunning() is false (this run's child handle is
-  // fresh/null) but a foreign process from a prior run IS listening on the
-  // port. Both old and new logic see isRunningThisRun === false here — the
-  // bug was never about isRunning() lying, it was about nothing ever
-  // checking "is the PORT actually free" before concluding "nothing to do".
-  const isRunningThisRun = false
-
-  const old = oldReconcileDecision(isRunningThisRun)
-  assert.equal(
-    old.calledStart,
-    true,
-    'sanity: old logic DOES call start() here too — the bug is not that start() was skipped, ' +
-      'it is that start() was never given a chance to reclaim a port a foreign process was holding, ' +
-      'so its own spawn either silently fails to bind or (if the OS allows SO_REUSEADDR-like behavior) ' +
-      'the new child and the orphan both think they own the port'
-  )
-
-  const orphanPresent: OrphanReclaimDeps = {
-    tcpProbe: async () => true,
-    listPortOwners: async () => [55555],
-    killPid: () => {},
-    sleep: async () => {}
-  }
-  const fresh = await newReconcileDecision(isRunningThisRun, orphanPresent)
-  assert.equal(fresh.calledReclaim, true, 'new logic must call reclaim before start()')
-  assert.equal(fresh.reclaimed, true, 'the orphan must actually be detected+killed by the new path')
-  assert.equal(fresh.calledStart, true, 'new logic still proceeds to start() after reclaiming')
   console.log(
-    "✓ reconcileRoutingProxy's new orphan-reclaim-then-start branch runs unconditionally whenever " +
-      'isRunning() is false, closing the gap where a foreign process holding the port left authFiles ' +
-      'empty (and the 30s refresh timer un-armed) for an entire session pre-fix'
-  )
-
-  // Clean-boot case: isRunning() false, nothing actually listening — reclaim
-  // must be a fast no-op and start() still proceeds normally (no behavior
-  // change for the common path).
-  const nothingListening: OrphanReclaimDeps = {
-    tcpProbe: async () => false,
-    listPortOwners: async () => {
-      throw new Error('must not be reached')
-    },
-    killPid: () => {
-      throw new Error('must not be reached')
-    },
-    sleep: async () => {
-      throw new Error('must not be reached')
-    }
-  }
-  const clean = await newReconcileDecision(isRunningThisRun, nothingListening)
-  assert.equal(clean.reclaimed, false, 'clean boot: nothing to reclaim')
-  assert.equal(clean.calledStart, true, 'clean boot: start() still proceeds exactly as before')
-  console.log(
-    '✓ the clean-boot path (nothing orphaned) is unaffected — reclaim is a fast no-op, start() proceeds as before'
+    '✓ reclaimProvenOrphan signals only a sole proven listener and requires an empty reinspection'
   )
 }
 
@@ -1113,10 +1970,10 @@ async function cleanup(): Promise<void> {
 //       - stop() (lifecycle.ts's stopRoutingProxy — SIGTERM then SIGKILL
 //         after a grace period, resolves only once the child has actually
 //         exited)
-//       - reclaimOrphanRoutingProxyPort (asserted exhaustively in section 12
-//         above) — reused UNCHANGED as a defensive port-release check
+//       - reclaimProvenOrphan (asserted exhaustively in section 12 above) —
+//         reused as a proof-only defensive port-release check
 //         between stop and start, exactly like reconcileRoutingProxy's own
-//         pre-start reclaim (section 13 above)
+//         pre-start reclaim
 //       - start() (already covers config regeneration, readiness polling,
 //         authFiles/model-cache refresh kickoff)
 //     plus a module-level boolean re-entrancy flag
@@ -1179,6 +2036,545 @@ async function cleanup(): Promise<void> {
     'the guard must release after completion, allowing a later restart'
   )
   console.log('✓ the re-entrancy guard releases after completion, allowing a subsequent restart')
+}
+
+// ---------------------------------------------------------------------------
+// 15. Auto-supervision (respawn + health watchdog) — src/main/routingProxy/
+//     supervisor.ts. Fully offline: a fake clock/scheduler stands in for
+//     setTimeout/setInterval so backoff/watchdog timing is asserted exactly,
+//     with no real delays. This is the ONE module in routingProxy/ purpose-
+//     built to be importable by this electron-free harness while still
+//     covering the respawn/backoff/watchdog/give-up decision logic that
+//     manager.ts wires to real electron/process APIs (manager.ts itself
+//     stays untestable here for the same reason restart() is, per section 14
+//     above — it imports `electron`).
+// ---------------------------------------------------------------------------
+
+// 15a. Pure backoff-delay calculator: attempt 0->1s, 1->2s, 2->4s, 3->8s,
+// 4->16s, 5+->30s (capped), per the required schedule exactly.
+{
+  const schedule = [0, 1, 2, 3, 4, 5, 6, 100].map(respawnBackoffDelayMs)
+  assert.deepEqual(
+    schedule,
+    [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000],
+    'backoff schedule must be attempt 0->1s, 1->2s, 2->4s, 3->8s, 4->16s, 5+->30s (capped)'
+  )
+  console.log(
+    '✓ respawnBackoffDelayMs follows the exact required schedule (1s/2s/4s/8s/16s/30s-capped)'
+  )
+}
+
+// 15b. Pure respawn decision function — expected vs unexpected exit.
+{
+  const respawnWhenUnexpected = decideRespawnAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: false,
+    consecutiveFailures: 0
+  })
+  assert.equal(
+    respawnWhenUnexpected.action,
+    'respawn',
+    'an unexpected exit with no restart in flight and under the failure cap must trigger a respawn'
+  )
+  if (respawnWhenUnexpected.action === 'respawn') {
+    assert.equal(
+      respawnWhenUnexpected.delayMs,
+      1000,
+      'first respawn attempt uses the 1s base delay'
+    )
+  }
+
+  const skipWhenExpected = decideRespawnAction({
+    enabled: true,
+    expectedShutdown: true,
+    restarting: false,
+    consecutiveFailures: 0
+  })
+  assert.equal(
+    skipWhenExpected.action,
+    'skip',
+    'an exit marked as expected (manual stop/restart/quit) must NOT trigger a respawn'
+  )
+
+  const skipWhenDisabled = decideRespawnAction({
+    enabled: false,
+    expectedShutdown: false,
+    restarting: false,
+    consecutiveFailures: 0
+  })
+  assert.equal(
+    skipWhenDisabled.action,
+    'skip',
+    'supervision must never fight an intentional stop — disabled must skip respawn entirely'
+  )
+
+  const skipWhenRestarting = decideRespawnAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: true,
+    consecutiveFailures: 0
+  })
+  assert.equal(
+    skipWhenRestarting.action,
+    'skip',
+    'a manual restart already in flight must not be raced by a second supervised respawn'
+  )
+  console.log(
+    '✓ decideRespawnAction: unexpected exit respawns, expected/disabled/restarting-in-flight all skip'
+  )
+}
+
+// 15c. Give-up after MAX_CONSECUTIVE_RESPAWN_FAILURES (5) consecutive
+// failures — and NOT before.
+{
+  const stillTrying = decideRespawnAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: false,
+    consecutiveFailures: MAX_CONSECUTIVE_RESPAWN_FAILURES - 1
+  })
+  assert.equal(
+    stillTrying.action,
+    'respawn',
+    'must keep respawning right up to (but not including) the failure cap'
+  )
+
+  const givesUp = decideRespawnAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: false,
+    consecutiveFailures: MAX_CONSECUTIVE_RESPAWN_FAILURES
+  })
+  assert.equal(
+    givesUp.action,
+    'give-up',
+    `must give up once consecutiveFailures reaches ${MAX_CONSECUTIVE_RESPAWN_FAILURES}`
+  )
+  console.log(
+    `✓ decideRespawnAction gives up after exactly ${MAX_CONSECUTIVE_RESPAWN_FAILURES} consecutive failed respawn attempts, not before`
+  )
+}
+
+// 15d. Watchdog decision — a hung-but-alive (running, unhealthy) process
+// must trigger a restart; a healthy one, a not-running one, a disabled
+// state, an expected-shutdown, and a restart-in-flight must all skip.
+{
+  const restartsWhenHung = decideWatchdogAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: false,
+    isRunning: true,
+    healthy: false
+  })
+  assert.equal(
+    restartsWhenHung.action,
+    'restart',
+    'a running-but-unhealthy (bound, not answering the management probe) process must be restarted'
+  )
+
+  const skipsWhenHealthy = decideWatchdogAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: false,
+    isRunning: true,
+    healthy: true
+  })
+  assert.equal(skipsWhenHealthy.action, 'skip', 'a healthy running process must not be restarted')
+
+  const skipsWhenNotRunning = decideWatchdogAction({
+    enabled: true,
+    expectedShutdown: false,
+    restarting: false,
+    isRunning: false,
+    healthy: false
+  })
+  assert.equal(
+    skipsWhenNotRunning.action,
+    'skip',
+    'nothing running means nothing for the watchdog to restart — the respawn-on-exit path owns that case'
+  )
+
+  const skipsWhenDisabled = decideWatchdogAction({
+    enabled: false,
+    expectedShutdown: false,
+    restarting: false,
+    isRunning: true,
+    healthy: false
+  })
+  assert.equal(
+    skipsWhenDisabled.action,
+    'skip',
+    'a disabled proxy must never be watchdog-restarted'
+  )
+  console.log(
+    '✓ decideWatchdogAction restarts a hung-but-running proxy and skips in every other case (healthy/not-running/disabled)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 16. RoutingProxySupervisor — the stateful orchestration class, driven with
+// a fully fake scheduler (no real setTimeout/setInterval) so backoff/
+// watchdog timing is deterministic and instantaneous in this harness.
+// ---------------------------------------------------------------------------
+
+interface FakeTimer {
+  id: number
+  cb: () => void
+  fireAt: number
+  interval: number | null
+}
+
+/** Minimal fake scheduler: setTimer/setRepeatingTimer register a callback
+ *  against a virtual clock; advance(ms) fires everything due, repeating
+ *  timers reschedule themselves exactly like the real setInterval would. */
+function makeFakeScheduler(): {
+  deps: Pick<RoutingProxySupervisorDeps, 'setTimer' | 'clearTimer' | 'setRepeatingTimer'>
+  advance: (ms: number) => void
+  pendingCount: () => number
+} {
+  let now = 0
+  let nextId = 1
+  const timers = new Map<number, FakeTimer>()
+
+  const setTimer: RoutingProxySupervisorDeps['setTimer'] = (cb, delayMs) => {
+    const id = nextId++
+    timers.set(id, { id, cb, fireAt: now + delayMs, interval: null })
+    return id
+  }
+  const setRepeatingTimer: RoutingProxySupervisorDeps['setRepeatingTimer'] = (cb, intervalMs) => {
+    const id = nextId++
+    timers.set(id, { id, cb, fireAt: now + intervalMs, interval: intervalMs })
+    return id
+  }
+  const clearTimer: RoutingProxySupervisorDeps['clearTimer'] = (handle) => {
+    timers.delete(handle as number)
+  }
+  const advance = (ms: number): void => {
+    const target = now + ms
+    // Fire due timers in fireAt order, one at a time, so a callback that
+    // itself schedules a new timer within the advanced window is picked up
+    // correctly (mirrors real event-loop ordering closely enough for this
+    // harness's purposes).
+    while (true) {
+      let due: FakeTimer | null = null
+      for (const t of timers.values()) {
+        if (t.fireAt <= target && (due === null || t.fireAt < due.fireAt)) due = t
+      }
+      if (!due) break
+      now = due.fireAt
+      if (due.interval !== null) {
+        due.fireAt = now + due.interval
+      } else {
+        timers.delete(due.id)
+      }
+      due.cb()
+    }
+    now = target
+  }
+  return {
+    deps: { setTimer, setRepeatingTimer, clearTimer },
+    advance,
+    pendingCount: () => timers.size
+  }
+}
+
+function silentLogger(): SupervisorLogger {
+  return { info: () => {}, warn: () => {}, error: () => {} }
+}
+
+/** Flushes pending microtasks (e.g. an `await deps.startProxy()` inside the
+ *  supervisor's respawn path) so synchronous fake-timer `advance()` calls in
+ *  this harness correctly observe state that only settles after a promise
+ *  continuation — mirrors the real event loop interleaving timers/microtasks
+ *  closely enough for these assertions. */
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
+// 16a. Expected shutdown suppresses respawn entirely.
+{
+  const scheduler = makeFakeScheduler()
+  let startCalls = 0
+  let giveUpCalls = 0
+  const deps: RoutingProxySupervisorDeps = {
+    startProxy: async () => {
+      startCalls++
+    },
+    killProxy: () => {},
+    isRunning: () => false,
+    isRestarting: () => false,
+    isEnabled: () => true,
+    checkHealth: async () => ({ healthy: true }),
+    onGiveUp: () => {
+      giveUpCalls++
+    },
+    logger: silentLogger(),
+    ...scheduler.deps
+  }
+  const supervisor = new RoutingProxySupervisor(deps)
+
+  supervisor.markExpectedShutdown()
+  supervisor.onUnexpectedExit(0, null)
+  scheduler.advance(60_000)
+  assert.equal(
+    startCalls,
+    0,
+    'marking a shutdown as expected BEFORE the exit must suppress respawn entirely, even after a long wait'
+  )
+  assert.equal(giveUpCalls, 0, 'no give-up should fire either when the exit was expected')
+  console.log(
+    '✓ RoutingProxySupervisor: an exit preceded by markExpectedShutdown() does NOT trigger a respawn'
+  )
+}
+
+// 16b. An exit with NO prior expected-shutdown mark DOES trigger a respawn,
+// on the correct 1s backoff.
+{
+  const scheduler = makeFakeScheduler()
+  let startCalls = 0
+  const deps: RoutingProxySupervisorDeps = {
+    startProxy: async () => {
+      startCalls++
+    },
+    killProxy: () => {},
+    isRunning: () => true,
+    isRestarting: () => false,
+    isEnabled: () => true,
+    checkHealth: async () => ({ healthy: true }),
+    onGiveUp: () => {},
+    logger: silentLogger(),
+    ...scheduler.deps
+  }
+  const supervisor = new RoutingProxySupervisor(deps)
+
+  supervisor.markStarted()
+  supervisor.onUnexpectedExit(1, null)
+  assert.equal(
+    startCalls,
+    0,
+    'the respawn must be scheduled on a backoff timer, not fired synchronously'
+  )
+  scheduler.advance(999)
+  await flushMicrotasks()
+  assert.equal(startCalls, 0, 'must not respawn before the 1s backoff elapses')
+  scheduler.advance(1)
+  await flushMicrotasks()
+  assert.equal(
+    startCalls,
+    1,
+    'must respawn once the 1s backoff elapses for an unmarked (unexpected) exit'
+  )
+  console.log(
+    '✓ RoutingProxySupervisor: an exit with NO prior expected-shutdown mark respawns after exactly the 1s backoff'
+  )
+}
+
+// 16c. Give up after 5 consecutive failed respawn attempts, and stop trying.
+{
+  const scheduler = makeFakeScheduler()
+  let startCalls = 0
+  let giveUpMessage: string | null = null
+  const deps: RoutingProxySupervisorDeps = {
+    // Every attempt "fails" — the process never comes up.
+    startProxy: async () => {
+      startCalls++
+    },
+    killProxy: () => {},
+    isRunning: () => false,
+    isRestarting: () => false,
+    isEnabled: () => true,
+    checkHealth: async () => ({ healthy: true }),
+    onGiveUp: (message) => {
+      giveUpMessage = message
+    },
+    logger: silentLogger(),
+    ...scheduler.deps
+  }
+  const supervisor = new RoutingProxySupervisor(deps)
+
+  supervisor.markStarted()
+  supervisor.onUnexpectedExit(1, null)
+  // Drain every backoff tier (1s,2s,4s,8s,16s) — 5 failed attempts total.
+  // Each advance() fires a timer synchronously, but the supervisor's own
+  // respawn handling awaits startProxy() before scheduling the NEXT backoff
+  // timer — flush microtasks after every tier so that next timer actually
+  // exists before the following advance() call.
+  for (const tier of [1000, 2000, 4000, 8000, 16000]) {
+    scheduler.advance(tier)
+    await flushMicrotasks()
+  }
+
+  assert.equal(startCalls, 5, 'must have attempted exactly 5 respawns before giving up')
+  assert.ok(giveUpMessage !== null, 'onGiveUp must fire once the 5th consecutive attempt fails')
+  assert.ok(
+    (giveUpMessage as unknown as string).includes('5'),
+    'the give-up message should be clear about the failure count'
+  )
+  assert.ok(supervisor.hasGivenUp(), 'hasGivenUp() must report true after giving up')
+
+  // A 6th window must NOT trigger yet another respawn attempt.
+  scheduler.advance(30_000)
+  await flushMicrotasks()
+  assert.equal(
+    startCalls,
+    5,
+    'once given up, the supervisor must stop trying — no further respawn attempts'
+  )
+  console.log(
+    '✓ RoutingProxySupervisor gives up after exactly 5 consecutive failed respawn attempts and stops trying'
+  )
+
+  // 16d. Counter reset (manual restart / enable-toggle) brings it back.
+  supervisor.resetFailureCount()
+  assert.equal(supervisor.hasGivenUp(), false, 'resetFailureCount() must clear the given-up state')
+  supervisor.markStarted()
+  supervisor.onUnexpectedExit(1, null)
+  scheduler.advance(1000)
+  await flushMicrotasks()
+  assert.equal(
+    startCalls,
+    6,
+    'after a counter reset, respawn attempts must resume normally from a fresh 1s backoff'
+  )
+  console.log(
+    '✓ resetFailureCount() (manual restart / enable-toggle) resets the failure counter and respawn attempts resume'
+  )
+}
+
+// 16e. Watchdog restarting an unhealthy-but-running proxy: a stubbed health
+// probe reporting unhealthy must trigger killProxy() (which — in the real
+// wiring — leads to a real child exit routed back through onUnexpectedExit;
+// this unit only asserts the watchdog's own trigger).
+{
+  const scheduler = makeFakeScheduler()
+  let killCalls = 0
+  const deps: RoutingProxySupervisorDeps = {
+    startProxy: async () => {},
+    killProxy: () => {
+      killCalls++
+    },
+    isRunning: () => true,
+    isRestarting: () => false,
+    isEnabled: () => true,
+    checkHealth: async () => ({ healthy: false, reason: 'stubbed unhealthy' }),
+    onGiveUp: () => {},
+    logger: silentLogger(),
+    ...scheduler.deps
+  }
+  const supervisor = new RoutingProxySupervisor(deps)
+  supervisor.startWatchdog()
+  scheduler.advance(30_000)
+  // Allow the async checkHealth() promise inside the tick to settle.
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.ok(
+    killCalls >= 1,
+    'the watchdog must kill a running-but-unhealthy process on its first 30s tick'
+  )
+  supervisor.dispose()
+  console.log(
+    '✓ RoutingProxySupervisor: the 30s health watchdog kills-and-lets-respawn an unhealthy-but-running proxy'
+  )
+}
+
+// 16f. Single-flight: two overlapping watchdog ticks must not stack/
+// duplicate probes — a slow checkHealth() call must not be invoked a second
+// time while the first is still outstanding.
+{
+  const scheduler = makeFakeScheduler()
+  let probeCalls = 0
+  let resolveFirstProbe: (() => void) | null = null
+  const firstProbeGate = new Promise<void>((resolve) => {
+    resolveFirstProbe = resolve
+  })
+  const deps: RoutingProxySupervisorDeps = {
+    startProxy: async () => {},
+    killProxy: () => {},
+    isRunning: () => true,
+    isRestarting: () => false,
+    isEnabled: () => true,
+    checkHealth: async () => {
+      probeCalls++
+      if (probeCalls === 1) await firstProbeGate
+      return { healthy: true }
+    },
+    onGiveUp: () => {},
+    logger: silentLogger(),
+    ...scheduler.deps
+  }
+  const supervisor = new RoutingProxySupervisor(deps)
+  supervisor.startWatchdog()
+
+  // First tick fires and its probe is deliberately left outstanding.
+  scheduler.advance(30_000)
+  await Promise.resolve()
+  assert.equal(probeCalls, 1, 'first watchdog tick must start exactly one probe')
+
+  // A second tick fires while the first probe is still outstanding — must
+  // NOT start a second overlapping probe (single-flight).
+  scheduler.advance(30_000)
+  await Promise.resolve()
+  assert.equal(
+    probeCalls,
+    1,
+    'a second overlapping watchdog tick must not stack a second probe while one is in flight'
+  )
+
+  // Release the first probe — now the NEXT tick is free to probe again.
+  resolveFirstProbe?.()
+  await Promise.resolve()
+  await Promise.resolve()
+  scheduler.advance(30_000)
+  await Promise.resolve()
+  assert.equal(
+    probeCalls,
+    2,
+    'once the outstanding probe settles, a subsequent tick must be able to probe again'
+  )
+  supervisor.dispose()
+  console.log(
+    '✓ RoutingProxySupervisor: overlapping watchdog ticks are single-flight — no stacked/duplicate probes'
+  )
+}
+
+// 16g. dispose() clears both the backoff-respawn timer and the health-
+// watchdog interval — mirrors shutdownRoutingProxySync()'s requirement.
+{
+  const scheduler = makeFakeScheduler()
+  let startCalls = 0
+  let probeCalls = 0
+  const deps: RoutingProxySupervisorDeps = {
+    startProxy: async () => {
+      startCalls++
+    },
+    killProxy: () => {},
+    isRunning: () => false,
+    isRestarting: () => false,
+    isEnabled: () => true,
+    checkHealth: async () => {
+      probeCalls++
+      return { healthy: true }
+    },
+    onGiveUp: () => {},
+    logger: silentLogger(),
+    ...scheduler.deps
+  }
+  const supervisor = new RoutingProxySupervisor(deps)
+  supervisor.startWatchdog()
+  supervisor.markStarted()
+  supervisor.onUnexpectedExit(1, null) // schedules a 1s backoff respawn timer
+
+  supervisor.dispose()
+  scheduler.advance(120_000)
+  assert.equal(startCalls, 0, 'dispose() must clear the pending backoff-respawn timer')
+  assert.equal(probeCalls, 0, 'dispose() must clear the health-watchdog interval')
+  assert.equal(scheduler.pendingCount(), 0, 'no timers should remain scheduled after dispose()')
+  console.log(
+    '✓ RoutingProxySupervisor.dispose() clears both the backoff-respawn timer and the health-watchdog interval'
+  )
 }
 
 await cleanup()

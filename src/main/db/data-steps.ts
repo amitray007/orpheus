@@ -432,6 +432,23 @@ const dataSteps: DataStep[] = [
          WHERE NOT EXISTS (SELECT 1 FROM pane_panels WHERE kind = 'general')`
       ).run(randomUUID(), now, now)
     }
+  },
+
+  // -------------------------------------------------------------------------
+  // Diagnostics written before the centralized redaction boundary are
+  // disposable operational history, not user/workspace data. Purge the
+  // complete history once after schema convergence; the applied-data-step
+  // ledger prevents this from becoming synchronous work on every startup.
+  // Query/export paths still sanitize rows as defense in depth.
+  // -------------------------------------------------------------------------
+  {
+    name: 'diagnostics-pre-redaction-purge',
+    legacyThroughVersion: 0,
+    alwaysRun: true,
+    run: (db) => {
+      if (!listTables(db).includes('diagnostics_events')) return
+      db.prepare('DELETE FROM diagnostics_events').run()
+    }
   }
 ]
 

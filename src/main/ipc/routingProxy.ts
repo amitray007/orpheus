@@ -10,6 +10,7 @@
 import {
   getRoutingProxySnapshot,
   setEnabled,
+  setPortConfiguration,
   install,
   getAssetInfo,
   checkForComponentUpdate,
@@ -25,6 +26,10 @@ export function registerRoutingProxyIpc(): void {
   handle('routingProxy:getState', () => getRoutingProxySnapshot())
 
   handle('routingProxy:setEnabled', async (_e, { enabled }) => setEnabled(enabled))
+
+  handle('routingProxy:setPortConfiguration', async (_e, configuration) =>
+    setPortConfiguration(configuration)
+  )
 
   handle('routingProxy:install', async () => {
     await install()

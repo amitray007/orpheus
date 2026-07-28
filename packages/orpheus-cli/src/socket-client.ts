@@ -78,11 +78,63 @@ export class CommandError extends Error {
   }
 }
 
+/**
+ * The /cmd transport failed after a request may have reached the server.
+ * Mutating commands must not auto-retry this error because the first attempt
+ * may already have applied.
+ */
+export class CommandTransportError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CommandTransportError'
+  }
+}
+
+export type SubscriptionErrorKind = 'auth' | 'http' | 'transport'
+
+/**
+ * A failure of the /subscribe HTTP stream itself, rather than a workspace wait
+ * outcome. Keeping these failures typed prevents ws wait from fabricating a
+ * per-workspace "died" result when authentication or transport failed before
+ * the server could report any workspace state.
+ */
+export class SubscriptionError extends Error {
+  readonly kind: SubscriptionErrorKind
+  readonly statusCode: number | null
+
+  constructor(kind: SubscriptionErrorKind, message: string, statusCode: number | null = null) {
+    super(message)
+    this.name = 'SubscriptionError'
+    this.kind = kind
+    this.statusCode = statusCode
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Token resolution — resolved once per CLI process
+// Connection resolution — cached for the CLI process, invalidated on retry
 // ---------------------------------------------------------------------------
 
 let _cachedToken: string | null | undefined = undefined // undefined = not yet resolved
+let _cachedSocketPath: string | undefined
+
+/**
+ * Clear all resolved command-server connection material.
+ *
+ * The top-level CLI calls this before its one auto-launch/reconnect retry so a
+ * cached missing-token sentinel, stale token, or stale socket selection cannot
+ * be reused. No token value is returned or logged.
+ */
+export function invalidateConnectionCache(): void {
+  _cachedToken = undefined
+  _cachedSocketPath = undefined
+}
+
+function resolveSocketPath(): string {
+  if (_cachedSocketPath === undefined) {
+    _cachedSocketPath = getCmdSockPath()
+  }
+  return _cachedSocketPath
+}
 
 /**
  * Resolve the auth token, caching it for the lifetime of this CLI process.
@@ -136,6 +188,10 @@ export function resolveToken(): string {
 // Low-level HTTP-over-Unix-socket helper
 // ---------------------------------------------------------------------------
 
+function isUnavailableSocketCode(code: string | undefined): boolean {
+  return code === 'ENOENT' || code === 'ECONNREFUSED'
+}
+
 /**
  * Send a single POST request over the Unix domain socket and collect the full
  * response body. Rejects with AppNotRunningError on ENOENT/ECONNREFUSED.
@@ -148,7 +204,7 @@ function rawPost(
   onData?: (chunk: string) => void
 ): Promise<{ statusCode: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const sockPath = getCmdSockPath()
+    const sockPath = resolveSocketPath()
 
     const options: http.RequestOptions = {
       socketPath: sockPath,
@@ -190,24 +246,52 @@ function rawPost(
         )
       })
 
-      res.on('error', (err) => {
-        settle(() => reject(err))
+      res.on('aborted', () => {
+        settle(() =>
+          reject(
+            new CommandTransportError(
+              'Orpheus command response was interrupted after the request was sent'
+            )
+          )
+        )
+      })
+
+      res.on('error', (err: NodeJS.ErrnoException) => {
+        settle(() =>
+          reject(
+            new CommandTransportError(
+              `Orpheus command response failed after dispatch${
+                err.code != null ? `: ${err.code}` : ''
+              }`
+            )
+          )
+        )
       })
     })
 
     req.setTimeout(timeoutMs, () => {
       settle(() => {
         req.destroy()
-        reject(new Error(`request timed out after ${timeoutMs}ms`))
+        reject(
+          new CommandTransportError(
+            `Orpheus command response timed out after ${timeoutMs}ms; the request may have applied`
+          )
+        )
       })
     })
 
     req.on('error', (err: NodeJS.ErrnoException) => {
       settle(() => {
-        if (err.code === 'ENOENT' || err.code === 'ECONNREFUSED') {
+        if (isUnavailableSocketCode(err.code)) {
           reject(new AppNotRunningError(`cannot reach Orpheus socket at ${sockPath}: ${err.code}`))
         } else {
-          reject(err)
+          reject(
+            new CommandTransportError(
+              `Orpheus command transport failed after dispatch${
+                err.code != null ? `: ${err.code}` : ''
+              }`
+            )
+          )
         }
       })
     })
@@ -260,7 +344,8 @@ export async function sendCommand(
 
   // 401 — bad or missing token
   if (statusCode === 401) {
-    throw new CommandError('unauthorized: invalid or missing auth token')
+    invalidateConnectionCache()
+    throw new AppNotRunningError('Orpheus command authentication was rejected; reconnect required')
   }
 
   // Parse the ok-envelope
@@ -305,27 +390,32 @@ const DEFAULT_SUBSCRIBE_TIMEOUT_MS = 5 * 60 * 1000
  *                  (e.g. { action: 'subscribe', workspaceId: '...' }).
  * @param onEvent   Called for each newline-delimited JSON frame received.
  * @param opts      Optional: timeoutMs (0 = no timeout, default 5 min).
- * @returns         { close, done } — call close() to tear down the connection;
- *                  done resolves when the server closes or the timeout fires.
+ * @returns         { close, done, timedOut } — call close() to tear down the
+ *                  connection; done resolves when the server closes or the
+ *                  timeout fires; timedOut identifies the latter case.
  */
 export function subscribe(
   payload: object,
   onEvent: (evt: unknown) => void,
   opts?: { timeoutMs?: number }
-): { close: () => void; done: Promise<void> } {
+): { close: () => void; done: Promise<void>; timedOut: () => boolean } {
   const token = resolveToken() // throws AppNotRunningError if unavailable
 
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_SUBSCRIBE_TIMEOUT_MS
 
   let reqRef: http.ClientRequest | null = null
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+  let timedOut = false
   let closed = false
   let resolveDone!: () => void
-  const done = new Promise<void>((resolve) => {
+  let rejectDone!: (error: SubscriptionError) => void
+  const done = new Promise<void>((resolve, reject) => {
     resolveDone = resolve
+    rejectDone = reject
   })
 
-  function teardown(): void {
+  function teardown(error?: SubscriptionError): void {
+    if (closed) return
     closed = true
     if (timeoutHandle != null) {
       clearTimeout(timeoutHandle)
@@ -339,14 +429,28 @@ export function subscribe(
       }
       reqRef = null
     }
-    resolveDone()
+    if (error == null) {
+      resolveDone()
+    } else {
+      rejectDone(error)
+    }
+  }
+
+  // The deadline covers socket connection and response-header establishment,
+  // not only an already-open response stream. A server that accepts the Unix
+  // socket but never sends headers must still terminate at the caller's bound.
+  if (timeoutMs > 0) {
+    timeoutHandle = setTimeout(() => {
+      timedOut = true
+      teardown()
+    }, timeoutMs)
   }
 
   // Kick off the connection asynchronously (subscribe is not async itself so
   // the caller can get the close handle synchronously before the socket opens).
   process.nextTick(() => {
     if (closed) return
-    const sockPath = getCmdSockPath()
+    const sockPath = resolveSocketPath()
     const bodyStr = JSON.stringify(payload)
 
     const options: http.RequestOptions = {
@@ -363,11 +467,26 @@ export function subscribe(
     const req = http.request(options, (res) => {
       res.setEncoding('utf-8')
 
-      // Set up optional timeout once we have the response (connection is alive)
-      if (timeoutMs > 0) {
-        timeoutHandle = setTimeout(() => {
-          teardown()
-        }, timeoutMs)
+      const statusCode = res.statusCode ?? 0
+      if (statusCode !== 200) {
+        if (statusCode === 401) {
+          invalidateConnectionCache()
+        }
+        res.resume()
+        teardown(
+          statusCode === 401
+            ? new SubscriptionError(
+                'auth',
+                'Orpheus subscription authentication was rejected',
+                statusCode
+              )
+            : new SubscriptionError(
+                'http',
+                `Orpheus subscription failed with HTTP ${statusCode}`,
+                statusCode
+              )
+        )
+        return
       }
 
       // Buffer for partial newline-delimited frames
@@ -394,15 +513,31 @@ export function subscribe(
         teardown()
       })
 
-      res.on('error', () => {
-        teardown()
+      res.on('aborted', () => {
+        teardown(
+          new SubscriptionError('transport', 'Orpheus subscription response was interrupted')
+        )
+      })
+
+      res.on('error', (err: NodeJS.ErrnoException) => {
+        teardown(
+          new SubscriptionError(
+            'transport',
+            `Orpheus subscription response failed${err.code != null ? `: ${err.code}` : ''}`
+          )
+        )
       })
     })
 
     reqRef = req
 
-    req.on('error', () => {
-      teardown()
+    req.on('error', (err: NodeJS.ErrnoException) => {
+      teardown(
+        new SubscriptionError(
+          'transport',
+          `cannot open Orpheus subscription${err.code != null ? `: ${err.code}` : ''}`
+        )
+      )
     })
 
     req.write(bodyStr)
@@ -413,6 +548,9 @@ export function subscribe(
     close(): void {
       teardown()
     },
-    done
+    done,
+    timedOut(): boolean {
+      return timedOut
+    }
   }
 }

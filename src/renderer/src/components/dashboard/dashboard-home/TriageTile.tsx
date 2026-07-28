@@ -26,7 +26,7 @@ export function TriageTile({
   hot = false,
   onClick
 }: {
-  count: number
+  count: number | null
   dotClassName: string
   label: string
   sublabel?: string
@@ -34,19 +34,21 @@ export function TriageTile({
   hot?: boolean
   onClick?: () => void
 }): React.JSX.Element {
+  const countLabel = count === null ? 'Unavailable' : String(count)
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label={`${label}: ${count}. ${actionLabel}.`}
+      disabled={!onClick}
+      aria-label={`${label}: ${countLabel}. ${actionLabel}.`}
       className={cn(
-        'flex min-w-[150px] flex-1 cursor-pointer items-center gap-2.5 rounded-xl border bg-surface-raised px-3.5 py-2.5 text-left transition-colors hover:bg-surface-overlay',
+        'flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border bg-surface-raised px-3.5 py-2.5 text-left transition-colors enabled:cursor-pointer enabled:hover:bg-surface-overlay enabled:active:scale-[0.98] disabled:cursor-default',
         hot ? 'border-accent/55' : 'border-border-default'
       )}
     >
       <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', dotClassName)} aria-hidden="true" />
       <span className="font-mono text-xl leading-none font-semibold tracking-tight text-text-primary tabular-nums">
-        {count}
+        {count === null ? '—' : count}
       </span>
       <span className="flex min-w-0 flex-col gap-px">
         <span className="truncate text-xs text-text-secondary">{label}</span>
