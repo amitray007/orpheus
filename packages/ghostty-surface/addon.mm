@@ -145,6 +145,62 @@ struct GhosttySurfaceEntry {
 // workspaceId → entry
 static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
 
+// Every live Ghostty surface owns a shell that must keep processing while
+// hidden. Keep a baseline user-initiated + idle-sleep-disabled activity while
+// ANY live surface exists; navigation must never App-Nap-throttle a background
+// pane. Add the stronger latency-critical assertion only while at least one
+// live surface is attached to the window hierarchy.
+//
+// g_surfaces is main-thread-owned. The defensive dispatch keeps activity
+// ownership on that same thread if a future lifecycle caller arrives elsewhere.
+static __strong id<NSObject> g_terminalLiveActivity = nil;
+static __strong id<NSObject> g_terminalVisibleLatencyActivity = nil;
+
+static void reconcileTerminalActivities() {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            reconcileTerminalActivities();
+        });
+        return;
+    }
+
+    const bool hasLiveSurface = std::any_of(
+        g_surfaces.begin(),
+        g_surfaces.end(),
+        [](const auto& pair) {
+            const GhosttySurfaceEntry& entry = pair.second;
+            return entry.surface != nullptr;
+        });
+    const bool hasAttachedLiveSurface = std::any_of(
+        g_surfaces.begin(),
+        g_surfaces.end(),
+        [](const auto& pair) {
+            const GhosttySurfaceEntry& entry = pair.second;
+            return entry.surface != nullptr && entry.isAttached && entry.view != nil;
+        });
+
+    if (hasLiveSurface && !g_terminalLiveActivity) {
+        g_terminalLiveActivity = [[NSProcessInfo processInfo]
+            beginActivityWithOptions:(NSActivityUserInitiated |
+                                      NSActivityIdleSystemSleepDisabled)
+                              reason:@"Live terminal processing"];
+    }
+
+    if (hasAttachedLiveSurface && !g_terminalVisibleLatencyActivity) {
+        g_terminalVisibleLatencyActivity = [[NSProcessInfo processInfo]
+            beginActivityWithOptions:NSActivityLatencyCritical
+                              reason:@"Visible terminal rendering"];
+    } else if (!hasAttachedLiveSurface && g_terminalVisibleLatencyActivity) {
+        [[NSProcessInfo processInfo] endActivity:g_terminalVisibleLatencyActivity];
+        g_terminalVisibleLatencyActivity = nil;
+    }
+
+    if (!hasLiveSurface && g_terminalLiveActivity) {
+        [[NSProcessInfo processInfo] endActivity:g_terminalLiveActivity];
+        g_terminalLiveActivity = nil;
+    }
+}
+
 // Screen text is sensitive and intentionally remains ephemeral: this cache is
 // process-memory-only, never logged or persisted, expires after 500ms, and is
 // erased synchronously when its surface is destroyed.
@@ -2501,19 +2557,9 @@ static bool ensureApp() {
     }];
     [[NSRunLoop mainRunLoop] addTimer:safetyTimer forMode:NSRunLoopCommonModes];
 
-    // Prevent App Nap: a backgrounded Orpheus would otherwise have its main-thread
-    // NSTimers (incl. the 10Hz terminal safety timer) coalesced/suspended, which
-    // stalls terminal rendering until foreground. Hold a user-initiated activity
-    // for the process lifetime. NSActivityLatencyCritical keeps timers prompt even
-    // in background; NSActivityIdleSystemSleepDisabled ensures the 10Hz safety timer
-    // survives display sleep.
-    // ARC: __strong static keeps the object alive without manual retain.
-    static __strong id<NSObject> s_appNapActivity = nil;
-    if (!s_appNapActivity) {
-        s_appNapActivity = [[NSProcessInfo processInfo]
-            beginActivityWithOptions:(NSActivityUserInitiated | NSActivityLatencyCritical | NSActivityIdleSystemSleepDisabled)
-                              reason:@"Active terminal rendering"];
-    }
+    // Activity ownership starts lazily with the first live surface. Hidden
+    // shells retain baseline non-throttling activity; only attached surfaces
+    // add the latency-critical assertion.
 
     return true;
 }
@@ -2981,6 +3027,8 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
         }
         // Already hidden — no-op.
     }
+
+    reconcileTerminalActivities();
 }
 
 // ---------------------------------------------------------------------------
@@ -3852,6 +3900,7 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
         doomed.view.surface = nullptr;
         [doomed.view removeFromSuperview];
     }
+    reconcileTerminalActivities();
 
     // ---- Asynchronous, slow — process teardown after the IPC return ----
     // ghostty_surface_free MUST run on the main thread per Ghostty's API

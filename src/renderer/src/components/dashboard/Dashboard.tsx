@@ -1814,6 +1814,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       >
         <PanelsSection
           collapsed={sidebarCollapsed}
+          animateRunningStatus={view.kind === 'panes'}
           onActivate={() => handleSelectSurface('panes')}
         />
         {sidebarNavigation}

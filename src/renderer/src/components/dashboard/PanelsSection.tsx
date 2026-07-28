@@ -183,6 +183,7 @@ async function confirmDeletePanel(panel: PanePanel, layoutCount: number): Promis
 interface LayoutSubRowProps {
   layout: PaneLayout
   active: boolean
+  animateRunningStatus: boolean
   renaming: boolean
   onSelect: () => void
   onBeginRename: () => void
@@ -206,13 +207,15 @@ interface LayoutSubRowProps {
  */
 function LayoutStatusIcon({
   active,
-  isRunning
+  isRunning,
+  animated
 }: {
   active: boolean
   isRunning: boolean
+  animated: boolean
 }): React.JSX.Element {
   if (isRunning) {
-    return <ActivityIndicator detail="working" />
+    return <ActivityIndicator detail="working" animated={animated} />
   }
   return (
     <Stack
@@ -226,6 +229,7 @@ function LayoutStatusIcon({
 function LayoutSubRow({
   layout,
   active,
+  animateRunningStatus,
   renaming,
   onSelect,
   onBeginRename,
@@ -364,7 +368,7 @@ function LayoutSubRow({
         aria-label={layout.name}
       >
         <span className="flex items-center justify-center w-3 h-3 flex-shrink-0">
-          <LayoutStatusIcon active={active} isRunning={isRunning} />
+          <LayoutStatusIcon active={active} isRunning={isRunning} animated={animateRunningStatus} />
         </span>
         {renaming ? (
           <RenameInput
@@ -588,6 +592,12 @@ interface PanelsSectionProps {
    * icon-rail UI yet (unlike Projects' CollapsedProjectList).
    */
   collapsed?: boolean
+  /**
+   * Running layouts remain visibly marked outside the Panes destination, but
+   * their 80ms braille ticker is disabled there so a retained sidebar does not
+   * keep the renderer and GPU active while Home or Settings is otherwise idle.
+   */
+  animateRunningStatus?: boolean
   /** Navigate the main content back to Panes when this retained tree is used
    * from Home or Settings. Selection state itself stays owned by the panes
    * selection store. */
@@ -596,6 +606,7 @@ interface PanelsSectionProps {
 
 export function PanelsSection({
   collapsed = false,
+  animateRunningStatus = true,
   onActivate
 }: PanelsSectionProps): React.JSX.Element {
   const [panels, setPanels] = useState<PanePanel[]>([])
@@ -865,6 +876,7 @@ export function PanelsSection({
                         key={layout.id}
                         layout={layout}
                         active={activePanelId === panel.id && activeLayoutId === layout.id}
+                        animateRunningStatus={animateRunningStatus}
                         renaming={renamingLayoutId === layout.id}
                         onSelect={() => {
                           onActivate()
