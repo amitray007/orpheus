@@ -32,10 +32,10 @@ interface TopBarProps {
   sidebarWidth: number
 }
 
-// macOS traffic lights + toggle button + status chip need at least this much
+// macOS traffic lights + toggle button + status chip + Keep Awake chip need at least this much
 // room before the workspace content starts.
-// 64 = two 32px controls (sidebar toggle + status chip) immediately after the spacer.
-const MIN_LEFT_WIDTH = TRAFFIC_LIGHT_CLEARANCE + 64
+// 92 = two 32px controls plus the 28px Keep Awake control after the spacer.
+const MIN_LEFT_WIDTH = TRAFFIC_LIGHT_CLEARANCE + 92
 
 // Components filtered out of the popover and settings list
 const HIDDEN_COMPONENT_NAMES = new Set(['Claude for Government', 'Claude Cowork'])
@@ -536,8 +536,11 @@ function keepAwakeStatusLine(s: KeepAwakeState): string {
   }
   if (s.mode === 'on') return 'On — staying awake.'
   if (s.mode === 'auto') {
-    return s.busyCount > 0
-      ? `Active — ${s.busyCount} agent${s.busyCount === 1 ? '' : 's'} running. Releases when idle.`
+    if (s.busyCount > 0) {
+      return `Active — ${s.busyCount} agent${s.busyCount === 1 ? '' : 's'} running. Releases when idle.`
+    }
+    return s.isHolding
+      ? 'Finishing — releases shortly.'
       : 'Watching — sleeps normally until agents run.'
   }
   return 'Off — normal sleep settings.'
@@ -568,6 +571,11 @@ function KeepAwakeChip({ sidebarWidth }: KeepAwakeChipProps): React.JSX.Element 
     }
   }, [])
 
+  const holding = state?.isHolding ?? false
+  const watching = state?.mode === 'auto' && !holding
+  const status = state ? keepAwakeStatusLine(state) : 'Loading current state.'
+  const tooltip = `Keep awake · ${status}`
+
   return (
     <>
       <button
@@ -577,12 +585,16 @@ function KeepAwakeChip({ sidebarWidth }: KeepAwakeChipProps): React.JSX.Element 
         onMouseDown={() => {
           if (open) suppressDismiss.current = true
         }}
-        aria-label="Keep awake"
-        title="Keep awake"
-        className="w-7 h-7 inline-flex items-center justify-center rounded-md cursor-pointer transition-colors focus-visible:outline-none text-text-secondary hover:bg-surface-overlay"
+        aria-label={tooltip}
+        title={tooltip}
+        aria-expanded={open}
+        className={[
+          'w-7 h-7 inline-flex items-center justify-center rounded-md cursor-pointer transition-colors focus-visible:outline-none hover:bg-surface-overlay',
+          holding ? 'text-accent' : watching ? 'text-text-secondary' : 'text-text-muted'
+        ].join(' ')}
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
-        <Coffee size={16} weight="regular" />
+        <Coffee size={16} weight={holding ? 'fill' : 'regular'} />
       </button>
       {open && state && (
         <KeepAwakePopover

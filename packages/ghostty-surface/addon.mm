@@ -147,9 +147,10 @@ struct GhosttySurfaceEntry {
 static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
 
 // Every live Ghostty surface owns a shell that must keep processing while
-// hidden. Keep a baseline user-initiated + idle-sleep-disabled activity while
-// ANY live surface exists; navigation must never App-Nap-throttle a background
-// pane. Add the stronger latency-critical assertion only while at least one
+// hidden. Keep a baseline user-initiated activity that allows idle system sleep
+// while ANY live surface exists; navigation must never App-Nap-throttle a
+// background pane, but Keep Awake remains the single owner of system-sleep
+// policy. Add the stronger latency-critical assertion only while at least one
 // live surface is attached to the window hierarchy.
 //
 // g_surfaces is main-thread-owned. The defensive dispatch keeps activity
@@ -189,8 +190,7 @@ static void reconcileTerminalActivities() {
 
     if (hasLiveSurface && !g_terminalLiveActivity) {
         g_terminalLiveActivity = [[NSProcessInfo processInfo]
-            beginActivityWithOptions:(NSActivityUserInitiated |
-                                      NSActivityIdleSystemSleepDisabled)
+            beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep
                               reason:@"Live terminal processing"];
     }
 

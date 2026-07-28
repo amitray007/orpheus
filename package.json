@@ -48,6 +48,7 @@
     "test:picker-icons": "bun run scripts/verify-model-picker-icons.ts",
     "test:creation-menu": "bun run scripts/verify-new-workspace-menu.ts",
     "test:overlay-dismissal": "bun run scripts/verify-overlay-dismissal.ts",
+    "test:keep-awake": "bun run scripts/verify-native-idle-activity.ts",
     "test:control-plane": "bun run scripts/verify-control-plane.ts",
     "test:terminal-observation": "bun run scripts/verify-terminal-observability.ts",
     "test:workspace-orchestration:foundation": "bun run scripts/verify-workspace-orchestration-foundation.ts",

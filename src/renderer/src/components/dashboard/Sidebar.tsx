@@ -773,7 +773,6 @@ const ProjectRow = memo(function ProjectRow({
   onWorkspaceDrop,
   onWorkspaceDragEnd
 }: ProjectRowProps): React.JSX.Element {
-  const [hovered, setHovered] = useState(false)
   const rename = useInlineRename(project.name, (trimmed) => onFinishRename(trimmed))
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [revealExtra, setRevealExtra] = useState(0)
@@ -910,8 +909,6 @@ const ProjectRow = memo(function ProjectRow({
             ? 'bg-accent/15 text-text-primary border-l-2 border-accent'
             : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
         ].join(' ')}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
         onContextMenu={handleContextMenu}
       >
         {/* Real content — fades out under the hatch overlay when redacted (200ms crossfade).
@@ -973,9 +970,12 @@ const ProjectRow = memo(function ProjectRow({
 
           {/* Right controls: add workspace + chevron. Each button is 32x32. */}
           {!renaming && (
-            <div className="flex items-center gap-0.5 pr-1 flex-shrink-0">
-              {/* Add workspace — CSS-visible-on-hover (opacity), not
-                conditionally MOUNTED on `hovered` — NewWorkspaceMenu now owns
+            <div className="flex items-center pr-1 flex-shrink-0">
+              {/* Add workspace — always mounted, but its wrapper collapses to
+                zero width at rest so the project label can use that space.
+                Row hover/focus expands it immediately (no width transition);
+                the conditional right margin restores the usual control gap.
+                NewWorkspaceMenu now owns
                 a native-overlay popover with its own hover-intent timers
                 (model-routing unit 10-creation); unmounting the trigger the
                 instant the pointer leaves this row (which fires well before
@@ -984,14 +984,13 @@ const ProjectRow = memo(function ProjectRow({
                 row) would tear the popover down out from under an in-transit
                 pointer — exactly the reported "popover disappears as I move
                 towards it" bug, just one level up from NewWorkspaceMenu's own
-                fix. Kept mounted always; `group-hover` (from the row's own
-                `group` class above) only toggles visibility/hit-testing. */}
+                fix. */}
               <NewWorkspaceMenu
                 projectId={project.id}
                 defaultName={nextWorkspaceName(workspaces)}
                 onCreateLocal={(modelId) => onAddWorkspace(modelId)}
                 onCreated={(ws) => onSelectWorkspace(ws.id)}
-                className={hovered ? '' : 'opacity-0 pointer-events-none'}
+                className="w-0 shrink-0 overflow-hidden opacity-0 pointer-events-none group-hover:w-8 group-hover:mr-0.5 group-hover:overflow-visible group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:w-8 group-focus-within:mr-0.5 group-focus-within:overflow-visible group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
               >
                 <button
                   type="button"

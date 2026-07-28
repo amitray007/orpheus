@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { CheckCircle, Gauge, WarningCircle } from '@phosphor-icons/react'
 import type { ProviderUsageEntry, ProviderUsageLimit, ProviderUsageWindow } from '@shared/types'
+import copilotIconRaw from '@/assets/providers/copilot.svg?raw'
+import cursorIconRaw from '@/assets/providers/cursor.svg?raw'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { cn } from '@/lib/utils'
 import { DashboardCard } from './DashboardCard'
@@ -8,6 +10,11 @@ import { SourceRefreshButton } from './SourceRefreshButton'
 import { formatResetCountdown } from './dashboardHome.helpers'
 
 const KNOWN_PROVIDER_ICON_IDS = new Set(['claude', 'codex', 'xai', 'antigravity'])
+const PROVIDER_USAGE_MARKS: Readonly<Record<string, string>> = {
+  copilot: copilotIconRaw,
+  'github-copilot': copilotIconRaw,
+  cursor: cursorIconRaw
+}
 
 function providerOrder(provider: ProviderUsageEntry): number {
   const id = provider.providerId.toLowerCase()
@@ -35,10 +42,24 @@ function ProviderMark({
   providerId: string
   size: number
 }): React.JSX.Element {
-  const iconProviderId = providerId === 'grok' ? 'xai' : providerId
+  const normalizedProviderId = providerId.toLowerCase()
+  const iconProviderId = normalizedProviderId === 'grok' ? 'xai' : normalizedProviderId
   if (KNOWN_PROVIDER_ICON_IDS.has(iconProviderId)) {
     return <ProviderIcon providerId={iconProviderId} size={size} />
   }
+
+  const raw = PROVIDER_USAGE_MARKS[normalizedProviderId]
+  if (raw) {
+    return (
+      <span
+        aria-hidden="true"
+        style={{ width: size, height: size, minWidth: size, minHeight: size }}
+        className="inline-flex shrink-0 items-center justify-center [&>svg]:h-full [&>svg]:w-full"
+        dangerouslySetInnerHTML={{ __html: raw }}
+      />
+    )
+  }
+
   return <Gauge size={size} weight="bold" aria-hidden="true" />
 }
 

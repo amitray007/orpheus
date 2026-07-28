@@ -36,8 +36,18 @@ assert.match(
 )
 assert.match(
   activityHelper,
-  /g_terminalLiveActivity = \[\[NSProcessInfo processInfo\]\s+beginActivityWithOptions:\(NSActivityUserInitiated \|\s+NSActivityIdleSystemSleepDisabled\)/,
-  'every live surface, including a hidden one, must retain baseline non-throttling activity'
+  /g_terminalLiveActivity = \[\[NSProcessInfo processInfo\]\s+beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep/,
+  'every live surface must retain baseline non-throttling activity without preventing idle system sleep'
+)
+assert.doesNotMatch(
+  activityHelper,
+  /NSActivityIdleSystemSleepDisabled/,
+  'native terminal activity must leave idle-system-sleep policy to Keep Awake'
+)
+assert.doesNotMatch(
+  activityHelper,
+  /beginActivityWithOptions:\(?NSActivityUserInitiated(?:\s|\||\))/,
+  'NSActivityUserInitiated is a composite that independently disables idle system sleep'
 )
 assert.match(
   activityHelper,
@@ -155,6 +165,28 @@ assert.doesNotMatch(
   hide,
   /ghostty_surface_free/,
   'releasing visible-only latency activity must not tear down hidden shells'
+)
+
+const powerAwakePath = path.join(repositoryRoot, 'src/main/powerAwake.ts')
+const powerAwakeSource = readFileSync(powerAwakePath, 'utf8')
+const blockerStart = powerAwakeSource.indexOf('function startBlocker()')
+const blockerEnd = powerAwakeSource.indexOf('function stopBlocker()', blockerStart)
+assert.ok(blockerStart >= 0 && blockerEnd > blockerStart, 'powerSaveBlocker owner not found')
+const blockerHelper = powerAwakeSource.slice(blockerStart, blockerEnd)
+assert.ok(
+  blockerHelper.indexOf('blockerId = powerSaveBlocker.start(type)') <
+    blockerHelper.indexOf('powerSaveBlocker.stop(previousId)'),
+  'display preference swaps must start the replacement assertion before stopping the old one'
+)
+assert.match(
+  powerAwakeSource,
+  /oldStatus === 'in_progress' && newStatus !== 'in_progress'/,
+  'Auto release grace must be driven by an agent leaving in_progress'
+)
+assert.match(
+  powerAwakeSource,
+  /function setKeepAwakeMode[\s\S]*?clearReleaseTimer\(\)[\s\S]*?baseMode = mode/,
+  'an explicit mode action must cancel any pending Auto release grace'
 )
 
 console.log('Native terminal idle-activity verification passed.')

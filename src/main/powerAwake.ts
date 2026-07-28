@@ -5,6 +5,7 @@ import { PUSH_CHANNELS } from '../shared/ipc'
 import type { KeepAwakeBaseMode, KeepAwakeMode, KeepAwakeState } from '../shared/types'
 
 const RELEASE_GRACE_MS = 30_000
+const MAX_TIMER_MINUTES = Math.floor(2_147_483_647 / 60_000)
 
 type BlockerType = 'prevent-app-suspension' | 'prevent-display-sleep'
 
@@ -101,9 +102,14 @@ function startBlocker(): void {
   const type = desiredType()
   if (isHolding()) {
     if (blockerType === type) return // already holding the right type
-    powerSaveBlocker.stop(blockerId as number) // swap type with no gap
-    blockerId = null
-    blockerType = null
+    // Start the replacement first. Electron applies the highest-precedence
+    // active request, so overlapping the two ids avoids a moment with no
+    // assertion while the display preference changes.
+    const previousId = blockerId as number
+    blockerId = powerSaveBlocker.start(type)
+    blockerType = type
+    powerSaveBlocker.stop(previousId)
+    return
   }
   blockerId = powerSaveBlocker.start(type)
   blockerType = type
@@ -126,19 +132,21 @@ function clearReleaseTimer(): void {
 // Reconcile — the single decision point
 // ---------------------------------------------------------------------------
 
-function reconcile(): void {
+function reconcile(allowReleaseGrace = false): void {
   if (shouldHold()) {
     clearReleaseTimer()
     startBlocker()
-  } else if (isHolding() && baseMode === 'auto' && !timerActive) {
+  } else if (releaseTimeout && isHolding() && baseMode === 'auto' && !timerActive) {
+    // Preserve an already-armed Auto grace period. This branch also lets a
+    // display toggle replace the active blocker without cancelling the grace.
+    startBlocker()
+  } else if (allowReleaseGrace && isHolding() && baseMode === 'auto' && !timerActive) {
     // Auto just went idle — hold for the grace window before releasing.
-    if (!releaseTimeout) {
-      releaseTimeout = setTimeout(() => {
-        releaseTimeout = null
-        if (!shouldHold()) stopBlocker()
-        broadcast()
-      }, RELEASE_GRACE_MS)
-    }
+    releaseTimeout = setTimeout(() => {
+      releaseTimeout = null
+      if (!shouldHold()) stopBlocker()
+      broadcast()
+    }, RELEASE_GRACE_MS)
   } else {
     clearReleaseTimer()
     stopBlocker()
@@ -187,6 +195,10 @@ function broadcast(): void {
 // ---------------------------------------------------------------------------
 
 function setKeepAwakeMode(mode: KeepAwakeBaseMode): KeepAwakeState {
+  if (mode !== 'off' && mode !== 'auto' && mode !== 'on') {
+    throw new Error(`Invalid Keep Awake mode: ${String(mode)}`)
+  }
+  clearReleaseTimer()
   baseMode = mode
   cancelTimer()
   savePersisted()
@@ -195,6 +207,7 @@ function setKeepAwakeMode(mode: KeepAwakeBaseMode): KeepAwakeState {
 }
 
 function setKeepAwakeDisplayOn(on: boolean): KeepAwakeState {
+  if (typeof on !== 'boolean') throw new Error('Keep Awake display preference must be boolean')
   displayOn = on
   savePersisted()
   reconcile() // swaps blocker type if currently holding
@@ -202,6 +215,9 @@ function setKeepAwakeDisplayOn(on: boolean): KeepAwakeState {
 }
 
 function startKeepAwakeTimer(minutes: number): KeepAwakeState {
+  if (!Number.isSafeInteger(minutes) || minutes <= 0 || minutes > MAX_TIMER_MINUTES) {
+    throw new Error(`Keep Awake timer must be 1-${MAX_TIMER_MINUTES} whole minutes`)
+  }
   defaultTimerMinutes = minutes
   timerActive = true
   timerDeadline = Date.now() + minutes * 60_000
@@ -218,7 +234,10 @@ function startKeepAwakeTimer(minutes: number): KeepAwakeState {
 function startPowerAwake(windowGetter: () => BrowserWindow | null): () => void {
   getWindow = windowGetter
   loadPersisted()
-  unsubscribeStatus = onWorkspaceStatusChange(() => reconcile())
+  unsubscribeStatus = onWorkspaceStatusChange((_workspaceId, oldStatus, newStatus) => {
+    const lastBusyAgentStopped = oldStatus === 'in_progress' && newStatus !== 'in_progress'
+    reconcile(lastBusyAgentStopped)
+  })
   // Refresh the UI countdown roughly every second while a timer runs.
   secondTick = setInterval(() => {
     if (timerActive) broadcast()
@@ -235,6 +254,7 @@ function startPowerAwake(windowGetter: () => BrowserWindow | null): () => void {
       secondTick = null
     }
     stopBlocker()
+    getWindow = null
   }
 }
 
