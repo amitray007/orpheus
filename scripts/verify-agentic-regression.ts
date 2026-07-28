@@ -9,6 +9,7 @@ const verifiers = [
   'verify-phase2-read-adapters.ts',
   'verify-runtime-leases.ts',
   'verify-runtime-main-integration.ts',
+  'verify-session-state-observation.ts',
   'verify-command-action.ts',
   'verify-workspace-orchestration-foundation.ts',
   'verify-workspace-orchestration-main.ts',

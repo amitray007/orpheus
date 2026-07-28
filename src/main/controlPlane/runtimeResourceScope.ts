@@ -2,6 +2,7 @@ import path from 'node:path'
 import type { DbLike } from '../db/types'
 import type { ClaudeRuntimeBinding } from './runtimeLeases'
 import type { TrustedRuntimeBinding } from './types'
+import { getRuntimeResourceScopeRevision } from './runtimeResourceScopeRevision'
 
 type RootRow = { root: string }
 type PaneRow = {
@@ -43,7 +44,6 @@ export function createRuntimeResourceScopeSource(
        FROM pane_layouts AS layouts
        LEFT JOIN pane_terminals AS terminals ON terminals.layout_id = layouts.id`
   )
-  const totalChangesStatement = db.prepare('SELECT total_changes() AS revision')
   const dataVersionStatement = db.prepare('PRAGMA data_version')
   const cache = new Map<
     string,
@@ -54,11 +54,12 @@ export function createRuntimeResourceScopeSource(
   >()
 
   const databaseRevision = (): string => {
-    const changes = totalChangesStatement.get() as { revision?: number } | undefined
     const dataVersion = dataVersionStatement.get() as
       | { data_version?: number; dataVersion?: number }
       | undefined
-    return `${changes?.revision ?? -1}:${dataVersion?.data_version ?? dataVersion?.dataVersion ?? -1}`
+    return `${getRuntimeResourceScopeRevision()}:${
+      dataVersion?.data_version ?? dataVersion?.dataVersion ?? -1
+    }`
   }
   const remember = (
     projectId: string,

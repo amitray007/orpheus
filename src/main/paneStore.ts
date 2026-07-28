@@ -30,6 +30,7 @@ import {
   terminalMutationReleasesAgentOwner
 } from './workbenchControl/paneOwnership'
 import { nextPaneRevision } from './workbenchControl/revisions'
+import { markRuntimeResourceScopeChanged } from './controlPlane/runtimeResourceScopeRevision'
 export { PaneProvisioningStoreError } from './workbenchControl/paneManagementErrors'
 
 // ---------------------------------------------------------------------------
@@ -214,7 +215,8 @@ export function updatePanel(id: string, patch: UpdatePanelInput): PanePanel {
 
 export function deletePanel(id: string): void {
   const db = getDb()
-  db.prepare('DELETE FROM pane_panels WHERE id = ?').run(id)
+  const result = db.prepare('DELETE FROM pane_panels WHERE id = ?').run(id)
+  if (result.changes > 0) markRuntimeResourceScopeChanged()
 }
 
 /** Persists sidebar expand/collapse state for a panel row. Mirrors
@@ -293,6 +295,7 @@ export function createLayout(input: CreateLayoutInput): PaneLayout {
     `INSERT INTO pane_layouts (id, panel_id, name, dir, split_tree_json, position, created_at, updated_at)
      VALUES (?, ?, ?, ?, 'null', ?, ?, ?)`
   ).run(id, input.panelId, input.name, input.dir, position, now, now)
+  markRuntimeResourceScopeChanged()
 
   return layoutFromRow(db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(id) as PaneLayoutRow)
 }
@@ -324,13 +327,15 @@ export function updateLayout(id: string, patch: UpdateLayoutInput): PaneLayout {
            CASE WHEN ? = 1 THEN NULL ELSE agent_owner_workspace_id END
      WHERE id = ?`
   ).run(name, dir, splitTreeJson, position, now, clearAgentOwner ? 1 : 0, id)
+  if (dir !== existing.dir) markRuntimeResourceScopeChanged()
 
   return layoutFromRow(db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(id) as PaneLayoutRow)
 }
 
 export function deleteLayout(id: string): void {
   const db = getDb()
-  db.prepare('DELETE FROM pane_layouts WHERE id = ?').run(id)
+  const result = db.prepare('DELETE FROM pane_layouts WHERE id = ?').run(id)
+  if (result.changes > 0) markRuntimeResourceScopeChanged()
 }
 
 /** Persists the per-layout auto-start-on-launch flag. Mirrors
@@ -497,7 +502,9 @@ export function createDedicatedWorkspaceTerminal(
       )
     }
   })
-  return create()
+  const created = create()
+  markRuntimeResourceScopeChanged()
+  return created
 }
 
 export interface DeleteDedicatedWorkspaceTerminalInput {
@@ -591,6 +598,7 @@ export function deleteDedicatedWorkspaceTerminal<T>(
       }
     })
     remove()
+    markRuntimeResourceScopeChanged()
     return { ...snapshot, teardown, persisted: 'deleted' }
   } catch {
     return { ...snapshot, teardown, persisted: 'retained' }
@@ -621,7 +629,9 @@ export function createTerminal(input: CreateTerminalInput): PaneTerminal {
       db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(id) as PaneTerminalRow
     )
   })
-  return create()
+  const terminal = create()
+  markRuntimeResourceScopeChanged()
+  return terminal
 }
 
 export interface UpdateTerminalInput {
@@ -670,12 +680,14 @@ export function updateTerminal(id: string, patch: UpdateTerminalInput): PaneTerm
 
 export function deleteTerminal(id: string): void {
   const db = getDb()
+  let deleted = false
   const remove = db.transaction(() => {
     const terminal = db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(id) as
       | PaneTerminalRow
       | undefined
     if (terminal == null) return
     db.prepare('DELETE FROM pane_terminals WHERE id = ?').run(id)
+    deleted = true
     const layout = db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(terminal.layout_id) as
       | PaneLayoutRow
       | undefined
@@ -689,4 +701,5 @@ export function deleteTerminal(id: string): void {
     }
   })
   remove()
+  if (deleted) markRuntimeResourceScopeChanged()
 }

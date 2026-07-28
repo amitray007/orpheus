@@ -7,6 +7,7 @@ import { refreshGithubData } from './githubAvatar'
 import * as nodePath from 'node:path'
 import { invalidateClaudeProjectSettingsCache } from './claudeProjectSettings'
 import { encodePathToClaudeDir } from './claudeProjectDir'
+import { markRuntimeResourceScopeChanged } from './controlPlane/runtimeResourceScopeRevision'
 import { PUSH_CHANNELS } from '../shared/ipc'
 
 // ---------------------------------------------------------------------------
@@ -190,7 +191,8 @@ export function getProject(id: string): ProjectRecord | null {
 export function deleteProject(id: string): void {
   const db = getDb()
   // ON DELETE CASCADE in the schema removes associated workspaces and sessions.
-  db.prepare('DELETE FROM projects WHERE id = ?').run(id)
+  const result = db.prepare('DELETE FROM projects WHERE id = ?').run(id)
+  if (result.changes > 0) markRuntimeResourceScopeChanged()
   // Evict the settings cache entry so a stale value can't be served after the
   // row (and its CASCADE-deleted workspace settings) is gone.
   invalidateClaudeProjectSettingsCache(id)

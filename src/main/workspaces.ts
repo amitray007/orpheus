@@ -4,6 +4,7 @@ import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from
 import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
 import { removeWorktree, withRepoLock } from './worktrees'
 import { PUSH_CHANNELS } from '../shared/ipc'
+import { markRuntimeResourceScopeChanged } from './controlPlane/runtimeResourceScopeRevision'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -252,6 +253,7 @@ export function createWorkspace({
     ) as WorkspaceRow | undefined
   if (!row) throw new Error(`createWorkspace: INSERT RETURNING returned nothing`)
   const workspace = rowToWorkspaceRecord(row)
+  markRuntimeResourceScopeChanged()
   broadcastWorkspaceCreated(workspace)
   return workspace
 }
@@ -359,7 +361,8 @@ export async function archiveWorkspace(
     wasDirty = r.wasDirty
   }
 
-  db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
+  const removed = db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
+  if (removed.changes > 0) markRuntimeResourceScopeChanged()
   // Evict the settings cache entry so a stale value can't be served after the
   // row is gone.
   invalidateClaudeWorkspaceSettingsCache(id)
@@ -386,6 +389,7 @@ export function removeWorkspaceRecord(id: string): boolean {
   if (!ws) return false
   const result = db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
   if (result.changes === 0) return false
+  markRuntimeResourceScopeChanged()
   invalidateClaudeWorkspaceSettingsCache(id)
   broadcastWorkspaceArchived(ws.id, ws.project_id)
   return true
@@ -594,7 +598,8 @@ export function listWorktreeWorkspaces(
  */
 export function setWorkspaceCwd(id: string, cwd: string): void {
   const db = getDb()
-  db.prepare('UPDATE workspaces SET cwd = ? WHERE id = ?').run(cwd, id)
+  const result = db.prepare('UPDATE workspaces SET cwd = ? WHERE id = ?').run(cwd, id)
+  if (result.changes > 0) markRuntimeResourceScopeChanged()
 }
 
 /**
@@ -623,6 +628,7 @@ export function convertWorktreeToLocal(id: string): WorkspaceRecord {
     .get(parentCwd, id) as WorkspaceRow | undefined
   if (!row) throw new Error(`convertWorktreeToLocal: UPDATE returned nothing for id: ${id}`)
   const record = rowToWorkspaceRecord(row)
+  markRuntimeResourceScopeChanged()
   broadcastWorkspaceChanged(record)
   return record
 }

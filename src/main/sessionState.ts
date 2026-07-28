@@ -20,6 +20,11 @@ import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 import { UI_STATE_DEFAULTS } from '../shared/uiStateDefaults'
 import { _mapFileStatus } from './sessionStatusMap'
+import {
+  buildWorkspaceSessionIds,
+  getLiveSessionSnapshot,
+  RuntimeObservationDeduper
+} from './sessionStateObservation'
 export { _mapFileStatus } from './sessionStatusMap'
 
 // ---------------------------------------------------------------------------
@@ -117,7 +122,7 @@ const deadPidReported = new Set<number>()
 
 let sessionReadyHandler: ((workspaceId: string) => void) | null = null
 let runtimeSessionObserver: ((observation: RuntimeSessionObservation) => void) | null = null
-const lastRuntimeObservation = new Map<string, string>()
+const runtimeObservationDeduper = new RuntimeObservationDeduper()
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -258,8 +263,7 @@ export function startSessionStateService(): { stop: () => void } {
 
 /** O(1) single-session snapshot; avoids cloning the entire live-session registry. */
 export function getLiveSession(sessionId: string): LiveSession | null {
-  const session = liveSessionMap.get(sessionId)
-  return session == null ? null : { ...session }
+  return getLiveSessionSnapshot(liveSessionMap, sessionId)
 }
 
 export function getLiveSessionCount(): number {
@@ -284,23 +288,12 @@ export function setRuntimeSessionObserver(
   fn: ((observation: RuntimeSessionObservation) => void) | null
 ): void {
   runtimeSessionObserver = fn
-  lastRuntimeObservation.clear()
+  runtimeObservationDeduper.clear()
 }
 
 function emitRuntimeSessionObservation(observation: RuntimeSessionObservation): void {
   if (runtimeSessionObserver == null) return
-  const session = observation.session
-  const fingerprint = JSON.stringify([
-    observation.claudeConversationId,
-    session?.pid ?? null,
-    session?.status ?? null,
-    session?.waitingFor ?? null,
-    session?.version ?? null,
-    session?.cwd ?? null,
-    session?.statusUpdatedAt ?? null
-  ])
-  if (lastRuntimeObservation.get(observation.workspaceId) === fingerprint) return
-  lastRuntimeObservation.set(observation.workspaceId, fingerprint)
+  if (!runtimeObservationDeduper.shouldEmit(observation)) return
   try {
     runtimeSessionObserver(observation)
   } catch (err) {
@@ -660,13 +653,7 @@ function signalSessionReady(ws: WorkspaceRow, rawStatus: string): void {
  */
 function reconcileWorkspaces(workspaceRows: WorkspaceRow[]): Set<string> {
   const activeWorkspaceIds = new Set<string>()
-  const nextWorkspaceSessionIds = new Map<string, string>()
-  for (const workspace of workspaceRows) {
-    if (workspace.claude_session_id != null) {
-      nextWorkspaceSessionIds.set(workspace.id, workspace.claude_session_id)
-    }
-  }
-  workspaceSessionIds = nextWorkspaceSessionIds
+  workspaceSessionIds = buildWorkspaceSessionIds(workspaceRows)
   for (const ws of workspaceRows) {
     // Skip archived workspaces
     if (ws.archived_at !== null) continue
@@ -717,9 +704,7 @@ function pruneStaleWorkspaceEntries(activeWorkspaceIds: Set<string>): void {
   for (const key of readySignaled) {
     if (!activeWorkspaceIds.has(key)) readySignaled.delete(key)
   }
-  for (const key of lastRuntimeObservation.keys()) {
-    if (!activeWorkspaceIds.has(key)) lastRuntimeObservation.delete(key)
-  }
+  runtimeObservationDeduper.prune(activeWorkspaceIds)
 }
 
 /**

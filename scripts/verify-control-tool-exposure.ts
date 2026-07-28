@@ -11,6 +11,7 @@ import {
 } from '../src/main/controlPlane/runtimeGrants.ts'
 import type { ClaudeRuntimeBinding } from '../src/main/controlPlane/runtimeLeases.ts'
 import { createRuntimeResourceScopeSource } from '../src/main/controlPlane/runtimeResourceScope.ts'
+import { markRuntimeResourceScopeChanged } from '../src/main/controlPlane/runtimeResourceScopeRevision.ts'
 import type {
   ControlAuthorizationPolicy,
   ControlContext,
@@ -218,6 +219,7 @@ db.exec(`
   CREATE TABLE workspaces (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, cwd TEXT NOT NULL);
   CREATE TABLE pane_layouts (id TEXT PRIMARY KEY, dir TEXT NOT NULL);
   CREATE TABLE pane_terminals (id TEXT PRIMARY KEY, layout_id TEXT NOT NULL);
+  CREATE TABLE unrelated_writes (id TEXT PRIMARY KEY);
   INSERT INTO projects VALUES ('project-1', '/code/project-one'),
     ('project-2', '/code/project-two'), ('project-3', '/code/project-three');
   INSERT INTO workspaces VALUES ('workspace-1', 'project-1', '/code/project-one'),
@@ -237,13 +239,21 @@ assert.deepEqual(initialProjectScope, {
   surfaceIds: ['pane:layout-project:terminal-project', 'pane:layout-worktree:terminal-worktree']
 })
 assert.equal(scopeSource(liveBinding), initialProjectScope)
+db.prepare("INSERT INTO unrelated_writes VALUES ('unrelated')").run()
+assert.equal(
+  scopeSource(liveBinding),
+  initialProjectScope,
+  'unrelated same-connection writes must not invalidate project scope'
+)
 db.prepare("DELETE FROM pane_layouts WHERE id = 'layout-project'").run()
 db.prepare("DELETE FROM pane_terminals WHERE layout_id = 'layout-project'").run()
+markRuntimeResourceScopeChanged()
 const scopeAfterDelete = scopeSource(liveBinding)
 assert.notEqual(scopeAfterDelete, initialProjectScope)
 assert.deepEqual(scopeAfterDelete.layoutIds, ['layout-worktree'])
 db.prepare("INSERT INTO pane_layouts VALUES ('layout-agent-new', '/code/project-one')").run()
 db.prepare("INSERT INTO pane_terminals VALUES ('terminal-agent-new', 'layout-agent-new')").run()
+markRuntimeResourceScopeChanged()
 assert.deepEqual(scopeSource(liveBinding).layoutIds, ['layout-agent-new', 'layout-worktree'])
 assert.deepEqual(scopeSource(liveBinding).surfaceIds, [
   'pane:layout-agent-new:terminal-agent-new',
