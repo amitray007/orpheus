@@ -244,6 +244,27 @@ assert.match(main, /nativeWindowOcclusionVisible = !occluded/)
 assert.match(main, /getNativeWindowOcclusionVisible: \(\) => nativeWindowOcclusionVisible/)
 assert.match(miscIpc, /deps\.getNativeWindowOcclusionVisible\(\)/)
 
+const addonLoaderStart = main.indexOf('function loadTerminalAddon(): GhosttySurfaceAddon {')
+const addonLoaderEnd = main.indexOf('function getNativeSurfacePhase(', addonLoaderStart)
+assert.notEqual(addonLoaderStart, -1, 'main must retain the native addon singleton loader')
+assert.notEqual(addonLoaderEnd, -1, 'main must retain the native surface phase helper')
+const addonLoader = main.slice(addonLoaderStart, addonLoaderEnd)
+assert.match(
+  addonLoader,
+  /const addon = loadOrpheusSurface\(\)[\s\S]*ensureTerminalCallbackWiring\(addon\)[\s\S]*terminalAddon = addon/,
+  'addon loading must register lifecycle callbacks before publishing the singleton'
+)
+
+const paneMountStart = main.indexOf('function mountPaneBackground(')
+const paneMountEnd = main.indexOf('/** Local leaf-id walk over SplitTree', paneMountStart)
+assert.notEqual(paneMountStart, -1, 'main must retain the pane background mount helper')
+assert.notEqual(paneMountEnd, -1, 'main must retain the pane mount helper boundary')
+const paneMount = main.slice(paneMountStart, paneMountEnd)
+assert.ok(
+  paneMount.indexOf('loadTerminalAddon()') < paneMount.indexOf('addon.mount('),
+  'pane-only startup must load and wire native callbacks before publishing its initial occlusion'
+)
+
 const teardownMarker = paneCell.match(
   /\/\/ True teardown marker[\s\S]*?useEffect\(\(\) => \{([\s\S]*?)\n[ ]{2}\}, \[\]\)/
 )

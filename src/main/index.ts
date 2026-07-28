@@ -366,7 +366,7 @@ function deliverWorkspaceOpenRequest(request: WorkspaceOpenRequest): boolean {
   }
 }
 
-let titleCallbackRegistered = false
+let terminalCallbacksRegistered = false
 let loadingOverlayWired = false
 
 // Theme palettes for the loading overlay. Must mirror src/renderer/src/assets/main.css.
@@ -446,9 +446,8 @@ function ensureLoadingOverlayWiring(addon: GhosttySurfaceAddon): void {
   })
 }
 
-function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
-  if (titleCallbackRegistered) return
-  titleCallbackRegistered = true
+function ensureTerminalCallbackWiring(addon: GhosttySurfaceAddon): void {
+  if (terminalCallbacksRegistered) return
   addon.setTitleCallback((surfaceKey: string, title: string) => {
     // Claude Code prefixes titles with a cycling spinner glyph (✱ ✶ ✻ ✺ ✦ …)
     // and a space. Strip leading non-letter/non-digit characters so the
@@ -531,6 +530,7 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
       win?.webContents.send(PUSH_CHANNELS.addonActionTrace, { tagName })
     })
   }
+  terminalCallbacksRegistered = true
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,12 +1307,17 @@ function loadTerminalAddon(): GhosttySurfaceAddon {
 
   console.log('[terminal] loading addon via loadOrpheusSurface')
   try {
-    terminalAddon = loadOrpheusSurface()
+    const addon = loadOrpheusSurface()
+    // Callback wiring is part of addon initialization, not claude-terminal
+    // mounting. Workbench and pane surfaces can be the first native surface,
+    // and their initial AppKit occlusion snapshot must never be dropped.
+    ensureTerminalCallbackWiring(addon)
+    terminalAddon = addon
     console.log('[terminal] addon loaded OK')
     // Wire the addon reference into the actions registry so terminal.*
     // actions can delegate through the same addon instance.
-    setTerminalAddonRef(terminalAddon)
-    return terminalAddon
+    setTerminalAddonRef(addon)
+    return addon
   } catch (err) {
     const msg = String(err)
     terminalAddonError = msg
@@ -1634,7 +1639,6 @@ function handlePostMountOverlay(workspaceId: string, created: boolean, routed: b
 
 handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
   const addon = loadTerminalAddon()
-  ensureTitleCallback(addon)
   ensureLoadingOverlayWiring(addon)
   const win = BrowserWindow.fromWebContents(e.sender)
   if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
