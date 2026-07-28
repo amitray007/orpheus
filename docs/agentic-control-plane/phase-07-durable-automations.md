@@ -251,10 +251,10 @@ widening authority. This MCP surface is source/deterministic evidence only until
 a fresh packaged managed-runtime pass exercises it.
 
 The current agentic harness snapshot reports 48 registered, 48 MCP, 48
-default-exposed, 48 runtime-visible, and 1 automation-eligible operation. That
+default-exposed, 48 runtime-visible, and 5 automation-eligible operations. That
 count is dated verification evidence rather than a stable catalog contract;
-the automation-eligible operation remains the fixed, effect-free Phase 6
-settings read.
+the eligible set is the fixed five-operation exact-workspace allowlist
+documented above.
 
 The authenticated command-socket fixture used by the historical packaged batch
 has been removed from the runtime now that production Settings and MCP

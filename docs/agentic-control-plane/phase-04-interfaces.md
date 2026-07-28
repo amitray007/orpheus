@@ -13,15 +13,13 @@ type Id = string // 1..128 characters
 type RelativePath = string // normalized POSIX, 1..4096 UTF-8 bytes
 
 type WorkbenchGetStateInput = {}
-type WorkbenchSelectTabInput = { tab: "git" | "terminal" | "files" }
+type WorkbenchSelectTabInput = { tab: 'git' | 'terminal' | 'files' }
 type WorkbenchOpenFileInput = {
   path: RelativePath
-  mode?: "viewer" | "preview"
+  mode?: 'viewer' | 'preview'
 }
 type WorkbenchOpenDiffInput = {
-  target:
-    | { kind: "working-tree-file"; path: RelativePath }
-    | { kind: "local-review"; reviewId: Id }
+  target: { kind: 'working-tree-file'; path: RelativePath } | { kind: 'local-review'; reviewId: Id }
 }
 
 type PaneTargetInput = { layoutId: Id }
@@ -61,14 +59,14 @@ type WorkbenchStateV1 = {
   schemaVersion: 1
   workspaceId: Id
   observedAt: number
-  source: "renderer-live"
+  source: 'renderer-live'
   workbench: {
-    state: "dormant" | "open" | "expanded"
-    activeTab: "git" | "terminal" | "files"
+    state: 'dormant' | 'open' | 'expanded'
+    activeTab: 'git' | 'terminal' | 'files'
   }
-  file: { path: string; mode: "viewer" | "preview" } | null
+  file: { path: string; mode: 'viewer' | 'preview' } | null
   diff: {
-    kind: "working-tree-file" | "local-review"
+    kind: 'working-tree-file' | 'local-review'
     path: string
     reviewId: string | null
   } | null
@@ -77,7 +75,7 @@ type WorkbenchStateV1 = {
 type PaneStateV1 = {
   schemaVersion: 1
   observedAt: number
-  source: "renderer-live"
+  source: 'renderer-live'
   layoutId: Id
   panelId: Id
   selected: boolean
@@ -85,7 +83,7 @@ type PaneStateV1 = {
   terminals: Array<{
     terminalId: Id
     selected: boolean
-    desiredState: "running" | "stopped"
+    desiredState: 'running' | 'stopped'
   }>
 }
 
@@ -96,7 +94,7 @@ type PaneTerminalLayoutMutationV1 = {
   layoutUpdatedAt: number
   terminalUpdatedAt: number
   observationTarget: {
-    kind: "pane"
+    kind: 'pane'
     layoutId: Id
     paneId: Id // exactly terminalId
   }
@@ -188,8 +186,8 @@ layout/terminal target. A renderer loss after a native effect returns a
 
 The focused Workbench/pane lifecycle verifier, node and web typechecks, and the
 aggregate agentic regression suite pass for this source. The inventory tuple is
-48 registered, 48 MCP, 48 default-exposed, 48 runtime-visible, and 1
-automation-eligible operation. Packaged-live validation confirmed
+48 registered, 48 MCP, 48 default-exposed, 48 runtime-visible, and 5
+automation-eligible operations. Packaged-live validation confirmed
 Retina-correct terminal scale, colored output, direct observation through the
 returned target, exact deletion, post-delete `not_found`, and preservation of
 the workspace Claude terminal.

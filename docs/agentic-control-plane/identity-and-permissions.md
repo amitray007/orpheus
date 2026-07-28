@@ -291,7 +291,7 @@ exposure.
 Before the automation-management descriptors landed on 2026-07-28, the
 all-enabled deterministic snapshot contained 37 of 37 MCP-eligible descriptors;
 the current harness snapshot reports 48 registered, 48 MCP, 48
-default-exposed, 48 runtime-visible, and 1 automation-eligible operation.
+default-exposed, 48 runtime-visible, and 5 automation-eligible operations.
 These counts are dated evidence, not a normative catalog contract.
 
 The current vocabulary also includes `automations.manage`. Its nine

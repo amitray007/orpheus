@@ -46,7 +46,7 @@ advertise `tools.listChanged`, long-poll for revision changes, refresh
 not require a workspace or MCP restart. Before the automation-management
 descriptors landed, the all-enabled deterministic snapshot contained 37 of 37
 MCP-eligible descriptors. The current harness snapshot reports 48 registered,
-48 MCP, 48 default-exposed, 48 runtime-visible, and 1 automation-eligible
+48 MCP, 48 default-exposed, 48 runtime-visible, and 5 automation-eligible
 operations. These dated counts are
 verification evidence, not a stable catalog contract.
 
@@ -465,18 +465,18 @@ recorded pre-2026-07-28 packaged batch. They do not prove the current-source
 delta above. Add a new packaged row/checklist after rebuilding instead of
 rewriting these results.
 
-| Area                                                  | Deterministic/source evidence                                                                                                       | Packaged/live evidence                                                                                                                                       | Recorded status                                                                                             |
-| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| Phase 1 registry and review adapters                  | Dedicated control-plane harness and adapter guards pass                                                                             | Exercised indirectly by later packaged runs                                                                                                                  | Deterministic pass; no new direct live proof required                                                       |
-| Phase 2 identity and default MCP reads                | Runtime-lease, policy, bridge, and schema harnesses pass                                                                            | Historical bound-identity/denial run retained; current batch discovered exactly 11 default tools and 28 exact-scoped tools                                   | Current discovery passed; a fresh final-build `self.get` refresh remains                                    |
-| Phase 3 workspace orchestration and CLI compatibility | Foundation, main, CLI, and renderer-action harnesses pass                                                                           | Historical lifecycle/fork/archive/audit evidence retained; current packaged `open --background` mounted an unmounted Dev workspace while Home stayed visible | Background-mount and terminal-color repairs live-reconfirmed; three focused paths remain deterministic-only |
-| Phase 4 Workbench/Panes                               | Domain, policy, renderer-broker, and exact persisted-scope harnesses pass                                                           | Current batch exercised state, tab/file/diff/layout control and pane start/focus/stop with real acknowledgements                                             | Core positive paths current-batch live; unavailable/partial live paths pending                              |
-| Phase 5 terminal observation                          | Source/freshness, bounds, subscription, exact scoped pane, unsupported-tail, de-duplication, and denial harnesses pass after repair | Rebuilt app exposed the mounted exact-scoped pane through list/get/tail/subscribe, then omitted it and returned `not_found` after stop                       | Current-batch live                                                                                          |
-| Phase 6 settings/resources                            | Layering, allowlist, grant, scope, redaction, and restart-to-apply harnesses pass                                                   | Current batch exercised effective settings, sanitized metadata, patch, and restore to effective `high`                                                       | Core positive paths current-batch live; native restart-required path pending                                |
-| Phase 7 automations                                   | Persistence, scheduler, outbox, recovery, idempotency, budget, grant, audit, production management, event-bridge, and five-operation production-path harnesses pass | Historical packaged fixture batch exercised schedule/event runs, duplicate reuse, restart recovery, disable, audit correlation, and cleanup                  | Historical core live; production MCP management live paths remain pending                                  |
-| Phase 8 integrated validation                         | Blocking aggregate covers every focused verifier; temporary injected-grant and command-fixture runtime modules are removed          | Historical packaged fixture run retained below; final packaged pane, observation, scope round-trip, scale, color, and cleanup paths passed                    | Current deterministic suite is CI-blocking; residual live negatives recorded below                          |
-| CLI preservation                                      | Compatibility harness covers live envelopes; offline readers remain independent of the app                                          | Historical lifecycle evidence retained; current packaged background-open and app-stopped project/workspace/transcript reads passed                           | Existing CLI retained                                                                                       |
-| Audit/log redaction                                   | Dedicated redaction, exhaustive legacy purge, hostile-input, export, and operation-audit checks pass                                | Packaged main logs emitted structural counts/key names rather than values; automation runs carried audit correlation; Gitleaks found no staged-diff leaks    | Current source and run evidence passed                                                                      |
+| Area                                                  | Deterministic/source evidence                                                                                                                                       | Packaged/live evidence                                                                                                                                       | Recorded status                                                                                             |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| Phase 1 registry and review adapters                  | Dedicated control-plane harness and adapter guards pass                                                                                                             | Exercised indirectly by later packaged runs                                                                                                                  | Deterministic pass; no new direct live proof required                                                       |
+| Phase 2 identity and default MCP reads                | Runtime-lease, policy, bridge, and schema harnesses pass                                                                                                            | Historical bound-identity/denial run retained; current batch discovered exactly 11 default tools and 28 exact-scoped tools                                   | Current discovery passed; a fresh final-build `self.get` refresh remains                                    |
+| Phase 3 workspace orchestration and CLI compatibility | Foundation, main, CLI, and renderer-action harnesses pass                                                                                                           | Historical lifecycle/fork/archive/audit evidence retained; current packaged `open --background` mounted an unmounted Dev workspace while Home stayed visible | Background-mount and terminal-color repairs live-reconfirmed; three focused paths remain deterministic-only |
+| Phase 4 Workbench/Panes                               | Domain, policy, renderer-broker, and exact persisted-scope harnesses pass                                                                                           | Current batch exercised state, tab/file/diff/layout control and pane start/focus/stop with real acknowledgements                                             | Core positive paths current-batch live; unavailable/partial live paths pending                              |
+| Phase 5 terminal observation                          | Source/freshness, bounds, subscription, exact scoped pane, unsupported-tail, de-duplication, and denial harnesses pass after repair                                 | Rebuilt app exposed the mounted exact-scoped pane through list/get/tail/subscribe, then omitted it and returned `not_found` after stop                       | Current-batch live                                                                                          |
+| Phase 6 settings/resources                            | Layering, allowlist, grant, scope, redaction, and restart-to-apply harnesses pass                                                                                   | Current batch exercised effective settings, sanitized metadata, patch, and restore to effective `high`                                                       | Core positive paths current-batch live; native restart-required path pending                                |
+| Phase 7 automations                                   | Persistence, scheduler, outbox, recovery, idempotency, budget, grant, audit, production management, event-bridge, and five-operation production-path harnesses pass | Historical packaged fixture batch exercised schedule/event runs, duplicate reuse, restart recovery, disable, audit correlation, and cleanup                  | Historical core live; production MCP management live paths remain pending                                   |
+| Phase 8 integrated validation                         | Blocking aggregate covers every focused verifier; temporary injected-grant and command-fixture runtime modules are removed                                          | Historical packaged fixture run retained below; final packaged pane, observation, scope round-trip, scale, color, and cleanup paths passed                   | Current deterministic suite is CI-blocking; residual live negatives recorded below                          |
+| CLI preservation                                      | Compatibility harness covers live envelopes; offline readers remain independent of the app                                                                          | Historical lifecycle evidence retained; current packaged background-open and app-stopped project/workspace/transcript reads passed                           | Existing CLI retained                                                                                       |
+| Audit/log redaction                                   | Dedicated redaction, exhaustive legacy purge, hostile-input, export, and operation-audit checks pass                                                                | Packaged main logs emitted structural counts/key names rather than values; automation runs carried audit correlation; Gitleaks found no staged-diff leaks    | Current source and run evidence passed                                                                      |
 
 The blocking `test:agentic` aggregate builds the CLI and MCP transports once,
 then runs all 31 focused control-plane, identity, workspace, review, Workbench,
@@ -507,8 +507,8 @@ historical evidence above.
 - [x] Run the dedicated pane provisioning/deletion store, policy, receipt,
       redaction, and renderer reconciliation harnesses.
 - [x] Repeat the aggregate agentic integration harness with the two descriptors
-      registered; it reports 48 registered/MCP/default/runtime-visible and 1
-      automation-eligible operation.
+      registered; it reports 48 registered/MCP/default/runtime-visible and 5
+      automation-eligible operations.
 - [x] Repeat the full repository check with the two descriptors registered.
 - [x] Package and launch the exact source; confirm 48 managed MCP tools.
 - [x] Exercise two positive self-workspace pane create flows, normal Retina
@@ -518,6 +518,28 @@ historical evidence above.
 - [x] Round-trip one existing MCP-created Settings automation
       project-descriptor/workspace definition through a no-op Save; confirm it
       remains `Workspace` scoped and its revision advances.
+- [ ] Rebuild and launch the exact source; confirm the production automation
+      catalog exposes exactly `settings.getEffective`,
+      `settings.patchWorkspace`, `workspaces.getLineage`, `workspaces.reopen`,
+      and `workspaces.rename`, while project resource metadata and automation
+      management remain ineligible.
+- [ ] Through the production management and scheduler paths, create and run an
+      exact-workspace definition for each of those five operations. Verify the
+      effective-settings result, bounded settings patch, persisted lineage,
+      closed-to-open transition, and rename transition against the selected
+      workspace.
+- [ ] Attempt sibling-workspace parameters for all five definitions and confirm
+      creation/invocation fails without exposing sibling state. Inspect each
+      successful run's persisted history and control audit for matching
+      definition, run, idempotency key, exact workspace, and automation
+      principal correlation.
+- [ ] Replay the same occurrence and confirm no duplicate run or repeated
+      effect. Trigger one new occurrence and confirm natural convergence:
+      unchanged settings, rename, and reopen skip durable writes while reads
+      remain effect-free.
+- [ ] Restore the original workspace name, closed/open state, and model/effort
+      overrides; disable and delete all five definitions; confirm no disposable
+      run fixture, definition, or workspace state remains.
 - [ ] Package the exact source and exercise create, authoritative start,
       initial-command non-persistence/at-most-once/no-replay beyond the positive
       command run, next-request exact-scope discovery beyond the observed
