@@ -21,6 +21,7 @@ import {
   type AutomationDefinition,
   type AutomationDefinitionDraft,
   type AutomationManagementContext,
+  type AutomationRegistry,
   type AutomationRun,
   type AutomationStore
 } from '../src/main/automations/types.ts'
@@ -161,6 +162,17 @@ const oversizedDescriptor: ControlDescriptor<{ text: string }, typeof oversizedP
   }
 }
 registry.register(oversizedDescriptor)
+
+const revokedProxyDescriptor: ControlDescriptor<{ text: string }, Record<string, unknown>> = {
+  ...descriptor,
+  id: 'test.revokedProxyResult',
+  idempotency: 'natural',
+  handler: async (_input, context) => {
+    invocations.push(context)
+    return { ok: true }
+  }
+}
+registry.register(revokedProxyDescriptor)
 
 const permissions: ControlPermission[] = ['reviews.resolve']
 const grantRequests: AutomationGrantRequest[] = []
@@ -740,6 +752,87 @@ assert.doesNotMatch(
   `${adversarialAudit.correlation_json}${adversarialAudit.receipts_json}`,
   /must-never-persist/
 )
+
+auditStore.appendAttempt({
+  auditId: 'oversized-receipts-audit',
+  requestId: 'oversized-receipts-request',
+  occurredAt: now,
+  definition: oversizedDefinition,
+  run: oversizedRun,
+  description: registry.describe(oversizedDescriptor.id)!,
+  decision: 'allow',
+  resultCode: 'completed',
+  result: {
+    effects: Array.from({ length: 129 }, (_, index) => ({
+      effect: `effect-${index}`,
+      status: 'applied'
+    }))
+  },
+  error: null
+})
+const oversizedReceiptsJson = (
+  db
+    .prepare(
+      `SELECT receipts_json FROM control_audit
+       WHERE audit_id = 'oversized-receipts-audit'`
+    )
+    .get() as { receipts_json: string }
+).receipts_json
+assert.ok(
+  Buffer.byteLength(oversizedReceiptsJson, 'utf8') <= AUTOMATION_LIMITS.maxPersistedResultBytes
+)
+assert.deepEqual(JSON.parse(oversizedReceiptsJson), [
+  {
+    effect: 'automation.result.receipts',
+    status: 'skipped',
+    message: 'Result receipts exceeded audit persistence safety limits.'
+  }
+])
+
+const revokedProxyDefinition = await create({
+  operationId: revokedProxyDescriptor.id,
+  idempotency: 'natural',
+  trigger: { kind: 'schedule', intervalMs: 1_000, startAt: now }
+})
+const revokedResultRegistry: AutomationRegistry = {
+  describe: (id) => registry.describe(id),
+  validateInput: (id, input, invocationContext) =>
+    registry.validateInput(id, input, invocationContext),
+  invoke: async <T>(invocation) => {
+    if (invocation.id !== revokedProxyDescriptor.id) return registry.invoke<T>(invocation)
+    const revoked = Proxy.revocable<Record<string, unknown>>({}, {})
+    revoked.revoke()
+    return { ok: true, value: revoked.proxy as T }
+  }
+}
+const revokedProxyScheduler = new AutomationScheduler({
+  store,
+  service,
+  registry: revokedResultRegistry,
+  audit: auditStore,
+  clock,
+  generateId
+})
+await revokedProxyScheduler.tick()
+const revokedProxyRun = persistedRun(revokedProxyDefinition.id)
+assert.equal(
+  revokedProxyRun.status,
+  'succeeded',
+  'a revoked result Proxy must not strand a claimed run in running state'
+)
+assert.equal(
+  ((revokedProxyRun.result as Record<string, unknown>)['value'] as Record<string, unknown>)[
+    'stoppedBy'
+  ],
+  'array_detection_failure'
+)
+assert.ok(revokedProxyRun.auditId, 'a safely collapsed Proxy result must retain its audit linkage')
+assert.ok(
+  db
+    .prepare('SELECT audit_id FROM control_audit WHERE audit_id = ?')
+    .get(revokedProxyRun.auditId) != null
+)
+await scheduler.setEnabled(revokedProxyDefinition.id, false, managementContext())
 await scheduler.setEnabled(oversizedDefinition.id, false, managementContext())
 
 // A failed INSERT is only a dedupe win when the stable-key lookup finds the

@@ -71,6 +71,15 @@ function dataProperty(object: object, key: PropertyKey, state: TraversalState): 
   }
 }
 
+function arrayKind(value: object, state: TraversalState): boolean | null {
+  try {
+    return Array.isArray(value)
+  } catch {
+    stop(state, 'array_detection_failure')
+    return null
+  }
+}
+
 function redactString(
   value: string,
   key: string | null,
@@ -211,13 +220,17 @@ function boundedRedact(
     fingerprint(state, marker)
     return marker
   }
+  const isArray = arrayKind(value, state)
+  if (isArray == null) return null
   if (state.seen.has(value)) {
     fingerprint(state, '[CIRCULAR]')
     return '[CIRCULAR]'
   }
   state.seen.add(value)
-  fingerprint(state, Array.isArray(value) ? 'array' : 'object')
-  return Array.isArray(value) ? redactArray(value, state, depth) : redactObject(value, state, depth)
+  fingerprint(state, isArray ? 'array' : 'object')
+  return isArray
+    ? redactArray(value as readonly unknown[], state, depth)
+    : redactObject(value, state, depth)
 }
 
 function truncationReceipt(state: TraversalState, maxBytes: number): Record<string, unknown> {

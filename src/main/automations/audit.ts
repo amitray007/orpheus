@@ -10,9 +10,24 @@ const INSERT_AUTOMATION_AUDIT = `INSERT OR IGNORE INTO control_audit (
   result_code, correlation_json
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 const SAFE_AUDIT_ID = /^[A-Za-z0-9._:-]{1,128}$/
+const TRUNCATED_RECEIPTS: readonly unknown[] = Object.freeze([
+  Object.freeze({
+    effect: 'automation.result.receipts',
+    status: 'skipped',
+    message: 'Result receipts exceeded audit persistence safety limits.'
+  })
+])
+
+function safelyIsArray(value: unknown): boolean {
+  try {
+    return Array.isArray(value)
+  } catch {
+    return false
+  }
+}
 
 function ownDataProperty(result: unknown, key: string): unknown {
-  if (result == null || typeof result !== 'object' || Array.isArray(result)) return undefined
+  if (result == null || typeof result !== 'object' || safelyIsArray(result)) return undefined
   try {
     const descriptor = Object.getOwnPropertyDescriptor(result, key)
     return descriptor != null && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined
@@ -23,12 +38,17 @@ function ownDataProperty(result: unknown, key: string): unknown {
 
 function resultReceipts(result: unknown): unknown[] {
   const effects = ownDataProperty(result, 'effects')
-  return Array.isArray(effects) ? effects : []
+  return safelyIsArray(effects) ? (effects as unknown[]) : []
 }
 
 function nestedAuditId(result: unknown): string | null {
   const value = ownDataProperty(result, 'auditId')
   return typeof value === 'string' && SAFE_AUDIT_ID.test(value) ? value : null
+}
+
+function boundedResultReceipts(result: unknown): readonly unknown[] {
+  const bounded = persistableAutomationValue(resultReceipts(result))
+  return safelyIsArray(bounded) ? (bounded as unknown[]) : TRUNCATED_RECEIPTS
 }
 
 function boundedAttemptCorrelation(input: {
@@ -96,7 +116,7 @@ export function createAutomationAuditStore(db: DbLike): AutomationAuditPort {
         input.decision,
         JSON.stringify(input.description.declaredEffects ?? []),
         JSON.stringify(recursivelyRedact(input.definition.params)),
-        JSON.stringify(persistableAutomationValue(resultReceipts(input.result))),
+        JSON.stringify(boundedResultReceipts(input.result)),
         input.resultCode,
         correlation
       )
