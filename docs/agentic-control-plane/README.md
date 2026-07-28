@@ -314,8 +314,8 @@ the native UI adapter. Automations invoke the core in-process.
    restored result did not require a restart. See
    [phase-06-settings-resources.md](phase-06-settings-resources.md) and
    [phase-06-interfaces.md](phase-06-interfaces.md).
-7. **Durable Automations — implemented and live-validated through the Dev QA
-   fixture; production management API added in current source.** Persist
+7. **Durable Automations — implemented; one production operation live-validated
+   through Settings.** Persist
    triggers, semantic invocations, policy, budgets, retries, idempotency keys,
    run history, and a transactionally coupled internal-event outbox; execute
    through the same control core. Main has one durable workspace-completion
@@ -331,12 +331,20 @@ the native UI adapter. Automations invoke the core in-process.
    additionally exposes strict renderer IPC/preload management and nine
    MCP-only, exact-bound-workspace `automations.*` management operations for
    definitions, enable/disable, run history, and manual retry generations.
-   Those operations are never automation-eligible. Settings → Automations is
-   source-complete for definition editing, explicit enable/delete/retry
-   confirmations, and redacted run history. The fresh packaged pass confirmed
-   one existing MCP-created project-descriptor/workspace definition no-op Save
-   retained `Workspace` scope and advanced its revision; material field edits,
-   enable/delete/retry, and run-history flows remain pending. See
+   Those management operations are never automation-eligible.
+   The current packaged Settings catalog exposed exactly the five eligible
+   operations. A production `settings.patchWorkspace` schedule for
+   `orpheus-dev-testing` / `Workspace 1` applied `effort=low`, recorded multiple
+   `SUCCEEDED` results, then successfully cleared the workspace override before
+   its QA definition/history were disabled and deleted. Older user-owned stale
+   definitions were preserved. The other four eligible operations pass the
+   production-path harness but were not live-executed through the packaged UI.
+   Settings → Automations is source-complete for definition editing, explicit
+   enable/delete/retry confirmations, and redacted run history. The fresh
+   packaged pass also confirmed one existing MCP-created
+   project-descriptor/workspace definition no-op Save retained `Workspace`
+   scope and advanced its revision. Packaged manual retry and MCP management
+   remain pending. See
    [phase-07-durable-automations.md](phase-07-durable-automations.md).
 8. **Integrated Validation — deterministic suite and major packaged paths
    exercised.** Verify parity across MCP,

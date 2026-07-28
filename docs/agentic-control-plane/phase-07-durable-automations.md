@@ -247,8 +247,9 @@ enable, and delete require the current `updatedAt` revision.
 These descriptors allow only the `mcp` surface and declare no automation
 eligibility. An automation therefore cannot manage or retry automations.
 Settings Agent Tools may further suppress their `automations` category without
-widening authority. This MCP surface is source/deterministic evidence only until
-a fresh packaged managed-runtime pass exercises it.
+widening authority. Their MCP surface remains source/deterministic evidence
+until a fresh packaged managed-runtime pass exercises it. The production
+Settings UI management path has separate packaged-live evidence below.
 
 The current agentic harness snapshot reports 48 registered, 48 MCP, 48
 default-exposed, 48 runtime-visible, and 5 automation-eligible operations. That
@@ -263,6 +264,19 @@ dispatch, and fixture controller are not included in the application bundle.
 The historical results below remain evidence for that build only; current
 regression coverage invokes the production service, scheduler, event bridge,
 renderer-management, and MCP-management interfaces directly.
+
+On 2026-07-28, the packaged Settings UI catalog showed exactly the five eligible
+operations documented above. Through the production Settings management and
+scheduler paths, a QA definition targeted
+`orpheus-dev-testing` / `Workspace 1` with `settings.patchWorkspace`, applied
+`effort=low`, and produced multiple `SUCCEEDED` history entries with recorded
+results. The definition was then changed to `Clear workspace override`, ran
+successfully, was disabled, and was deleted together with its QA history. Older
+user-owned stale definitions were deliberately preserved. This is packaged-live
+evidence for the catalog and `settings.patchWorkspace` only:
+`settings.getEffective`, `workspaces.getLineage`, `workspaces.reopen`, and
+`workspaces.rename` pass the five-operation production-path harness but were not
+executed through the packaged UI in this batch.
 
 ## Acceptance boundary
 
@@ -313,4 +327,5 @@ These remain historical packaged fixture results, not current-live evidence for
 the production MCP management API or manual retry generations. The fixture code
 has since been removed. The separate 2026-07-28 Settings save proves only the
 no-op round trip, retained workspace-scope, and revision-advance path described
-above.
+above; the later production Settings scheduled-run evidence is recorded
+separately above.

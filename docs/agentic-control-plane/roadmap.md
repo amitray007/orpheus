@@ -518,16 +518,23 @@ historical evidence above.
 - [x] Round-trip one existing MCP-created Settings automation
       project-descriptor/workspace definition through a no-op Save; confirm it
       remains `Workspace` scoped and its revision advances.
-- [ ] Rebuild and launch the exact source; confirm the production automation
-      catalog exposes exactly `settings.getEffective`,
+- [x] Rebuild and launch the exact source; confirm the packaged Settings
+      automation catalog exposes exactly `settings.getEffective`,
       `settings.patchWorkspace`, `workspaces.getLineage`, `workspaces.reopen`,
       and `workspaces.rename`, while project resource metadata and automation
       management remain ineligible.
-- [ ] Through the production management and scheduler paths, create and run an
-      exact-workspace definition for each of those five operations. Verify the
-      effective-settings result, bounded settings patch, persisted lineage,
-      closed-to-open transition, and rename transition against the selected
-      workspace.
+- [x] Through the production Settings management and scheduler paths, create a
+      `settings.patchWorkspace` definition for
+      `orpheus-dev-testing` / `Workspace 1`; apply `effort=low` and observe
+      multiple `SUCCEEDED` history entries with recorded results.
+- [x] Update that QA definition to `Clear workspace override`, run it
+      successfully, disable it, and delete its definition and history. Preserve
+      the older user-owned stale definitions unchanged.
+- [ ] Through the packaged production management and scheduler paths, create
+      and run exact-workspace definitions for `settings.getEffective`,
+      `workspaces.getLineage`, `workspaces.reopen`, and `workspaces.rename`.
+      Their production paths pass deterministic harness coverage, but they were
+      not executed through the packaged UI in this batch.
 - [ ] Attempt sibling-workspace parameters for all five definitions and confirm
       creation/invocation fails without exposing sibling state. Inspect each
       successful run's persisted history and control audit for matching
@@ -537,9 +544,10 @@ historical evidence above.
       effect. Trigger one new occurrence and confirm natural convergence:
       unchanged settings, rename, and reopen skip durable writes while reads
       remain effect-free.
-- [ ] Restore the original workspace name, closed/open state, and model/effort
-      overrides; disable and delete all five definitions; confirm no disposable
-      run fixture, definition, or workspace state remains.
+- [ ] After live-testing the remaining four operations, restore the original
+      workspace name and closed/open state; disable and delete only their QA
+      definitions and history without altering older user-owned stale
+      definitions.
 - [ ] Package the exact source and exercise create, authoritative start,
       initial-command non-persistence/at-most-once/no-replay beyond the positive
       command run, next-request exact-scope discovery beyond the observed
