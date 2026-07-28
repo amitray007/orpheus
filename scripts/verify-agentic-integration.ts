@@ -295,10 +295,7 @@ assert.equal(
   registry.describe('settings.getEffective')?.allowedSurfaces.join(','),
   'mcp,automation'
 )
-assert.equal(
-  registry.describe('resources.listProjectMetadata')?.allowedSurfaces.join(','),
-  'mcp,automation'
-)
+assert.equal(registry.describe('resources.listProjectMetadata')?.allowedSurfaces.join(','), 'mcp')
 assert.equal(registry.describe('settings.patchWorkspace')?.allowedSurfaces.join(','), 'mcp')
 assert.equal(registry.describe('settings.getEffective')?.idempotency, 'natural')
 assert.equal(registry.describe('resources.listProjectMetadata')?.idempotency, 'natural')
@@ -509,7 +506,7 @@ const automationDescriptions = allDescriptions.filter(({ allowedSurfaces }) =>
 )
 assert.deepEqual(
   automationDescriptions.map(({ id }) => id),
-  ['resources.listProjectMetadata', 'settings.getEffective']
+  ['settings.getEffective']
 )
 console.log(
   JSON.stringify({

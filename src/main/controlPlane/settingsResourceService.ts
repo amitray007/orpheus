@@ -168,6 +168,8 @@ export type SettingsResourceServiceDeps = {
   generateId?: () => string
   resourceMetadataCacheTtlMs?: number
   maxResourceMetadataCacheEntries?: number
+  maxResourceMetadataCacheBytes?: number
+  maxResourceMetadataCacheResources?: number
 }
 
 type OperationAuditMeta = {
@@ -191,7 +193,9 @@ const MAX_METADATA_LENGTH = 512
 const MAX_METADATA_ITEMS = 64
 const MAX_PUBLISHED_RESOURCES = 256
 const RESOURCE_METADATA_CACHE_TTL_MS = 5_000
-const MAX_RESOURCE_METADATA_CACHE_ENTRIES = 128
+const MAX_RESOURCE_METADATA_CACHE_ENTRIES = 32
+const MAX_RESOURCE_METADATA_CACHE_BYTES = 2 * 1024 * 1024
+const MAX_RESOURCE_METADATA_CACHE_RESOURCES = 2_048
 const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$/
 const DB_WRITE_EFFECT = 'db.write' as const
 const DIRTY_RECOMPUTE_EFFECT = 'workspace.dirty.recompute' as const
@@ -255,9 +259,18 @@ export class SettingsResourceService {
   private readonly generateId: () => string
   private readonly resourceMetadataCacheTtlMs: number
   private readonly maxResourceMetadataCacheEntries: number
+  private readonly maxResourceMetadataCacheBytes: number
+  private readonly maxResourceMetadataCacheResources: number
+  private resourceMetadataCacheBytes = 0
+  private resourceMetadataCacheResources = 0
   private readonly resourceMetadataCache = new Map<
     string,
-    { expiresAt: number; output: ListProjectResourceMetadataOutput }
+    {
+      expiresAt: number
+      bytes: number
+      resources: number
+      output: ListProjectResourceMetadataOutput
+    }
   >()
 
   constructor(private readonly deps: SettingsResourceServiceDeps) {
@@ -270,6 +283,14 @@ export class SettingsResourceService {
     this.maxResourceMetadataCacheEntries = Math.max(
       1,
       Math.floor(deps.maxResourceMetadataCacheEntries ?? MAX_RESOURCE_METADATA_CACHE_ENTRIES)
+    )
+    this.maxResourceMetadataCacheBytes = Math.max(
+      1,
+      Math.floor(deps.maxResourceMetadataCacheBytes ?? MAX_RESOURCE_METADATA_CACHE_BYTES)
+    )
+    this.maxResourceMetadataCacheResources = Math.max(
+      1,
+      Math.floor(deps.maxResourceMetadataCacheResources ?? MAX_RESOURCE_METADATA_CACHE_RESOURCES)
     )
   }
 
@@ -353,7 +374,14 @@ export class SettingsResourceService {
     const cached = this.resourceMetadataCache.get(cacheKey)
     if (cached == null) return null
     this.resourceMetadataCache.delete(cacheKey)
-    if (observedAt >= cached.expiresAt) return null
+    if (observedAt >= cached.expiresAt) {
+      this.resourceMetadataCacheBytes = Math.max(0, this.resourceMetadataCacheBytes - cached.bytes)
+      this.resourceMetadataCacheResources = Math.max(
+        0,
+        this.resourceMetadataCacheResources - cached.resources
+      )
+      return null
+    }
     this.resourceMetadataCache.set(cacheKey, cached)
     return cached.output
   }
@@ -364,17 +392,45 @@ export class SettingsResourceService {
     output: ListProjectResourceMetadataOutput
   ): void {
     for (const [key, entry] of this.resourceMetadataCache) {
-      if (observedAt >= entry.expiresAt) this.resourceMetadataCache.delete(key)
+      if (observedAt >= entry.expiresAt) {
+        this.removeCachedProjectMetadata(key, entry.bytes, entry.resources)
+      }
     }
-    while (this.resourceMetadataCache.size >= this.maxResourceMetadataCacheEntries) {
+    const bytes = Buffer.byteLength(JSON.stringify(output), 'utf8')
+    const resources = output.resources.length
+    if (
+      bytes > this.maxResourceMetadataCacheBytes ||
+      resources > this.maxResourceMetadataCacheResources
+    ) {
+      return
+    }
+    while (
+      this.resourceMetadataCache.size >= this.maxResourceMetadataCacheEntries ||
+      this.resourceMetadataCacheBytes + bytes > this.maxResourceMetadataCacheBytes ||
+      this.resourceMetadataCacheResources + resources > this.maxResourceMetadataCacheResources
+    ) {
       const oldestKey = this.resourceMetadataCache.keys().next().value
       if (oldestKey == null) break
-      this.resourceMetadataCache.delete(oldestKey)
+      const oldest = this.resourceMetadataCache.get(oldestKey)
+      this.removeCachedProjectMetadata(oldestKey, oldest?.bytes ?? 0, oldest?.resources ?? 0)
     }
     this.resourceMetadataCache.set(cacheKey, {
       expiresAt: observedAt + this.resourceMetadataCacheTtlMs,
+      bytes,
+      resources,
       output
     })
+    this.resourceMetadataCacheBytes += bytes
+    this.resourceMetadataCacheResources += resources
+  }
+
+  private removeCachedProjectMetadata(cacheKey: string, bytes: number, resources: number): void {
+    if (!this.resourceMetadataCache.delete(cacheKey)) return
+    this.resourceMetadataCacheBytes = Math.max(0, this.resourceMetadataCacheBytes - bytes)
+    this.resourceMetadataCacheResources = Math.max(
+      0,
+      this.resourceMetadataCacheResources - resources
+    )
   }
 
   private scanProjectResources(

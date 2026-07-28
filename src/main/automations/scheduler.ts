@@ -111,6 +111,8 @@ type AttemptOutcome = {
   description: ReturnType<AutomationRegistry['describe']>
 }
 
+type RunSelection = { definition: AutomationDefinition; run: AutomationRun }
+
 export class AutomationScheduler {
   private readonly clock: AutomationClock
   private readonly generateId: () => string
@@ -118,8 +120,11 @@ export class AutomationScheduler {
   private readonly maxGlobalConcurrency: number
   private readonly activeByAutomation = new Map<string, number>()
   private readonly activeTasks = new Set<Promise<void>>()
+  private readonly occupiedSlots = new Set<symbol>()
+  private readonly lingeringTasks = new Set<Promise<void>>()
   private readonly controllers = new Map<string, Set<AbortController>>()
   private readonly lingeringRunIds = new Set<string>()
+  private automationCursor = 0
   private timer: NodeJS.Timeout | null = null
   private tickInFlight: Promise<readonly Promise<void>[]> | null = null
   private started = false
@@ -138,9 +143,9 @@ export class AutomationScheduler {
     try {
       await this.recover()
       if (!this.started) return
-      await this.tick(false)
+      await this.tick(false, true)
       if (!this.started) return
-      this.timer = setInterval(() => void this.tick(false), this.tickMs)
+      this.timer = setInterval(() => void this.tick(false, true), this.tickMs)
       this.timer.unref?.()
     } catch (error) {
       if (this.timer != null) clearInterval(this.timer)
@@ -260,10 +265,10 @@ export class AutomationScheduler {
     }
   }
 
-  async tick(waitForExecutions = true): Promise<void> {
+  async tick(waitForExecutions = true, requireStarted = false): Promise<void> {
     if (this.tickInFlight == null) {
       this.tickInFlight = Promise.resolve()
-        .then(() => this.reconcile())
+        .then(() => (requireStarted && !this.started ? [] : this.reconcile()))
         .finally(() => {
           this.tickInFlight = null
         })
@@ -273,14 +278,30 @@ export class AutomationScheduler {
   }
 
   async waitForIdle(): Promise<void> {
-    while (this.activeTasks.size > 0) {
-      await Promise.all([...this.activeTasks])
+    while (this.activeTasks.size > 0 || this.lingeringTasks.size > 0) {
+      await Promise.allSettled([...this.activeTasks, ...this.lingeringTasks])
     }
   }
 
   private dispatch(definition: AutomationDefinition, run: AutomationRun): Promise<void> {
-    const task = this.execute(definition, run).finally(() => {
+    const slot = Symbol(run.id)
+    this.occupiedSlots.add(slot)
+    let slotTransferred = false
+    const holdSlotUntilSettled = (invocation: Promise<unknown>): void => {
+      slotTransferred = true
+      const lingering = invocation.then(
+        () => undefined,
+        () => undefined
+      )
+      this.lingeringTasks.add(lingering)
+      void lingering.finally(() => {
+        this.lingeringTasks.delete(lingering)
+        this.occupiedSlots.delete(slot)
+      })
+    }
+    const task = this.execute(definition, run, holdSlotUntilSettled).finally(() => {
       this.activeTasks.delete(task)
+      if (!slotTransferred) this.occupiedSlots.delete(slot)
     })
     this.activeTasks.add(task)
     void task.catch(() => {
@@ -307,10 +328,17 @@ export class AutomationScheduler {
       this.lastCleanupAt = now
     }
     this.enqueueDueSchedules(now)
-    const runnable = this.ports.store.listRunnableRuns(now, MAX_RECONCILE_ITEMS)
+    const runnableAutomationIds = this.ports.store.listRunnableAutomationIds(
+      now,
+      AUTOMATION_LIMITS.maxDefinitions
+    )
+    if (runnableAutomationIds.length === 0) {
+      this.automationCursor = 0
+      return []
+    }
     const definitions = new Map(
       this.ports.store
-        .listDefinitionsByIds([...new Set(runnable.map((run) => run.automationId))])
+        .listDefinitionsByIds(runnableAutomationIds)
         .map((definition) => [definition.id, definition])
     )
     const starts = this.ports.store.countStartsSinceMany(
@@ -319,33 +347,112 @@ export class AutomationScheduler {
         since: now - definition.rollingBudget.windowMs
       }))
     )
-    const availableGlobalSlots = Math.max(0, this.maxGlobalConcurrency - this.activeTasks.size)
-    const selected: Array<{ definition: AutomationDefinition; run: AutomationRun }> = []
+    const availableGlobalSlots = Math.max(0, this.maxGlobalConcurrency - this.occupiedSlots.size)
+    if (availableGlobalSlots === 0) return []
+
+    const cursor = this.automationCursor % runnableAutomationIds.length
+    const orderedAutomationIds = [
+      ...runnableAutomationIds.slice(cursor),
+      ...runnableAutomationIds.slice(0, cursor)
+    ]
+    const selected = this.selectFairRuns({
+      now,
+      orderedAutomationIds,
+      definitions,
+      starts,
+      availableGlobalSlots
+    })
+    const lastSelectedId = selected.at(-1)?.definition.id
+    const lastSelectedIndex =
+      lastSelectedId == null ? -1 : orderedAutomationIds.lastIndexOf(lastSelectedId)
+    this.automationCursor =
+      lastSelectedIndex < 0
+        ? (cursor + 1) % runnableAutomationIds.length
+        : (cursor + lastSelectedIndex + 1) % runnableAutomationIds.length
+    return selected.map(({ definition, run }) => this.dispatch(definition, run))
+  }
+
+  private selectFairRuns(input: {
+    now: number
+    orderedAutomationIds: readonly string[]
+    definitions: ReadonlyMap<string, AutomationDefinition>
+    starts: ReadonlyMap<string, number>
+    availableGlobalSlots: number
+  }): RunSelection[] {
+    const selected: RunSelection[] = []
     const reserved = new Map<string, number>()
-    for (const run of runnable) {
-      if (selected.length >= availableGlobalSlots) break
-      const definition = definitions.get(run.automationId)
-      if (definition == null || !definition.enabled) continue
-      if (this.lingeringRunIds.has(run.id)) continue
-      const active = this.activeByAutomation.get(definition.id) ?? 0
-      const alreadyReserved = reserved.get(definition.id) ?? 0
-      if (active + alreadyReserved >= definition.concurrencyLimit) continue
-      if (
-        (starts.get(definition.id) ?? 0) + alreadyReserved >=
-        definition.rollingBudget.maxStarts
-      ) {
+    const candidates = new Map<string, AutomationRun[]>()
+    const blocked = new Set<string>()
+
+    while (selected.length < input.availableGlobalSlots) {
+      let progressed = false
+      for (const automationId of input.orderedAutomationIds) {
+        if (selected.length >= input.availableGlobalSlots) break
+        if (automationId == null || blocked.has(automationId)) continue
+        const definition = input.definitions.get(automationId)
+        if (definition == null || !definition.enabled) {
+          blocked.add(automationId)
+          continue
+        }
+        const alreadyReserved = reserved.get(definition.id) ?? 0
+        const run = this.nextFairRun({
+          now: input.now,
+          definition,
+          alreadyReserved,
+          starts: input.starts,
+          candidates,
+          globalSlotsRemaining: input.availableGlobalSlots - selected.length
+        })
+        if (run == null) {
+          blocked.add(automationId)
+          continue
+        }
+        reserved.set(definition.id, alreadyReserved + 1)
+        selected.push({ definition, run })
+        progressed = true
+      }
+      if (!progressed) break
+    }
+    return selected
+  }
+
+  private nextFairRun(input: {
+    now: number
+    definition: AutomationDefinition
+    alreadyReserved: number
+    starts: ReadonlyMap<string, number>
+    candidates: Map<string, AutomationRun[]>
+    globalSlotsRemaining: number
+  }): AutomationRun | null {
+    const { definition, alreadyReserved } = input
+    const active = this.activeByAutomation.get(definition.id) ?? 0
+    const definitionSlots = definition.concurrencyLimit - active - alreadyReserved
+    const budgetSlots =
+      definition.rollingBudget.maxStarts - (input.starts.get(definition.id) ?? 0) - alreadyReserved
+    if (definitionSlots <= 0) return null
+    if (budgetSlots <= 0) {
+      const [run] = this.ports.store.listRunnableRunsForAutomation(definition.id, input.now, 1)
+      if (run != null) {
         this.ports.store.deferRun(
           run.id,
           run.status as 'queued' | 'retry_wait',
-          now + definition.rollingBudget.windowMs,
+          input.now + definition.rollingBudget.windowMs,
           'rolling_budget'
         )
-        continue
       }
-      reserved.set(definition.id, alreadyReserved + 1)
-      selected.push({ definition, run })
+      return null
     }
-    return selected.map(({ definition, run }) => this.dispatch(definition, run))
+    let definitionCandidates = input.candidates.get(definition.id)
+    if (definitionCandidates == null) {
+      definitionCandidates = this.ports.store.listRunnableRunsForAutomation(
+        definition.id,
+        input.now,
+        Math.min(definitionSlots, budgetSlots, input.globalSlotsRemaining)
+      )
+      input.candidates.set(definition.id, definitionCandidates)
+    }
+    const run = definitionCandidates[alreadyReserved]
+    return run == null || this.lingeringRunIds.has(run.id) ? null : run
   }
 
   private enqueuePendingEvents(now: number): void {
@@ -424,7 +531,11 @@ export class AutomationScheduler {
     throw new Error('Automation run was not persisted and no idempotent winner exists.')
   }
 
-  private async execute(definition: AutomationDefinition, pending: AutomationRun): Promise<void> {
+  private async execute(
+    definition: AutomationDefinition,
+    pending: AutomationRun,
+    holdSlotUntilSettled: (invocation: Promise<unknown>) => void
+  ): Promise<void> {
     const requestId = `automation:${definition.id}:${pending.id}:${pending.attempt + 1}`
     const expected = pending.status as 'queued' | 'retry_wait'
     const startedAt = this.clock.now()
@@ -439,23 +550,37 @@ export class AutomationScheduler {
     const automationControllers = this.controllers.get(definition.id) ?? new Set()
     automationControllers.add(controller)
     this.controllers.set(definition.id, automationControllers)
+    let activeTransferred = false
+    const holdAttemptUntilSettled = (invocation: Promise<unknown>): void => {
+      activeTransferred = true
+      holdSlotUntilSettled(invocation)
+      void invocation.then(
+        () => this.releaseActiveAutomation(definition.id),
+        () => this.releaseActiveAutomation(definition.id)
+      )
+    }
 
     try {
-      await this.invokeAttempt(definition, run, requestId, controller)
+      await this.invokeAttempt(definition, run, requestId, controller, holdAttemptUntilSettled)
     } finally {
       automationControllers.delete(controller)
       if (automationControllers.size === 0) this.controllers.delete(definition.id)
-      const active = (this.activeByAutomation.get(definition.id) ?? 1) - 1
-      if (active <= 0) this.activeByAutomation.delete(definition.id)
-      else this.activeByAutomation.set(definition.id, active)
+      if (!activeTransferred) this.releaseActiveAutomation(definition.id)
     }
+  }
+
+  private releaseActiveAutomation(automationId: string): void {
+    const active = (this.activeByAutomation.get(automationId) ?? 1) - 1
+    if (active <= 0) this.activeByAutomation.delete(automationId)
+    else this.activeByAutomation.set(automationId, active)
   }
 
   private async invokeAttempt(
     definition: AutomationDefinition,
     run: AutomationRun,
     requestId: string,
-    controller: AbortController
+    controller: AbortController,
+    holdSlotUntilSettled: (invocation: Promise<unknown>) => void
   ): Promise<void> {
     const auditId = this.generateId()
     const currentDefinition = this.ports.store.getDefinition(definition.id)
@@ -465,7 +590,8 @@ export class AutomationScheduler {
       definitionForAttempt,
       run,
       requestId,
-      controller
+      controller,
+      holdSlotUntilSettled
     )
 
     let persistedAuditId: string | null = null
@@ -545,7 +671,8 @@ export class AutomationScheduler {
     definition: AutomationDefinition,
     run: AutomationRun,
     requestId: string,
-    controller: AbortController
+    controller: AbortController,
+    holdSlotUntilSettled: (invocation: Promise<unknown>) => void
   ): Promise<AttemptOutcome> {
     let description = this.ports.registry.describe(definition.operationId)
     try {
@@ -599,7 +726,10 @@ export class AutomationScheduler {
       const timed = await this.clock.withTimeout(invocation, attemptTimeoutMs, controller)
       if (timed.timedOut) {
         attemptTimedOut = true
-        if (!invocationSettled) this.lingeringRunIds.add(run.id)
+        if (!invocationSettled) {
+          this.lingeringRunIds.add(run.id)
+          holdSlotUntilSettled(invocation)
+        }
         const resultCode = abortedCode(controller)
         return {
           resultCode,

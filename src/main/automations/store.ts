@@ -8,6 +8,7 @@ import type {
 } from './types'
 
 type PreparedStatement = ReturnType<DbLike['prepare']>
+const MAX_DYNAMIC_STATEMENTS_PER_CACHE = 32
 
 type DefinitionRow = {
   id: string
@@ -230,9 +231,21 @@ export function createAutomationStore(db: DbLike): AutomationStore {
        AND next_run_at IS NOT NULL AND next_run_at <= ?
      ORDER BY next_run_at ASC, id ASC LIMIT ?`
   )
-  const listRunnableRunsStatement = db.prepare(
+  const listRunnableAutomationIdsStatement = db.prepare(
+    `SELECT runs.automation_id AS automation_id, MIN(runs.queued_at) AS first_queued_at
+     FROM automation_runs AS runs
+     INNER JOIN automation_definitions AS definitions
+       ON definitions.id = runs.automation_id AND definitions.enabled = 1
+     WHERE runs.status IN ('queued', 'retry_wait')
+       AND (runs.next_attempt_at IS NULL OR runs.next_attempt_at <= ?)
+     GROUP BY runs.automation_id
+     ORDER BY first_queued_at ASC, runs.automation_id ASC
+     LIMIT ?`
+  )
+  const listRunnableRunsForAutomationStatement = db.prepare(
     `SELECT ${RUN_COLUMNS} FROM automation_runs
-     WHERE status IN ('queued', 'retry_wait')
+     WHERE automation_id = ?
+       AND status IN ('queued', 'retry_wait')
        AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
      ORDER BY queued_at ASC, rowid ASC LIMIT ?`
   )
@@ -245,6 +258,20 @@ export function createAutomationStore(db: DbLike): AutomationStore {
   const startsByCount = new Map<number, PreparedStatement>()
   const latestRunsByCount = new Map<number, PreparedStatement>()
 
+  const rememberDynamicStatement = <K>(
+    cache: Map<K, PreparedStatement>,
+    key: K,
+    statement: PreparedStatement
+  ): PreparedStatement => {
+    while (cache.size >= MAX_DYNAMIC_STATEMENTS_PER_CACHE) {
+      const oldestKey = cache.keys().next().value
+      if (oldestKey == null) break
+      cache.delete(oldestKey)
+    }
+    cache.set(key, statement)
+    return statement
+  }
+
   const preparedForCount = (
     cache: Map<number, PreparedStatement>,
     count: number,
@@ -252,10 +279,13 @@ export function createAutomationStore(db: DbLike): AutomationStore {
     tuple = '?'
   ): PreparedStatement => {
     const cached = cache.get(count)
-    if (cached != null) return cached
+    if (cached != null) {
+      cache.delete(count)
+      cache.set(count, cached)
+      return cached
+    }
     const statement = db.prepare(sql(Array.from({ length: count }, () => tuple).join(', ')))
-    cache.set(count, statement)
-    return statement
+    return rememberDynamicStatement(cache, count, statement)
   }
 
   return {
@@ -555,13 +585,22 @@ export function createAutomationStore(db: DbLike): AutomationStore {
         ORDER BY ${order} LIMIT ?`
       let statement = runsByShape.get(sql)
       if (statement == null) {
-        statement = db.prepare(sql)
+        statement = rememberDynamicStatement(runsByShape, sql, db.prepare(sql))
+      } else {
+        runsByShape.delete(sql)
         runsByShape.set(sql, statement)
       }
       return (statement.all(...params) as RunRow[]).map(runFromRow)
     },
-    listRunnableRuns(now, limit) {
-      return (listRunnableRunsStatement.all(now, limit) as RunRow[]).map(runFromRow)
+    listRunnableAutomationIds(now, limit) {
+      return (
+        listRunnableAutomationIdsStatement.all(now, limit) as Array<{ automation_id: string }>
+      ).map((row) => row.automation_id)
+    },
+    listRunnableRunsForAutomation(automationId, now, limit) {
+      return (listRunnableRunsForAutomationStatement.all(automationId, now, limit) as RunRow[]).map(
+        runFromRow
+      )
     },
     countStartsSince(automationId, since) {
       const row = countStartsSinceStatement.get(automationId, since) as { count: number }

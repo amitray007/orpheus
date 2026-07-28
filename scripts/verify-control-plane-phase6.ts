@@ -277,6 +277,8 @@ const service = new SettingsResourceService({
   audit: { append: (record) => audits.push(record) },
   now: () => now,
   maxResourceMetadataCacheEntries: 2,
+  maxResourceMetadataCacheBytes: 2_048,
+  maxResourceMetadataCacheResources: 128,
   generateId: () => `audit-${++idCounter}`
 })
 
@@ -358,6 +360,7 @@ assert.ok(patchDescription)
 assert.equal(effectiveDescription.idempotency, 'natural')
 assert.equal(resourceDescription.idempotency, 'natural')
 assert.equal(patchDescription.allowedSurfaces.includes('automation'), false)
+assert.deepEqual(resourceDescription.allowedSurfaces, ['mcp'])
 const automationScope = {
   kind: 'workspace' as const,
   projectId: workspace.projectId,
@@ -398,21 +401,10 @@ assert.equal(
   ),
   null
 )
-const resourceBinding = await automationGrants.resolve(
-  'automation-resources',
-  automationScope,
-  resourceDescription,
-  { projectId: workspace.projectId }
-)
-assert.ok(resourceBinding)
-assert.deepEqual(resourceBinding.permissions, ['resources.read'])
 assert.equal(
-  await automationGrants.resolve(
-    'automation-cross-project',
-    { kind: 'project', projectId: 'project-2' },
-    resourceDescription,
-    { projectId: 'project-2' }
-  ),
+  await automationGrants.resolve('automation-resources', automationScope, resourceDescription, {
+    projectId: workspace.projectId
+  }),
   null
 )
 assert.equal(
@@ -424,7 +416,7 @@ assert.equal(
 )
 const automationContext = (
   automationId: string,
-  binding: NonNullable<typeof effectiveBinding | typeof resourceBinding>
+  binding: NonNullable<typeof effectiveBinding>
 ): ControlContext => ({
   principal: { type: 'automation', id: automationId },
   consumer: 'automation',
@@ -441,11 +433,12 @@ assert.ok(
     automationContext('automation-effective', effectiveBinding)
   )
 )
-assert.ok(
+assert.equal(
   registry.describeForContext(
     RESOURCES_LIST_PROJECT_METADATA_ID,
-    automationContext('automation-resources', resourceBinding)
-  )
+    automationContext('automation-resources', effectiveBinding)
+  ),
+  null
 )
 assert.equal(
   registry.describeForContext(
@@ -467,12 +460,6 @@ const automatedSibling = await registry.invoke({
 })
 assert.equal(automatedSibling.ok, false)
 if (!automatedSibling.ok) assert.equal(automatedSibling.code, 'forbidden')
-const automatedResources = await registry.invoke({
-  id: RESOURCES_LIST_PROJECT_METADATA_ID,
-  input: { projectId: workspace.projectId },
-  context: automationContext('automation-resources', resourceBinding)
-})
-assert.equal(automatedResources.ok, true)
 composeCalls = 0
 scopedMcpCalls = 0
 scopedHookCalls = 0
@@ -493,6 +480,17 @@ if (boundedResources.ok) {
   assert.equal(value.resources[0]?.kind, 'mcp_server')
   assert.equal(value.resources.at(-1)?.kind, 'mcp_server')
 }
+const repeatedBoundedResources = await registry.invoke({
+  id: RESOURCES_LIST_PROJECT_METADATA_ID,
+  input: { kinds: ['mcp_server'] },
+  context: grantedContext
+})
+assert.equal(repeatedBoundedResources.ok, true)
+assert.equal(
+  scopedMcpCalls,
+  2,
+  'an oversized resource result must bypass the byte-bounded metadata cache'
+)
 bulkMcp = false
 
 const staleProjectContext: ControlContext = {
@@ -515,7 +513,7 @@ assert.deepEqual(staleProjectRead, {
 for (const description of phase6Catalog) {
   assert.deepEqual(
     description.allowedSurfaces,
-    description.id === SETTINGS_PATCH_WORKSPACE_ID ? ['mcp'] : ['mcp', 'automation']
+    description.id === SETTINGS_GET_EFFECTIVE_ID ? ['mcp', 'automation'] : ['mcp']
   )
   assert.equal(description.inputSchema.additionalProperties, false)
   for (const excluded of [
@@ -625,14 +623,21 @@ if (resourceResult.ok) {
 }
 assert.deepEqual(
   [scopedMcpCalls, scopedHookCalls, scopedCommandCalls, scopedSubagentCalls],
-  [1, 0, 0, 0],
-  'automation-warmed project metadata should be reused instead of rescanning files'
+  [3, 1, 1, 1],
+  'cold MCP metadata reads should scan only the explicitly requested project resources'
 )
 await registry.invoke({
   id: RESOURCES_LIST_PROJECT_METADATA_ID,
   input: { kinds: ['hook'] },
   context: grantedContext
 })
+now += 5_001
+await registry.invoke({
+  id: RESOURCES_LIST_PROJECT_METADATA_ID,
+  input: { kinds: ['hook'] },
+  context: grantedContext
+})
+assert.equal(scopedHookCalls, 3, 'expired resource metadata must be rescanned')
 await registry.invoke({
   id: RESOURCES_LIST_PROJECT_METADATA_ID,
   input: { kinds: ['mcp_server'] },
@@ -640,16 +645,9 @@ await registry.invoke({
 })
 assert.deepEqual(
   [scopedMcpCalls, scopedHookCalls, scopedCommandCalls, scopedSubagentCalls],
-  [2, 1, 0, 0],
-  'resource metadata cache must evict the least-recently-used entry at its configured bound'
+  [4, 3, 1, 1],
+  'resource metadata cache must remain bounded while replacing expired entries'
 )
-now += 5_001
-await registry.invoke({
-  id: RESOURCES_LIST_PROJECT_METADATA_ID,
-  input: { kinds: ['hook'] },
-  context: grantedContext
-})
-assert.equal(scopedHookCalls, 2, 'expired resource metadata must be rescanned')
 
 const invalidPatch = await registry.invoke({
   id: SETTINGS_PATCH_WORKSPACE_ID,

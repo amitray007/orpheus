@@ -261,6 +261,7 @@ function persistedRun(automationId: string, index = 0): AutomationRun {
     .all() as Array<{ name: string }>
   assert.ok(indexes.some(({ name }) => name === 'idx_automation_runs_idempotency'))
   assert.ok(indexes.some(({ name }) => name === 'idx_automation_runs_automation_started'))
+  assert.ok(indexes.some(({ name }) => name === 'idx_automation_runs_automation_runnable'))
   assert.ok(indexes.some(({ name }) => name === 'idx_automation_event_occurrences_pending'))
 }
 
@@ -419,10 +420,113 @@ assert.equal(
   true
 )
 assert.deepEqual(
-  store.listRunnableRuns(now, 10).map(({ id }) => id),
+  store.listRunnableRunsForAutomation(starvationDefinition.id, now, 10).map(({ id }) => id),
   [readyRunId]
 )
 db.prepare('DELETE FROM automation_runs WHERE automation_id = ?').run(starvationDefinition.id)
+
+// Candidate selection is fair across definitions. More than one full legacy
+// reconciliation page of old work from one definition cannot hide another
+// definition's ready run indefinitely.
+const noisyDefinition = await create()
+const quietDefinition = await create()
+for (let index = 0; index < 201; index++) {
+  assert.equal(
+    store.insertRun({
+      id: generateId(),
+      automationId: noisyDefinition.id,
+      trigger: { kind: 'event', key: `noisy-${index}`, occurredAt: index },
+      idempotencyKey: `noisy-key-${index}`,
+      status: 'queued',
+      attempt: 0,
+      queuedAt: index,
+      startedAt: null,
+      finishedAt: null,
+      nextAttemptAt: null,
+      resultCode: null,
+      result: null,
+      error: null,
+      requestId: null,
+      auditId: null
+    }),
+    true
+  )
+}
+const quietRunId = generateId()
+assert.equal(
+  store.insertRun({
+    id: quietRunId,
+    automationId: quietDefinition.id,
+    trigger: { kind: 'event', key: 'quiet', occurredAt: now },
+    idempotencyKey: 'quiet-key',
+    status: 'queued',
+    attempt: 0,
+    queuedAt: now,
+    startedAt: null,
+    finishedAt: null,
+    nextAttemptAt: null,
+    resultCode: null,
+    result: null,
+    error: null,
+    requestId: null,
+    auditId: null
+  }),
+  true
+)
+const fairScheduler = new AutomationScheduler({
+  store,
+  service,
+  registry,
+  audit: auditStore,
+  clock,
+  generateId,
+  maxGlobalConcurrency: 1
+})
+await fairScheduler.tick()
+await fairScheduler.tick()
+assert.equal(store.getRun(quietRunId)?.status, 'succeeded')
+await fairScheduler.setEnabled(noisyDefinition.id, false, managementContext())
+await fairScheduler.setEnabled(quietDefinition.id, false, managementContext())
+
+// A scheduled reconciliation queued just before shutdown must re-check the
+// scheduler lifecycle inside its microtask. stop() is a hard dispatch boundary:
+// it cannot mark current work interrupted and then launch a fresh effect.
+const shutdownDefinition = await create()
+const shutdownScheduler = new AutomationScheduler({
+  store,
+  service,
+  registry,
+  audit: auditStore,
+  clock,
+  generateId
+})
+await shutdownScheduler.start()
+const shutdownRunId = generateId()
+assert.equal(
+  store.insertRun({
+    id: shutdownRunId,
+    automationId: shutdownDefinition.id,
+    trigger: { kind: 'event', key: 'shutdown-boundary', occurredAt: now },
+    idempotencyKey: 'shutdown-boundary-key',
+    status: 'queued',
+    attempt: 0,
+    queuedAt: now,
+    startedAt: null,
+    finishedAt: null,
+    nextAttemptAt: null,
+    resultCode: null,
+    result: null,
+    error: null,
+    requestId: null,
+    auditId: null
+  }),
+  true
+)
+const shutdownTick = shutdownScheduler.tick(false, true)
+shutdownScheduler.stop()
+await shutdownTick
+assert.equal(store.getRun(shutdownRunId)?.status, 'queued')
+await shutdownScheduler.setEnabled(shutdownDefinition.id, false, managementContext())
 
 // One overdue schedule occurrence is enqueued per reconciliation; the next due
 // time jumps past now instead of replaying every missed interval.
@@ -647,6 +751,33 @@ await scheduler.emitEvent({
 })
 let lingeringRun = persistedRun(lingeringDefinition.id)
 assert.equal(lingeringRun.status, 'retry_wait')
+const sameDefinitionQueuedId = generateId()
+assert.equal(
+  store.insertRun({
+    id: sameDefinitionQueuedId,
+    automationId: lingeringDefinition.id,
+    trigger: { kind: 'event', key: 'same-definition-queued', occurredAt: now },
+    idempotencyKey: 'same-definition-queued-key',
+    status: 'queued',
+    attempt: 0,
+    queuedAt: now + 1,
+    startedAt: null,
+    finishedAt: null,
+    nextAttemptAt: null,
+    resultCode: null,
+    result: null,
+    error: null,
+    requestId: null,
+    auditId: null
+  }),
+  true
+)
+await scheduler.tick(false)
+assert.equal(
+  store.getRun(sameDefinitionQueuedId)?.status,
+  'queued',
+  'a lingering invocation must retain its per-definition concurrency slot'
+)
 now = lingeringRun.nextAttemptAt ?? now
 await scheduler.tick()
 lingeringRun = persistedRun(lingeringDefinition.id)
@@ -748,6 +879,58 @@ assert.deepEqual(
 )
 for (const definition of globallyCappedDefinitions) {
   await globallyCappedScheduler.setEnabled(definition.id, false, managementContext())
+}
+
+// A timed-out handler that ignores AbortSignal still owns its global execution
+// slot until its underlying invocation settles. The persisted attempt may move
+// to retry_wait, but unrelated work cannot accumulate live handlers behind it.
+const lingeringCapDefinitions = [await create(), await create()]
+const lingeringCapRunIds = lingeringCapDefinitions.map((definition, index) => {
+  const id = generateId()
+  assert.equal(
+    store.insertRun({
+      id,
+      automationId: definition.id,
+      trigger: { kind: 'event', key: `lingering-cap-${index}`, occurredAt: now },
+      idempotencyKey: `lingering-cap-key-${index}`,
+      status: 'queued',
+      attempt: 0,
+      queuedAt: now + index,
+      startedAt: null,
+      finishedAt: null,
+      nextAttemptAt: null,
+      resultCode: null,
+      result: null,
+      error: null,
+      requestId: null,
+      auditId: null
+    }),
+    true
+  )
+  return id
+})
+const lingeringCapScheduler = new AutomationScheduler({
+  store,
+  service,
+  registry,
+  audit: auditStore,
+  clock,
+  generateId,
+  maxGlobalConcurrency: 1
+})
+blockNext = true
+releaseBlocked = null
+timeoutNext = true
+await lingeringCapScheduler.tick()
+assert.ok(releaseBlocked)
+await lingeringCapScheduler.tick(false)
+assert.equal(store.getRun(lingeringCapRunIds[1]!)?.status, 'queued')
+releaseBlocked()
+await lingeringCapScheduler.waitForIdle()
+await lingeringCapScheduler.tick()
+assert.equal(store.getRun(lingeringCapRunIds[1]!)?.status, 'succeeded')
+for (const definition of lingeringCapDefinitions) {
+  await lingeringCapScheduler.setEnabled(definition.id, false, managementContext())
 }
 
 // Disable aborts a running attempt and records cancellation, then also cancels

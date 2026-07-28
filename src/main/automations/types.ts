@@ -135,7 +135,8 @@ export type AutomationStore = {
     order?: 'oldest' | 'recent'
     limit: number
   }): AutomationRun[]
-  listRunnableRuns(now: number, limit: number): AutomationRun[]
+  listRunnableAutomationIds(now: number, limit: number): string[]
+  listRunnableRunsForAutomation(automationId: string, now: number, limit: number): AutomationRun[]
   countStartsSince(automationId: string, since: number): number
   countStartsSinceMany(
     requests: readonly { automationId: string; since: number }[]

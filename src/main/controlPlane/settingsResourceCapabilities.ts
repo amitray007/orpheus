@@ -436,7 +436,10 @@ export function createSettingsResourceCapabilities(service: SettingsResourceServ
         }
       }
     },
-    allowedSurfaces: READ_SURFACES,
+    // Project-file discovery is synchronous today. Keep it available to an
+    // explicit MCP request, but do not let a scheduled automation repeatedly
+    // scan the main-process filesystem on a cold cache.
+    allowedSurfaces: MCP_SURFACE,
     permission: 'resources.read',
     scope: { kind: 'project', inputField: 'projectId' },
     risk: { tier: 0, label: 'read' },
