@@ -188,8 +188,8 @@ layout/terminal target. A renderer loss after a native effect returns a
 
 The focused Workbench/pane lifecycle verifier, node and web typechecks, and the
 aggregate agentic regression suite pass for this source. The inventory tuple is
-48 registered, 48 MCP, 48 default-exposed, 48 runtime-visible, and 2
-automation-eligible operations. Packaged-live validation confirmed
+48 registered, 48 MCP, 48 default-exposed, 48 runtime-visible, and 1
+automation-eligible operation. Packaged-live validation confirmed
 Retina-correct terminal scale, colored output, direct observation through the
 returned target, exact deletion, post-delete `not_found`, and preservation of
 the workspace Claude terminal.

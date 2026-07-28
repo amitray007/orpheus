@@ -83,10 +83,11 @@ authoritative sources produce a stable `unavailable` result.
 ## Identity and policy
 
 MCP access to all three operations requires a valid Phase 2 runtime lease.
-The two Tier 0 reads additionally accept a server-resolved automation binding;
-the workspace patch remains MCP-only. Project metadata results use a
-five-second, 128-entry bounded cache keyed by project and requested kinds, so
-repeated reads do not continuously rescan project files.
+Only `settings.getEffective` additionally accepts a server-resolved automation
+binding. `resources.listProjectMetadata` and the workspace patch remain
+MCP-only. Project metadata results use a five-second cache keyed by project and
+requested kinds, bounded to 32 entries and 2 MiB total, so repeated MCP reads
+do not continuously rescan project files or retain unbounded metadata.
 
 - Reads may target the bound workspace/project or an explicitly named
   same-project workspace/project.
@@ -98,8 +99,9 @@ repeated reads do not continuously rescan project files.
   MCP identity or authority.
 - Current valid, main-observed live runtimes receive the Phase 6 permissions.
   Invalid/stale identity and disabled Agent Tools exposure fail closed.
-- Main's automation policy grants only the two effect-free reads, at Tier 0,
-  for the exact existing workspace/project scope. It never grants app scope or
+- Main's automation policy grants only the effect-free
+  `settings.getEffective` read, at Tier 0, for the exact existing workspace
+  scope. It never grants app scope, resource discovery, or
   `settings.patchWorkspace`.
 
 The permission vocabulary is:
@@ -188,8 +190,8 @@ Deterministic verification must cover:
 - absence of every excluded field from schemas and results;
 - recursive audit redaction and secret-pattern filtering;
 - stable redacted errors and Phase 2/3 registry regressions.
-- automation discovery/idempotency pairing, exact-scope default grants,
-  cross-project denial, and workspace-patch exclusion.
+- automation discovery/idempotency pairing, the exact-workspace default grant,
+  and resource-discovery/workspace-patch exclusion.
 
 The historical packaged integration batch verified then-injected exact scoped managed-MCP discovery,
 `settings.getEffective`, sanitized `resources.listProjectMetadata`, and a

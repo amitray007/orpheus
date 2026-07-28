@@ -291,7 +291,7 @@ exposure.
 Before the automation-management descriptors landed on 2026-07-28, the
 all-enabled deterministic snapshot contained 37 of 37 MCP-eligible descriptors;
 the current harness snapshot reports 48 registered, 48 MCP, 48
-default-exposed, 48 runtime-visible, and 2 automation-eligible operations.
+default-exposed, 48 runtime-visible, and 1 automation-eligible operation.
 These counts are dated evidence, not a normative catalog contract.
 
 The current vocabulary also includes `automations.manage`. Its nine
@@ -309,10 +309,10 @@ only reduce exposure.
 
 Automation authority is separate from runtime authority. Definitions cannot
 grant themselves permissions. Main's fixed automation source permits only
-`settings.getEffective` and `resources.listProjectMetadata`, both effect-free
-Tier 0 queries with natural idempotency, against a server-resolved exact
-workspace/project scope. Metadata scans use a five-second, 128-entry bounded
-cache. App scope, mutations, and every other descriptor fail closed.
+`settings.getEffective`, an effect-free Tier 0 query with natural idempotency,
+against a server-resolved exact workspace scope. Project resource discovery is
+MCP-only and uses a five-second metadata cache bounded to 32 entries and 2 MiB
+total. App/project scope, mutations, and every other descriptor fail closed.
 
 The retired Phase 8 QA command credential was fixture authentication, never a
 runtime or automation grant. No current command-server action accepts it.

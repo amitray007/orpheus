@@ -31,7 +31,7 @@ deprecation, or compatibility-removal phase in this plan.
 - Before the automation-management descriptors landed, the all-enabled
   deterministic catalog snapshot contained 37 of 37 MCP-eligible descriptors.
   The post-pane-lifecycle 2026-07-28 harness snapshot reports 48 registered, 48
-  MCP, 48 default-exposed, 48 runtime-visible, and 2 automation-eligible
+  MCP, 48 default-exposed, 48 runtime-visible, and 1 automation-eligible
   operations. These dated counts are verification evidence,
   not a normative catalog contract.
 - `reviews.setResolved` is now a scoped Tier 2 MCP mutation with target
@@ -143,7 +143,7 @@ snapshot.
 | Review/workbench        | Diff viewing and local review comments exist                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `src/main/gitDiff.ts`, `reviewStore.ts`, `ipc/reviews.ts`, `src/renderer/src/components/workbench/`                                                                                                                                                  |
 | Panes                   | Persisted panel/layout/terminal hierarchy and native surfaces exist. Two semantic operations constrain self-workspace creation and exact-owner single-layout deletion; deterministic validation and the positive packaged create/observe/delete path pass.                                                                                                                                                                                                                                                                  | `src/main/paneStore.ts`, `src/main/controlPlane/workbenchCapabilities.ts`, `src/renderer/src/components/panes/`                                                                                                                                      |
 | MCP                     | A bundled stdio bridge and runtime-lease-scoped `/control` protocol are implemented. Valid current managed runtimes receive the registered permission vocabulary; Settings can only suppress MCP exposure. Revisioned `tools/listChanged` refresh updates connected bridges without restart                                                                                                                                                                                                                                 | `packages/orpheus-mcp/`, `src/main/controlPlane/`, `src/main/commandServer.ts`                                                                                                                                                                       |
-| Automations             | Durable bounded schedules/events invoke the canonical registry in-process. Two effect-free Phase 6 reads retain fixed Tier 0 exact-scope automation grants; project metadata uses a five-second, 128-entry bounded cache to avoid repeated file scans. Renderer IPC/preload, Settings → Automations, and nine MCP-only exact-bound-workspace operations support definitions, state, runs, and manual retry generations; MCP management is never automation-eligible. A packaged no-op definition Save retained Workspace scope and advanced revision; material field edits and remaining management paths are pending. | `src/main/automations/`, `src/main/ipc/automations.ts`, `src/main/controlPlane/automationManagementCapabilities.ts`, `src/main/controlPlane/safeAutomationGrants.ts`, `src/renderer/src/components/dashboard/settings/OrpheusAutomationsSection.tsx` |
+| Automations             | Durable bounded schedules/events invoke the canonical registry in-process. The effect-free `settings.getEffective` read retains a fixed Tier 0 exact-workspace automation grant. Project resource metadata is MCP-only; its five-second cache is bounded to 32 entries and 2 MiB total to limit repeated synchronous file scans and retained memory. Renderer IPC/preload, Settings → Automations, and nine MCP-only exact-bound-workspace operations support definitions, state, runs, and manual retry generations; MCP management is never automation-eligible. A packaged no-op definition Save retained Workspace scope and advanced revision; material field edits and remaining management paths are pending. | `src/main/automations/`, `src/main/ipc/automations.ts`, `src/main/controlPlane/automationManagementCapabilities.ts`, `src/main/controlPlane/safeAutomationGrants.ts`, `src/renderer/src/components/dashboard/settings/OrpheusAutomationsSection.tsx` |
 
 The control registry is now authoritative for the Phase 1 review proof, the
 Phase 2 managed read catalog, and Phase 3 workspace orchestration. Split
@@ -319,8 +319,9 @@ the native UI adapter. Automations invoke the core in-process.
    triggers, semantic invocations, policy, budgets, retries, idempotency keys,
    run history, and a transactionally coupled internal-event outbox; execute
    through the same control core. Main has one durable workspace-completion
-   event and fixed Tier 0 grants for two Phase 6 reads. Project resource
-   metadata scans are amortized by a five-second, 128-entry bounded cache.
+   event and a fixed Tier 0 grant for the `settings.getEffective` Phase 6 read.
+   Project resource metadata remains MCP-only; its five-second cache is bounded
+   to 32 entries and 2 MiB total.
    Packaged validation
    covered negative QA authentication/action parsing, schedule and
    workspace-completion event runs, duplicate-create reuse, correlated

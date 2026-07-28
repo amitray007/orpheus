@@ -171,8 +171,8 @@ only.
 The two dedicated lifecycle operations above were added after that historical
 batch. The focused Workbench/pane lifecycle verifier, node and web typechecks,
 and aggregate agentic harness pass. The aggregate harness reports 48
-registered, 48 MCP, 48 default-exposed, 48 runtime-visible, and 2
-automation-eligible operations.
+registered, 48 MCP, 48 default-exposed, 48 runtime-visible, and 1
+automation-eligible operation.
 
 On 2026-07-28, a fresh packaged build exposed all 48 tools. Two
 `panes.createWorkspaceTerminal` calls produced visible QA layouts; one rendered

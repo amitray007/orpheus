@@ -114,11 +114,10 @@ type AutomationScope =
 
 Definitions cannot contain grants. A server-owned grant source resolves from
 the automation id, already validated params, requested scope, and canonical
-descriptor. Main's fixed default policy grants only the two effect-free Phase 6
-reads `settings.getEffective` and `resources.listProjectMetadata`, at Tier 0
-and for the exact existing workspace/project scope. Metadata scans are
-amortized by a five-second, 128-entry bounded cache. App scope, mutations, and
-all other operations fail closed.
+descriptor. Main's fixed default policy grants only the effect-free Phase 6
+read `settings.getEffective`, at Tier 0 and for an exact existing workspace
+scope. Project resource discovery is MCP-only. App/project scope, mutations,
+and all other operations fail closed.
 Creation/update, enable, scheduler reconciliation, and immediately-before-
 invoke checks all re-resolve the grant. Absence of a grant fails closed.
 
@@ -249,10 +248,10 @@ widening authority. This MCP surface is source/deterministic evidence only until
 a fresh packaged managed-runtime pass exercises it.
 
 The current agentic harness snapshot reports 48 registered, 48 MCP, 48
-default-exposed, 48 runtime-visible, and 2 automation-eligible operations. That
+default-exposed, 48 runtime-visible, and 1 automation-eligible operation. That
 count is dated verification evidence rather than a stable catalog contract;
-the two automation-eligible operations remain the fixed, effect-free Phase 6
-reads.
+the automation-eligible operation remains the fixed, effect-free Phase 6
+settings read.
 
 The authenticated command-socket fixture used by the historical packaged batch
 has been removed from the runtime now that production Settings and MCP
@@ -280,8 +279,8 @@ Deterministic verification covers:
 - no replay of terminal success;
 - automation principal/context propagation;
 - audit/run correlation and recursive result redaction;
-- real Phase 6 automation discovery, natural idempotency, exact-scope grants,
-  cross-project denial, and mutation exclusion;
+- real Phase 6 automation discovery, natural idempotency, the exact-workspace
+  grant, and exclusion of resource discovery and mutations;
 - production management create/update/enable/delete/list/retry policy, revision,
   audit, and ownership behavior;
 - transactional workspace-event persistence, post-commit delivery, and

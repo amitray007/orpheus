@@ -46,7 +46,7 @@ advertise `tools.listChanged`, long-poll for revision changes, refresh
 not require a workspace or MCP restart. Before the automation-management
 descriptors landed, the all-enabled deterministic snapshot contained 37 of 37
 MCP-eligible descriptors. The current harness snapshot reports 48 registered,
-48 MCP, 48 default-exposed, 48 runtime-visible, and 2 automation-eligible
+48 MCP, 48 default-exposed, 48 runtime-visible, and 1 automation-eligible
 operations. These dated counts are
 verification evidence, not a stable catalog contract.
 
@@ -337,9 +337,11 @@ registry:
 The historical Phase 6 harness injected exact grants. Current valid managed
 runtimes receive Phase 6 permissions by default, while invalid runtime identity
 and disabled Agent Tools exposure remain fail-closed.
-Automation eligibility is narrower: only `settings.getEffective` and
-`resources.listProjectMetadata` declare natural idempotency and receive fixed
-Tier 0, exact-scope main grants. The workspace patch remains ineligible.
+Automation eligibility is narrower: only `settings.getEffective` declares the
+automation surface and receives a fixed Tier 0, exact-workspace main grant.
+`resources.listProjectMetadata` and the workspace patch remain MCP-only.
+Project resource metadata's five-second cache is bounded to 32 entries and
+2 MiB total.
 Global and project writes, permission/shell/environment settings, user/global
 or cross-project resources, resource contents and mutations, and memory files
 remain excluded.
@@ -474,8 +476,8 @@ rewriting these results.
 | Audit/log redaction                                   | Dedicated redaction, exhaustive legacy purge, hostile-input, export, and operation-audit checks pass                                | Packaged main logs emitted structural counts/key names rather than values; automation runs carried audit correlation; Gitleaks found no staged-diff leaks    | Current source and run evidence passed                                                                      |
 
 The blocking `test:agentic` aggregate builds the CLI and MCP transports once,
-then runs every focused control-plane, identity, workspace, review, Workbench,
-pane, terminal, settings, automation, redaction, and MCP bridge verifier. The
+then runs all 28 focused control-plane, identity, workspace, review, Workbench,
+pane, terminal, settings, automation, redaction, and MCP bridge verifiers. The
 legacy `test:agentic-integration` name aliases the same complete suite. It
 complements `bun run check` and the packaged checklist below.
 
@@ -502,8 +504,8 @@ historical evidence above.
 - [x] Run the dedicated pane provisioning/deletion store, policy, receipt,
       redaction, and renderer reconciliation harnesses.
 - [x] Repeat the aggregate agentic integration harness with the two descriptors
-      registered; it reports 48 registered/MCP/default/runtime-visible and 2
-      automation-eligible operations.
+      registered; it reports 48 registered/MCP/default/runtime-visible and 1
+      automation-eligible operation.
 - [x] Repeat the full repository check with the two descriptors registered.
 - [x] Package and launch the exact source; confirm 48 managed MCP tools.
 - [x] Exercise two positive self-workspace pane create flows, normal Retina
