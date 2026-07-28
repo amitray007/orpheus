@@ -58,6 +58,7 @@ import {
 } from '@/lib/panesSelectionStore'
 import { bumpPanesRefresh } from '@/lib/panesRefreshStore'
 import { useIsLayoutLive } from '@/lib/paneLiveLayoutsStore'
+import { deleteLayoutAndReconcile } from './paneLayoutDeletion'
 
 const ADD_LAYOUT_LABEL = 'Add Layout'
 
@@ -712,7 +713,7 @@ export function PanelsSection({
   // Panes view stuck showing the just-deleted layout) — delete a layout,
   // confirm first (destructive, FK CASCADE takes its terminals with it).
   //
-  // Two things make this robust against the bug this handler used to have:
+  // Three things make this robust against the bug this handler used to have:
   //
   // 1. Reads the CURRENT selection via getPanesSelection() rather than the
   //    `activeLayoutId` destructured from usePanesSelection() at render
@@ -721,31 +722,37 @@ export function PanelsSection({
   //    (the user could switch layouts while the confirm dialog is up) — so
   //    checking the LIVE selection at the moment of deletion is the only
   //    way to reliably know whether the just-deleted layout was active.
-  // 2. Re-lists the panel's layouts directly from the source of truth
+  // 2. Invalidates PanesView's independent snapshot immediately after the
+  //    source deletion, before clearing or replacing the shared active
+  //    layout selection. Otherwise an active final-layout delete can expose
+  //    activeLayoutId=null while PanesView still considers its stale list
+  //    ready, allowing its default-selection effect to re-seed the deleted
+  //    id.
+  // 3. Re-lists the panel's layouts directly from the source of truth
   //    (window.api.panes.listLayouts) rather than trusting the
   //    in-memory layoutsByPanel list, which could itself be stale. If the
   //    deleted layout was active, prefer selecting a SIBLING layout that
   //    still exists in this panel (nicer UX than dropping to the empty
   //    state) — else fall back to null.
   //
-  // bumpPanesRefresh() at the end is the other half of the fix: it forces
-  // usePanesData (PanesView's data hook) to refetch too, so its `layouts`
-  // list also drops the deleted row and PanesView's seeding effect never
-  // sees a stale list that still contains it.
   function handleDeleteLayout(panel: PanePanel, layout: PaneLayout): void {
     void (async () => {
       const confirmed = await confirmDeleteLayout(layout)
       if (!confirmed) return
       try {
-        await window.api.panes.deleteLayout(layout.id)
-        loadLayouts(panel.id)
-        const wasActive = getPanesSelection().activeLayoutId === layout.id
-        if (wasActive) {
-          const remaining = await window.api.panes.listLayouts(panel.id)
-          const sibling = remaining.find((l) => l.id !== layout.id)
-          setActiveLayout(sibling ? sibling.id : null)
-        }
-        bumpPanesRefresh()
+        const remaining = await deleteLayoutAndReconcile({
+          layoutId: layout.id,
+          deleteLayout: window.api.panes.deleteLayout,
+          invalidatePanesSnapshot: bumpPanesRefresh,
+          listRemainingLayouts: () => window.api.panes.listLayouts(panel.id),
+          getActiveLayoutId: () => getPanesSelection().activeLayoutId,
+          selectLayout: setActiveLayout
+        })
+        setLayoutsByPanel((prev) => {
+          const next = new Map(prev)
+          next.set(panel.id, remaining)
+          return next
+        })
       } catch (err) {
         console.error('[PanelsSection] deleteLayout failed', err, layout.id)
       }
