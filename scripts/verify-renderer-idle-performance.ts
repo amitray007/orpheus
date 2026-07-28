@@ -13,6 +13,10 @@ const paneCell = await readFile(
   new URL('../src/renderer/src/components/panes/PaneCell.tsx', import.meta.url),
   'utf8'
 )
+const pageVisibility = await readFile(
+  new URL('../src/renderer/src/lib/usePageVisibility.ts', import.meta.url),
+  'utf8'
+)
 
 assert.match(
   dashboard,
@@ -26,8 +30,43 @@ assert.match(
 )
 assert.match(
   panelsSection,
-  /animateRunningStatus=\{animateRunningStatus\}/,
-  'the off-view animation policy must reach each layout row'
+  /const shouldAnimateRunningStatus = animateRunningStatus && pageVisible/,
+  'running status animation must also require the renderer page to be visible'
+)
+assert.match(
+  panelsSection,
+  /const pageVisible = usePageVisibility\(\)/,
+  'the Panes sidebar must subscribe to foreground page visibility'
+)
+assert.match(
+  panelsSection,
+  /animateRunningStatus=\{shouldAnimateRunningStatus\}/,
+  'the route-and-page visibility policy must reach each layout row'
+)
+assert.match(
+  pageVisibility,
+  /document\.addEventListener\('visibilitychange', onVisibilityChange\)/,
+  'the page visibility hook must subscribe to Chromium visibility changes'
+)
+assert.match(
+  pageVisibility,
+  /document\.removeEventListener\('visibilitychange', onVisibilityChange\)/,
+  'the page visibility hook must remove its visibility listener during cleanup'
+)
+assert.match(
+  pageVisibility,
+  /window\.addEventListener\('focus', onVisibilityChange\)[\s\S]*window\.addEventListener\('blur', onVisibilityChange\)/,
+  'the page visibility hook must react when the Electron window enters or leaves the foreground'
+)
+assert.match(
+  pageVisibility,
+  /window\.removeEventListener\('focus', onVisibilityChange\)[\s\S]*window\.removeEventListener\('blur', onVisibilityChange\)/,
+  'the page visibility hook must remove both window listeners during cleanup'
+)
+assert.match(
+  pageVisibility,
+  /document\.visibilityState === 'visible' && document\.hasFocus\(\)/,
+  'the page visibility hook must require both page visibility and a foreground window'
 )
 
 const teardownMarker = paneCell.match(

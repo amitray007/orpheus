@@ -58,6 +58,7 @@ import {
 } from '@/lib/panesSelectionStore'
 import { bumpPanesRefresh } from '@/lib/panesRefreshStore'
 import { useIsLayoutLive } from '@/lib/paneLiveLayoutsStore'
+import { usePageVisibility } from '@/lib/usePageVisibility'
 import { deleteLayoutAndReconcile } from './paneLayoutDeletion'
 
 const ADD_LAYOUT_LABEL = 'Add Layout'
@@ -596,6 +597,8 @@ interface PanelsSectionProps {
    * Running layouts remain visibly marked outside the Panes destination, but
    * their 80ms braille ticker is disabled there so a retained sidebar does not
    * keep the renderer and GPU active while Home or Settings is otherwise idle.
+   * PanelsSection also pauses the ticker while this window is hidden or
+   * unfocused; layout liveness and background pane processes remain unchanged.
    */
   animateRunningStatus?: boolean
   /** Navigate the main content back to Panes when this retained tree is used
@@ -615,6 +618,8 @@ export function PanelsSection({
   const [renamingPanelId, setRenamingPanelId] = useState<string | null>(null)
   const [renamingLayoutId, setRenamingLayoutId] = useState<string | null>(null)
   const { activePanelId, activeLayoutId } = usePanesSelection()
+  const pageVisible = usePageVisibility()
+  const shouldAnimateRunningStatus = animateRunningStatus && pageVisible
 
   const loadPanels = useCallback(() => {
     window.api.panes
@@ -876,7 +881,7 @@ export function PanelsSection({
                         key={layout.id}
                         layout={layout}
                         active={activePanelId === panel.id && activeLayoutId === layout.id}
-                        animateRunningStatus={animateRunningStatus}
+                        animateRunningStatus={shouldAnimateRunningStatus}
                         renaming={renamingLayoutId === layout.id}
                         onSelect={() => {
                           onActivate()
