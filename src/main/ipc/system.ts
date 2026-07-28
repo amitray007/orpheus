@@ -16,7 +16,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import type { HealthReport, AppUiState, DiagRow } from '../../shared/types'
-import { getLiveSessionState } from '../sessionState'
+import { getLiveSessionCount } from '../sessionState'
 import { countManagedHooks } from '../orpheusNotify'
 import { getUserShellPath } from '../shellHelpers'
 import { openDiagConsole } from '../diagConsoleWindow'
@@ -80,7 +80,7 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
     try {
       const sessionDir = path.join(os.homedir(), '.claude', 'sessions')
       await fs.promises.access(sessionDir, fs.constants.R_OK)
-      const liveCount = getLiveSessionState().size
+      const liveCount = getLiveSessionCount()
       sessionRegistry = { status: 'ok', detail: `${liveCount} live session(s)` }
     } catch {
       sessionRegistry = { status: 'warn', detail: 'session directory not found' }

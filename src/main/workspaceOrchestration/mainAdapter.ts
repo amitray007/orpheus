@@ -63,6 +63,7 @@ export type MainWorkspaceOrchestrationDeps = {
 export type MainWorkspaceOrchestration = {
   service: WorkspaceOrchestrationService
   waits: MainWorkspaceWaitEngine
+  runtime: WorkspaceRuntimeCoordinator
 }
 
 function workspaceRevision(workspace: {
@@ -343,5 +344,5 @@ export function createMainWorkspaceOrchestration(
     maxLineageDepth: settings.maxWorkspaceDepth ?? 3,
     maxChildrenPerWorkspace: settings.maxWorkspaceChildren ?? 10
   })
-  return { service, waits }
+  return { service, waits, runtime }
 }

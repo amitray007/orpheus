@@ -2,7 +2,7 @@ import { app } from 'electron'
 import * as path from 'node:path'
 import type { ReadCapabilityHandlers } from '../controlPlane/types'
 import type { RuntimeLeaseRegistry } from '../controlPlane/runtimeLeases'
-import { getLiveSessionState, getWorkspaceFileInfo } from '../sessionState'
+import { getLiveSession, getWorkspaceFileInfo } from '../sessionState'
 import { getWorkspaceActivity, onWorkspaceStatusChange } from '../orpheusNotify'
 import { getLayout, listTerminals } from '../paneStore'
 import { getAddonRef } from '../actions/addonSurface'
@@ -67,7 +67,7 @@ function sessionInfo(
       reason: 'Workspace has no Claude conversation.'
     }
   }
-  const live = getLiveSessionState().get(workspace.claudeSessionId)
+  const live = getLiveSession(workspace.claudeSessionId)
   const file = getWorkspaceFileInfo(workspaceId)
   if (live == null || file.availability === 'unavailable') {
     return {

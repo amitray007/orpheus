@@ -6,12 +6,12 @@ export const MAX_EVENTS_PER_RESPONSE = 100
 
 type Waiter = {
   afterRevision: number
-  terminalIds: ReadonlySet<string> | null
+  matchesTerminal: (terminalId: string) => boolean
   resolve: () => void
   timeout: NodeJS.Timeout
 }
 
-function matches(
+function matchesSet(
   event: TerminalObservationEvent,
   terminalIds: ReadonlySet<string> | null
 ): boolean {
@@ -22,6 +22,7 @@ export class TerminalObservationJournal {
   private revision = 0
   private readonly events: TerminalObservationEvent[] = []
   private readonly waiters = new Set<Waiter>()
+  private readonly lastStates = new Map<string, string>()
   private disposed = false
 
   constructor(
@@ -65,11 +66,36 @@ export class TerminalObservationJournal {
       this.events.splice(0, this.events.length - this.maxEvents)
     }
     for (const waiter of [...this.waiters]) {
-      if (event.revision > waiter.afterRevision && matches(event, waiter.terminalIds)) {
+      if (event.revision > waiter.afterRevision && waiter.matchesTerminal(event.terminalId)) {
         this.finishWaiter(waiter)
       }
     }
     return event
+  }
+
+  /**
+   * Appends only when the terminal/kind/source state actually changed. Runtime
+   * session reconciliation is intentionally frequent; suppressing identical
+   * observations avoids filling the bounded journal and waking long-poll
+   * subscribers for no semantic change.
+   */
+  appendDistinct(
+    terminalId: string,
+    kind: TerminalObservationEvent['kind'],
+    source: TerminalObservationEvent['source'],
+    state: Record<string, unknown>
+  ): TerminalObservationEvent | null {
+    const key = `${terminalId}\u0000${kind}\u0000${source}`
+    const fingerprint = JSON.stringify(state)
+    if (this.lastStates.get(key) === fingerprint) return null
+    this.lastStates.delete(key)
+    this.lastStates.set(key, fingerprint)
+    while (this.lastStates.size > this.maxEvents) {
+      const oldest = this.lastStates.keys().next().value
+      if (oldest == null) break
+      this.lastStates.delete(oldest)
+    }
+    return this.append(terminalId, kind, source, state)
   }
 
   read(
@@ -90,7 +116,7 @@ export class TerminalObservationJournal {
     const events = overflowed
       ? []
       : this.events
-          .filter((event) => event.revision > afterRevision && matches(event, terminalIds))
+          .filter((event) => event.revision > afterRevision && matchesSet(event, terminalIds))
           .slice(0, boundedMax)
     const cursor =
       events.length === boundedMax
@@ -101,19 +127,31 @@ export class TerminalObservationJournal {
 
   async waitForChange(
     afterRevision: number,
-    terminalIds: ReadonlySet<string> | null,
+    terminalIds: ReadonlySet<string> | null | ((terminalId: string) => boolean),
     timeoutMs: number
   ): Promise<'changed' | 'timeout' | 'capacity'> {
     if (this.disposed) return 'timeout'
-    const immediate = this.read(afterRevision, terminalIds, 1)
-    if (immediate.overflowed || immediate.events.length > 0) return 'changed'
+    const matchesTerminal =
+      typeof terminalIds === 'function'
+        ? terminalIds
+        : (terminalId: string): boolean => terminalIds == null || terminalIds.has(terminalId)
+    const oldestRevision = this.oldestRevision()
+    if (
+      afterRevision > this.currentRevision() ||
+      (this.events.length > 0 && afterRevision < Math.max(0, oldestRevision - 1)) ||
+      this.events.some(
+        (event) => event.revision > afterRevision && matchesTerminal(event.terminalId)
+      )
+    ) {
+      return 'changed'
+    }
     if (this.waiters.size >= this.maxWaiters) return 'capacity'
 
     return new Promise((resolve) => {
       let settled = false
       const waiter: Waiter = {
         afterRevision,
-        terminalIds,
+        matchesTerminal,
         resolve: () => {
           if (settled) return
           settled = true
@@ -134,6 +172,7 @@ export class TerminalObservationJournal {
     this.disposed = true
     for (const waiter of [...this.waiters]) this.finishWaiter(waiter)
     this.events.length = 0
+    this.lastStates.clear()
   }
 
   private finishWaiter(waiter: Waiter): void {

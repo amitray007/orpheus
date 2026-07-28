@@ -7,6 +7,7 @@ import type {
   TrustedRuntimeBinding
 } from '../controlPlane/types'
 import type { ClaudeRuntimeBinding } from '../controlPlane/runtimeLeases'
+import type { RuntimeSessionObservation } from '../sessionState'
 import { terminalObservationError } from './errors'
 import { TerminalObservationJournal } from './journal'
 import type {
@@ -399,9 +400,11 @@ export class TerminalObservationService implements TerminalObservationHandlers {
     let wakeCursor = input.afterRevision
     while (true) {
       const remainingMs = Math.max(1, deadline - Date.now())
+      const matchesAuthorizedTerminal =
+        target == null ? this.authorizedSubscriptionMatcher(runtime, terminalIds) : terminalIds
       const wait = await this.journal.waitForChange(
         wakeCursor,
-        target == null ? null : terminalIds,
+        matchesAuthorizedTerminal,
         remainingMs
       )
       if (wait === 'capacity') {
@@ -443,7 +446,7 @@ export class TerminalObservationService implements TerminalObservationHandlers {
   }
 
   recordLifecycle(target: ResolvedTerminalTarget, phase: NativeSurfacePhase): void {
-    this.journal.append(target.terminalId, 'lifecycle', NATIVE_SURFACE_SOURCE, {
+    this.journal.appendDistinct(target.terminalId, 'lifecycle', NATIVE_SURFACE_SOURCE, {
       registered: phase !== 'none',
       phase
     })
@@ -471,28 +474,63 @@ export class TerminalObservationService implements TerminalObservationHandlers {
     this.recordLifecycle(this.resolvePane(pane), phase)
   }
 
-  recordWorkspaceSession(workspaceId: string, info: TerminalSessionInfo): void {
+  recordWorkspaceSession(
+    workspaceId: string,
+    info: TerminalSessionInfo,
+    ready = this.deps.isWorkspaceReady(workspaceId)
+  ): void {
     const workspace = this.deps.getWorkspace(workspaceId)
     if (workspace == null) return
     const metadata = sessionMetadata(info)
-    this.journal.append(
+    this.journal.appendDistinct(
       workspaceTerminalId(workspaceId),
       'runtime',
       CLAUDE_SESSION_SOURCE,
       metadata == null ? { availability: info.availability } : { ...metadata }
     )
-    this.journal.append(workspaceTerminalId(workspaceId), 'readiness', CLAUDE_SESSION_SOURCE, {
-      ready: this.deps.isWorkspaceReady(workspaceId)
-    })
+    this.journal.appendDistinct(
+      workspaceTerminalId(workspaceId),
+      'readiness',
+      CLAUDE_SESSION_SOURCE,
+      {
+        ready
+      }
+    )
   }
 
-  recordWorkspaceSessionFromSource(workspaceId: string): void {
-    this.recordWorkspaceSession(workspaceId, this.deps.getSessionInfo(workspaceId))
+  recordRuntimeSessionObservation(observation: RuntimeSessionObservation): void {
+    const session = observation.session
+    const hasConversation = observation.claudeConversationId != null
+    const status = session?.status ?? (session == null ? 'unknown' : 'starting')
+    const concrete =
+      status === 'busy' || status === 'idle' || status === 'waiting' || status === 'shell'
+    this.recordWorkspaceSession(
+      observation.workspaceId,
+      {
+        claudeConversationId: observation.claudeConversationId,
+        pid: session?.pid ?? null,
+        version: session?.version ?? null,
+        cwd: session?.cwd ?? null,
+        status,
+        waitingFor: session?.waitingFor ?? null,
+        statusUpdatedAt: session?.statusUpdatedAt ?? null,
+        availability: !hasConversation ? 'unavailable' : concrete ? 'available' : 'offline',
+        stale: hasConversation && !concrete,
+        ...(!hasConversation
+          ? { reason: 'Workspace has no Claude conversation.' }
+          : session == null
+            ? { reason: 'Claude runtime is offline.' }
+            : concrete
+              ? {}
+              : { reason: 'Claude runtime is starting.' })
+      },
+      concrete
+    )
   }
 
   recordWorkspaceActivity(workspaceId: string, activity: string): void {
     if (this.deps.getWorkspace(workspaceId) == null) return
-    this.journal.append(workspaceTerminalId(workspaceId), 'activity', LIVE, { activity })
+    this.journal.appendDistinct(workspaceTerminalId(workspaceId), 'activity', LIVE, { activity })
   }
 
   private async initialSubscription(
@@ -557,6 +595,18 @@ export class TerminalObservationService implements TerminalObservationHandlers {
   ): ReadonlySet<string> {
     const targets = target == null ? this.listAuthorizedTargets(runtime) : [target]
     return new Set(targets.slice(0, MAX_LISTED_TERMINALS).map((candidate) => candidate.terminalId))
+  }
+
+  private authorizedSubscriptionMatcher(
+    runtime: TrustedRuntimeBinding,
+    initialTerminalIds: ReadonlySet<string>
+  ): (terminalId: string) => boolean {
+    let scopedTerminalIds = initialTerminalIds
+    return (terminalId) => {
+      if (scopedTerminalIds.has(terminalId)) return true
+      scopedTerminalIds = this.subscriptionTerminalIds(runtime, null)
+      return scopedTerminalIds.has(terminalId)
+    }
   }
 
   // eslint-disable-next-line sonarjs/cognitive-complexity

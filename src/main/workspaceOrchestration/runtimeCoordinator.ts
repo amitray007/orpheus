@@ -27,6 +27,15 @@ export type RuntimeCoordinatorDeps = {
   destroyRuntime: (workspaceId: string) => void | Promise<void>
 }
 
+export type RuntimeTextResult =
+  | { ok: true }
+  | {
+      ok: false
+      stage: 'send' | 'submit'
+      code?: string
+      error?: string
+    }
+
 function mounted(phase: SurfacePhase): boolean {
   return phase === 'hidden' || phase === 'attached' || phase === 'visible'
 }
@@ -99,24 +108,50 @@ export class WorkspaceRuntimeCoordinator implements WorkspaceRuntimePort {
   }
 
   async sendText(workspaceId: string, text: string, submit: boolean): Promise<void> {
+    const result = await this.stageText(workspaceId, text, submit)
+    if (result.ok) return
+    if (result.stage === 'submit' && result.code === 'busy') return
+    throw orchestrationError(
+      result.code === 'busy' ? 'busy' : result.code === 'not_found' ? 'not_found' : 'failed',
+      result.error ??
+        (result.stage === 'send'
+          ? 'Workspace input could not be sent.'
+          : 'Workspace input could not be submitted.')
+    )
+  }
+
+  /**
+   * Shared stage/optional-submit primitive for both semantic orchestration and
+   * the legacy CLI envelope. It preserves the lower-level error stage so the
+   * CLI can retain its historical warning strings without duplicating native
+   * readiness and injection logic in index.ts.
+   */
+  async stageText(workspaceId: string, text: string, submit: boolean): Promise<RuntimeTextResult> {
+    let result: RuntimeTextResult = { ok: true }
     await this.deps.withInjectLock(workspaceId, async () => {
       const input = this.deps.sendInput(workspaceId, text)
       if (!input.ok) {
-        throw orchestrationError(
-          input.code === 'busy' ? 'busy' : input.code === 'not_found' ? 'not_found' : 'failed',
-          input.error ?? 'Workspace input could not be sent.'
-        )
+        result = {
+          ok: false,
+          stage: 'send',
+          ...(input.code == null ? {} : { code: input.code }),
+          ...(input.error == null ? {} : { error: input.error })
+        }
+        return
       }
       if (!submit) return
       await delay(SUBMIT_DELAY_MS)
       const submitted = this.deps.submit(workspaceId)
-      if (!submitted.ok && submitted.code !== 'busy') {
-        throw orchestrationError(
-          submitted.code === 'not_found' ? 'not_found' : 'failed',
-          submitted.error ?? 'Workspace input could not be submitted.'
-        )
+      if (!submitted.ok) {
+        result = {
+          ok: false,
+          stage: 'submit',
+          ...(submitted.code == null ? {} : { code: submitted.code }),
+          ...(submitted.error == null ? {} : { error: submitted.error })
+        }
       }
     })
+    return result
   }
 
   canTeardown(workspaceId: string): boolean {

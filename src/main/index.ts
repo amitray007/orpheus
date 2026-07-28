@@ -183,27 +183,11 @@ import {
 import { teardownPaneSurfaceStrict } from './workbenchControl/paneSurfaceTeardown'
 import { isCanonicalWorkspacePath } from './workbenchControl/pathSafety'
 import { createControlAuditStore } from './controlPlane/controlAudit'
+import { invokeControl, listControl } from './controlPlane'
 import {
-  AutomationManagementService,
-  bootControlPlane,
-  configurePhase2ControlPlane,
-  describeRegisteredControl,
-  invokeControl,
-  listControl,
-  listRegisteredControl,
-  validateRegisteredControlInput
-} from './controlPlane'
-import { createAutomationRuntime, type AutomationScheduler } from './automations'
-import {
-  capturePhase8QaConfig,
-  createPhase8QaController,
-  type Phase8QaController
-} from './automations/phase8Qa'
-import {
-  wireWorkspaceAutomationEvents,
-  WORKSPACE_COMPLETED_EVENT
-} from './automations/workspaceEvents'
-import { createSafeAutomationGrantSource } from './controlPlane/safeAutomationGrants'
+  startMainControlPlaneLifecycle,
+  type MainControlPlaneLifecycle
+} from './controlPlane/mainLifecycle'
 import { createTrustedRuntimeReadPolicy } from './controlPlane/readPolicy'
 import { createMainReadHandlers } from './controlPlane/mainReadHandlers'
 import { createMainSettingsResourceService } from './controlPlane/mainSettingsResourceService'
@@ -215,8 +199,6 @@ import {
 } from './workspaceOrchestration'
 import { RuntimeControlGrantPolicy } from './controlPlane/runtimeGrants'
 import { createRuntimeResourceScopeSource } from './controlPlane/runtimeResourceScope'
-import { ControlToolExposureStore } from './controlPlane/controlToolExposure'
-import { createPhase456QaGrantSource } from './controlPlane/phase456QaGrant'
 import {
   WorkspaceOpenRequestQueue,
   type WorkspaceOpenRequest
@@ -234,8 +216,6 @@ import { registerProjectsIpc } from './ipc/projects'
 import { registerWorkspacesIpc } from './ipc/workspaces'
 import { registerActionsIpc } from './ipc/actions'
 import { registerOverlayIpc } from './ipc/overlay'
-import { registerControlToolsIpc } from './ipc/controlTools'
-import { registerAutomationsIpc } from './ipc/automations'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
 import { WorkspaceControlAdapter } from './workspaceControlAdapter'
@@ -259,18 +239,8 @@ const runtimeLeases = new RuntimeLeaseRegistry()
 let workspaceOrchestrationService: WorkspaceOrchestrationService | null = null
 let terminalObservationService: TerminalObservationService | null = null
 let terminalObservationCleanup: (() => void) | null = null
-let automationScheduler: AutomationScheduler | null = null
-let automationEventCleanup: (() => void) | null = null
-let phase8QaController: Phase8QaController | undefined
+let controlPlaneLifecycle: MainControlPlaneLifecycle | null = null
 let unmanagedMountWarningEmitted = false
-
-// Capture QA-only process configuration once, then scrub it before any native
-// terminal can inherit the main-process environment.
-const phase456QaFlagValue = process.env['ORPHEUS_PHASE456_QA']
-const phase456QaScopeValue = process.env['ORPHEUS_PHASE456_QA_SCOPE']
-delete process.env['ORPHEUS_PHASE456_QA']
-delete process.env['ORPHEUS_PHASE456_QA_SCOPE']
-const phase8QaConfig = capturePhase8QaConfig(process.env, APP_NAME)
 
 setRuntimeSessionObserver(({ workspaceId, claudeConversationId, session }) => {
   const binding = runtimeLeases.getBySurfaceId(workspaceId)
@@ -298,7 +268,11 @@ setRuntimeSessionObserver(({ workspaceId, claudeConversationId, session }) => {
       })
     }
   }
-  terminalObservationService?.recordWorkspaceSessionFromSource(workspaceId)
+  terminalObservationService?.recordRuntimeSessionObservation({
+    workspaceId,
+    claudeConversationId,
+    session
+  })
 })
 
 /**
@@ -2695,22 +2669,10 @@ if (!app.requestSingleInstanceLock()) {
         destroyWorkspaceRuntime
       })
       workspaceOrchestrationService = workspaceOrchestration.service
-      const runtimeControlGrants = new RuntimeControlGrantPolicy(
-        createPhase456QaGrantSource({
-          flagValue: phase456QaFlagValue,
-          scopeValue: phase456QaScopeValue,
-          appName: APP_NAME,
-          getRuntimeBinding: (runtimeId) => runtimeLeases.getByRuntimeId(runtimeId),
-          getWorkspaceProjectId: (workspaceId) => getWorkspace(workspaceId)?.projectId ?? null,
-          hasPaneTerminal: (layoutId, terminalId) =>
-            getLayout(layoutId) != null &&
-            listTerminals(layoutId).some((terminal) => terminal.id === terminalId)
-        }),
-        {
-          getCurrentBinding: (runtimeId) => runtimeLeases.getByRuntimeId(runtimeId),
-          getResourceScope: createRuntimeResourceScopeSource(getDb())
-        }
-      )
+      const runtimeControlGrants = new RuntimeControlGrantPolicy(undefined, {
+        getCurrentBinding: (runtimeId) => runtimeLeases.getByRuntimeId(runtimeId),
+        getResourceScope: createRuntimeResourceScopeSource(getDb())
+      })
       const workbenchControlAudit = createControlAuditStore(getDb())
       const workbenchControl = new WorkbenchControlService({
         renderer: {
@@ -2861,22 +2823,8 @@ if (!app.requestSingleInstanceLock()) {
       terminalObservationService = terminalObservation.service
       terminalObservationCleanup = terminalObservation.dispose
 
-      // Boot both internal registries before renderer IPC or the deferred command
-      // server can invoke them.
-      const controlToolExposure = new ControlToolExposureStore(getDb(), listRegisteredControl)
-      const automations = createAutomationRuntime({
-        db: getDb(),
-        registry: {
-          describe: describeRegisteredControl,
-          validateInput: validateRegisteredControlInput,
-          invoke: invokeControl
-        },
-        grants: createSafeAutomationGrantSource({
-          getProject,
-          getWorkspace
-        }),
-        allowedEventTypes: new Set([WORKSPACE_COMPLETED_EVENT])
-      })
+      // Boot the control registry, durable automation runtime, IPC surfaces,
+      // scheduler, and event bridge under one paired lifecycle owner.
       const broadcastAutomationChanged = (event: AutomationChangedEvent): void => {
         const win = getMainWindow()
         if (win == null || win.isDestroyed() || win.webContents.isDestroyed()) return
@@ -2887,48 +2835,31 @@ if (!app.requestSingleInstanceLock()) {
           // the result of a mutation that has already committed.
         }
       }
-      const automationManagement = new AutomationManagementService({
-        service: automations.service,
-        listOperations: listRegisteredControl,
-        broadcastChanged: broadcastAutomationChanged
-      })
-      configurePhase2ControlPlane({
-        authorization: createTrustedRuntimeReadPolicy({
-          getWorkspaceProjectId: (workspaceId) => getWorkspace(workspaceId)?.projectId ?? null
-        }),
-        reads: mainReads,
-        workspaceOrchestration: workspaceOrchestration.service,
-        workbenchControl,
-        terminalObservation: terminalObservation.service,
-        settingsResources: createMainSettingsResourceService(),
-        toolExposure: controlToolExposure,
-        automationManagement
-      })
-      bootControlPlane()
-      registerControlToolsIpc(controlToolExposure)
-      registerAutomationsIpc(automations.service, listRegisteredControl, broadcastAutomationChanged)
-      automationScheduler = automations.scheduler
-      automationEventCleanup = wireWorkspaceAutomationEvents({
-        scheduler: automations.scheduler,
+      controlPlaneLifecycle = startMainControlPlaneLifecycle({
+        db: getDb(),
+        controlPlane: {
+          authorization: createTrustedRuntimeReadPolicy({
+            getWorkspaceProjectId: (workspaceId) => getWorkspace(workspaceId)?.projectId ?? null
+          }),
+          reads: mainReads,
+          workspaceOrchestration: workspaceOrchestration.service,
+          workbenchControl,
+          terminalObservation: terminalObservation.service,
+          settingsResources: createMainSettingsResourceService()
+        },
+        getProject,
+        getWorkspace,
+        broadcastAutomationChanged,
         subscribePersisting: onWorkspaceStatusPersisting,
         subscribeCommitted: onWorkspaceStatusCommitted,
-        onError: (error) => {
+        onAutomationEventError: (error) => {
           console.error('[automations] workspace event failed:', redactErrorForLog(error))
+        },
+        onSchedulerStartError: () => {
+          console.error('[automations] startup reconciliation failed')
         }
       })
-      phase8QaController =
-        phase8QaConfig == null
-          ? undefined
-          : createPhase8QaController({
-              service: automations.service,
-              scheduler: automations.scheduler,
-              getWorkspace,
-              targetWorkspaceId: phase8QaConfig.workspaceId,
-              principalId: phase8QaConfig.principalId
-            })
-      void automationScheduler.start().catch(() => {
-        console.error('[automations] startup reconciliation failed')
-      })
+      const controlToolExposure = controlPlaneLifecycle.toolExposure
       bootActions(workspaceControlAdapter)
 
       // Seed default footer actions on first install (idempotent: no-op if rows exist).
@@ -3065,14 +2996,6 @@ if (!app.requestSingleInstanceLock()) {
               getControlCatalogRevision: () => controlToolExposure.getCatalogRevision(),
               waitForControlCatalogRevision: (afterRevision, timeoutMs, signal) =>
                 controlToolExposure.waitForCatalogRevision(afterRevision, timeoutMs, signal),
-              ...(phase8QaController == null || phase8QaConfig == null
-                ? {}
-                : {
-                    phase8Qa: {
-                      controller: phase8QaController,
-                      credential: phase8QaConfig.credential
-                    }
-                  }),
               workspaceOrchestration: workspaceOrchestration.service,
               workspaceWaitEngine: workspaceOrchestration.waits,
               runtimeControlGrants,
@@ -3103,107 +3026,32 @@ if (!app.requestSingleInstanceLock()) {
                 focus: boolean = true,
                 submit: boolean = true
               ): Promise<string | null> => {
-                // Ask the renderer to open + mount the workspace. focus=true (default)
-                // navigates the UI there (the normal nav path); focus=false performs a
-                // background mount — the surface becomes injectable without stealing
-                // the user's view.
                 requestOpenWorkspace(workspaceId, focus)
-                // Poll with a bounded timeout (25 s) for THREE conditions:
-                //   1. getSurfacePhase() confirms an actual mounted surface (not 'none') —
-                //      QA fix #3: a brand-new workspace has no activityMap entry yet, and
-                //      getWorkspaceActivity() defaults an absent entry to 'idle', so
-                //      canInject() alone reports "injectable" on the very first poll tick,
-                //      before requestOpenWorkspace() has actually finished mounting the NSView.
-                //   2. terminalActions.canInject() — status is 'idle' or 'awaiting_input'.
-                //   3. isWorkspaceSessionReady() — CLAUDE ITSELF has booted and registered
-                //      its ~/.claude/sessions/<pid>.json (status busy/idle/waiting). For a
-                //      FRESHLY-CREATED workspace the terminal surface mounts within ~100ms,
-                //      but claude takes several seconds to launch + reach its interactive
-                //      prompt. Without this check, injection races ahead of claude's boot —
-                //      the text lands in an empty shell (or before claude's TUI is reading
-                //      input) and is silently lost: no transcript is ever written, even
-                //      though this function reports success. This was the root cause of
-                //      `ws new --task` reporting seedWarning:null while producing no
-                //      transcript and leaving status at awaiting_input forever.
-                //
-                // TIMEOUT: bumped from 10 s → 25 s. The old timeout only had to cover
-                // surface-mount time (~100ms); now the poll also waits out claude's full
-                // boot + session-registration sequence, which can take 3-8 s in practice
-                // (binary launch, MCP/tool init, session file write). 25 s leaves generous
-                // headroom over the observed worst case without hanging indefinitely.
-                const POLL_INTERVAL_MS = 300
                 const TIMEOUT_MS = 25_000
-                const deadline = Date.now() + TIMEOUT_MS
-                let injectable = false
-                while (Date.now() < deadline) {
-                  let mounted = false
-                  try {
-                    const phase = loadTerminalAddon().getSurfacePhase(workspaceId)
-                    mounted = phase === 'hidden' || phase === 'attached' || phase === 'visible'
-                  } catch {
-                    mounted = false
-                  }
-                  if (
-                    mounted &&
-                    terminalActions.canInject(workspaceId) &&
-                    isWorkspaceSessionReady(workspaceId)
-                  ) {
-                    injectable = true
-                    break
-                  }
-                  await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
-                }
-                if (!injectable) {
+                const ready = await workspaceOrchestration.runtime.waitUntilReady(
+                  workspaceId,
+                  Date.now() + TIMEOUT_MS
+                )
+                if (!ready) {
                   return (
                     `seed-timeout: claude did not become ready within ${Math.round(TIMEOUT_MS / 1000)}s; ` +
                     'task not injected. The workspace was created but claude may still be booting ' +
                     '— open it manually and paste the task text once it reaches the prompt.'
                   )
                 }
-                // Critical section: stage text and (optionally) submit it. Locked per
-                // workspace (RACE-10) so a concurrent injection into the same workspace
-                // can't interleave its own stage/submit sequence with this one — the
-                // 25s open+poll above intentionally runs OUTSIDE the lock so concurrent
-                // calls don't stack slow waits behind each other.
-                return withInjectLock(workspaceId, async (): Promise<string | null> => {
-                  const addon = loadTerminalAddon()
-                  const inputResult = terminalActions.sendInput(addon, workspaceId, taskText)
-                  if (!inputResult.ok) {
-                    return `seed-failed: could not send task text — ${inputResult.error ?? UNKNOWN_ERROR_MESSAGE}`
-                  }
-                  // submit=false: caller wants the task STAGED (typed into claude's input
-                  // box) but not sent — e.g. for review/editing before the user presses
-                  // Enter themselves. Skip the delay + submit entirely; the text sitting
-                  // in the input box is the desired end state, not an intermediate one.
-                  if (!submit) {
-                    return null
-                  }
-                  // sendInput (ghostty_surface_text) and submit (ghostty_surface_key,
-                  // a synthetic Return) are two different libghostty code paths. Claude's
-                  // full-screen TUI reads the PTY asynchronously, so it needs a moment to
-                  // ingest the just-committed text before a Return keypress is meaningful.
-                  // Firing Return microseconds later races ahead of that ingestion and the
-                  // line never actually submits — the text just sits in the input box.
-                  // SUBMIT_DELAY_MS bridges that gap: imperceptible to a human, ample for
-                  // the TUI's read loop (terminal paste-then-submit automation typically
-                  // needs 50-200ms; 150 is a safe middle).
-                  await delay(SUBMIT_DELAY_MS)
-                  const submitResult = terminalActions.submit(addon, workspaceId)
-                  if (!submitResult.ok) {
-                    // If the workspace flipped to 'busy' during the delay, that most
-                    // likely means claude already started processing the text we just
-                    // staged (canInject() — and therefore submit — goes false the moment
-                    // status leaves idle/awaiting_input). Treat this as a soft signal
-                    // rather than a hard failure: the submit may well have raced a
-                    // status flip caused by the text itself landing. Only a genuine,
-                    // non-busy failure is reported as an error.
-                    if (submitResult.code === 'busy') {
-                      return `seed-submit-busy: text was sent; workspace became busy before the explicit submit — it may have already been submitted`
-                    }
-                    return `seed-submit-failed: text was sent but submit failed — ${submitResult.error ?? UNKNOWN_ERROR_MESSAGE}`
-                  }
-                  return null
-                })
+                const result = await workspaceOrchestration.runtime.stageText(
+                  workspaceId,
+                  taskText,
+                  submit
+                )
+                if (result.ok) return null
+                if (result.stage === 'send') {
+                  return `seed-failed: could not send task text — ${result.error ?? UNKNOWN_ERROR_MESSAGE}`
+                }
+                if (result.code === 'busy') {
+                  return `seed-submit-busy: text was sent; workspace became busy before the explicit submit — it may have already been submitted`
+                }
+                return `seed-submit-failed: text was sent but submit failed — ${result.error ?? UNKNOWN_ERROR_MESSAGE}`
               },
               sendToWorkspace: async (
                 workspaceId: string,
@@ -3494,9 +3342,8 @@ if (!app.requestSingleInstanceLock()) {
     })
 
   app.on('will-quit', () => {
-    automationEventCleanup?.()
-    automationEventCleanup = null
-    automationScheduler?.stop()
+    controlPlaneLifecycle?.dispose()
+    controlPlaneLifecycle = null
     globalShortcut.unregisterAll()
     runtimeLeases.revokeAll()
     notifyServer?.close()

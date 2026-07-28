@@ -33,12 +33,6 @@ import type { WorkspaceOperationActor } from './workspaceOrchestration/types'
 import type { WorkspaceOrchestrationService } from './workspaceOrchestration/service'
 import { legacyWaitReason, type MainWorkspaceWaitEngine } from './workspaceOrchestration/waitEngine'
 import { parseCommandAction } from './commandAction'
-import {
-  PHASE8_QA_COMMAND,
-  PHASE8_QA_TOKEN_HEADER,
-  phase8QaCredentialMatches,
-  type Phase8QaController
-} from './automations/phase8Qa'
 import { redactErrorForLog, redactErrorMessage } from './logRedaction'
 
 // ---------------------------------------------------------------------------
@@ -59,8 +53,6 @@ export type CommandServerDeps = {
     timeoutMs: number,
     signal: AbortSignal
   ) => Promise<{ revision: number; changed: boolean }>
-  /** Present only in the explicitly enabled Orpheus Dev Phase 8 QA process. */
-  phase8Qa?: Readonly<{ controller: Phase8QaController; credential: string }>
   /** Destroy the libghostty surface for a workspace (no-op if not mounted). */
   destroySurface: (workspaceId: string) => void
   /**
@@ -157,6 +149,11 @@ type ControlRequest =
   | { protocolVersion: 1; op: 'invoke'; id: string; input: unknown }
 
 const CONTROL_CATALOG_WAIT_MS = 25_000
+const EMPTY_RUNTIME_RESOURCE_SCOPE = Object.freeze({
+  selfOnly: true as const,
+  layoutIds: Object.freeze([]) as readonly string[],
+  surfaceIds: Object.freeze([]) as readonly string[]
+})
 
 const COMMAND_SOCKET_PERMISSIONS = Object.freeze([
   'identity.read',
@@ -635,10 +632,6 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       )
     }
   }
-  const phase8Qa = deps.phase8Qa
-  if (phase8Qa != null) {
-    dispatch[PHASE8_QA_COMMAND] = (args) => phase8Qa.controller.execute(args)
-  }
   return dispatch
 }
 
@@ -674,17 +667,6 @@ function authenticate(req: http.IncomingMessage, res: http.ServerResponse, token
     return false
   }
   return true
-}
-
-function authenticatePhase8Qa(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  credential: string
-): boolean {
-  if (phase8QaCredentialMatches(req.headers[PHASE8_QA_TOKEN_HEADER], credential)) return true
-  res.writeHead(401, { 'Content-Type': 'application/json' })
-  res.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
-  return false
 }
 
 /**
@@ -777,7 +759,8 @@ function resolveRuntimeLease(
 
 function trustedRuntimeBinding(
   binding: ClaudeRuntimeBinding,
-  grants: RuntimeControlGrantPolicy
+  grants: RuntimeControlGrantPolicy,
+  includeResourceScope: boolean
 ): TrustedRuntimeBinding {
   return Object.freeze({
     runtimeId: binding.runtimeId,
@@ -788,15 +771,16 @@ function trustedRuntimeBinding(
     claudeConversationId: binding.claudeConversationId,
     issuedAt: binding.issuedAt,
     permissions: grants.permissionsFor(binding),
-    resourceScope: grants.scopeFor(binding)
+    resourceScope: includeResourceScope ? grants.scopeFor(binding) : EMPTY_RUNTIME_RESOURCE_SCOPE
   })
 }
 
 function runtimeControlContext(
   binding: ClaudeRuntimeBinding,
-  grants: RuntimeControlGrantPolicy
+  grants: RuntimeControlGrantPolicy,
+  includeResourceScope = true
 ): ControlContext {
-  const trustedRuntime = trustedRuntimeBinding(binding, grants)
+  const trustedRuntime = trustedRuntimeBinding(binding, grants, includeResourceScope)
   return {
     principal: { type: 'workspace-agent', id: binding.runtimeId },
     consumer: 'mcp',
@@ -1073,7 +1057,14 @@ export function startCommandServer(deps: CommandServerDeps): {
           return
         }
 
-        const context = runtimeControlContext(binding, deps.runtimeControlGrants)
+        const context = runtimeControlContext(
+          binding,
+          deps.runtimeControlGrants,
+          request.op === 'invoke' &&
+            (request.id.startsWith('workbench.') ||
+              request.id.startsWith('panes.') ||
+              request.id.startsWith('terminals.'))
+        )
         if (request.op === 'catalog') {
           const capabilities = deps.listControl(context).map(publishedControlDescription)
           writeJsonResponse(res, 200, {
@@ -1518,14 +1509,6 @@ export function startCommandServer(deps: CommandServerDeps): {
           return
         }
         const { args = {}, context = {} } = body as CmdBody
-        if (
-          action === PHASE8_QA_COMMAND &&
-          deps.phase8Qa != null &&
-          !authenticatePhase8Qa(req, res, deps.phase8Qa.credential)
-        ) {
-          return
-        }
-
         // --- Dispatch ---
         const handler = resolveCmdHandler(dispatch, action)
         if (!handler) {

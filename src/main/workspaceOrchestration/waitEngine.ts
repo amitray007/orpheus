@@ -6,6 +6,15 @@ import { WaitLifecycleGeneration } from './waitState'
 export { isWaitTerminal, legacyWaitReason } from './waitState'
 
 const UNKNOWN_DEATH_GRACE_MS = 3_000
+const RECONCILE_COALESCE_MS = 250
+const MIN_BACKSTOP_MS = 125
+const MAX_BACKSTOP_MS = 1_000
+
+type ChangeWaiter = {
+  workspaceIds: ReadonlySet<string>
+  finish: (changed: boolean) => void
+  timer: NodeJS.Timeout
+}
 
 function liveObservation(
   status: 'busy' | 'idle' | 'waiting',
@@ -28,12 +37,23 @@ function liveObservation(
  * alive and then remained absent beyond a short grace window.
  */
 export class MainWorkspaceWaitEngine implements WorkspaceWaitPort {
+  private readonly changeWaiters = new Set<ChangeWaiter>()
+  private unsubscribeStatus: (() => void) | null = null
+  private reconcileFlight: Promise<void> | null = null
+  private lastReconciledAt = 0
+
   createSession(workspaceIds: readonly string[]): WorkspaceWaitSession {
     void workspaceIds
     const generation = new WaitLifecycleGeneration()
+    let backstopMs = MIN_BACKSTOP_MS
     return {
       observe: (workspaceId) => this.observe(workspaceId, generation),
-      waitForChange: (workspaceIds, deadlineAt) => this.waitForChange(workspaceIds, deadlineAt),
+      waitForChange: async (workspaceIds, deadlineAt) => {
+        const changed = await this.waitForChange(workspaceIds, deadlineAt, backstopMs)
+        backstopMs = changed
+          ? MIN_BACKSTOP_MS
+          : Math.min(MAX_BACKSTOP_MS, Math.max(MIN_BACKSTOP_MS, backstopMs * 2))
+      },
       dispose: () => generation.dispose()
     }
   }
@@ -64,7 +84,7 @@ export class MainWorkspaceWaitEngine implements WorkspaceWaitPort {
       return { status: workspace.status }
     }
 
-    await forceReconcile()
+    await this.reconcileFreshState()
     info = getWorkspaceFileInfo(workspaceId)
     if (info.status === 'busy' || info.status === 'idle' || info.status === 'waiting') {
       generation.markAlive(workspaceId, Date.now())
@@ -83,25 +103,57 @@ export class MainWorkspaceWaitEngine implements WorkspaceWaitPort {
     return { status: 'unknown' }
   }
 
-  waitForChange(workspaceIds: readonly string[], deadlineAt: number): Promise<void> {
+  private reconcileFreshState(): Promise<void> {
+    const now = Date.now()
+    if (now - this.lastReconciledAt < RECONCILE_COALESCE_MS) return Promise.resolve()
+    if (this.reconcileFlight != null) return this.reconcileFlight
+    const flight = forceReconcile().finally(() => {
+      this.lastReconciledAt = Date.now()
+      if (this.reconcileFlight === flight) this.reconcileFlight = null
+    })
+    this.reconcileFlight = flight
+    return flight
+  }
+
+  private waitForChange(
+    workspaceIds: readonly string[],
+    deadlineAt: number,
+    backstopMs: number
+  ): Promise<boolean> {
     return new Promise((resolve) => {
       let settled = false
-      let timer: NodeJS.Timeout | null = null
-      const finish = (): void => {
+      const finish = (changed: boolean): void => {
         if (settled) return
         settled = true
-        unsubscribe()
-        if (timer != null) clearTimeout(timer)
-        resolve()
+        clearTimeout(waiter.timer)
+        this.changeWaiters.delete(waiter)
+        this.releaseStatusSubscriptionIfIdle()
+        resolve(changed)
       }
-      // Observer is installed before the next service snapshot. A short polling
-      // backstop also covers status-file changes that do not emit a DB transition.
-      const unsubscribe = onWorkspaceStatusChange((workspaceId) => {
-        if (workspaceIds.includes(workspaceId)) finish()
-      })
       const remaining = Math.max(0, deadlineAt - Date.now())
-      timer = setTimeout(finish, Math.min(250, remaining))
-      if (remaining === 0) finish()
+      const waiter: ChangeWaiter = {
+        workspaceIds: new Set(workspaceIds),
+        finish,
+        timer: setTimeout(() => finish(false), Math.min(backstopMs, remaining))
+      }
+      this.changeWaiters.add(waiter)
+      this.ensureStatusSubscription()
+      if (remaining === 0) finish(false)
     })
+  }
+
+  private ensureStatusSubscription(): void {
+    if (this.unsubscribeStatus != null) return
+    this.unsubscribeStatus = onWorkspaceStatusChange((workspaceId) => {
+      for (const waiter of [...this.changeWaiters]) {
+        if (waiter.workspaceIds.has(workspaceId)) waiter.finish(true)
+      }
+    })
+  }
+
+  private releaseStatusSubscriptionIfIdle(): void {
+    if (this.changeWaiters.size !== 0 || this.unsubscribeStatus == null) return
+    this.unsubscribeStatus()
+    this.unsubscribeStatus = null
   }
 }

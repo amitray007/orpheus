@@ -34,7 +34,9 @@ import type {
   WorkspaceOperationStatus,
   WorkspaceOrchestrationPorts,
   WorkspaceRef,
-  WorkspaceSnapshot
+  WorkspaceSnapshot,
+  WorkspaceWaitObservation,
+  WorkspaceWaitSession
 } from './types'
 
 const READ_EFFECTS: readonly string[] = []
@@ -65,6 +67,29 @@ const DEFAULT_MAX_LINEAGE_DEPTH = 32
 const DEFAULT_MAX_CHILDREN = 32
 const DEFAULT_WORKSPACE_NAME = 'New workspace'
 const RESOURCE_NOT_FOUND = 'Requested resource was not found.'
+const MAX_WAIT_OBSERVE_CONCURRENCY = 8
+
+async function observeWorkspaces(
+  workspaceIds: readonly string[],
+  observe: WorkspaceWaitSession['observe']
+): Promise<Map<string, WorkspaceWaitObservation | null>> {
+  const results = new Map<string, WorkspaceWaitObservation | null>()
+  let cursor = 0
+  const worker = async (): Promise<void> => {
+    while (cursor < workspaceIds.length) {
+      const index = cursor++
+      const workspaceId = workspaceIds[index]
+      if (workspaceId == null) continue
+      results.set(workspaceId, await observe(workspaceId))
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(MAX_WAIT_OBSERVE_CONCURRENCY, workspaceIds.length) }, async () =>
+      worker()
+    )
+  )
+  return results
+}
 
 export type OperationMeta = {
   id: string
@@ -539,8 +564,10 @@ export class WorkspaceOrchestrationService {
       try {
         while (pending.size > 0 && this.now() < deadlineAt) {
           await this.assertRuntimeStillActive(actor)
-          for (const workspaceId of [...pending]) {
-            const observation = await waitSession.observe(workspaceId)
+          const pendingIds = [...pending]
+          const observations = await observeWorkspaces(pendingIds, waitSession.observe)
+          for (const workspaceId of pendingIds) {
+            const observation = observations.get(workspaceId) ?? null
             if (observation == null) {
               results.set(workspaceId, {
                 workspaceId,
@@ -563,8 +590,10 @@ export class WorkspaceOrchestrationService {
             await waitSession.waitForChange([...pending], deadlineAt)
           }
         }
-        for (const workspaceId of pending) {
-          const observation = await waitSession.observe(workspaceId)
+        const remainingIds = [...pending]
+        const finalObservations = await observeWorkspaces(remainingIds, waitSession.observe)
+        for (const workspaceId of remainingIds) {
+          const observation = finalObservations.get(workspaceId) ?? null
           results.set(workspaceId, {
             workspaceId,
             outcome: observation == null ? 'not_found' : 'timeout',

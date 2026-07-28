@@ -67,6 +67,8 @@ export type RuntimeSessionObservation = Readonly<{
 
 /** Keyed by sessionId from inside the file. */
 let liveSessionMap = new Map<string, LiveSession>()
+/** Keyed by workspaceId, refreshed by the same bulk DB query as reconciliation. */
+let workspaceSessionIds = new Map<string, string>()
 
 /** Keyed by workspaceId → composite "fileStatus|hookStatus" key; logs only on change. */
 const lastSnapshot = new Map<string, string>()
@@ -115,45 +117,31 @@ const deadPidReported = new Set<number>()
 
 let sessionReadyHandler: ((workspaceId: string) => void) | null = null
 let runtimeSessionObserver: ((observation: RuntimeSessionObservation) => void) | null = null
+const lastRuntimeObservation = new Map<string, string>()
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Synchronously returns the raw session-file status for the workspace.
+ * Synchronously returns the latest reconciled raw session-file status.
  * Used as the fileStatusProvider veto in orpheusNotify.
  * Returns 'unknown' on any miss (no sessionId, not in map, file gone, parse error).
  */
 export function getWorkspaceFileStatusSync(
   workspaceId: string
 ): 'busy' | 'idle' | 'waiting' | 'shell' | 'unknown' {
-  let sessionId: string | null = null
-  try {
-    const row = getDb()
-      .prepare('SELECT claude_session_id FROM workspaces WHERE id = ?')
-      .get(workspaceId) as { claude_session_id: string | null } | undefined
-    sessionId = row?.claude_session_id ?? null
-  } catch {
-    return 'unknown'
-  }
+  const sessionId = workspaceSessionIds.get(workspaceId) ?? null
   if (!sessionId) return 'unknown'
 
   const session = liveSessionMap.get(sessionId)
   if (!session) return 'unknown'
   if (!isAlive(session.pid)) return 'unknown'
 
-  // Freshly read the file to avoid stale in-memory state
-  const filePath = path.join(SESSIONS_DIR, `${session.pid}.json`)
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8')
-    const parsed = JSON.parse(raw) as { status?: string }
-    const s = parsed.status
-    if (s === 'busy' || s === 'idle' || s === 'waiting' || s === 'shell') return s
-    return 'unknown'
-  } catch {
-    return 'unknown'
-  }
+  const status = session.status
+  return status === 'busy' || status === 'idle' || status === 'waiting' || status === 'shell'
+    ? status
+    : 'unknown'
 }
 
 export function getWorkspaceFileInfo(workspaceId: string): {
@@ -163,33 +151,21 @@ export function getWorkspaceFileInfo(workspaceId: string): {
   elapsedMs?: number
   statusUpdatedAt?: number
 } {
-  let sessionId: string | null = null
-  try {
-    const row = getDb()
-      .prepare('SELECT claude_session_id FROM workspaces WHERE id = ?')
-      .get(workspaceId) as { claude_session_id: string | null } | undefined
-    sessionId = row?.claude_session_id ?? null
-  } catch {
-    return { status: 'unknown', availability: 'unavailable' }
-  }
+  const sessionId = workspaceSessionIds.get(workspaceId) ?? null
   if (!sessionId) return { status: 'unknown', availability: 'unavailable' }
 
   const session = liveSessionMap.get(sessionId)
   if (!session) return { status: 'unknown', availability: 'unavailable' }
   if (!isAlive(session.pid)) return { status: 'unknown', availability: 'unavailable' }
 
-  const filePath = path.join(SESSIONS_DIR, `${session.pid}.json`)
-  let fileStatus: 'busy' | 'idle' | 'waiting' | 'shell' | 'unknown' = 'unknown'
-  let waitingFor: string | undefined
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8')
-    const parsed = JSON.parse(raw) as { status?: string; waitingFor?: string }
-    const s = parsed.status
-    if (s === 'busy' || s === 'idle' || s === 'waiting' || s === 'shell') fileStatus = s
-    if (parsed.waitingFor) waitingFor = parsed.waitingFor
-  } catch {
-    return { status: 'unknown', availability: 'unavailable' }
-  }
+  const fileStatus =
+    session.status === 'busy' ||
+    session.status === 'idle' ||
+    session.status === 'waiting' ||
+    session.status === 'shell'
+      ? session.status
+      : 'unknown'
+  const waitingFor = session.waitingFor
 
   const elapsed = busySince.get(workspaceId)
   const result: {
@@ -280,8 +256,14 @@ export function startSessionStateService(): { stop: () => void } {
   }
 }
 
-export function getLiveSessionState(): Map<string, LiveSession> {
-  return new Map(liveSessionMap)
+/** O(1) single-session snapshot; avoids cloning the entire live-session registry. */
+export function getLiveSession(sessionId: string): LiveSession | null {
+  const session = liveSessionMap.get(sessionId)
+  return session == null ? null : { ...session }
+}
+
+export function getLiveSessionCount(): number {
+  return liveSessionMap.size
 }
 
 export async function forceReconcile(): Promise<void> {
@@ -302,11 +284,25 @@ export function setRuntimeSessionObserver(
   fn: ((observation: RuntimeSessionObservation) => void) | null
 ): void {
   runtimeSessionObserver = fn
+  lastRuntimeObservation.clear()
 }
 
 function emitRuntimeSessionObservation(observation: RuntimeSessionObservation): void {
+  if (runtimeSessionObserver == null) return
+  const session = observation.session
+  const fingerprint = JSON.stringify([
+    observation.claudeConversationId,
+    session?.pid ?? null,
+    session?.status ?? null,
+    session?.waitingFor ?? null,
+    session?.version ?? null,
+    session?.cwd ?? null,
+    session?.statusUpdatedAt ?? null
+  ])
+  if (lastRuntimeObservation.get(observation.workspaceId) === fingerprint) return
+  lastRuntimeObservation.set(observation.workspaceId, fingerprint)
   try {
-    runtimeSessionObserver?.(observation)
+    runtimeSessionObserver(observation)
   } catch (err) {
     console.error(
       '[sessionState] runtime session observer failed:',
@@ -536,6 +532,7 @@ function loadOwnedWorkspaceRows(): WorkspaceRow[] | null {
 function computeAndLogFileStatus(
   ws: WorkspaceRow,
   session: LiveSession | undefined,
+  alive: boolean,
   hookStatus: WorkspaceStatus
 ): WorkspaceStatus | null {
   if (!session) {
@@ -550,8 +547,6 @@ function computeAndLogFileStatus(
   }
 
   const pid = session.pid
-  const alive = isAlive(pid)
-
   if (!alive) {
     // Process is dead
     const fileStatus: WorkspaceStatus = 'idle'
@@ -588,8 +583,8 @@ function computeAndLogFileStatus(
 }
 
 /** Step 4b. Compute rawStatus from the live session (session.status !== null is guaranteed by the caller). */
-function computeRawStatus(session: LiveSession | undefined): string {
-  if (!session || !isAlive(session.pid)) return 'gone'
+function computeRawStatus(session: LiveSession | undefined, alive: boolean): string {
+  if (!session || !alive) return 'gone'
   return session.status as string
 }
 
@@ -665,6 +660,13 @@ function signalSessionReady(ws: WorkspaceRow, rawStatus: string): void {
  */
 function reconcileWorkspaces(workspaceRows: WorkspaceRow[]): Set<string> {
   const activeWorkspaceIds = new Set<string>()
+  const nextWorkspaceSessionIds = new Map<string, string>()
+  for (const workspace of workspaceRows) {
+    if (workspace.claude_session_id != null) {
+      nextWorkspaceSessionIds.set(workspace.id, workspace.claude_session_id)
+    }
+  }
+  workspaceSessionIds = nextWorkspaceSessionIds
   for (const ws of workspaceRows) {
     // Skip archived workspaces
     if (ws.archived_at !== null) continue
@@ -679,21 +681,22 @@ function reconcileWorkspaces(workspaceRows: WorkspaceRow[]): Set<string> {
     }
 
     const session = liveSessionMap.get(ws.claude_session_id)
+    const alive = session != null && isAlive(session.pid)
     emitRuntimeSessionObservation({
       workspaceId: ws.id,
       claudeConversationId: ws.claude_session_id,
-      session: session != null && isAlive(session.pid) ? session : null
+      session: alive ? session : null
     })
     const hookStatus = getWorkspaceActivity(ws.id)
 
-    const fileStatus = computeAndLogFileStatus(ws, session, hookStatus)
+    const fileStatus = computeAndLogFileStatus(ws, session, alive, hookStatus)
     if (fileStatus === null) {
       // Status field absent (starting) — skip this workspace, leave snapshot untouched
       continue
     }
 
     // --- Drive step: act on file→status transitions (not just log them) ---
-    const rawStatus = computeRawStatus(session)
+    const rawStatus = computeRawStatus(session, alive)
     driveStatusTransition(ws, rawStatus, session)
     signalSessionReady(ws, rawStatus)
   }
@@ -713,6 +716,9 @@ function pruneStaleWorkspaceEntries(activeWorkspaceIds: Set<string>): void {
   }
   for (const key of readySignaled) {
     if (!activeWorkspaceIds.has(key)) readySignaled.delete(key)
+  }
+  for (const key of lastRuntimeObservation.keys()) {
+    if (!activeWorkspaceIds.has(key)) lastRuntimeObservation.delete(key)
   }
 }
 

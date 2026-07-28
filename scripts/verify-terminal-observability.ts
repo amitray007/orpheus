@@ -845,6 +845,28 @@ const pendingWait = oneWaiterJournal.waitForChange(0, null, 25)
 assert.equal(await oneWaiterJournal.waitForChange(0, null, 1), 'capacity')
 assert.equal(await pendingWait, 'timeout')
 
+const scopedWaitJournal = new TerminalObservationJournal(() => 1_000)
+const scopedWait = scopedWaitJournal.waitForChange(
+  0,
+  (terminalId) => terminalId === 'authorized',
+  1_000
+)
+scopedWaitJournal.append('unrelated', 'activity', 'live', { activity: 'busy' })
+assert.equal(scopedWaitJournal.waiterCount(), 1)
+scopedWaitJournal.append('authorized', 'activity', 'live', { activity: 'busy' })
+assert.equal(await scopedWait, 'changed')
+
+const distinctJournal = new TerminalObservationJournal(() => 1_000)
+assert.notEqual(
+  distinctJournal.appendDistinct('terminal', 'readiness', 'claude-session-file', { ready: true }),
+  null
+)
+assert.equal(
+  distinctJournal.appendDistinct('terminal', 'readiness', 'claude-session-file', { ready: true }),
+  null
+)
+assert.equal(distinctJournal.size(), 1)
+
 const disposedJournal = new TerminalObservationJournal()
 const disposedWait = disposedJournal.waitForChange(0, null, 1_000)
 assert.equal(disposedJournal.waiterCount(), 1)

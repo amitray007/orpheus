@@ -300,6 +300,10 @@ assert.equal(await runtime.waitUntilReady(snapshot.workspaceId, Date.now() + 10)
 await runtime.sendText(snapshot.workspaceId, 'ship it', true)
 assert.equal(sentText, 'ship it')
 assert.equal(submitCount, 1)
+const staged = await runtime.stageText(snapshot.workspaceId, 'review it', false)
+assert.deepEqual(staged, { ok: true })
+assert.equal(sentText, 'review it')
+assert.equal(submitCount, 1)
 assert.equal((await runtime.ensureOpen(snapshot)).runtimeState, 'retained')
 await runtime.teardown(snapshot.workspaceId)
 assert.equal(destroyCount, 1)
@@ -405,5 +409,23 @@ assert.doesNotMatch(
   mainAdapterSource,
   /requestOpen: \(workspaceId\) => deps\.requestOpenWorkspace\(workspaceId, false\)/
 )
+const mainSource = fs.readFileSync(path.join(repoRoot, 'src/main/index.ts'), 'utf8')
+assert.match(mainSource, /workspaceOrchestration\.runtime\.waitUntilReady/)
+assert.match(mainSource, /workspaceOrchestration\.runtime\.stageText/)
+const openAndSeedSource = mainSource.slice(
+  mainSource.indexOf('openAndSeed: async'),
+  mainSource.indexOf('sendToWorkspace: async')
+)
+assert.doesNotMatch(openAndSeedSource, /POLL_INTERVAL_MS/)
+assert.doesNotMatch(openAndSeedSource, /withInjectLock/)
+const waitEngineSource = fs.readFileSync(
+  path.join(repoRoot, 'src/main/workspaceOrchestration/waitEngine.ts'),
+  'utf8'
+)
+assert.match(waitEngineSource, /private reconcileFlight: Promise<void> \| null = null/)
+assert.match(waitEngineSource, /RECONCILE_COALESCE_MS/)
+assert.match(waitEngineSource, /backstopMs \* 2/)
+assert.match(waitEngineSource, /private readonly changeWaiters = new Set<ChangeWaiter>\(\)/)
+assert.equal((waitEngineSource.match(/onWorkspaceStatusChange\(/g) ?? []).length, 1)
 
 console.log('Workspace orchestration main integration verification passed.')
