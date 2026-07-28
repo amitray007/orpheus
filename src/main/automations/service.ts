@@ -23,6 +23,7 @@ import {
   type AutomationStore
 } from './types'
 import {
+  automationCatalogEntry,
   eventMatchesScope,
   validateAutomationDescriptor,
   validateAutomationDraft,
@@ -101,6 +102,10 @@ export class AutomationService {
   subscribeMutations(listener: () => void): () => void {
     this.mutationListeners.add(listener)
     return () => this.mutationListeners.delete(listener)
+  }
+
+  catalogEntry(description: ControlDescription): ReturnType<typeof automationCatalogEntry> {
+    return this.ports.grants.supports(description) ? automationCatalogEntry(description) : null
   }
 
   private notifyMutation(): void {

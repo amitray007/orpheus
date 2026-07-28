@@ -45,14 +45,30 @@ const generateId = (): string => `automation-mcp-${++sequence}`
 const automationService = new AutomationService({
   store,
   registry: forwardingRegistry,
-  grants: new AutomationGrantPolicy(() => ({
-    permissions: ['reviews.resolve'],
-    maxRiskTier: 2,
-    scopes: [
-      { kind: 'workspace', projectId: 'project-1', workspaceId: 'workspace-1' },
-      { kind: 'workspace', projectId: 'project-1', workspaceId: 'workspace-2' }
-    ]
-  })),
+  grants: new AutomationGrantPolicy(
+    Object.assign(
+      () => ({
+        permissions: ['reviews.resolve'] as const,
+        maxRiskTier: 2 as const,
+        scopes: [
+          {
+            kind: 'workspace' as const,
+            projectId: 'project-1',
+            workspaceId: 'workspace-1'
+          },
+          {
+            kind: 'workspace' as const,
+            projectId: 'project-1',
+            workspaceId: 'workspace-2'
+          }
+        ]
+      }),
+      {
+        supports: (description: ControlDescriptor<unknown, unknown>) =>
+          description.id === 'test.workspaceMutation'
+      }
+    )
+  ),
   audit: createAutomationAuditStore(db),
   allowedEventTypes: new Set(['workspace.completed']),
   now: () => now,

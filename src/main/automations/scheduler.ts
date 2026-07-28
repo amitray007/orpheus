@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { recursivelyRedact } from '../workspaceOrchestration/redaction'
 import { AutomationDefinitionError, AutomationService } from './service'
+import { persistableAutomationResult } from './resultPersistence'
 import {
   AUTOMATION_LIMITS,
   type AutomationAuditPort,
@@ -759,7 +759,7 @@ export class AutomationScheduler {
         status: 'succeeded',
         finishedAt: this.clock.now(),
         resultCode,
-        result: recursivelyRedact({ value: result }),
+        result: persistableAutomationResult(result),
         error: null,
         auditId: persistedAuditId
       })

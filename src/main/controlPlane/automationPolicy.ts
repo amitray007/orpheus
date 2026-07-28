@@ -111,9 +111,17 @@ export type AutomationGrantRequest = Readonly<{
   params: unknown
 }>
 
-export type AutomationGrantSource = (
+export type AutomationGrantSource = ((
   request: AutomationGrantRequest
-) => AutomationGrant | null | undefined | Promise<AutomationGrant | null | undefined>
+) => AutomationGrant | null | undefined | Promise<AutomationGrant | null | undefined>) &
+  Readonly<{
+    /**
+     * Side-effect-free catalog predicate. Publication fails closed when a
+     * source does not declare support, while invocation still re-resolves the
+     * complete scope-aware grant immediately before every attempt.
+     */
+    supports?: (description: ControlDescription) => boolean
+  }>
 
 function scopeContains(
   allowed: AutomationScopeBinding,
@@ -127,6 +135,14 @@ function scopeContains(
 
 export class AutomationGrantPolicy {
   constructor(private readonly source?: AutomationGrantSource) {}
+
+  supports(description: ControlDescription): boolean {
+    try {
+      return this.source?.supports?.(description) === true
+    } catch {
+      return false
+    }
+  }
 
   async resolve(
     automationId: string,

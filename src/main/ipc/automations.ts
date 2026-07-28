@@ -7,7 +7,7 @@ import type {
 } from '../../shared/types'
 import type { ControlDescription } from '../controlPlane/types'
 import { AutomationService, type AutomationManagementContext } from '../automations'
-import { automationCatalogEntry, isAutomationDraftShape } from '../automations/validation'
+import { isAutomationDraftShape } from '../automations/validation'
 import { handle } from './handle'
 
 type AutomationCatalogProvider = () => readonly ControlDescription[]
@@ -155,7 +155,7 @@ export function registerAutomationsIpc(
   })
   handle('automations:catalog', () => {
     const operations = catalogProvider()
-      .map(automationCatalogEntry)
+      .map((description) => service.catalogEntry(description))
       .filter((entry): entry is AutomationOperationCatalogEntry => entry != null)
       .sort((left, right) => left.id.localeCompare(right.id))
     return {

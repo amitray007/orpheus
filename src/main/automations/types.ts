@@ -36,6 +36,7 @@ export const AUTOMATION_LIMITS = Object.freeze({
   maxGlobalConcurrency: 8,
   maxEventFanout: 200,
   maxRetainedRunsPerAutomation: 1_000,
+  maxPersistedResultBytes: 32 * 1024,
   runRetentionMs: 30 * 24 * 60 * 60 * 1_000,
   maxRetainedDeliveredEvents: 10_000,
   eventRetentionMs: 30 * 24 * 60 * 60 * 1_000,

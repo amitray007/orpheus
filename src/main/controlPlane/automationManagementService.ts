@@ -11,7 +11,6 @@ import {
   type AutomationManagementAction,
   type AutomationManagementContext
 } from '../automations'
-import { automationCatalogEntry } from '../automations/validation'
 import { orchestrationError } from '../workspaceOrchestration/errors'
 import type {
   ControlAuthorizationDecision,
@@ -159,7 +158,7 @@ export class AutomationManagementService {
     this.requireBinding(context)
     const operations = this.deps
       .listOperations()
-      .map(automationCatalogEntry)
+      .map((description) => this.deps.service.catalogEntry(description))
       .filter((entry): entry is NonNullable<typeof entry> => entry != null)
       .sort((left, right) => left.id.localeCompare(right.id))
     return { ...this.deps.service.editorConfiguration(), operations }

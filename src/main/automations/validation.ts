@@ -53,10 +53,57 @@ function safeSchema(value: Readonly<Record<string, unknown>>): Readonly<Record<s
   return parsed
 }
 
+function editorSupportsField(schema: unknown): boolean {
+  if (!isRecord(schema)) return false
+  if (Object.hasOwn(schema, 'const')) return true
+  const options = schema['enum']
+  if (Array.isArray(options)) {
+    return options.length > 0 && options.every((option) => typeof option === 'string')
+  }
+  if (schema['type'] === 'array') {
+    const items = schema['items']
+    return (
+      isRecord(items) &&
+      Array.isArray(items['enum']) &&
+      items['enum'].length > 0 &&
+      items['enum'].every((option) => typeof option === 'string')
+    )
+  }
+  return ['string', 'integer', 'number', 'boolean'].includes(String(schema['type']))
+}
+
+/**
+ * Keep the server-published catalog within the renderer's deliberately small
+ * safe form language. A descriptor may remain automation-invocable by an
+ * already persisted definition while being withheld from new-definition UI.
+ */
+export function automationEditorSupportsDescription(description: ControlDescription): boolean {
+  if (!['self', 'project', 'workspace'].includes(description.scope.kind)) return false
+  const schema = description.inputSchema
+  if (
+    schema['type'] !== 'object' ||
+    schema['additionalProperties'] !== false ||
+    ['oneOf', 'anyOf', 'allOf', 'if', 'then', 'else'].some((key) => Object.hasOwn(schema, key))
+  ) {
+    return false
+  }
+  const properties = schema['properties']
+  if (!isRecord(properties)) return false
+  const scopeField =
+    'inputField' in description.scope ? (description.scope.inputField ?? null) : null
+  return Object.entries(properties).every(
+    ([key, fieldSchema]) => key === scopeField || editorSupportsField(fieldSchema)
+  )
+}
+
 export function automationCatalogEntry(
   description: ControlDescription
 ): AutomationOperationCatalogEntry | null {
-  if (!description.allowedSurfaces.includes('automation') || description.idempotency == null) {
+  if (
+    !description.allowedSurfaces.includes('automation') ||
+    description.idempotency == null ||
+    !automationEditorSupportsDescription(description)
+  ) {
     return null
   }
   return {

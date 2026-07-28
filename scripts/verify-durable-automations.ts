@@ -10,6 +10,7 @@ import type {
   ControlPermission
 } from '../src/main/controlPlane/types.ts'
 import { createAutomationAuditStore } from '../src/main/automations/audit.ts'
+import { persistableAutomationResult } from '../src/main/automations/resultPersistence.ts'
 import { AutomationScheduler } from '../src/main/automations/scheduler.ts'
 import { AutomationService } from '../src/main/automations/service.ts'
 import { createAutomationStore } from '../src/main/automations/store.ts'
@@ -144,6 +145,23 @@ const noneDescriptor: ControlDescriptor<{ text: string }, { ok: true }> = {
 }
 registry.register(noneDescriptor)
 
+const oversizedPayload = {
+  rows: Array.from({ length: 256 }, (_, index) => ({
+    index,
+    payload: 'x'.repeat(512)
+  }))
+}
+const oversizedDescriptor: ControlDescriptor<{ text: string }, typeof oversizedPayload> = {
+  ...descriptor,
+  id: 'test.oversizedResult',
+  idempotency: 'natural',
+  handler: async (_input, context) => {
+    invocations.push(context)
+    return oversizedPayload
+  }
+}
+registry.register(oversizedDescriptor)
+
 const permissions: ControlPermission[] = ['reviews.resolve']
 const grantRequests: AutomationGrantRequest[] = []
 const grants = new AutomationGrantPolicy((request) => {
@@ -237,6 +255,29 @@ function persistedRun(automationId: string, index = 0): AutomationRun {
   assert.ok(run)
   return run
 }
+
+// Successful results are redacted before measurement and persisted within a
+// strict byte ceiling. Oversized values produce deterministic metadata rather
+// than invalid, partially sliced JSON.
+const boundedResult = persistableAutomationResult(oversizedPayload)
+assert.ok(
+  Buffer.byteLength(JSON.stringify(boundedResult), 'utf8') <=
+    AUTOMATION_LIMITS.maxPersistedResultBytes
+)
+assert.deepEqual(boundedResult, persistableAutomationResult(oversizedPayload))
+assert.deepEqual(boundedResult['value'], {
+  truncated: true,
+  reason: 'persisted_result_byte_limit',
+  originalByteLength: Buffer.byteLength(JSON.stringify({ value: oversizedPayload }), 'utf8'),
+  sha256: (boundedResult['value'] as Record<string, unknown>)['sha256']
+})
+assert.match(
+  String((boundedResult['value'] as Record<string, unknown>)['sha256']),
+  /^[a-f0-9]{64}$/
+)
+assert.deepEqual(persistableAutomationResult({ token: 'secret', ok: true }), {
+  value: { token: '[REDACTED]', ok: true }
+})
 
 // Declarative migration created the durable definitions, runs, and event
 // outbox tables plus their critical indexes.
@@ -543,6 +584,21 @@ assert.equal(firstContext?.trustedAutomation?.automationId, scheduled.id)
 assert.equal(firstContext?.automationRunId, persistedRun(scheduled.id).id)
 assert.equal(firstContext?.idempotencyKey, persistedRun(scheduled.id).idempotencyKey)
 await scheduler.setEnabled(scheduled.id, false, managementContext())
+
+const oversizedDefinition = await create({
+  operationId: oversizedDescriptor.id,
+  idempotency: 'natural',
+  trigger: { kind: 'schedule', intervalMs: 1_000, startAt: now }
+})
+await scheduler.tick()
+const oversizedRun = persistedRun(oversizedDefinition.id)
+assert.equal(oversizedRun.status, 'succeeded')
+assert.deepEqual(oversizedRun.result, boundedResult)
+assert.ok(
+  Buffer.byteLength(JSON.stringify(oversizedRun.result), 'utf8') <=
+    AUTOMATION_LIMITS.maxPersistedResultBytes
+)
+await scheduler.setEnabled(oversizedDefinition.id, false, managementContext())
 
 // A failed INSERT is only a dedupe win when the stable-key lookup finds the
 // persisted winner. Never return or advance a schedule with a fabricated run.

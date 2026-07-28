@@ -71,11 +71,16 @@ const store = createAutomationStore(db)
 const service = new AutomationService({
   store,
   registry,
-  grants: new AutomationGrantPolicy(() => ({
-    permissions: ['reviews.resolve'],
-    maxRiskTier: 2,
-    scopes: [{ kind: 'project', projectId: 'project-1' }]
-  })),
+  grants: new AutomationGrantPolicy(
+    Object.assign(
+      () => ({
+        permissions: ['reviews.resolve'] as const,
+        maxRiskTier: 2 as const,
+        scopes: [{ kind: 'project' as const, projectId: 'project-1' }]
+      }),
+      { supports: () => true }
+    )
+  ),
   audit: createAutomationAuditStore(db),
   allowedEventTypes: new Set(['workspace.completed']),
   now: () => now,
@@ -235,6 +240,48 @@ assert.equal(
     allowedSurfaces: ['renderer']
   }),
   null
+)
+assert.equal(
+  automationCatalogEntry({
+    ...registry.describe(descriptor.id)!,
+    scope: { kind: 'resource', inputField: 'text' }
+  }),
+  null
+)
+assert.equal(
+  automationCatalogEntry({
+    ...registry.describe(descriptor.id)!,
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        nested: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { value: { type: 'string' } }
+        }
+      }
+    }
+  }),
+  null
+)
+assert.equal(
+  automationCatalogEntry({
+    ...registry.describe(descriptor.id)!,
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      oneOf: [{ properties: { text: { type: 'string' } } }],
+      properties: { text: { type: 'string' } }
+    }
+  }),
+  null
+)
+assert.ok(service.catalogEntry(registry.describe(descriptor.id)!))
+assert.equal(
+  new AutomationGrantPolicy().supports(registry.describe(descriptor.id)!),
+  false,
+  'catalog publication must fail closed without a policy support declaration'
 )
 const editorConfiguration = service.editorConfiguration()
 assert.deepEqual(editorConfiguration.eventTypes, ['workspace.completed'])
