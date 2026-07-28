@@ -14,6 +14,7 @@ import {
 } from './settingsResourceService'
 import { withSettingsResourcePolicy } from './settingsResourcePolicy'
 import { withAutomationPolicy } from './automationPolicy'
+import { withControlToolExposurePolicy, type ControlToolExposureStore } from './controlToolExposure'
 
 const SETTINGS_RESOURCE_OPERATIONS = new Set<string>(SETTINGS_RESOURCE_OPERATION_IDS)
 
@@ -23,6 +24,7 @@ export function createConfiguredControlRegistry(config: {
   workbenchControl?: WorkbenchControlService
   terminalObservation?: TerminalObservationService
   settingsResources?: SettingsResourceService
+  toolExposure?: Pick<ControlToolExposureStore, 'isEnabled'>
 }): ControlRegistry {
   const workspaceService = config.workspaceOrchestration
   const settingsService = config.settingsResources
@@ -36,7 +38,11 @@ export function createConfiguredControlRegistry(config: {
     settingsService == null
       ? workspacePolicy
       : withSettingsResourcePolicy(workspacePolicy, settingsService)
-  const authorization = withAutomationPolicy(withWorkbenchControlPolicy(settingsPolicy))
+  const automationPolicy = withAutomationPolicy(withWorkbenchControlPolicy(settingsPolicy))
+  const authorization =
+    config.toolExposure == null
+      ? automationPolicy
+      : withControlToolExposurePolicy(automationPolicy, config.toolExposure)
 
   const workspaceAuditor =
     workspaceService == null ? null : createWorkspaceRejectionAuditor(workspaceService)

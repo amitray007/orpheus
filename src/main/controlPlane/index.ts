@@ -15,6 +15,7 @@ import type { WorkbenchControlService } from '../workbenchControl/service'
 import type { TerminalObservationService } from '../terminalObservation/service'
 import { createTerminalObservationHandlers } from '../terminalObservation/service'
 import type { SettingsResourceService } from './settingsResourceService'
+import type { ControlToolExposureStore } from './controlToolExposure'
 
 export type Phase2ControlPlaneConfig = {
   authorization: ControlAuthorizationPolicy
@@ -23,6 +24,7 @@ export type Phase2ControlPlaneConfig = {
   workbenchControl?: WorkbenchControlService
   terminalObservation?: TerminalObservationService
   settingsResources?: SettingsResourceService
+  toolExposure?: Pick<ControlToolExposureStore, 'isEnabled'>
 }
 
 let phase2Config: Phase2ControlPlaneConfig | null = null
@@ -84,6 +86,11 @@ export function describeControl(id: string, context: ControlContext): ControlDes
 /** Main-process subsystem seam; unlike describeControl this does not publish. */
 export function describeRegisteredControl(id: string): ControlDescription | null {
   return getRegistry().describe(id)
+}
+
+/** Main-process settings seam; unlike listControl this does not publish. */
+export function listRegisteredControl(): ControlDescription[] {
+  return getRegistry().list()
 }
 
 export function validateRegisteredControlInput(

@@ -172,6 +172,7 @@ import {
   describeRegisteredControl,
   invokeControl,
   listControl,
+  listRegisteredControl,
   validateRegisteredControlInput
 } from './controlPlane'
 import { createAutomationRuntime, type AutomationScheduler } from './automations'
@@ -195,6 +196,8 @@ import {
   type WorkspaceOrchestrationService
 } from './workspaceOrchestration'
 import { RuntimeControlGrantPolicy } from './controlPlane/runtimeGrants'
+import { createRuntimeResourceScopeSource } from './controlPlane/runtimeResourceScope'
+import { ControlToolExposureStore } from './controlPlane/controlToolExposure'
 import { createPhase456QaGrantSource } from './controlPlane/phase456QaGrant'
 import {
   WorkspaceOpenRequestQueue,
@@ -213,6 +216,7 @@ import { registerProjectsIpc } from './ipc/projects'
 import { registerWorkspacesIpc } from './ipc/workspaces'
 import { registerActionsIpc } from './ipc/actions'
 import { registerOverlayIpc } from './ipc/overlay'
+import { registerControlToolsIpc } from './ipc/controlTools'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
 import { WorkspaceControlAdapter } from './workspaceControlAdapter'
@@ -2619,7 +2623,11 @@ if (!app.requestSingleInstanceLock()) {
           hasPaneTerminal: (layoutId, terminalId) =>
             getLayout(layoutId) != null &&
             listTerminals(layoutId).some((terminal) => terminal.id === terminalId)
-        })
+        }),
+        {
+          getCurrentBinding: (runtimeId) => runtimeLeases.getByRuntimeId(runtimeId),
+          getResourceScope: createRuntimeResourceScopeSource(getDb())
+        }
       )
       const workbenchControlAudit = createControlAuditStore(getDb())
       const workbenchControl = new WorkbenchControlService({
@@ -2769,6 +2777,7 @@ if (!app.requestSingleInstanceLock()) {
 
       // Boot both internal registries before renderer IPC or the deferred command
       // server can invoke them.
+      const controlToolExposure = new ControlToolExposureStore(getDb(), listRegisteredControl)
       configurePhase2ControlPlane({
         authorization: createTrustedRuntimeReadPolicy({
           getWorkspaceProjectId: (workspaceId) => getWorkspace(workspaceId)?.projectId ?? null
@@ -2777,9 +2786,11 @@ if (!app.requestSingleInstanceLock()) {
         workspaceOrchestration: workspaceOrchestration.service,
         workbenchControl,
         terminalObservation: terminalObservation.service,
-        settingsResources: createMainSettingsResourceService()
+        settingsResources: createMainSettingsResourceService(),
+        toolExposure: controlToolExposure
       })
       bootControlPlane()
+      registerControlToolsIpc(controlToolExposure)
       const automations = createAutomationRuntime({
         db: getDb(),
         registry: {

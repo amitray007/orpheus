@@ -18,6 +18,55 @@ export interface UpdateProgress {
   line: string
 }
 
+// ---------------------------------------------------------------------------
+// Orpheus control-tool exposure
+// ---------------------------------------------------------------------------
+
+export type ControlToolCategory =
+  | 'identity'
+  | 'projects'
+  | 'workspaces'
+  | 'reviews'
+  | 'workbench'
+  | 'panes'
+  | 'terminals'
+  | 'settings'
+  | 'resources'
+
+export type ControlToolCategoryPreference = {
+  id: ControlToolCategory
+  label: string
+  enabled: boolean
+  override: boolean | null
+  toolCount: number
+}
+
+export type ControlToolPreference = {
+  id: string
+  category: ControlToolCategory
+  description: string
+  kind: 'query' | 'mutation'
+  riskTier: 0 | 1 | 2 | 3
+  enabled: boolean
+  categoryEnabled: boolean
+  override: boolean | null
+}
+
+export type ControlToolsSettings = {
+  categories: ControlToolCategoryPreference[]
+  tools: ControlToolPreference[]
+  updatedAt: number | null
+}
+
+export type ControlToolsUpdate =
+  | { target: 'category'; id: ControlToolCategory; enabled: boolean }
+  | { target: 'tool'; id: string; enabled: boolean }
+
+export type ControlToolsReset =
+  | { target: 'all' }
+  | { target: 'category'; id: ControlToolCategory }
+  | { target: 'tool'; id: string }
+
 export interface UpdateSnapshot {
   kind: 'idle' | 'checking' | 'up_to_date' | 'available' | 'installing' | 'installed' | 'error'
   latest: string | null

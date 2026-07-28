@@ -49,9 +49,9 @@ const leaseBinding: ClaudeRuntimeBinding = {
 }
 
 const defaultPermissions = new RuntimeControlGrantPolicy().permissionsFor(leaseBinding)
-assert.equal(defaultPermissions.includes('settings.read'), false)
-assert.equal(defaultPermissions.includes('settings.workspace.patch'), false)
-assert.equal(defaultPermissions.includes('resources.read'), false)
+assert.equal(defaultPermissions.includes('settings.read'), true)
+assert.equal(defaultPermissions.includes('settings.workspace.patch'), true)
+assert.equal(defaultPermissions.includes('resources.read'), true)
 
 const exactPermissions = new RuntimeControlGrantPolicy(() => ({
   permissions: ['settings.read', 'settings.workspace.patch', 'resources.read'],
@@ -313,9 +313,9 @@ function context(permissions: readonly ControlPermission[]): ControlContext {
 }
 
 const noPhase6Context = context(defaultPermissions)
-assert.equal(registry.describeForContext(SETTINGS_GET_EFFECTIVE_ID, noPhase6Context), null)
-assert.equal(registry.describeForContext(SETTINGS_PATCH_WORKSPACE_ID, noPhase6Context), null)
-assert.equal(registry.describeForContext(RESOURCES_LIST_PROJECT_METADATA_ID, noPhase6Context), null)
+assert.ok(registry.describeForContext(SETTINGS_GET_EFFECTIVE_ID, noPhase6Context))
+assert.ok(registry.describeForContext(SETTINGS_PATCH_WORKSPACE_ID, noPhase6Context))
+assert.ok(registry.describeForContext(RESOURCES_LIST_PROJECT_METADATA_ID, noPhase6Context))
 
 const grantedContext = context(exactPermissions)
 function schemaContainsKey(value: unknown, key: string): boolean {

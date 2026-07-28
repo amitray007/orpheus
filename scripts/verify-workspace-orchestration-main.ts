@@ -216,11 +216,11 @@ const defaultGrantPolicy = new RuntimeControlGrantPolicy()
 const defaultToolIds = registry
   .listForContext(contextWithPermissions(defaultGrantPolicy.permissionsFor(leaseBinding)))
   .map(({ id }) => id)
-assert.equal(defaultToolIds.length, 11)
+assert.equal(defaultToolIds.length, 19)
 assert.ok(defaultToolIds.includes('workspaces.getLineage'))
 assert.ok(defaultToolIds.includes('workspaces.wait'))
-assert.equal(defaultToolIds.includes('workspaces.create'), false)
-assert.equal(defaultToolIds.includes('workspaces.archive'), false)
+assert.equal(defaultToolIds.includes('workspaces.create'), true)
+assert.equal(defaultToolIds.includes('workspaces.archive'), true)
 
 const tier2GrantPolicy = new RuntimeControlGrantPolicy(() => ({
   permissions: ALL_RUNTIME_PERMISSIONS,

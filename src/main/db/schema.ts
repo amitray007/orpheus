@@ -1068,6 +1068,26 @@ export const schema: SchemaDef = {
     }
   },
 
+  // User-controlled MCP exposure. Missing rows intentionally mean enabled,
+  // so existing and newly registered tools are available without migration
+  // seeding. Category and exact-operation preferences are independent:
+  // disabling either one hides and rejects the operation.
+  control_tool_category_preferences: {
+    columns: {
+      category_id: TEXT_PK,
+      enabled: bool('enabled', '1'),
+      updated_at: INTEGER_NOT_NULL
+    }
+  },
+
+  control_tool_preferences: {
+    columns: {
+      operation_id: TEXT_PK,
+      enabled: bool('enabled', '1'),
+      updated_at: INTEGER_NOT_NULL
+    }
+  },
+
   // Durable automation intent. Permissions and risk grants are deliberately
   // absent: main resolves those from a server-owned grant source on create,
   // enable, recovery, and immediately before invocation.

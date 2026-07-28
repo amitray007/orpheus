@@ -7,6 +7,7 @@ import {
 } from '../src/main/controlPlane/phase456QaGrant.ts'
 import type { ClaudeRuntimeBinding } from '../src/main/controlPlane/runtimeLeases.ts'
 import {
+  BASE_RUNTIME_CONTROL_PERMISSIONS,
   DEFAULT_RUNTIME_CONTROL_PERMISSIONS,
   RuntimeControlGrantPolicy
 } from '../src/main/controlPlane/runtimeGrants.ts'
@@ -140,10 +141,7 @@ assert.equal(workspaceLookups, 1)
 assert.equal(paneLookups, 1)
 
 const pendingPolicy = new RuntimeControlGrantPolicy(source)
-assert.deepEqual(
-  pendingPolicy.permissionsFor(binding({ state: 'pending', pid: null })),
-  DEFAULT_RUNTIME_CONTROL_PERMISSIONS
-)
+assert.deepEqual(pendingPolicy.permissionsFor(binding({ state: 'pending', pid: null })), [])
 assert.deepEqual(pendingPolicy.scopeFor(binding({ state: 'pending', pid: null })), {
   selfOnly: true,
   layoutIds: [],
@@ -156,7 +154,7 @@ const revokedSource = createPhase456QaGrantSource({
 })
 assert.ok(revokedSource)
 const revokedPolicy = new RuntimeControlGrantPolicy(revokedSource)
-assert.deepEqual(revokedPolicy.permissionsFor(binding()), DEFAULT_RUNTIME_CONTROL_PERMISSIONS)
+assert.deepEqual(revokedPolicy.permissionsFor(binding()), BASE_RUNTIME_CONTROL_PERMISSIONS)
 assert.deepEqual(revokedPolicy.scopeFor(binding()), {
   selfOnly: true,
   layoutIds: [],
@@ -170,7 +168,7 @@ const mismatchedObservedSource = createPhase456QaGrantSource({
 assert.ok(mismatchedObservedSource)
 assert.deepEqual(
   new RuntimeControlGrantPolicy(mismatchedObservedSource).permissionsFor(binding()),
-  DEFAULT_RUNTIME_CONTROL_PERMISSIONS
+  BASE_RUNTIME_CONTROL_PERMISSIONS
 )
 
 const pendingObservedSource = createPhase456QaGrantSource({
@@ -180,7 +178,7 @@ const pendingObservedSource = createPhase456QaGrantSource({
 assert.ok(pendingObservedSource)
 assert.deepEqual(
   new RuntimeControlGrantPolicy(pendingObservedSource).permissionsFor(binding()),
-  DEFAULT_RUNTIME_CONTROL_PERMISSIONS
+  BASE_RUNTIME_CONTROL_PERMISSIONS
 )
 
 observedRuntime = binding({ runtimeId: 'runtime-2', issuedAt: 2, pid: 84 })
@@ -193,7 +191,7 @@ assert.strictEqual(
 
 const policy = new RuntimeControlGrantPolicy(source)
 const permissions = policy.permissionsFor(observedRuntime)
-for (const permission of [...DEFAULT_RUNTIME_CONTROL_PERMISSIONS, ...PHASE456_QA_PERMISSIONS]) {
+for (const permission of [...BASE_RUNTIME_CONTROL_PERMISSIONS, ...PHASE456_QA_PERMISSIONS]) {
   assert.ok(permissions.includes(permission))
 }
 for (const forbidden of [

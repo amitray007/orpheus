@@ -202,6 +202,39 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
     console.log('schema-fresh: non-empty second plan', JSON.stringify(secondPlan, null, 2))
   }
   assert.deepEqual(secondPlan, [], 'fresh build must be idempotent')
+
+  // Control-tool exposure is opt-out: no seed rows means every current and
+  // future category/tool starts enabled. Explicit rows round-trip through the
+  // declarative schema and converge without a data migration.
+  assert.equal(
+    (
+      sdb.prepare('SELECT COUNT(*) AS count FROM control_tool_category_preferences').get() as {
+        count: number
+      }
+    ).count,
+    0
+  )
+  assert.equal(
+    (
+      sdb.prepare('SELECT COUNT(*) AS count FROM control_tool_preferences').get() as {
+        count: number
+      }
+    ).count,
+    0
+  )
+  sdb
+    .prepare(
+      `INSERT INTO control_tool_category_preferences (category_id, enabled, updated_at)
+       VALUES ('workspaces', 0, 1)`
+    )
+    .run()
+  sdb
+    .prepare(
+      `INSERT INTO control_tool_preferences (operation_id, enabled, updated_at)
+       VALUES ('workspaces.rename', 0, 1)`
+    )
+    .run()
+  assert.deepEqual(planSync(sdb, schema), [], 'control-tool preferences must remain converged')
   console.log('✓ schema-fresh')
 }
 

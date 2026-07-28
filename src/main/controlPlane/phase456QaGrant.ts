@@ -131,8 +131,8 @@ function buildGrant(scope: Phase456QaScope): RuntimeControlGrant {
  * runtime with an observed PID and re-resolves that binding plus main-owned
  * workspace and pane records on every request. Missing, pending, revoked,
  * stale, invalid, or throwing state fails closed. Production and worktree
- * builds always receive `undefined`, preserving the default read-only runtime
- * grant policy.
+ * builds always receive `undefined`, preserving the full default MCP runtime
+ * permission set controlled by the persisted tool-exposure settings.
  */
 export function createPhase456QaGrantSource(
   options: Phase456QaGrantSourceOptions

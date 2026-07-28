@@ -66,8 +66,8 @@ assert.equal(
 )
 
 const defaults = new RuntimeControlGrantPolicy()
-assert.equal(defaults.permissionsFor(runtime).includes('ui.workbench.control'), false)
-assert.equal(defaults.permissionsFor(runtime).includes('terminals.control'), false)
+assert.equal(defaults.permissionsFor(runtime).includes('ui.workbench.control'), true)
+assert.equal(defaults.permissionsFor(runtime).includes('terminals.control'), true)
 assert.deepEqual(defaults.scopeFor(runtime), { selfOnly: true, layoutIds: [], surfaceIds: [] })
 
 const grants = new RuntimeControlGrantPolicy(() => ({

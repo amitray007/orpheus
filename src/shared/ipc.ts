@@ -122,7 +122,10 @@ import type {
   PaneTerminal,
   SplitTree,
   OAuthStartResult,
-  OAuthPollResult
+  OAuthPollResult,
+  ControlToolsSettings,
+  ControlToolsUpdate,
+  ControlToolsReset
 } from './types'
 import type { RendererControlAck, RendererControlRequest } from './workbenchControl'
 
@@ -139,6 +142,9 @@ import type { RendererControlAck, RendererControlRequest } from './workbenchCont
 export interface InvokeChannelMap {
   'control:ackRendererCommand': { req: [RendererControlAck]; res: boolean }
   'control:rendererReady': { req: []; res: void }
+  'controlTools:get': { req: []; res: ControlToolsSettings }
+  'controlTools:update': { req: [ControlToolsUpdate]; res: ControlToolsSettings }
+  'controlTools:reset': { req: [ControlToolsReset]; res: ControlToolsSettings }
   'app:getVersion': { req: []; res: string }
   'app:getPaths': { req: []; res: { userData: string; logs: string } }
   'app:offeredModes': {

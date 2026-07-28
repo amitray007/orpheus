@@ -102,7 +102,10 @@ import type {
   OverlayShowResult,
   OverlayEvent,
   TerminalMountResult,
-  TerminalRect
+  TerminalRect,
+  ControlToolsSettings,
+  ControlToolsUpdate,
+  ControlToolsReset
 } from '../shared/types'
 import type { RendererControlAck, RendererControlRequest } from '../shared/workbenchControl'
 
@@ -134,6 +137,13 @@ const api = {
       invoke('control:ackRendererCommand', ack),
     onRendererCommand: (cb: (request: RendererControlRequest) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.controlRendererCommand, cb)
+  },
+  controlTools: {
+    get: (): Promise<ControlToolsSettings> => invoke('controlTools:get'),
+    update: (update: ControlToolsUpdate): Promise<ControlToolsSettings> =>
+      invoke('controlTools:update', update),
+    reset: (reset: ControlToolsReset): Promise<ControlToolsSettings> =>
+      invoke('controlTools:reset', reset)
   },
   app: {
     getVersion: (): Promise<string> => invoke('app:getVersion'),

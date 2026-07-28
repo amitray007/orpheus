@@ -7,7 +7,10 @@ import { createReadCapabilities } from '../src/main/controlPlane/readCapabilitie
 import { createTrustedRuntimeReadPolicy } from '../src/main/controlPlane/readPolicy'
 import { ControlRegistry } from '../src/main/controlPlane/registry'
 import { createReviewCapabilities } from '../src/main/controlPlane/reviewCapabilities'
-import { DEFAULT_RUNTIME_CONTROL_PERMISSIONS } from '../src/main/controlPlane/runtimeGrants'
+import {
+  BASE_RUNTIME_CONTROL_PERMISSIONS,
+  DEFAULT_RUNTIME_CONTROL_PERMISSIONS
+} from '../src/main/controlPlane/runtimeGrants'
 import { createSettingsResourceCapabilities } from '../src/main/controlPlane/settingsResourceCapabilities'
 import {
   SETTINGS_RESOURCE_OPERATION_IDS,
@@ -183,14 +186,10 @@ assert.equal(mcpIds.length, expectedIds.length - 1, 'only reviews.setResolved is
 const defaultIds = registry
   .listForContext(context(DEFAULT_RUNTIME_CONTROL_PERMISSIONS))
   .map(({ id }) => id)
-assert.equal(defaultIds.length, 11, 'the runtime default surface must remain exactly 11 tools')
+assert.deepEqual(defaultIds, [...mcpIds].sort(), 'live runtimes receive the complete MCP surface')
 assert.ok(
-  defaultIds.every((id) => registry.describe(id)?.kind === 'query'),
-  'the default surface must not include mutations'
-)
-assert.ok(
-  [...workbenchIds, ...terminalIds, ...settingsIds].every((id) => !defaultIds.includes(id)),
-  'Phase 4-6 tools require explicit grants'
+  [...workbenchIds, ...terminalIds, ...settingsIds].every((id) => defaultIds.includes(id)),
+  'Workbench, pane, terminal, and settings tools are enabled by default'
 )
 
 const phase456Permissions = [
@@ -291,7 +290,7 @@ assert.equal(settingsRejections.length, 1, 'rejections must be routed to exactly
 const defaultForbidden = await registry.invoke({
   id: 'workspaces.rename',
   input: { workspaceId: 'workspace-1', name: 'Renamed' },
-  context: context(DEFAULT_RUNTIME_CONTROL_PERMISSIONS)
+  context: context(BASE_RUNTIME_CONTROL_PERMISSIONS)
 })
 assert.equal(defaultForbidden.ok, false)
 if (!defaultForbidden.ok) assert.equal(defaultForbidden.code, 'forbidden')
