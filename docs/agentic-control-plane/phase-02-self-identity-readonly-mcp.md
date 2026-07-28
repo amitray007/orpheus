@@ -4,6 +4,13 @@
 **Roadmap:** [roadmap.md](roadmap.md)<br>
 **Depends on:** [Phase 1: Control Foundation](phase-01-control-foundation.md)
 
+> **Historical phase record.** The nine-tool, read-only catalog and packaged
+> results below describe the Phase 2 delivery state. Current source includes
+> later mutations, user-controlled deny-only exposure, and dynamic catalog
+> refresh. The original live evidence is retained rather than rewritten as
+> proof of the current aggregate build; see
+> [README.md](README.md#2026-07-28-current-source-delta).
+
 ## Outcome
 
 Phase 2 adds a bundled Orpheus MCP stdio bridge to Orpheus-managed Claude
@@ -87,8 +94,9 @@ has a strict object input schema with `additionalProperties: false`.
 | `workspaces.getLastTurn`   | `workspaces.read` | Optional non-empty `workspaceId`; defaults to bound workspace                                       | Claude-JSONL last-turn observation                                   |
 | `reviews.list`             | `reviews.read`    | Required non-empty `workspaceId`                                                                    | Existing ordered `LocalReviewComment[]`                              |
 
-`reviews.setResolved` remains registered for the existing renderer and command
-socket, but it is not MCP-eligible and is omitted from contextual discovery.
+At Phase 2 delivery, `reviews.setResolved` remained registered for the existing
+renderer and command socket but was not MCP-eligible. Current source publishes
+the scoped, audited Tier 2 mutation as described in the aggregate README.
 
 Catalog publication exposes only:
 
@@ -386,7 +394,8 @@ fallback.
 - Existing `reviews:list` and `reviews:setResolved` renderer IPC remain.
 - MCP enforces non-empty, no-extra-field `reviews.list` input while legacy
   renderer/socket validation preserves its previous compatibility behavior.
-- `reviews.setResolved` remains available only to renderer and command socket.
+- At Phase 2 delivery, `reviews.setResolved` remained available only to
+  renderer and command socket.
 - `actions:list` and Quick Actions discovery are unchanged.
 - `packages/orpheus-cli` offline SQLite/JSONL reads remain independent and work
   without the app.

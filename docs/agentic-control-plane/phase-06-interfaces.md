@@ -1,7 +1,8 @@
 # Phase 6: Settings and Resources Interfaces
 
 **Status:** implemented and deterministically tested; core live MCP
-read/patch paths validated, restart-required live path pending<br>
+read/patch paths historically validated, restart-required live path pending.
+Agent Tools exposure refresh is immediate and independent<br>
 **Phase contract:** [phase-06-settings-resources.md](phase-06-settings-resources.md)
 
 ## Common constraints
@@ -190,7 +191,7 @@ at 1 MiB.
 | --- | --- |
 | `invalid` | Unknown field, malformed model/effort, empty patch, duplicate kind, or bound violation |
 | `not_found` | Unknown or cross-project target, including a non-self mutation target |
-| `forbidden` | Missing exact permission or risk-tier grant |
+| `forbidden` | Invalid runtime permission, disabled exposure, or failed risk-tier policy |
 | `unavailable` | The canonical settings/resource owner cannot produce an authoritative result |
 | `failed` | Redacted unexpected internal failure |
 

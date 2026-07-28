@@ -150,11 +150,20 @@ context are not treated as runtime identity.
 MCP is the primary agent discovery contract:
 
 - `tools/list` is generated from catalog descriptors allowed for that context;
+- effective catalog exposure has a monotonic process-local revision; the bridge
+  advertises `tools.listChanged`, long-polls for revisions after MCP
+  initialization, and refreshes without restarting the workspace or bridge;
 - JSON schemas come from the catalog, not hand-written MCP copies;
 - read tools arrive before mutation tools;
 - self/project restrictions are visible in descriptions and enforced in core;
 - internal/renderer-only capabilities are omitted, not merely documented as
   forbidden.
+
+Settings → Orpheus Agent Tools is a persisted deny-only layer over otherwise
+authorized MCP descriptors. It can remove discovery and invocation but cannot
+grant a permission or widen target/resource scope. Invocation always rechecks
+main policy, so a client calling a stale cached tool name cannot bypass a newly
+disabled tool or changed target authorization.
 
 Resources may provide identity, status, and documentation, but state-changing
 work remains explicit tools. `orpheus ai skill` and `orpheus ai schema` remain
@@ -194,6 +203,18 @@ cannot bypass catalog policy or call renderer clicks/CLI subprocesses. A
 persisted automation stores trigger, operation id, validated params, scope,
 limits, enabled state, and idempotency policy. Each run stores timestamps,
 result, retry decision, and audit correlation id.
+
+Management is a separate authority. Renderer IPC/preload and nine
+`automations.*` MCP descriptors can manage definitions and bounded run history.
+The MCP descriptors require `automations.manage`, accept only the calling
+runtime's exact bound workspace, return non-enumerating absence outside it, and
+are allowed only on `mcp`. They are never automation-eligible, preventing
+recursive automation administration.
+
+Settings → Automations consumes the renderer API for definition editing,
+explicit enable/delete/retry confirmations, and redacted run history. This is
+an automation-management surface, not a permission or grant-administration
+surface.
 
 ## 5. Semantic control
 
@@ -290,6 +311,8 @@ leases registered and resolved by main, rotating when that runtime restarts.
 Transport access is necessary but not sufficient: the invocation pipeline also
 applies:
 
+- current main-observed live-runtime identity; invalid, dead, rotated, revoked,
+  stale, or mismatched bindings fail closed;
 - current-workspace identity and same-project defaults;
 - explicit authorization for cross-project access;
 - self-close/self-archive protection;
@@ -299,6 +322,12 @@ applies:
 - risk and surface filtering from descriptors;
 - explicit account/app-global grants for source-account data;
 - timeout, concurrency, and body/output-size limits.
+
+Valid current managed runtimes receive the registered runtime permission
+vocabulary. Exact resource authorization remains operation-specific: pane
+layout/surface scope is derived from current persisted pane state, settings and
+review mutations remain self/scoped and audited, and user Agent Tools
+preferences may only further deny exposure.
 
 Caller-supplied workspace ids are treated as claims and resolved against known
 state. Automations use persisted principals, not fabricated workspace env.

@@ -4,6 +4,10 @@
 reconfirmed, with three focused final-fix paths still pending<br>
 **Phase contract:** [phase-03-workspace-orchestration.md](phase-03-workspace-orchestration.md)
 
+> **Historical phase record.** The default mutation-absence validation below
+> records Phase 3 delivery, not the current aggregate runtime permission model.
+> See [README.md](README.md#2026-07-28-current-source-delta).
+
 ## Purpose
 
 This document records the delivered transport-neutral Phase 3 operation

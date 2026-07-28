@@ -1,7 +1,10 @@
 # Phase 7: Durable Automations
 
 **Status:** implemented and deterministically verified; packaged schedule,
-event, restart-recovery, and cleanup paths live-validated<br>
+event, restart-recovery, and cleanup paths historically live-validated.
+Production renderer/MCP management APIs, the Settings renderer surface, and
+manual retry generations are source-complete; packaged/manual management
+validation pending<br>
 **Roadmap:** [roadmap.md](roadmap.md)<br>
 **Validation ledger:** [Phase 8](roadmap.md#8-integrated-validation)<br>
 **Depends on:** the canonical control registry and declarative database migration engine
@@ -202,9 +205,51 @@ the same SQLite transaction as the state change. Validation, grant, conflict,
 and persistence failures emit a denied/failed audit with request, definition,
 and principal correlation; an audit-write failure rolls the mutation back.
 
-There is no production grant-administration or automation-management UI/API.
-For batched live validation only, the authenticated command socket exposes a
-fixed fixture protocol only when the process identity is exactly `Orpheus Dev`
+There is still no production grant-administration surface. Current source adds
+a strict renderer IPC/preload automation-management API for:
+
+- operation catalog and definition list/detail;
+- create/update with validated drafts and optimistic `updatedAt` checks;
+- enable/disable and delete;
+- bounded run history with eligibility metadata;
+- manual retry as a new retry generation linked to the source run.
+
+Creation/update persists a definition disabled until an explicit enable action.
+Settings → Automations is source-complete. It provides the server-owned safe
+operation catalog, a definition list/editor, explicit confirmations before
+enable, delete, or retry, and bounded redacted run history. The run view
+refreshes from push events and a visibility-aware four-second poll. A packaged
+manual renderer pass has not yet exercised this surface.
+
+Nine matching managed-MCP descriptors are also source-complete:
+
+- Tier 0: `automations.catalog`, `automations.list`, `automations.get`, and
+  `automations.listRuns`;
+- Tier 2: `automations.create`, `automations.update`,
+  `automations.setEnabled`, `automations.delete`, and
+  `automations.retryRun`.
+
+All require `automations.manage`, a valid live workspace-agent binding, and the
+calling runtime's exact bound project/workspace. Create/update reject any other
+scope; list/get/run/retry paths filter ownership and return non-enumerating
+`not_found` outside it. Create/update force the definition disabled until an
+explicit enable operation. Mutations use the management audit path, and update,
+enable, and delete require the current `updatedAt` revision.
+
+These descriptors allow only the `mcp` surface and declare no automation
+eligibility. An automation therefore cannot manage or retry automations.
+Settings Agent Tools may further suppress their `automations` category without
+widening authority. This MCP surface is source/deterministic evidence only until
+a fresh packaged managed-runtime pass exercises it.
+
+The post-registration 2026-07-28 agentic harness snapshot reports 46
+registered, 46 MCP, 46 default-exposed, and 2 automation-eligible operations.
+That count is dated verification evidence rather than a stable catalog
+contract; the two automation-eligible operations remain the fixed,
+effect-free Phase 6 reads.
+
+For the historical batched live validation, the authenticated command socket
+exposed a fixed fixture protocol only when the process identity was exactly `Orpheus Dev`
 and startup captures valid `ORPHEUS_PHASE8_QA=1`,
 `ORPHEUS_PHASE8_QA_WORKSPACE_ID`, and a separate high-entropy
 `ORPHEUS_PHASE8_QA_TOKEN`. Every QA request needs both the ordinary command
@@ -244,8 +289,8 @@ Deterministic verification covers:
   audited cleanup, event bridge, and truthful CLI/automation audit correlation;
 - absence of CLI subprocess and renderer-gesture dependencies.
 
-The packaged Orpheus Dev integration batch exercised the fixed QA fixture
-without adding a production management surface:
+The historical packaged Orpheus Dev integration batch exercised the fixed QA
+fixture before the production management API was added:
 
 - a missing QA credential and malformed non-string action failed before fixture
   dispatch;
@@ -259,5 +304,5 @@ without adding a production management surface:
 - schedule/event definitions were disabled and scoped fixture cleanup
   completed.
 
-These are packaged fixture results, not a production grant-administration or
-automation-management claim.
+These remain packaged fixture results, not current-live evidence for the
+production renderer/MCP management APIs or manual retry generations.

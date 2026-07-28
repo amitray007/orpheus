@@ -1,7 +1,8 @@
 # Phase 5: Terminal Observability
 
-**Status:** implemented, deterministically tested, and rebuilt live-validated
-for exact scoped pane observation<br>
+**Status:** exact scoped pane observation historically live-validated; bounded
+native Ghostty screen/scrollback tail implemented and deterministically tested,
+with fresh packaged-live output validation pending<br>
 **Roadmap:** [roadmap.md](roadmap.md)<br>
 **Depends on:** [Phase 2: Self Identity + Read-only MCP](phase-02-self-identity-readonly-mcp.md)
 and the Phase 3 same-project policy contract
@@ -31,10 +32,10 @@ no Orpheus project identity and are available only to the exact pane-bound
 runtime or a runtime with the exact server-issued layout and pane-surface
 scope; directory coincidence never grants access.
 
-`terminals.read` is not in the default 11-tool managed-runtime grant. It
-requires an explicit server-owned grant. The Phase 8 `Orpheus Dev` QA source
-can grant it only to the exact configured, current main-observed live runtime;
-production and invalid, pending, stale, or revoked bindings remain fail-closed.
+Current valid, main-observed live runtimes receive `terminals.read`. Invalid,
+pending, dead, stale, rotated, revoked, or mismatched bindings fail closed.
+Pane observation remains available only through exact DB-derived layout/surface
+scope; Settings Agent Tools can further suppress the terminal category or tools.
 
 ## Explicit exclusions
 
@@ -170,10 +171,13 @@ type GetOutputTailInput = {
 ```
 
 The output tail is available only from an explicitly registered authoritative
-UTF-8 text-stream provider. Providers must enforce both byte and line bounds
-before returning and report truncation. The current libghostty EXEC backend
-does not provide Orpheus with PTY output bytes, so current native surfaces
-return `availability: "unsupported"` with a null value. No transcript, OSC
+UTF-8 provider. Providers must enforce both byte and line bounds before
+returning and report truncation. Current source uses Ghostty's native
+screen/scrollback reader for the exact authorized surface, with a 500 ms native
+cache and hard caps in both native and control layers. It returns bounded
+visible screen/scrollback text, not an unbounded PTY byte log. A missing or
+unreadable surface returns `unavailable`; an installation without an
+authoritative provider may still return `unsupported`. No transcript, OSC
 title, screenshot, renderer, or OCR fallback exists.
 
 ## `terminals.subscribe`
@@ -234,8 +238,9 @@ The Phase 5 verification harness must cover:
 5. explicit unavailable, unsupported, stale, and offline results;
 6. bounded terminal lists, transcript scans, per-turn text, output requests,
    journal size, response event count, waiter count, and timeout;
-7. unsupported output tails when no authoritative text provider exists;
-8. byte/line truncation when a fake authoritative provider is injected;
+7. unsupported output tails when no authoritative provider exists and
+   unavailable output when a native surface cannot be read;
+8. native and injected-provider byte/line truncation;
 9. initial snapshot plus replay when a transition occurs during snapshot
    construction;
 10. normal long-poll delivery, timeout, filtered events, cursor overflow, and
@@ -243,7 +248,7 @@ The Phase 5 verification harness must cover:
 11. no renderer, OCR, screenshot, settings-write, terminal-input, shell
     execution, or secret-bearing imports in the observation core.
 
-The first packaged scoped-pane run mounted and later destroyed the real native
+The historical first packaged scoped-pane run mounted and later destroyed the real native
 surface, but exposed an integration defect: `terminals.list` omitted the pane
 and `terminals.get`, `terminals.getOutputTail`, and `terminals.subscribe`
 returned non-enumerating `not_found`. The observation policy accepted
@@ -259,11 +264,17 @@ Workbench control harnesses pass with coverage for lifecycle configuration,
 explicit unsupported output tail, subscription snapshot, de-duplication,
 boundary truncation, and denial paths.
 
-The rebuilt packaged app repeated pane start/focus, native mount,
+The rebuilt packaged app then repeated pane start/focus, native mount,
 `terminals.list`, `terminals.get`, the explicit `unsupported` output-tail
 result, and a subscription snapshot through managed MCP. Stop destroyed the
 native surface; the subsequent list omitted it and direct get returned the
 expected non-enumerating `not_found`.
+
+That `unsupported` result remains valid historical live evidence for the source
+state tested in that batch. It is not current proof of the new native
+screen/scrollback provider. A fresh packaged run must confirm bounded text,
+byte/line truncation, unavailable behavior after surface loss, and secret-safe
+result handling before the new output path is marked current-live.
 
 ## Rollback
 

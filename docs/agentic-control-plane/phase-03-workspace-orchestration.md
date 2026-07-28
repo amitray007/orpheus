@@ -6,6 +6,12 @@ reconfirmed, with three focused final-fix paths still pending<br>
 **Interfaces:** [phase-03-interfaces.md](phase-03-interfaces.md)<br>
 **Depends on:** [Phase 2: Self Identity + Read-only MCP](phase-02-self-identity-readonly-mcp.md)
 
+> **Historical phase record.** Default-grant counts and mutation-absence
+> evidence below describe Phase 3 delivery. Current source grants valid live
+> managed runtimes the registered permission vocabulary and applies Settings
+> Agent Tools only as a deny layer. See
+> [README.md](README.md#2026-07-28-current-source-delta).
+
 ## Outcome
 
 Phase 3 adds one main-process `WorkspaceOrchestrationService` for semantic
@@ -139,13 +145,13 @@ type Phase3WorkspacePermission =
 reversible lifecycle/presentation state. Archive has its own Tier 3 permission
 and never inherits from close.
 
-Default managed-runtime permissions are `identity.read`, `projects.read`,
-`workspaces.read`, `workspaces.wait`, and `reviews.read`. They expose exactly 11
-safe tools: the Phase 2 nine plus `workspaces.getLineage` and
-`workspaces.wait`. Create, start, open, send, close, reopen, rename, and archive
-descriptors require a server-owned grant source to add their permissions within
-the configured maximum risk tier. Phase 3 provides that grant seam but no
-persisted grant store or user-facing grant UI.
+At Phase 3 delivery, default managed-runtime permissions were `identity.read`,
+`projects.read`, `workspaces.read`, `workspaces.wait`, and `reviews.read`. They
+exposed exactly 11 safe tools: the Phase 2 nine plus
+`workspaces.getLineage` and `workspaces.wait`. Create, start, open, send, close,
+reopen, rename, and archive descriptors required a server-owned grant source to
+add their permissions within the configured maximum risk tier. This is
+historical delivery state; the current aggregate model is linked above.
 
 ## Creation and lineage
 
@@ -377,7 +383,7 @@ The deterministic harnesses cover:
 `bun run test:workspace-orchestration` and the full `bun run check` quality gate
 passed.
 
-The packaged worktree app and live acceptance pass established:
+The historical packaged worktree app and live acceptance pass established:
 
 - managed MCP calls for `self.get`, `workspaces.getLineage`, and a typed
   `workspaces.wait` timeout;

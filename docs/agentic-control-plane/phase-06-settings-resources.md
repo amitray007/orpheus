@@ -1,7 +1,9 @@
 # Phase 6: Settings and Resources
 
 **Status:** implemented and deterministically tested; core live MCP
-read/patch paths validated, restart-required live path pending<br>
+read/patch paths historically validated, restart-required live path pending.
+Current Agent Tools exposure refresh is immediate and does not change this
+model/effort restart contract<br>
 **Roadmap:** [roadmap.md](roadmap.md)<br>
 **Interfaces:** [phase-06-interfaces.md](phase-06-interfaces.md)<br>
 **Depends on:** [Phase 3: Workspace Orchestration](phase-03-workspace-orchestration.md)
@@ -92,8 +94,8 @@ the workspace patch remains MCP-only.
   equal the trusted binding's workspace.
 - Ambient context, cwd, PID, and the app-global command token do not supply
   MCP identity or authority.
-- Default managed runtime grants do not include any Phase 6 permission.
-  Publication requires an injected exact grant.
+- Current valid, main-observed live runtimes receive the Phase 6 permissions.
+  Invalid/stale identity and disabled Agent Tools exposure fail closed.
 - Main's automation policy grants only the two effect-free reads, at Tier 0,
   for the exact existing workspace/project scope. It never grants app scope or
   `settings.patchWorkspace`.
@@ -173,7 +175,8 @@ a filesystem guess would violate the phase's domain-owner rule.
 Deterministic verification must cover:
 
 - strict schemas with `additionalProperties: false`;
-- default-grant omission and exact injected-grant publication;
+- valid-runtime publication, invalid/stale denial, and deny-only Agent Tools
+  exposure;
 - self-only writes and non-enumerating same-project reads;
 - model/effort parity with `composeClaudeLaunch`;
 - provenance across global, project, and workspace layers;
@@ -186,7 +189,7 @@ Deterministic verification must cover:
 - automation discovery/idempotency pairing, exact-scope default grants,
   cross-project denial, and workspace-patch exclusion.
 
-The packaged integration batch verified exact scoped managed-MCP discovery,
+The historical packaged integration batch verified then-injected exact scoped managed-MCP discovery,
 `settings.getEffective`, sanitized `resources.listProjectMetadata`, and a
 self-workspace effort patch with correlated request/audit ids and effects. The
 test then restored the original workspace effort override to `high` and
@@ -195,3 +198,8 @@ confirmed both the override and effective value were `high`.
 That restored result reported `restartRequired: false`, so the live batch did
 not exercise a native restart-to-apply transition. That focused path remains
 deterministic-only and must not be inferred from the successful patch/restore.
+
+Agent Tools settings are a separate control-plane exposure preference. Their
+revisioned `tools/listChanged` refresh applies to connected MCP bridges without
+restarting a workspace. It must not be used as evidence that a model/effort
+launch change can apply without the `restartRequired` workflow above.

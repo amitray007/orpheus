@@ -1,8 +1,10 @@
 # Orpheus Agentic Control Plane
 
-**Status:** Phases 1–8 implemented; the current integration batch
+**Status:** Phases 1–8 implemented. The recorded packaged integration batch
 live-validated Phase 3 background open, Phase 4 controls, Phase 5 exact scoped
-pane observation, Phase 6 reads/patch, and Phase 7–8 automation recovery<br>
+pane observation, Phase 6 reads/patch, and Phase 7–8 automation recovery.
+The 2026-07-28 current-source delta below is deterministic/source evidence and
+still needs a fresh packaged live pass.<br>
 **Scope:** local Orpheus app, its renderer, bundled CLI, managed Claude sessions, and durable automations
 
 The Agentic Control Plane makes Orpheus programmable through stable, semantic
@@ -13,6 +15,39 @@ the same control core.
 This is an additive design. The existing CLI remains supported, including its
 direct SQLite and JSONL reads while the app is offline. There is no deletion,
 deprecation, or compatibility-removal phase in this plan.
+
+### 2026-07-28 current-source delta
+
+- A valid, current, main-observed managed Claude runtime receives the complete
+  registered runtime permission vocabulary. Pending, dead, rotated, revoked, or
+  mismatched identities fail closed.
+- Settings → Orpheus Agent Tools is a persisted, deny-only exposure layer over
+  MCP categories and individual tools. It cannot grant authority beyond runtime
+  identity, risk, target, or exact resource-scope policy.
+- Effective catalog changes are revisioned. A connected MCP bridge long-polls
+  for changes, advertises `tools.listChanged`, and refreshes `tools/list`
+  without a workspace or MCP restart.
+- Before the automation-management descriptors landed, the all-enabled
+  deterministic catalog snapshot contained 37 of 37 MCP-eligible descriptors.
+  The post-registration 2026-07-28 harness snapshot reports 46 registered, 46
+  MCP, 46 default-exposed, and 2 automation-eligible operations. These dated
+  counts are verification evidence, not a normative catalog contract.
+- `reviews.setResolved` is now a scoped Tier 2 MCP mutation with target
+  revalidation and redacted audit records.
+- Ghostty exposes a bounded authoritative screen/scrollback tail. Source and
+  deterministic coverage pass; a fresh packaged-live output-tail result is
+  pending.
+- Production renderer IPC/preload and nine MCP-only `automations.*` management
+  operations now cover catalog/list/get/create/update/enable/delete, run
+  history, and manual retry generations. MCP management is restricted to the
+  caller's exact bound workspace and is never automation-eligible. Settings →
+  Automations is source-complete for definition editing, explicit
+  enable/delete/retry confirmations, and redacted run history; packaged/manual
+  renderer validation is pending.
+
+Tool-exposure refresh is independent of Phase 6 launch settings:
+model/effort patches still report `restartRequired` through the existing
+workspace dirty/restart-to-apply contract.
 
 See [architecture.md](architecture.md) for boundaries, adapter contracts,
 security, migration rules, and decision records;
@@ -72,8 +107,8 @@ snapshot.
 | Dashboard data services | Typed renderer IPC and main-process domain modules provide GitHub account snapshots, provider-neutral usage, activity/contribution windows, persisted stale-while-revalidate caches, and background pushes | `src/shared/ipc.ts`, `src/main/githubDashboard.ts`, `providerUsage.ts`, `claudeActivityWindow.ts`, `db/dashboardCache.ts`, `usagePoller.ts` |
 | Review/workbench        | Diff viewing and local review comments exist                                                                                                                                                               | `src/main/gitDiff.ts`, `reviewStore.ts`, `ipc/reviews.ts`, `src/renderer/src/components/workbench/`                                         |
 | Panes                   | Persisted panel/layout/terminal hierarchy and native surfaces exist                                                                                                                                        | `src/main/paneStore.ts`, `ipc/panes.ts`, `src/renderer/src/components/panes/`                                                               |
-| MCP                     | A bundled stdio bridge and runtime-lease-scoped `/control` protocol are implemented. Default managed runtimes discover exactly 11 safe read/wait tools; workspace mutations require explicit server-owned grants | `packages/orpheus-mcp/`, `src/main/controlPlane/`, `src/main/commandServer.ts`                                                   |
-| Automations             | Durable bounded schedules/events invoke the canonical registry in-process. Two effect-free Phase 6 reads have fixed Tier 0 exact-scope grants; production management remains absent | `src/main/automations/`, `src/main/controlPlane/safeAutomationGrants.ts` |
+| MCP                     | A bundled stdio bridge and runtime-lease-scoped `/control` protocol are implemented. Valid current managed runtimes receive the registered permission vocabulary; Settings can only suppress MCP exposure. Revisioned `tools/listChanged` refresh updates connected bridges without restart | `packages/orpheus-mcp/`, `src/main/controlPlane/`, `src/main/commandServer.ts` |
+| Automations             | Durable bounded schedules/events invoke the canonical registry in-process. Two effect-free Phase 6 reads retain fixed Tier 0 exact-scope automation grants. Renderer IPC/preload, Settings → Automations, and nine MCP-only exact-bound-workspace operations support definitions, state, runs, and manual retry generations; MCP management is never automation-eligible. Packaged/manual management-surface validation is pending | `src/main/automations/`, `src/main/ipc/automations.ts`, `src/main/controlPlane/automationManagementCapabilities.ts`, `src/main/controlPlane/safeAutomationGrants.ts`, `src/renderer/src/components/dashboard/settings/OrpheusAutomationsSection.tsx` |
 
 The control registry is now authoritative for the Phase 1 review proof, the
 Phase 2 managed read catalog, and Phase 3 workspace orchestration. Split
@@ -170,9 +205,10 @@ the native UI adapter. Automations invoke the core in-process.
 2. **Self Identity + Read-only MCP — implemented and validated.**
    The bundled adapter exposes `self.get`, project/workspace/status/transcript/
    last-turn reads, review reads, and operation descriptions through ephemeral
-   managed `--mcp-config`. Live validation confirmed eventual discovery of all
-   nine tools, exact bound identity, non-enumerating cross-project denial, and
-   identity preservation across hide/reattach. It does not mutate user/global
+   managed `--mcp-config`. The historical Phase 2 live pass confirmed eventual
+   discovery of all nine then-delivered tools, exact bound identity,
+   non-enumerating cross-project denial, and identity preservation across
+   hide/reattach. It does not mutate user/global
    `.mcp.json`. See
    [phase-02-self-identity-readonly-mcp.md](phase-02-self-identity-readonly-mcp.md).
    Account-wide Home dashboard reads and active source refreshes remain
@@ -181,10 +217,11 @@ the native UI adapter. Automations invoke the core in-process.
    One main-process service exposes semantic create/start/open/send/wait/
    close/reopen/rename/archive operations plus lineage reads, with strict
    same-project runtime identity, background defaults, typed receipts, and
-   preflighted Tier 3 archive. Default managed MCP grants expose exactly the
-   Phase 2 nine safe tools plus `workspaces.getLineage` and `workspaces.wait`;
-   mutations require explicit server-owned grants. There is no persisted grant
-   store or user grant UI yet. Deterministic checks and the full repository gate
+   preflighted Tier 3 archive. At Phase 3 delivery, default managed MCP grants
+   exposed the Phase 2 nine safe tools plus `workspaces.getLineage` and
+   `workspaces.wait`; mutations required explicit server-owned grants. That
+   grant inventory is historical and has since been superseded by the
+   2026-07-28 current-source delta above. Deterministic checks and the full repository gate
    passed. Packaged/live validation covered MCP reads, CLI lifecycle/fork/
    archive/audit behavior, and renderer create/fork. The current batch also
    confirmed that packaged CLI `ws open --background` mounts an unmounted
@@ -200,15 +237,16 @@ the native UI adapter. Automations invoke the core in-process.
    validated.** Managed MCP and a real renderer acknowledgement exercised state,
    tab selection, file/diff open, layout selection, and pane start/focus/stop
    through exact scope. Unavailable/partial paths remain deterministic-only. An
-   agent controls its own workbench and explicitly granted pane/layout state
+   agent controls its own workbench and exact server-resolved pane/layout state
    through semantic domain commands, with no click simulation. See
    [phase-04-workbench-pane-control.md](phase-04-workbench-pane-control.md) and
    [phase-04-interfaces.md](phase-04-interfaces.md).
 5. **Terminal Observability — implemented and rebuilt live-validated.** Five
    Tier 0 `terminals.read` queries expose authoritative lifecycle, readiness,
    command/cwd, status, session/transcript, and bounded output-tail data where
-   it exists. Current libghostty surfaces return explicit `unsupported` output
-   tails because Orpheus does not receive an authoritative text stream. The
+   it exists. The recorded packaged batch returned explicit `unsupported`
+   output tails. Current source now reads bounded authoritative Ghostty
+   screen/scrollback text; that new native path remains packaged-live pending. The
    packaged batch exposed a pane-discovery/lookup defect after a native pane
    mounted; exact layout/surface scope is now honored in source, bounded-list
    harnesses, and the rebuilt app. Live start/list/get/tail/subscribe/stop
@@ -217,35 +255,44 @@ the native UI adapter. Automations invoke the core in-process.
 6. **Settings/Resources — implemented with core live MCP validation.** MCP
    exposes effective model/effort provenance, a
    self-only model/effort workspace patch, and sanitized same-project MCP
-   server/hook/slash-command/subagent metadata. Default runtime grants remain
-   fail-closed. The packaged batch exercised effective reads, sanitized project
-   metadata, and a workspace effort patch, then restored the original `high`
-   override and confirmed `high` remained effective. The native
-   restart-required path was not exercised because the restored result did not
-   require a restart. See
+   server/hook/slash-command/subagent metadata. Valid current runtime identity
+   receives the registered permissions, while invalid identity and disabled
+   Agent Tools exposure fail closed. The packaged batch exercised effective
+   reads, sanitized project metadata, and a workspace effort patch, then
+   restored the original `high` override and confirmed `high` remained
+   effective. The native restart-required path was not exercised because the
+   restored result did not require a restart. See
    [phase-06-settings-resources.md](phase-06-settings-resources.md) and
    [phase-06-interfaces.md](phase-06-interfaces.md).
 7. **Durable Automations — implemented and live-validated through the Dev QA
-   fixture.** Persist
+   fixture; production management API added in current source.** Persist
    triggers, semantic invocations, policy, budgets, retries, idempotency keys,
    run history, and a transactionally coupled internal-event outbox; execute
    through the same control core. Main has one durable workspace-completion
    event and fixed Tier 0 grants for two Phase 6 reads. Packaged validation
    covered negative QA authentication/action parsing, schedule and
    workspace-completion event runs, duplicate-create reuse, correlated
-   request/audit ids, restart recovery, disable, and scoped cleanup. See
+   request/audit ids, restart recovery, disable, and scoped cleanup. Current
+   source additionally exposes strict renderer IPC/preload management and nine
+   MCP-only, exact-bound-workspace `automations.*` management operations for
+   definitions, enable/disable, run history, and manual retry generations.
+   Those operations are never automation-eligible. Settings → Automations is
+   source-complete for definition editing, explicit enable/delete/retry
+   confirmations, and redacted run history; packaged/manual renderer
+   validation is pending. See
    [phase-07-durable-automations.md](phase-07-durable-automations.md).
 8. **Integrated Validation — deterministic suite and major packaged paths
    exercised.** Verify parity across MCP,
    renderer, CLI, automation, offline reads, restart recovery, policy failures,
-   and audit records. The current batch proved default/scoped MCP inventory,
-   renderer/native effects, QA fail-closed behavior, durable automation
-   recovery, and recursive redaction. The Dev QA elevation itself requires a
-   current main-observed `live` runtime with a valid PID; pending, revoked, and
-   stale bindings retain the default read-only grant. The exact-source build,
-   Phase 5 live revalidation, app-stopped offline reads, and fixture cleanup
-   passed; residual negative-path limitations and the completed staged-diff
-   secret review are recorded in the evidence ledger. See
+   and audit records. The historical packaged batch proved default/scoped MCP
+   inventory, renderer/native effects, QA fail-closed behavior, durable
+   automation recovery, and recursive redaction. In that historical QA model,
+   elevation required a current main-observed `live` runtime with a valid PID;
+   pending, revoked, and stale bindings retained the then-default read-only
+   grant. Current production identity instead fails those bindings closed. The
+   exact-source build, Phase 5 live revalidation, app-stopped offline reads, and
+   fixture cleanup passed; residual negative-path limitations and the completed
+   staged-diff secret review are recorded in the evidence ledger. See
    [the Phase 8 roadmap record](roadmap.md#8-integrated-validation) for the
    evidence ledger and pending packaged checklist.
 

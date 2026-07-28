@@ -4,6 +4,12 @@
 **Roadmap:** [roadmap.md](roadmap.md)<br>
 **Proof slice:** `reviews.list` and `reviews.setResolved`
 
+> **Historical phase record.** This document preserves the Phase 1 delivery
+> boundary and its evidence. Later phases now publish both review operations to
+> managed MCP, including scoped, audited `reviews.setResolved`. See
+> [README.md](README.md#2026-07-28-current-source-delta) for current aggregate
+> behavior.
+
 ## Outcome
 
 Add a small, transport-neutral control registry and route the two existing

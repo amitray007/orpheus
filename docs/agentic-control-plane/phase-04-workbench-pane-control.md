@@ -9,7 +9,7 @@ controls validated, negative live paths pending<br>
 ## Outcome
 
 Phase 4 adds semantic, self-scoped control over the calling runtime's Workbench
-and explicitly granted persisted pane layouts. Public operations never accept a
+and exact server-resolved persisted pane layouts. Public operations never accept a
 DOM selector, coordinate, accessibility label, key sequence, command, cwd, or
 workspace id.
 
@@ -22,7 +22,8 @@ The frozen operation set is:
 
 Workbench targets are resolved only from a trusted runtime lease. Panes v2 is
 app-global, not workspace-owned, so pane operations additionally require exact
-server-issued layout and surface grants. Directory equality is never identity.
+layout and surface scope derived by main from current persisted pane state.
+Directory equality is never identity.
 
 ## Boundary
 
@@ -56,10 +57,10 @@ models, and environment.
 | `panes.stopTerminal` | `terminals.control` | 2 | `surface.destroy`, `process.terminate` |
 | `panes.focusTerminal` | `terminals.control` | 1 | `ui.present`, `ui.focus` |
 
-Default runtime grants do not include either new permission. Deterministic
-tests inject them explicitly. The Phase 8 `Orpheus Dev` QA grant can publish
-them only to one current main-observed live runtime and exact configured pane
-scope; there is no production user-grant surface.
+Current valid, main-observed live runtimes receive both permissions. Invalid or
+stale runtime identity fails closed, and pane calls still require exact
+DB-derived layout/surface scope immediately before effects. Settings Agent
+Tools may suppress discovery/invocation but cannot widen that scope.
 
 `openDiff` v1 supports only working-tree files and Orpheus local review targets.
 PR/GitHub targets are excluded because opening them may cross account and
@@ -67,14 +68,14 @@ network authority.
 
 ## Validation record
 
-The packaged integration batch exercised the exact scoped grant through managed
-MCP and a real renderer acknowledgement. It read Workbench and pane state,
+The historical packaged integration batch exercised the then-injected exact QA
+grant through managed MCP and a real renderer acknowledgement. It read Workbench and pane state,
 selected Files and Git, opened a workspace file and its working-tree diff,
 selected the granted layout, and started, focused, and stopped the granted pane
 terminal. Completed mutation receipts carried correlated request/audit ids and
 applied effect receipts. No coordinates, selectors, accessibility scripting,
 or generic key simulation were used.
 
-The live batch did not force renderer loss or an unavailable/partial
+That live batch did not force renderer loss or an unavailable/partial
 acknowledgement. Those negative paths remain covered by deterministic harnesses
 only.

@@ -216,21 +216,40 @@ wins. No match uses the capability's ask/deny default. Changing grants is tier 3
 
 ### Delivered grant state
 
-The implemented managed-runtime default is deliberately smaller than the full
-permission vocabulary. It grants only `identity.read`, `projects.read`,
-`workspaces.read`, `workspaces.wait`, and `reviews.read`, which currently
-publish exactly 11 query/wait operations. Workspace mutations and every Phase
-4–6 permission require a server-owned injected grant; there is no persisted
-grant store or production grant-administration UI.
+As of the 2026-07-28 current-source delta, a valid, current, main-observed
+managed Claude runtime receives the complete registered runtime permission
+vocabulary. Main still requires the same live binding, valid PID, matching
+runtime/surface/workspace/project/conversation identity, and unrotated issuance
+record. Missing, malformed, pending, dead, revoked, stale, replaced, mismatched,
+or throwing state receives no production runtime authority.
 
-The Phase 8 `Orpheus Dev` QA grant is process-local and exact-scope. Its launch
-configuration selects a candidate but does not establish identity. Main grants
-Phase 4–6 permissions only when the candidate is the same current
-main-observed Claude binding, has state `live` and a valid PID, matches the
-configured project/workspace, and resolves the configured pane terminal.
-Missing, malformed, pending, revoked, stale, replaced, or throwing state
-receives only the default grant. Production and worktree app identities cannot
-enable this source.
+Pane authority remains narrower than permission publication. Main derives the
+runtime's exact layout and surface scope from current persisted pane state;
+directory or cwd equality never supplies scope. Authorization rechecks that
+scope immediately before an effect.
+
+Settings → Orpheus Agent Tools persists category and per-tool exposure
+preferences. Exposure is deny-only: disabling a tool removes discovery and
+blocks invocation, while enabling it cannot add permissions, widen exact scope,
+raise the allowed risk tier, or bypass operation policy. Effective exposure
+changes increment a process-local catalog revision and notify connected MCP
+bridges through `tools.listChanged`, so they do not require a runtime restart.
+Before the automation-management descriptors landed on 2026-07-28, the
+all-enabled deterministic snapshot contained 37 of 37 MCP-eligible descriptors;
+the post-registration harness snapshot reports 46 registered, 46 MCP, 46
+default-exposed, and 2 automation-eligible operations. These counts are dated
+evidence, not a normative catalog contract.
+
+The current vocabulary also includes `automations.manage`. Its nine
+`automations.*` descriptors are MCP-only, require a trusted live
+workspace-agent binding, and filter definitions/runs to the binding's exact
+project and workspace. They never declare the `automation` surface, so an
+automation cannot create, enable, delete, or retry another automation.
+
+The earlier Phase 8 `Orpheus Dev` injected-grant run remains historical live
+evidence for the former restricted default. It must not be read as the current
+production permission model. There is still no user-editable grant store or
+grant-administration UI; Agent Tools preferences only reduce exposure.
 
 Automation authority is separate from runtime authority. Definitions cannot
 grant themselves permissions. Main's fixed automation source permits only
