@@ -319,7 +319,8 @@ the native UI adapter. Automations invoke the core in-process.
    triggers, semantic invocations, policy, budgets, retries, idempotency keys,
    run history, and a transactionally coupled internal-event outbox; execute
    through the same control core. Main has one durable workspace-completion
-   event and a fixed Tier 0 grant for the `settings.getEffective` Phase 6 read.
+   event and fixed exact-workspace grants for five naturally idempotent
+   settings and workspace operations across Tiers 0–2.
    Project resource metadata remains MCP-only; its five-second cache is bounded
    to 32 entries and 2 MiB total.
    Packaged validation

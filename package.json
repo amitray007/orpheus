@@ -58,6 +58,7 @@
     "test:workbench-control": "bun run scripts/verify-workbench-pane-control.ts",
     "test:settings-resources": "bun run scripts/verify-control-plane-phase6.ts",
     "test:automations": "bun run scripts/verify-durable-automations.ts",
+    "test:automation-operations": "bun run scripts/verify-production-automation-operations.ts",
     "test:agentic-integration:harness": "bun run scripts/verify-agentic-integration.ts",
     "test:log-redaction": "bun run scripts/verify-log-redaction.ts",
     "test:agentic": "bun run scripts/verify-agentic-regression.ts",

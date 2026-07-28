@@ -284,6 +284,10 @@ Deterministic verification covers:
 - audit/run correlation and recursive result redaction;
 - production automation discovery, natural replay behavior, exact-workspace
   grants, and exclusion of resource discovery and non-allowlisted mutations;
+- the five production settings/workspace descriptors through durable
+  definition creation, fixed server grant resolution, scheduler invocation,
+  persisted run/history/audit correlation, same-occurrence deduplication,
+  convergent replay, exact-scope denial, and state cleanup;
 - production management create/update/enable/delete/list/retry policy, revision,
   audit, and ownership behavior;
 - transactional workspace-event persistence, post-commit delivery, and

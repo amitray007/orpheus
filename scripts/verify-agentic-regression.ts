@@ -27,6 +27,7 @@ const verifiers = [
   'verify-control-tool-exposure.ts',
   'verify-agent-tools-settings-ui.ts',
   'verify-durable-automations.ts',
+  'verify-production-automation-operations.ts',
   'verify-automation-management.ts',
   'verify-automation-management-mcp.ts',
   'verify-automation-management-wiring.ts',

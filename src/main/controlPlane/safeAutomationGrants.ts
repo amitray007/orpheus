@@ -105,10 +105,9 @@ function descriptorIsSafe(description: ControlDescription): boolean {
 }
 
 function scopeExists(scope: AutomationScopeBinding, deps: SafeAutomationGrantDeps): boolean {
-  if (scope.kind === 'app') return false
+  if (scope.kind !== 'workspace') return false
   const project = deps.getProject(scope.projectId)
   if (project == null || project.id !== scope.projectId) return false
-  if (scope.kind === 'project') return true
   const workspace = deps.getWorkspace(scope.workspaceId)
   return (
     workspace != null &&
@@ -117,31 +116,11 @@ function scopeExists(scope: AutomationScopeBinding, deps: SafeAutomationGrantDep
   )
 }
 
-function scopeSupportsOperation(
-  scope: AutomationScopeBinding,
-  required: 'project' | 'workspace'
-): boolean {
-  if (required === 'workspace') return scope.kind === 'workspace'
-  return scope.kind === 'project' || scope.kind === 'workspace'
-}
-
-function paramsMatchScope(
-  params: unknown,
-  scope: AutomationScopeBinding,
-  required: 'project' | 'workspace'
-): boolean {
+function paramsMatchScope(params: unknown, scope: AutomationScopeBinding): boolean {
   if (params == null || typeof params !== 'object' || Array.isArray(params)) return false
+  if (scope.kind !== 'workspace') return false
   const record = params as Record<string, unknown>
-  if (required === 'workspace') {
-    return (
-      scope.kind === 'workspace' &&
-      (record['workspaceId'] === undefined || record['workspaceId'] === scope.workspaceId)
-    )
-  }
-  return (
-    scope.kind !== 'app' &&
-    (record['projectId'] === undefined || record['projectId'] === scope.projectId)
-  )
+  return record['workspaceId'] === undefined || record['workspaceId'] === scope.workspaceId
 }
 
 /**
@@ -164,9 +143,8 @@ export function createSafeAutomationGrantSource(
       if (
         safe == null ||
         !descriptorIsSafe(description) ||
-        !scopeSupportsOperation(scope, safe.scope) ||
         !scopeExists(scope, deps) ||
-        !paramsMatchScope(params, scope, safe.scope)
+        !paramsMatchScope(params, scope)
       ) {
         return null
       }
