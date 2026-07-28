@@ -3,7 +3,10 @@ import * as path from 'node:path'
 import {
   CONTROL_PROTOCOL_VERSION,
   parseCatalog,
+  parseCatalogWait,
   parseControlEnvelope,
+  type ControlCatalog,
+  type ControlCatalogWait,
   type ControlCapability,
   type ControlEnvelope,
   type ControlRequest
@@ -38,12 +41,28 @@ function resolveSocketPath(): string {
   return socketPath
 }
 
-async function postControl(request: ControlRequest): Promise<ControlEnvelope> {
+async function postControl(
+  request: ControlRequest,
+  signal?: AbortSignal
+): Promise<ControlEnvelope> {
+  if (signal?.aborted === true) {
+    throw new ControlBridgeError('aborted', 'control request was aborted')
+  }
   const socketPath = resolveSocketPath()
   const leaseToken = requiredEnv('ORPHEUS_RUNTIME_LEASE_TOKEN')
   const body = JSON.stringify(request)
 
   const response = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+    let settled = false
+    const finish = <T>(callback: (value: T) => void, value: T): void => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', onAbort)
+      callback(value)
+    }
+    const onAbort = (): void => {
+      req.destroy(new ControlBridgeError('aborted', 'control request was aborted'))
+    }
     const req = http.request(
       {
         socketPath,
@@ -67,7 +86,7 @@ async function postControl(request: ControlRequest): Promise<ControlEnvelope> {
           chunks.push(chunk)
         })
         res.on('end', () => {
-          resolve({
+          finish(resolve, {
             statusCode: res.statusCode ?? 0,
             body: Buffer.concat(chunks).toString('utf8')
           })
@@ -78,7 +97,8 @@ async function postControl(request: ControlRequest): Promise<ControlEnvelope> {
     req.setTimeout(REQUEST_TIMEOUT_MS, () => {
       req.destroy(new Error(`control request timed out after ${REQUEST_TIMEOUT_MS}ms`))
     })
-    req.on('error', reject)
+    req.on('error', (error) => finish(reject, error))
+    signal?.addEventListener('abort', onAbort, { once: true })
     req.end(body)
   })
 
@@ -100,11 +120,32 @@ function unwrap(envelope: ControlEnvelope): unknown {
   throw new ControlBridgeError(envelope.error.code, envelope.error.message)
 }
 
-export async function listCapabilities(): Promise<ControlCapability[]> {
+export async function getCatalog(): Promise<ControlCatalog> {
   const data = unwrap(
     await postControl({ protocolVersion: CONTROL_PROTOCOL_VERSION, op: 'catalog' })
   )
   return parseCatalog(data)
+}
+
+export async function listCapabilities(): Promise<ControlCapability[]> {
+  return (await getCatalog()).capabilities
+}
+
+export async function waitForCatalogChange(
+  afterRevision: number,
+  signal?: AbortSignal
+): Promise<ControlCatalogWait> {
+  const data = unwrap(
+    await postControl(
+      {
+        protocolVersion: CONTROL_PROTOCOL_VERSION,
+        op: 'catalog.wait',
+        afterRevision
+      },
+      signal
+    )
+  )
+  return parseCatalogWait(data)
 }
 
 export async function invokeCapability(id: string, input: unknown): Promise<unknown> {

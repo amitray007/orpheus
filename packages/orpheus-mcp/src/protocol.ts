@@ -13,6 +13,7 @@ export type ControlCapability = {
 
 export type ControlRequest =
   | { protocolVersion: 1; op: 'catalog' }
+  | { protocolVersion: 1; op: 'catalog.wait'; afterRevision: number }
   | { protocolVersion: 1; op: 'invoke'; id: string; input: unknown }
 
 export type ControlError = {
@@ -61,12 +62,27 @@ export function parseControlEnvelope(value: unknown): ControlEnvelope {
   }
 }
 
-export function parseCatalog(value: unknown): ControlCapability[] {
+export type ControlCatalog = {
+  revision: number
+  capabilities: ControlCapability[]
+}
+
+export type ControlCatalogWait = {
+  revision: number
+  changed: boolean
+}
+
+export function parseCatalog(value: unknown): ControlCatalog {
   if (
     !isRecord(value) ||
     value.protocolVersion !== CONTROL_PROTOCOL_VERSION ||
+    !Number.isSafeInteger(value.revision) ||
+    (value.revision as number) < 1 ||
     !Array.isArray(value.capabilities) ||
-    !value.capabilities.every(isCapability)
+    !value.capabilities.every(isCapability) ||
+    !Object.keys(value).every((key) =>
+      ['protocolVersion', 'revision', 'capabilities'].includes(key)
+    )
   ) {
     throw new Error('invalid or unsupported control catalog')
   }
@@ -76,5 +92,19 @@ export function parseCatalog(value: unknown): ControlCapability[] {
   if (names.size !== capabilities.length) {
     throw new Error('control catalog contains duplicate capability ids')
   }
-  return capabilities
+  return { revision: value.revision as number, capabilities }
+}
+
+export function parseCatalogWait(value: unknown): ControlCatalogWait {
+  if (
+    !isRecord(value) ||
+    value.protocolVersion !== CONTROL_PROTOCOL_VERSION ||
+    !Number.isSafeInteger(value.revision) ||
+    (value.revision as number) < 1 ||
+    typeof value.changed !== 'boolean' ||
+    !Object.keys(value).every((key) => ['protocolVersion', 'revision', 'changed'].includes(key))
+  ) {
+    throw new Error('invalid or unsupported control catalog wait response')
+  }
+  return { revision: value.revision as number, changed: value.changed }
 }

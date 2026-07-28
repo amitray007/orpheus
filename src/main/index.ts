@@ -2959,6 +2959,9 @@ if (!app.requestSingleInstanceLock()) {
               runtimeLeases,
               listControl,
               invokeControl,
+              getControlCatalogRevision: () => controlToolExposure.getCatalogRevision(),
+              waitForControlCatalogRevision: (afterRevision, timeoutMs, signal) =>
+                controlToolExposure.waitForCatalogRevision(afterRevision, timeoutMs, signal),
               ...(phase8QaController == null || phase8QaConfig == null
                 ? {}
                 : {

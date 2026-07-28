@@ -53,6 +53,12 @@ export type CommandServerDeps = {
   runtimeControlGrants: RuntimeControlGrantPolicy
   listControl: (context: ControlContext) => ControlDescription[]
   invokeControl: ControlInvoker
+  getControlCatalogRevision: () => number
+  waitForControlCatalogRevision: (
+    afterRevision: number,
+    timeoutMs: number,
+    signal: AbortSignal
+  ) => Promise<{ revision: number; changed: boolean }>
   /** Present only in the explicitly enabled Orpheus Dev Phase 8 QA process. */
   phase8Qa?: Readonly<{ controller: Phase8QaController; credential: string }>
   /** Destroy the libghostty surface for a workspace (no-op if not mounted). */
@@ -147,7 +153,10 @@ type CmdBody = {
 
 type ControlRequest =
   | { protocolVersion: 1; op: 'catalog' }
+  | { protocolVersion: 1; op: 'catalog.wait'; afterRevision: number }
   | { protocolVersion: 1; op: 'invoke'; id: string; input: unknown }
+
+const CONTROL_CATALOG_WAIT_MS = 25_000
 
 const COMMAND_SOCKET_PERMISSIONS = Object.freeze([
   'identity.read',
@@ -808,6 +817,20 @@ function parseControlRequest(value: unknown): ControlRequest | null {
       : null
   }
   if (
+    record['op'] === 'catalog.wait' &&
+    Number.isSafeInteger(record['afterRevision']) &&
+    (record['afterRevision'] as number) >= 1 &&
+    Object.keys(record).every(
+      (key) => key === 'protocolVersion' || key === 'op' || key === 'afterRevision'
+    )
+  ) {
+    return {
+      protocolVersion: 1,
+      op: 'catalog.wait',
+      afterRevision: record['afterRevision'] as number
+    }
+  }
+  if (
     record['op'] === 'invoke' &&
     typeof record['id'] === 'string' &&
     record['id'].length > 0 &&
@@ -1010,6 +1033,7 @@ export function startCommandServer(deps: CommandServerDeps): {
   }
 
   const dispatch = makeDispatchTable(deps)
+  const catalogWaitControllers = new Set<AbortController>()
 
   let listening = false
   let readySettled = false
@@ -1054,8 +1078,41 @@ export function startCommandServer(deps: CommandServerDeps): {
           const capabilities = deps.listControl(context).map(publishedControlDescription)
           writeJsonResponse(res, 200, {
             ok: true,
-            data: { protocolVersion: 1, capabilities }
+            data: {
+              protocolVersion: 1,
+              revision: deps.getControlCatalogRevision(),
+              capabilities
+            }
           })
+          return
+        }
+        if (request.op === 'catalog.wait') {
+          if (request.afterRevision > deps.getControlCatalogRevision()) {
+            writeControlError(res, 400, 'invalid', 'Control catalog revision is invalid.')
+            return
+          }
+          const controller = new AbortController()
+          catalogWaitControllers.add(controller)
+          const abortWait = (): void => controller.abort()
+          res.once('close', abortWait)
+          try {
+            const result = await deps.waitForControlCatalogRevision(
+              request.afterRevision,
+              CONTROL_CATALOG_WAIT_MS,
+              controller.signal
+            )
+            if (!controller.signal.aborted && !res.destroyed) {
+              writeJsonResponse(res, 200, {
+                ok: true,
+                data: { protocolVersion: 1, ...result }
+              })
+            }
+          } catch (error) {
+            if (!controller.signal.aborted) throw error
+          } finally {
+            catalogWaitControllers.delete(controller)
+            res.removeListener('close', abortWait)
+          }
           return
         }
 
@@ -1561,6 +1618,8 @@ export function startCommandServer(deps: CommandServerDeps): {
     token,
     ready,
     close(): void {
+      for (const controller of catalogWaitControllers) controller.abort()
+      catalogWaitControllers.clear()
       if (
         typeof (server as http.Server & { closeAllConnections?: () => void })
           .closeAllConnections === 'function'
