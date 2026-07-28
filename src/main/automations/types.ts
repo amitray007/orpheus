@@ -5,6 +5,7 @@ import type {
   AutomationIdempotency as SharedAutomationIdempotency,
   AutomationEditorConfiguration as SharedAutomationEditorConfiguration,
   AutomationManualRetryReason as SharedAutomationManualRetryReason,
+  AutomationRunWithEligibility as SharedAutomationRunWithEligibility,
   AutomationRetryBudget as SharedAutomationRetryBudget,
   AutomationRollingBudget as SharedAutomationRollingBudget,
   AutomationRun as SharedAutomationRun,
@@ -72,6 +73,14 @@ export type AutomationRun = Omit<SharedAutomationRun, 'retryGeneration' | 'retry
   }>
 export type AutomationEditorConfiguration = SharedAutomationEditorConfiguration
 export type AutomationManualRetryReason = SharedAutomationManualRetryReason
+export type AutomationRunWithEligibility = SharedAutomationRunWithEligibility
+
+export type AutomationManagementAction =
+  | 'automations.createDefinition'
+  | 'automations.updateDefinition'
+  | 'automations.setEnabled'
+  | 'automations.deleteDefinition'
+  | 'automations.retryRun'
 
 export type AutomationEvent = Readonly<{
   id: string
@@ -199,12 +208,7 @@ export type AutomationAuditPort = {
     auditId: string
     requestId: string
     occurredAt: number
-    action:
-      | 'automations.createDefinition'
-      | 'automations.updateDefinition'
-      | 'automations.setEnabled'
-      | 'automations.deleteDefinition'
-      | 'automations.retryRun'
+    action: AutomationManagementAction
     definitionId: string
     principal: AutomationManagementContext['principal']
     consumer: AutomationManagementContext['consumer']
@@ -224,10 +228,10 @@ export type AutomationAuditPort = {
 export type AutomationManagementContext = Readonly<{
   requestId: string
   principal: Readonly<{
-    type: 'renderer-user' | 'cli'
+    type: 'renderer-user' | 'workspace-agent' | 'cli'
     id: string
   }>
-  consumer: 'renderer-ipc' | 'command-socket'
+  consumer: 'renderer-ipc' | 'command-socket' | 'mcp'
 }>
 
 export type AutomationTimeoutResult<T> =

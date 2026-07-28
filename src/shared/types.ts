@@ -30,6 +30,7 @@ export type ControlToolCategory =
   | 'workbench'
   | 'panes'
   | 'terminals'
+  | 'automations'
   | 'settings'
   | 'resources'
 

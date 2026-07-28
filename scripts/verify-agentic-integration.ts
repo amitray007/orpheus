@@ -30,6 +30,8 @@ import type {
 } from '../src/main/controlPlane/types'
 import { createWorkbenchCapabilities } from '../src/main/controlPlane/workbenchCapabilities'
 import { WORKSPACE_OPERATION_IDS } from '../src/main/controlPlane/workspaceCapabilities'
+import { AUTOMATION_MANAGEMENT_OPERATION_IDS } from '../src/main/controlPlane/automationManagementCapabilities'
+import type { AutomationManagementService } from '../src/main/controlPlane/automationManagementService'
 import { terminalObservationError } from '../src/main/terminalObservation/errors'
 import type { TerminalObservationService } from '../src/main/terminalObservation/service'
 import type { TerminalObservationHandlers } from '../src/main/terminalObservation/types'
@@ -113,6 +115,20 @@ const reviewMutationService = new ReviewMutationService({
   setResolved: unreachable,
   audit: { append: unreachable }
 })
+const automationManagementService = {
+  canDiscover: () => true,
+  authorize: () => ({ allowed: true as const }),
+  catalog: unreachable,
+  list: unreachable,
+  get: unreachable,
+  create: unreachable,
+  update: unreachable,
+  setEnabled: unreachable,
+  delete: unreachable,
+  listRuns: unreachable,
+  retryRun: unreachable,
+  auditRejected: unreachable
+} as unknown as AutomationManagementService
 
 const basePolicy = createTrustedRuntimeReadPolicy({
   getWorkspaceProjectId: () => 'project-1'
@@ -123,7 +139,8 @@ const registry = createConfiguredControlRegistry({
   workbenchControl: workbenchService,
   terminalObservation: terminalService,
   settingsResources: settingsService,
-  reviewMutations: reviewMutationService
+  reviewMutations: reviewMutationService,
+  automationManagement: automationManagementService
 })
 bootControlRegistry(
   registry,
@@ -133,7 +150,8 @@ bootControlRegistry(
   workbenchService,
   terminalHandlers,
   settingsService,
-  reviewMutationService
+  reviewMutationService,
+  automationManagementService
 )
 
 const reviewIds = createReviewCapabilities(reviewHandlers, {
@@ -152,7 +170,8 @@ const expectedIds = [
   ...WORKSPACE_OPERATION_IDS,
   ...workbenchIds,
   ...terminalIds,
-  ...settingsIds
+  ...settingsIds,
+  ...AUTOMATION_MANAGEMENT_OPERATION_IDS
 ]
 assert.equal(new Set(expectedIds).size, expectedIds.length, 'control operation IDs must be unique')
 assert.deepEqual(

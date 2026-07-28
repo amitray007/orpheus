@@ -18,6 +18,7 @@ import type { SettingsResourceService } from './settingsResourceService'
 import type { ControlToolExposureStore } from './controlToolExposure'
 import type { ReviewMutationService } from './reviewMutation'
 import { createMainReviewMutationService } from './reviewMutationMain'
+import type { AutomationManagementService } from './automationManagementService'
 
 export type Phase2ControlPlaneConfig = {
   authorization: ControlAuthorizationPolicy
@@ -28,6 +29,7 @@ export type Phase2ControlPlaneConfig = {
   settingsResources?: SettingsResourceService
   toolExposure?: Pick<ControlToolExposureStore, 'isEnabled'>
   reviewMutations?: ReviewMutationService
+  automationManagement?: AutomationManagementService
 }
 
 let phase2Config: Phase2ControlPlaneConfig | null = null
@@ -82,7 +84,8 @@ export function bootControlPlane(): void {
       ? undefined
       : createTerminalObservationHandlers(phase2Config.terminalObservation),
     phase2Config?.settingsResources,
-    phase2Config == null ? undefined : getReviewMutations()
+    phase2Config == null ? undefined : getReviewMutations(),
+    phase2Config?.automationManagement
   )
   booted = true
 }
@@ -118,3 +121,5 @@ export function validateRegisteredControlInput(
 }
 
 export { unwrapControlResult }
+export { AUTOMATION_MANAGEMENT_OPERATION_IDS } from './automationManagementCapabilities'
+export { AutomationManagementService } from './automationManagementService'

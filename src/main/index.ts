@@ -33,7 +33,7 @@ import { promisify } from 'node:util'
 import { pathToFileURL } from 'node:url'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import type { DoctorResult } from '../shared/types'
+import type { AutomationChangedEvent, DoctorResult } from '../shared/types'
 import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
 import { startGitWatch, stopGitWatch, stopAllGitWatches } from './git'
 import { stopFilesWatch } from './filesWatcher'
@@ -167,6 +167,7 @@ import { createMainPaneControlPort } from './workbenchControl/mainPaneAdapter'
 import { isCanonicalWorkspacePath } from './workbenchControl/pathSafety'
 import { createControlAuditStore } from './controlPlane/controlAudit'
 import {
+  AutomationManagementService,
   bootControlPlane,
   configurePhase2ControlPlane,
   describeRegisteredControl,
@@ -2779,19 +2780,6 @@ if (!app.requestSingleInstanceLock()) {
       // Boot both internal registries before renderer IPC or the deferred command
       // server can invoke them.
       const controlToolExposure = new ControlToolExposureStore(getDb(), listRegisteredControl)
-      configurePhase2ControlPlane({
-        authorization: createTrustedRuntimeReadPolicy({
-          getWorkspaceProjectId: (workspaceId) => getWorkspace(workspaceId)?.projectId ?? null
-        }),
-        reads: mainReads,
-        workspaceOrchestration: workspaceOrchestration.service,
-        workbenchControl,
-        terminalObservation: terminalObservation.service,
-        settingsResources: createMainSettingsResourceService(),
-        toolExposure: controlToolExposure
-      })
-      bootControlPlane()
-      registerControlToolsIpc(controlToolExposure)
       const automations = createAutomationRuntime({
         db: getDb(),
         registry: {
@@ -2805,11 +2793,36 @@ if (!app.requestSingleInstanceLock()) {
         }),
         allowedEventTypes: new Set([WORKSPACE_COMPLETED_EVENT])
       })
-      registerAutomationsIpc(automations.service, listRegisteredControl, (event) => {
+      const broadcastAutomationChanged = (event: AutomationChangedEvent): void => {
         const win = getMainWindow()
         if (win == null || win.isDestroyed() || win.webContents.isDestroyed()) return
-        win.webContents.send(PUSH_CHANNELS.automationsChanged, event)
+        try {
+          win.webContents.send(PUSH_CHANNELS.automationsChanged, event)
+        } catch {
+          // Best-effort invalidation: a window teardown race must not change
+          // the result of a mutation that has already committed.
+        }
+      }
+      const automationManagement = new AutomationManagementService({
+        service: automations.service,
+        listOperations: listRegisteredControl,
+        broadcastChanged: broadcastAutomationChanged
       })
+      configurePhase2ControlPlane({
+        authorization: createTrustedRuntimeReadPolicy({
+          getWorkspaceProjectId: (workspaceId) => getWorkspace(workspaceId)?.projectId ?? null
+        }),
+        reads: mainReads,
+        workspaceOrchestration: workspaceOrchestration.service,
+        workbenchControl,
+        terminalObservation: terminalObservation.service,
+        settingsResources: createMainSettingsResourceService(),
+        toolExposure: controlToolExposure,
+        automationManagement
+      })
+      bootControlPlane()
+      registerControlToolsIpc(controlToolExposure)
+      registerAutomationsIpc(automations.service, listRegisteredControl, broadcastAutomationChanged)
       automationScheduler = automations.scheduler
       automationEventCleanup = wireWorkspaceAutomationEvents({
         scheduler: automations.scheduler,

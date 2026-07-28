@@ -66,15 +66,21 @@ export function createAutomationAuditStore(db: DbLike): AutomationAuditPort {
     appendManagement(input) {
       const projectId = input.scope?.kind === 'app' ? null : (input.scope?.projectId ?? null)
       const workspaceIds = input.scope?.kind === 'workspace' ? [input.scope.workspaceId] : []
+      const consumer =
+        input.consumer === 'renderer-ipc'
+          ? 'renderer'
+          : input.consumer === 'command-socket'
+            ? 'cli'
+            : 'mcp'
       insertManagement.run(
         input.auditId,
         input.requestId,
         input.occurredAt,
-        input.consumer === 'renderer-ipc' ? 'renderer' : 'cli',
+        consumer,
         input.action,
         1,
         input.principal.type,
-        null,
+        input.principal.type === 'workspace-agent' ? input.principal.id : null,
         projectId,
         JSON.stringify(workspaceIds),
         'automations.manage',

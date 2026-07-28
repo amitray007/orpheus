@@ -20,6 +20,12 @@ import {
   type ReviewMutationService,
   withReviewMutationPolicy
 } from './reviewMutation'
+import { isAutomationManagementOperation } from './automationManagementCapabilities'
+import type { AutomationManagementService } from './automationManagementService'
+import {
+  createAutomationManagementRejectionAuditor,
+  withAutomationManagementPolicy
+} from './automationManagementPolicy'
 
 const SETTINGS_RESOURCE_OPERATIONS = new Set<string>(SETTINGS_RESOURCE_OPERATION_IDS)
 const REVIEW_MUTATION_OPERATION = 'reviews.setResolved'
@@ -32,6 +38,7 @@ export function createConfiguredControlRegistry(config: {
   settingsResources?: SettingsResourceService
   toolExposure?: Pick<ControlToolExposureStore, 'isEnabled'>
   reviewMutations?: ReviewMutationService
+  automationManagement?: AutomationManagementService
 }): ControlRegistry {
   const workspaceService = config.workspaceOrchestration
   const settingsService = config.settingsResources
@@ -51,10 +58,14 @@ export function createConfiguredControlRegistry(config: {
       ? workspacePolicy
       : withSettingsResourcePolicy(workspacePolicy, settingsService)
   const automationPolicy = withAutomationPolicy(withWorkbenchControlPolicy(settingsPolicy))
+  const automationManagementPolicy =
+    config.automationManagement == null
+      ? automationPolicy
+      : withAutomationManagementPolicy(automationPolicy, config.automationManagement)
   const authorization =
     config.toolExposure == null
-      ? automationPolicy
-      : withControlToolExposurePolicy(automationPolicy, config.toolExposure)
+      ? automationManagementPolicy
+      : withControlToolExposurePolicy(automationManagementPolicy, config.toolExposure)
 
   const workspaceAuditor =
     workspaceService == null ? null : createWorkspaceRejectionAuditor(workspaceService)
@@ -62,10 +73,22 @@ export function createConfiguredControlRegistry(config: {
     settingsService == null ? null : createSettingsResourceRejectionAuditor(settingsService)
   const reviewAuditor =
     reviewService == null ? null : createReviewMutationRejectionAuditor(reviewService)
+  const automationAuditor =
+    config.automationManagement == null
+      ? null
+      : createAutomationManagementRejectionAuditor(config.automationManagement)
   let rejectionAuditor: ControlRejectionAuditor | undefined
-  if (workspaceAuditor != null || settingsAuditor != null || reviewAuditor != null) {
+  if (
+    workspaceAuditor != null ||
+    settingsAuditor != null ||
+    reviewAuditor != null ||
+    automationAuditor != null
+  ) {
     rejectionAuditor = {
       auditRejected(input) {
+        if (isAutomationManagementOperation(input.description.id)) {
+          return automationAuditor?.auditRejected(input)
+        }
         if (input.description.id === REVIEW_MUTATION_OPERATION) {
           return reviewAuditor?.auditRejected(input)
         }

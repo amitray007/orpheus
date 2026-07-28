@@ -37,6 +37,7 @@ const CATEGORY_DEFINITIONS = Object.freeze([
   { id: 'workbench', label: 'Workbench' },
   { id: 'panes', label: 'Panes' },
   { id: 'terminals', label: 'Terminals' },
+  { id: 'automations', label: 'Automations' },
   { id: 'settings', label: 'Settings' },
   { id: 'resources', label: 'Resources' }
 ] as const satisfies readonly { id: ControlToolCategory; label: string }[])

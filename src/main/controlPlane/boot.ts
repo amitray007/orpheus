@@ -11,6 +11,8 @@ import type { WorkbenchControlService } from '../workbenchControl/service'
 import { createWorkbenchCapabilities } from './workbenchCapabilities'
 import type { SettingsResourceService } from './settingsResourceService'
 import type { ReviewMutationService } from './reviewMutation'
+import { createAutomationManagementCapabilities } from './automationManagementCapabilities'
+import type { AutomationManagementService } from './automationManagementService'
 
 export function bootControlRegistry(
   registry: ControlRegistry,
@@ -20,7 +22,8 @@ export function bootControlRegistry(
   workbenchService?: WorkbenchControlService,
   terminalObservationHandlers?: TerminalObservationHandlers,
   settingsResourceService?: SettingsResourceService,
-  reviewMutationService?: ReviewMutationService
+  reviewMutationService?: ReviewMutationService,
+  automationManagementService?: AutomationManagementService
 ): void {
   const [listCapability, setResolvedCapability] = createReviewCapabilities(reviewHandlers, {
     mcpRead: readHandlers != null,
@@ -84,5 +87,10 @@ export function bootControlRegistry(
     registry.register(effective)
     registry.register(patch)
     registry.register(resources)
+  }
+  if (automationManagementService != null) {
+    for (const capability of createAutomationManagementCapabilities(automationManagementService)) {
+      registry.register(capability)
+    }
   }
 }

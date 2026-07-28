@@ -13,10 +13,12 @@ import {
   type AutomationDefinitionDraft,
   type AutomationEvent,
   type AutomationEditorConfiguration,
+  type AutomationManagementAction,
   type AutomationManagementContext,
   type AutomationManualRetryReason,
   type AutomationRegistry,
   type AutomationRun,
+  type AutomationRunWithEligibility,
   type AutomationScope,
   type AutomationStore
 } from './types'
@@ -212,6 +214,36 @@ export class AutomationService {
       throw new AutomationDefinitionError('not_found', 'Automation definition was not found.')
     }
     return this.ports.store.listRuns({ automationId, order: 'recent', limit })
+  }
+
+  getRun(id: string): AutomationRun {
+    const run = this.ports.store.getRun(id)
+    if (run == null)
+      throw new AutomationDefinitionError('not_found', 'Automation run was not found.')
+    return run
+  }
+
+  async summarizeRun(run: AutomationRun): Promise<AutomationRunWithEligibility> {
+    return {
+      id: run.id,
+      automationId: run.automationId,
+      trigger: {
+        kind: run.trigger.kind,
+        occurredAt: run.trigger.occurredAt
+      },
+      retryGeneration: run.retryGeneration ?? 0,
+      retryOfRunId: run.retryOfRunId ?? null,
+      status: run.status,
+      attempt: run.attempt,
+      queuedAt: run.queuedAt,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      nextAttemptAt: run.nextAttemptAt,
+      resultCode: run.resultCode,
+      hasResult: run.result != null,
+      hasError: run.error != null,
+      manualRetry: await this.manualRetryEligibility(run)
+    }
   }
 
   editorConfiguration(): AutomationEditorConfiguration {
@@ -628,13 +660,27 @@ export class AutomationService {
     return Math.max(this.now(), previous + 1)
   }
 
+  auditManagementDenial(input: {
+    action: AutomationManagementAction
+    definitionId: string
+    management: AutomationManagementContext
+    scope: AutomationScope | null
+    params: Readonly<Record<string, unknown>>
+    code: 'invalid' | 'not_found' | 'forbidden'
+  }): void {
+    this.auditManagementFailure({
+      action: input.action,
+      definitionId: input.definitionId,
+      management: input.management,
+      scope: input.scope,
+      params: input.params,
+      error: new AutomationDefinitionError(input.code, 'Automation management request denied.'),
+      effectStatus: 'skipped'
+    })
+  }
+
   private auditManagementFailure(input: {
-    action:
-      | 'automations.createDefinition'
-      | 'automations.updateDefinition'
-      | 'automations.setEnabled'
-      | 'automations.deleteDefinition'
-      | 'automations.retryRun'
+    action: AutomationManagementAction
     definitionId: string
     management: AutomationManagementContext
     scope: AutomationScope | null
