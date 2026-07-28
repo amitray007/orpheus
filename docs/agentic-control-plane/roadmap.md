@@ -476,7 +476,7 @@ rewriting these results.
 | Audit/log redaction                                   | Dedicated redaction, exhaustive legacy purge, hostile-input, export, and operation-audit checks pass                                | Packaged main logs emitted structural counts/key names rather than values; automation runs carried audit correlation; Gitleaks found no staged-diff leaks    | Current source and run evidence passed                                                                      |
 
 The blocking `test:agentic` aggregate builds the CLI and MCP transports once,
-then runs all 28 focused control-plane, identity, workspace, review, Workbench,
+then runs all 30 focused control-plane, identity, workspace, review, Workbench,
 pane, terminal, settings, automation, redaction, and MCP bridge verifiers. The
 legacy `test:agentic-integration` name aliases the same complete suite. It
 complements `bun run check` and the packaged checklist below.

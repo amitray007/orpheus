@@ -20,6 +20,7 @@ const verifiers = [
   'verify-workbench-pane-control.ts',
   'verify-pane-layout-deletion.ts',
   'verify-renderer-idle-performance.ts',
+  'verify-native-idle-activity.ts',
   'verify-terminal-observability.ts',
   'verify-terminal-launch-env.ts',
   'verify-control-plane-phase6.ts',
