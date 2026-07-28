@@ -196,6 +196,25 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
   for (const t of Object.keys(schema)) {
     assert.ok(introspectTable(sdb, t), `missing ${t}`)
   }
+  const paneOwner = (
+    sdb.prepare('PRAGMA table_info("pane_layouts")').all() as Array<{
+      name: string
+      type: string
+      notnull: number
+      dflt_value: string | null
+    }>
+  ).find((column) => column.name === 'agent_owner_workspace_id')
+  assert.deepEqual(
+    paneOwner == null
+      ? null
+      : {
+          type: paneOwner.type,
+          notnull: paneOwner.notnull,
+          dflt_value: paneOwner.dflt_value
+        },
+    { type: 'TEXT', notnull: 0, dflt_value: null },
+    'agent pane ownership must be nullable, server-owned text with no default owner'
+  )
   // idempotent on a fresh build
   const secondPlan = planSync(sdb, schema)
   if (secondPlan.length !== 0) {

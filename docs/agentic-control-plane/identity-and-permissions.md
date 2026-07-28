@@ -84,8 +84,13 @@ Its identity graph is:
 pane panel -> pane layout -> pane shell runtime -> pane surface
 ```
 
-A pane has no default Orpheus workspace, project, or Claude conversation. Directory
-matching may suggest a target, but cannot attach identity or grants.
+Ordinary/user-created panes have no default Orpheus workspace, project, or
+Claude conversation. Directory matching may suggest a target, but cannot attach
+identity or grants. A constrained layout created through
+`panes.createWorkspaceTerminal` instead persists the exact trusted creator
+workspace in `agent_owner_workspace_id`. That field is durable authorization
+provenance for exact cleanup; it does not turn the pane runtime into a workspace
+runtime or invent project/conversation identity from its cwd.
 
 ## Trusted runtime context
 
@@ -179,6 +184,7 @@ new authority is introduced additively.
 | `ui.workbench.control` | Open/focus Workbench UI and select or create its terminal |
 | `terminals.control` | Send input or run a command in an authorized plain terminal |
 | `terminals.read` | Read bounded authoritative terminal/session observations |
+| `panes.manage` | Create and delete the caller workspace's constrained, agent-owned terminal layout |
 | `settings.read` | Read allowlisted effective workspace settings and provenance |
 | `settings.workspace.patch` | Change workspace-scoped Claude settings |
 | `resources.read` | Read sanitized same-project resource metadata |
@@ -228,17 +234,55 @@ runtime's exact layout and surface scope from current persisted pane state;
 directory or cwd equality never supplies scope. Authorization rechecks that
 scope immediately before an effect.
 
+`panes.manage` is default-enabled for the same valid live managed runtime, but
+it does not expose general pane CRUD. `panes.createWorkspaceTerminal` derives
+workspace, project, and exact `WorkspaceRecord.cwd` from the trusted self lease;
+the caller cannot choose those values or the panel, split tree, position, or
+auto-start state. Main persists the exact trusted workspace ID as the layout's
+durable `agent_owner_workspace_id`. The new exact layout/surface is available
+through DB-derived scope on the next request, not as authority minted from the
+create parameters.
+
+`panes.deleteTerminalLayout` requires exact layout/terminal IDs, matching
+expected layout and terminal update timestamps, the same exact workspace owner
+ID and cwd, and the dedicated single-leaf shape. It preflights both CAS values,
+performs native teardown outside the database transaction, then attempts a
+final dual-CAS delete. Native teardown acceptance and registry detachment do not
+prove child-process exit. If the final delete fails after detachment, recoverable
+rows remain and the result is partial rather than a rollback claim. After a
+successful deletion, the target disappears from the next request's derived
+scope. Unknown, unauthorized, foreign-owner (including same-cwd sibling),
+wrong-cwd, and wrong-shape targets are all non-enumerating `not_found`.
+
+Generic renderer panel/layout/terminal deletes must also tear down affected
+native surfaces before persistence removal; destroy failure blocks database
+deletion/cascade. The trusted UI may edit or delete a layout carrying
+`agent_owner_workspace_id`; that owner constrains MCP cleanup, not user
+authority. Later MCP cleanup fails with `conflict` or non-enumerating
+`not_found` when the UI has changed or removed the protected records.
+
+Material trusted-UI takeover clears `agent_owner_workspace_id`
+transactionally and advances the layout revision. Layout dir/tree/position,
+terminal add/delete/command/position, and `autoStart` changes transfer the
+layout to user ownership; name-only changes preserve the owner. Owner-workspace
+close, archive, or removal tears down all live surfaces still carrying its
+persisted owner ID. Rows may remain for later user cleanup/remount, but no
+process survives lease revocation. The four-layout owner cap counts only
+still-owned layouts.
+
 Settings → Orpheus Agent Tools persists category and per-tool exposure
 preferences. Exposure is deny-only: disabling a tool removes discovery and
 blocks invocation, while enabling it cannot add permissions, widen exact scope,
 raise the allowed risk tier, or bypass operation policy. Effective exposure
 changes increment a process-local catalog revision and notify connected MCP
 bridges through `tools.listChanged`, so they do not require a runtime restart.
+There is no per-call permission prompt: valid live managed runtimes receive the
+full vocabulary by default, and exposure preferences can only remove tools.
 Before the automation-management descriptors landed on 2026-07-28, the
 all-enabled deterministic snapshot contained 37 of 37 MCP-eligible descriptors;
-the post-registration harness snapshot reports 46 registered, 46 MCP, 46
-default-exposed, and 2 automation-eligible operations. These counts are dated
-evidence, not a normative catalog contract.
+the post-pane-lifecycle harness snapshot reports 48 registered, 48 MCP, 48
+default-exposed, 48 in the explicit Phase 4–6 scope, and 2 automation-eligible
+operations. These counts are dated evidence, not a normative catalog contract.
 
 The current vocabulary also includes `automations.manage`. Its nine
 `automations.*` descriptors are MCP-only, require a trusted live
@@ -306,6 +350,15 @@ terminal input default to hash, length, and safe summary rather than raw bytes.
 Dashboard results, errors, receipts, and audits also exclude raw credentials,
 tokens, and secret-bearing process arguments while preserving explicit stale,
 unavailable, unsupported, and unknown states.
+
+The optional `panes.createWorkspaceTerminal.initialCommand` is NUL-free and
+capped at 8192 UTF-8 bytes. It is never persisted: the agent-created terminal
+stores an empty command, while the value travels ephemerally through a dedicated
+first-start port and is attempted at most once. Failure or restart cannot replay
+it. Ordinary user-created pane commands remain persistent. The initial command
+is never returned or logged; its audit metadata contains only SHA-256 and UTF-8
+byte length, and a receipt never claims `shell.execute` was applied without an
+authoritative execution acknowledgement.
 
 ## Example `self.get`
 

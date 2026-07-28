@@ -963,7 +963,15 @@ export const schema: SchemaDef = {
       // add-column path (no backfill needed since the default covers it).
       // When set, all of this layout's panes are background-mounted at
       // app launch, regardless of which surface is visible.
-      auto_start: bool('auto_start', '0')
+      auto_start: bool('auto_start', '0'),
+      // Server-owned ownership for agent-created bootstrap layouts. User
+      // renderer CRUD always receives the default NULL; only the main control
+      // plane transaction writes the exact trusted lease workspace ID. This
+      // is an authorization fact for the paired cleanup operation and is
+      // intentionally not exposed to the renderer's PaneLayout model. It is
+      // deliberately not an FK: deleting a workspace must not cascade into a
+      // user's terminal layout, and a stale owner makes cleanup fail closed.
+      agent_owner_workspace_id: { type: 'TEXT' }
     },
     foreignKeys: [{ columns: ['panel_id'], ref: 'pane_panels(id)', onDelete: 'CASCADE' }],
     indexes: {

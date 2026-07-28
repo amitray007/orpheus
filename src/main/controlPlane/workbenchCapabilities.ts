@@ -1,4 +1,7 @@
-import type { WorkbenchControlService } from '../workbenchControl/service'
+import type {
+  CreateWorkspaceTerminalInput,
+  WorkbenchControlService
+} from '../workbenchControl/service'
 import type { ControlDescriptor, ControlSchema } from './types'
 
 const ID = { type: 'string', minLength: 1, maxLength: 128 } as const
@@ -19,6 +22,8 @@ const TERMINAL = {
 } as const
 const UI_PERMISSION = 'ui.workbench.control' as const
 const UI_PRESENT = 'ui.present' as const
+const MAX_INITIAL_COMMAND_BYTES = 8_192
+const MAX_SAFE_REVISION = Number.MAX_SAFE_INTEGER
 
 const EFFECT = {
   type: 'object',
@@ -120,6 +125,19 @@ const PANE_STATE = {
   }
 } as const
 
+const PANE_LAYOUT_MUTATION = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['layoutId', 'panelId', 'terminalId', 'layoutUpdatedAt', 'terminalUpdatedAt'],
+  properties: {
+    layoutId: ID,
+    panelId: ID,
+    terminalId: ID,
+    layoutUpdatedAt: { type: 'number' },
+    terminalUpdatedAt: { type: 'number' }
+  }
+} as const
+
 function receipt(value: ControlSchema): ControlSchema {
   return {
     type: 'object',
@@ -179,6 +197,55 @@ function terminal(value: unknown): value is { layoutId: string; terminalId: stri
     only(value, ['layoutId', 'terminalId']) &&
     id(value.layoutId) &&
     id(value.terminalId)
+  )
+}
+function optionalLabel(value: unknown): value is string | undefined {
+  return (
+    value === undefined ||
+    (typeof value === 'string' && value.length > 0 && value.length <= 128 && value.trim() === value)
+  )
+}
+function initialCommand(value: unknown): value is string | undefined {
+  return (
+    value === undefined ||
+    (typeof value === 'string' &&
+      !value.includes('\0') &&
+      Buffer.byteLength(value, 'utf8') <= MAX_INITIAL_COMMAND_BYTES)
+  )
+}
+function createWorkspaceTerminalInput(value: unknown): value is CreateWorkspaceTerminalInput {
+  return (
+    record(value) &&
+    only(value, ['layoutName', 'terminalName', 'initialCommand']) &&
+    optionalLabel(value.layoutName) &&
+    optionalLabel(value.terminalName) &&
+    initialCommand(value.initialCommand)
+  )
+}
+function deleteTerminalLayoutInput(value: unknown): value is {
+  layoutId: string
+  terminalId: string
+  expectedLayoutUpdatedAt: number
+  expectedTerminalUpdatedAt: number
+} {
+  return (
+    record(value) &&
+    only(value, [
+      'layoutId',
+      'terminalId',
+      'expectedLayoutUpdatedAt',
+      'expectedTerminalUpdatedAt'
+    ]) &&
+    id(value.layoutId) &&
+    id(value.terminalId) &&
+    typeof value.expectedLayoutUpdatedAt === 'number' &&
+    Number.isSafeInteger(value.expectedLayoutUpdatedAt) &&
+    value.expectedLayoutUpdatedAt >= 0 &&
+    value.expectedLayoutUpdatedAt <= MAX_SAFE_REVISION &&
+    typeof value.expectedTerminalUpdatedAt === 'number' &&
+    Number.isSafeInteger(value.expectedTerminalUpdatedAt) &&
+    value.expectedTerminalUpdatedAt >= 0 &&
+    value.expectedTerminalUpdatedAt <= MAX_SAFE_REVISION
   )
 }
 
@@ -364,6 +431,79 @@ export function createWorkbenchCapabilities(service: WorkbenchControlService) {
     validateInput: terminal,
     handler: (input, context) => service.terminal(action, input.layoutId, input.terminalId, context)
   })
+  const createWorkspaceTerminal: ControlDescriptor<CreateWorkspaceTerminalInput, unknown> = {
+    id: 'panes.createWorkspaceTerminal',
+    version: 1,
+    kind: 'mutation',
+    description:
+      'Create, start, and semantically select one dedicated terminal layout rooted at the calling workspace. initialCommand is optional, at-most-once, NUL-free, and limited to 8192 UTF-8 bytes.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        layoutName: { type: 'string', minLength: 1, maxLength: 128 },
+        terminalName: { type: 'string', minLength: 1, maxLength: 128 },
+        initialCommand: { type: 'string', maxLength: MAX_INITIAL_COMMAND_BYTES }
+      }
+    },
+    outputSchema: receipt(PANE_LAYOUT_MUTATION),
+    allowedSurfaces: SURFACES,
+    permission: 'panes.manage',
+    scope: { kind: 'self' },
+    risk: { tier: 3, label: 'persistent terminal creation' },
+    declaredEffects: [
+      'db.write',
+      'surface.mount',
+      'process.spawn',
+      'shell.execute',
+      UI_PRESENT,
+      'ui.focus'
+    ],
+    validateInput: createWorkspaceTerminalInput,
+    handler: (input, context) => service.createWorkspaceTerminal(input, context)
+  }
+  const deleteTerminalLayout: ControlDescriptor<
+    {
+      layoutId: string
+      terminalId: string
+      expectedLayoutUpdatedAt: number
+      expectedTerminalUpdatedAt: number
+    },
+    unknown
+  > = {
+    id: 'panes.deleteTerminalLayout',
+    version: 1,
+    kind: 'mutation',
+    description:
+      'Delete one authorized dedicated single-terminal layout after stopping its surface.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['layoutId', 'terminalId', 'expectedLayoutUpdatedAt', 'expectedTerminalUpdatedAt'],
+      properties: {
+        layoutId: ID,
+        terminalId: ID,
+        expectedLayoutUpdatedAt: {
+          type: 'integer',
+          minimum: 0,
+          maximum: MAX_SAFE_REVISION
+        },
+        expectedTerminalUpdatedAt: {
+          type: 'integer',
+          minimum: 0,
+          maximum: MAX_SAFE_REVISION
+        }
+      }
+    },
+    outputSchema: receipt(PANE_LAYOUT_MUTATION),
+    allowedSurfaces: SURFACES,
+    permission: 'panes.manage',
+    scope: { kind: 'resource', inputField: 'layoutId' },
+    risk: { tier: 3, label: 'destructive pane cleanup' },
+    declaredEffects: ['surface.destroy', 'process.terminate', 'db.write', 'ui.reconcile'],
+    validateInput: deleteTerminalLayoutInput,
+    handler: (input, context) => service.deleteTerminalLayout(input, context)
+  }
   return [
     getState,
     selectTab,
@@ -373,6 +513,8 @@ export function createWorkbenchCapabilities(service: WorkbenchControlService) {
     paneDescriptor('selectLayout'),
     terminalDescriptor('start'),
     terminalDescriptor('stop'),
-    terminalDescriptor('focus')
+    terminalDescriptor('focus'),
+    createWorkspaceTerminal,
+    deleteTerminalLayout
   ] as const
 }

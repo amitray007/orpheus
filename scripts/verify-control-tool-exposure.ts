@@ -223,5 +223,12 @@ assert.deepEqual(scopeSource(liveBinding), {
 db.prepare("DELETE FROM pane_layouts WHERE id = 'layout-project'").run()
 db.prepare("DELETE FROM pane_terminals WHERE layout_id = 'layout-project'").run()
 assert.deepEqual(scopeSource(liveBinding).layoutIds, ['layout-worktree'])
+db.prepare("INSERT INTO pane_layouts VALUES ('layout-agent-new', '/code/project-one')").run()
+db.prepare("INSERT INTO pane_terminals VALUES ('terminal-agent-new', 'layout-agent-new')").run()
+assert.deepEqual(scopeSource(liveBinding).layoutIds, ['layout-agent-new', 'layout-worktree'])
+assert.deepEqual(scopeSource(liveBinding).surfaceIds, [
+  'pane:layout-agent-new:terminal-agent-new',
+  'pane:layout-worktree:terminal-worktree'
+])
 
 console.log('Control tool exposure verification passed.')

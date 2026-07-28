@@ -45,10 +45,10 @@ advertise `tools.listChanged`, long-poll for revision changes, refresh
 `tools/list`, and recheck authorization at invocation time. Exposure changes do
 not require a workspace or MCP restart. Before the automation-management
 descriptors landed, the all-enabled deterministic snapshot contained 37 of 37
-MCP-eligible descriptors. The post-registration 2026-07-28 harness snapshot
-reports 46 registered, 46 MCP, 46 default-exposed, and 2 automation-eligible
-operations. These dated counts are verification evidence, not a stable catalog
-contract.
+MCP-eligible descriptors. The post-pane-lifecycle 2026-07-28 harness snapshot
+reports 48 registered, 48 MCP, 48 default-exposed, 48 in the explicit Phase
+4–6 scope, and 2 automation-eligible operations. These dated counts are
+verification evidence, not a stable catalog contract.
 
 Current source also publishes scoped, audited `reviews.setResolved` to MCP,
 reads bounded authoritative Ghostty screen/scrollback tails, and exposes a
@@ -59,6 +59,10 @@ Settings → Automations is source-complete for definition editing, explicit
 enable/delete/retry confirmations, and redacted run history; packaged/manual
 renderer validation is pending. Phase 6 model/effort mutations retain their
 separate `restartRequired` behavior.
+
+Two additional source-present Phase 4 descriptors provide constrained
+self-workspace pane creation and exact-owner deletion. Deterministic validation
+passes; packaged-live validation remains pending.
 
 ## Delivery rules
 
@@ -85,7 +89,7 @@ Every phase:
 | 1. Control Foundation            | Implemented and statically tested | Add a transport-neutral capability registry and prove it with the two review-comment operations | Registry contract plus preserved IPC/socket adapters      |
 | 2. Self Identity + Read-only MCP | Implemented and historically live-validated | Ship managed MCP discovery with identity and the initial read-only tools                         | MCP bootstrap, contextual tool filtering, read schemas    |
 | 3. Workspace Orchestration       | Implemented; background open and terminal color live-reconfirmed, three focused paths pending | Add semantic workspace creation, task start, wait, and lifecycle control | One orchestration service, strict schemas, archive safety |
-| 4. Self Workbench/Panes Control  | Implemented; core live controls validated, negative live paths pending | Let an agent control its own workbench and panes semantically | Self-scoped UI commands, no click simulation              |
+| 4. Self Workbench/Panes Control  | Existing controls live-validated; dedicated create/delete deterministic pass, packaged-live pending | Let an agent control its own workbench and panes semantically | Self-scoped UI commands and constrained durable pane lifecycle |
 | 5. Terminal Observability        | Historical scoped-pane live pass retained; native screen-tail source/deterministic pass, packaged-live pending | Add authoritative terminal/session observation | Source/freshness contract and explicit absence states |
 | 6. Settings/Resources            | Implemented; core live reads/patch validated, restart-required path pending | Expose allowlisted non-secret settings and resources                              | Layering, validation, dirty-state, and secret boundaries  |
 | 7. Durable Automations           | Historical fixture live pass retained; production renderer API/manual retry source-complete | Persist bounded triggers, internal-event outbox, runs, and management APIs | Scheduler, crash recovery, idempotency, budgets, retries  |
@@ -222,12 +226,25 @@ Expose semantic commands for the calling agent's own workspace:
 - select a workbench tab or review target;
 - select a persisted pane layout;
 - start, stop, or focus a configured pane terminal;
+- create one constrained terminal layout rooted at the trusted self workspace;
+- delete that exact agent-owned single-terminal layout with dual-CAS protection;
 - query current self workbench/pane state.
 
 Implementation may send targeted renderer messages, but public capabilities
 express Orpheus intent. DOM selectors, coordinates, accessibility scripting,
 and generic click/key simulation are excluded. Cross-workspace UI manipulation
 is excluded.
+
+The dedicated lifecycle inputs do not accept workspace, project, cwd, panel,
+tree, position, or auto-start. Main uses exact `WorkspaceRecord.cwd`, creates
+one root-leaf layout in the `General` panel atomically under its 12-terminal cap,
+and persists the exact trusted workspace ID in
+`agent_owner_workspace_id`, with at most four such layouts per owner workspace.
+The new exact scope appears only on the next request. An optional NUL-free
+`initialCommand` is limited to 8192 UTF-8 bytes, never persisted, carried
+ephemerally into at most one native mount attempt, never replayed, returned, or
+logged, and represented in audit only by SHA-256 and byte length. Ordinary user
+pane commands remain persistent.
 
 Exit when the same semantic command works regardless of renderer layout details,
 is self-scoped in policy, and reports a clear unavailable result when no
@@ -238,6 +255,35 @@ file/diff open, layout selection, and pane start/focus/stop through managed MCP,
 exact scope, and real renderer acknowledgements. Completed mutations included
 correlated request/audit ids and applied effect receipts. Forced renderer loss
 and unavailable/partial live paths remain deterministic-only.
+
+The source-present `panes.createWorkspaceTerminal` and
+`panes.deleteTerminalLayout` delta requires the default-enabled,
+exposure-suppressible Tier 3 `panes.manage` capability. Creation separates
+durable write, native start, renderer presentation, and focus into truthful
+partial receipts; visibility and presentation require verification, while
+unconfirmed `ui.focus` is skipped and `shell.execute` is not reported applied
+without an execution acknowledgement.
+Deletion requires exact IDs plus matching layout/terminal CAS timestamps, exact
+current scope, exact workspace ownership (same cwd is insufficient), and the
+single-leaf shape. It preflights dual CAS, detaches outside the transaction,
+then performs the final dual-CAS delete. A post-detach DB failure retains
+recoverable rows and returns partial; native acceptance does not prove process
+exit. A structurally invalid or unavailable renderer reconciliation returns
+partial after successful deletion. Generic renderer deletes use strict
+main-owned native teardown and block database removal on destroy failure. The
+trusted UI may edit or delete agent-owned layouts, after which MCP cleanup
+returns `conflict` or non-enumerating `not_found`.
+
+Material trusted-UI edits transfer the layout to user ownership by
+transactionally clearing `agent_owner_workspace_id` and bumping its revision:
+dir/tree/position, terminal add/delete/command/position, and `autoStart` are
+material; name-only edits preserve ownership. Closing, archiving, or removing
+the owner workspace tears down live surfaces for every still-owned layout by
+persisted owner ID. Rows may remain for later cleanup/remount, but no process
+survives lease revocation; owner cleanup and the four-layout cap ignore
+transferred layouts.
+
+Deterministic verification passes; packaged-live results remain pending.
 
 ## 5. Terminal Observability
 
@@ -421,6 +467,29 @@ repeated after the final Phase 5 source repair.
 - [x] Phase 6 settings/resources harness
 - [x] Repeat `test:agentic-integration` for the exact post-repair source
 - [x] final diff/secret review (`git diff --check` and Gitleaks staged scan)
+
+### Current-source pending checklist
+
+These items describe the dedicated pane lifecycle delta and do not alter the
+historical evidence above.
+
+- [x] Run the dedicated pane provisioning/deletion store, policy, receipt,
+      redaction, and renderer reconciliation harnesses.
+- [x] Repeat the aggregate agentic integration harness with the two descriptors
+      registered; it reports 48 registered/MCP/default/explicit Phase 4–6 and 2
+      automation-eligible operations.
+- [ ] Repeat the full repository check with the two descriptors registered.
+- [ ] Package the exact source and exercise create, authoritative start,
+      initial-command non-persistence/at-most-once/no-replay, presentation/focus,
+      next-request exact-scope discovery, dual-CAS conflict,
+      post-detach DB-failure recovery, post-delete scope removal, per-owner/global
+      capacity, strict renderer teardown, renderer-delete-before-MCP
+      conflict/not-found behavior, material UI ownership transfer, owner
+      lifecycle teardown, and unavailable/partial receipts.
+- [ ] Confirm Agent Tools suppression removes discovery/invocation without
+      changing default `panes.manage` authority.
+- [ ] Inspect logs and audits to confirm initial command text is absent and only
+      SHA-256/byte-length metadata remains.
 
 ### Historical packaged/live checklist
 

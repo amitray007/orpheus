@@ -29,9 +29,10 @@ deprecation, or compatibility-removal phase in this plan.
   without a workspace or MCP restart.
 - Before the automation-management descriptors landed, the all-enabled
   deterministic catalog snapshot contained 37 of 37 MCP-eligible descriptors.
-  The post-registration 2026-07-28 harness snapshot reports 46 registered, 46
-  MCP, 46 default-exposed, and 2 automation-eligible operations. These dated
-  counts are verification evidence, not a normative catalog contract.
+  The post-pane-lifecycle 2026-07-28 harness snapshot reports 48 registered, 48
+  MCP, 48 default-exposed, 48 in the explicit Phase 4–6 scope, and 2
+  automation-eligible operations. These dated counts are verification evidence,
+  not a normative catalog contract.
 - `reviews.setResolved` is now a scoped Tier 2 MCP mutation with target
   revalidation and redacted audit records.
 - Ghostty exposes a bounded authoritative screen/scrollback tail. Source and
@@ -44,6 +45,16 @@ deprecation, or compatibility-removal phase in this plan.
   Automations is source-complete for definition editing, explicit
   enable/delete/retry confirmations, and redacted run history; packaged/manual
   renderer validation is pending.
+- Source now includes two constrained Tier 3 pane lifecycle descriptors:
+  `panes.createWorkspaceTerminal` creates one durable terminal rooted at the
+  trusted self workspace, and `panes.deleteTerminalLayout` removes only that
+  exact agent-owned single-leaf layout with dual CAS and staged native teardown.
+  Creation is capped at four layouts per owner and 12 terminals globally in
+  `General`. An optional one-shot initial command is never persisted, is
+  attempted at most once, and cannot replay. Deterministic verification passes;
+  packaged-live validation is pending. Material trusted-UI edits transfer
+  ownership, while owner-workspace close/archive/removal tears down all live
+  still-owned surfaces so no process survives lease revocation.
 
 Tool-exposure refresh is independent of Phase 6 launch settings:
 model/effort patches still report `restartRequired` through the existing
@@ -106,7 +117,7 @@ snapshot.
 | Home dashboard          | Exists with Overview, Limits, and Insights views over account-wide GitHub work, provider usage, Claude activity windows, recent sessions, model activity, and GitHub contribution windows                  | `src/renderer/src/components/dashboard/DashboardView.tsx`, `dashboard/dashboard-home/`                                                      |
 | Dashboard data services | Typed renderer IPC and main-process domain modules provide GitHub account snapshots, provider-neutral usage, activity/contribution windows, persisted stale-while-revalidate caches, and background pushes | `src/shared/ipc.ts`, `src/main/githubDashboard.ts`, `providerUsage.ts`, `claudeActivityWindow.ts`, `db/dashboardCache.ts`, `usagePoller.ts` |
 | Review/workbench        | Diff viewing and local review comments exist                                                                                                                                                               | `src/main/gitDiff.ts`, `reviewStore.ts`, `ipc/reviews.ts`, `src/renderer/src/components/workbench/`                                         |
-| Panes                   | Persisted panel/layout/terminal hierarchy and native surfaces exist                                                                                                                                        | `src/main/paneStore.ts`, `ipc/panes.ts`, `src/renderer/src/components/panes/`                                                               |
+| Panes                   | Persisted panel/layout/terminal hierarchy and native surfaces exist. Two semantic operations constrain self-workspace creation and exact-owner single-layout deletion; deterministic validation passes and packaged-live validation is pending. | `src/main/paneStore.ts`, `src/main/controlPlane/workbenchCapabilities.ts`, `src/renderer/src/components/panes/` |
 | MCP                     | A bundled stdio bridge and runtime-lease-scoped `/control` protocol are implemented. Valid current managed runtimes receive the registered permission vocabulary; Settings can only suppress MCP exposure. Revisioned `tools/listChanged` refresh updates connected bridges without restart | `packages/orpheus-mcp/`, `src/main/controlPlane/`, `src/main/commandServer.ts` |
 | Automations             | Durable bounded schedules/events invoke the canonical registry in-process. Two effect-free Phase 6 reads retain fixed Tier 0 exact-scope automation grants. Renderer IPC/preload, Settings → Automations, and nine MCP-only exact-bound-workspace operations support definitions, state, runs, and manual retry generations; MCP management is never automation-eligible. Packaged/manual management-surface validation is pending | `src/main/automations/`, `src/main/ipc/automations.ts`, `src/main/controlPlane/automationManagementCapabilities.ts`, `src/main/controlPlane/safeAutomationGrants.ts`, `src/renderer/src/components/dashboard/settings/OrpheusAutomationsSection.tsx` |
 
@@ -233,12 +244,22 @@ the native UI adapter. Automations invoke the core in-process.
    still await focused packaged reconfirmation. See
    [phase-03-workspace-orchestration.md](phase-03-workspace-orchestration.md)
    and [phase-03-interfaces.md](phase-03-interfaces.md).
-4. **Self Workbench/Panes Control — implemented with core live controls
-   validated.** Managed MCP and a real renderer acknowledgement exercised state,
-   tab selection, file/diff open, layout selection, and pane start/focus/stop
-   through exact scope. Unavailable/partial paths remain deterministic-only. An
-   agent controls its own workbench and exact server-resolved pane/layout state
-   through semantic domain commands, with no click simulation. See
+4. **Self Workbench/Panes Control — existing controls live-validated; dedicated
+   create/delete deterministic validation passed, packaged-live pending.**
+   Managed MCP and a real renderer
+   acknowledgement exercised state, tab selection, file/diff open, layout
+   selection, and pane start/focus/stop through exact scope.
+   `panes.createWorkspaceTerminal` now source-defines atomic, self-cwd,
+   single-leaf creation under the General-panel cap with a non-replaying
+   one-shot initial command; `panes.deleteTerminalLayout` source-defines
+   exact-ID/dual-CAS/exact-owner preflight, native detachment outside the
+   transaction, and final dual-CAS deletion; a final DB failure retains
+   recoverable rows and returns partial. Generic renderer deletion uses strict
+   native teardown that blocks database removal on destroy failure, while the
+   trusted UI remains able to edit or remove agent-owned layouts and make later
+   MCP cleanup conflict or return `not_found`. Both semantic operations require
+   the default-enabled Tier 3 `panes.manage` permission, remain suppressible
+   through Agent Tools, and still await packaged-live results. See
    [phase-04-workbench-pane-control.md](phase-04-workbench-pane-control.md) and
    [phase-04-interfaces.md](phase-04-interfaces.md).
 5. **Terminal Observability — implemented and rebuilt live-validated.** Five

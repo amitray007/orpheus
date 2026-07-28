@@ -19,6 +19,8 @@ export type RendererControlCommand =
   | { kind: 'panes.selectLayout'; layoutId: string }
   | { kind: 'panes.validateTerminal'; layoutId: string; terminalId: string }
   | { kind: 'panes.presentTerminal'; layoutId: string; terminalId: string }
+  | { kind: 'panes.presentCreatedTerminal'; layoutId: string; terminalId: string }
+  | { kind: 'panes.reconcileDeletedLayout'; layoutId: string; panelId: string }
   | {
       kind: 'panes.commitTerminalState'
       layoutId: string
@@ -38,7 +40,8 @@ export function rendererControlRequiresPresentation(command: RendererControlComm
     command.kind === 'workbench.openFile' ||
     command.kind === 'workbench.openDiff' ||
     command.kind === 'panes.selectLayout' ||
-    command.kind === 'panes.presentTerminal'
+    command.kind === 'panes.presentTerminal' ||
+    command.kind === 'panes.presentCreatedTerminal'
   )
 }
 
@@ -81,4 +84,20 @@ export type PaneStateV1 = {
     selected: boolean
     desiredState: 'running' | 'stopped'
   }>
+}
+
+export type PaneTerminalLayoutMutationV1 = {
+  layoutId: string
+  panelId: string
+  terminalId: string
+  layoutUpdatedAt: number
+  terminalUpdatedAt: number
+}
+
+export type PaneLayoutDeletionStateV1 = {
+  schemaVersion: 1
+  observedAt: number
+  source: 'renderer-live'
+  deletedLayoutId: string
+  selectedLayoutId: string | null
 }

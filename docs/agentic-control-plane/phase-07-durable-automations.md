@@ -242,11 +242,11 @@ Settings Agent Tools may further suppress their `automations` category without
 widening authority. This MCP surface is source/deterministic evidence only until
 a fresh packaged managed-runtime pass exercises it.
 
-The post-registration 2026-07-28 agentic harness snapshot reports 46
-registered, 46 MCP, 46 default-exposed, and 2 automation-eligible operations.
-That count is dated verification evidence rather than a stable catalog
-contract; the two automation-eligible operations remain the fixed,
-effect-free Phase 6 reads.
+The post-pane-lifecycle 2026-07-28 agentic harness snapshot reports 48
+registered, 48 MCP, 48 default-exposed, 48 in the explicit Phase 4–6 scope, and
+2 automation-eligible operations. That count is dated verification evidence
+rather than a stable catalog contract; the two automation-eligible operations
+remain the fixed, effect-free Phase 6 reads.
 
 For the historical batched live validation, the authenticated command socket
 exposed a fixed fixture protocol only when the process identity was exactly `Orpheus Dev`

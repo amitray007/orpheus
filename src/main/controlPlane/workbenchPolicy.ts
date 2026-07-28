@@ -13,7 +13,9 @@ const IDS = new Set([
   'panes.selectLayout',
   'panes.startTerminal',
   'panes.stopTerminal',
-  'panes.focusTerminal'
+  'panes.focusTerminal',
+  'panes.createWorkspaceTerminal',
+  'panes.deleteTerminalLayout'
 ])
 
 function isPhase4(description: ControlDescription): boolean {
@@ -55,6 +57,7 @@ export function withWorkbenchControlPolicy(
         }
       }
       if (!description.id.startsWith('panes.')) return { allowed: true }
+      if (description.id === 'panes.createWorkspaceTerminal') return { allowed: true }
       const params = input as { layoutId?: unknown; terminalId?: unknown }
       if (typeof params.layoutId !== 'string') return denyNotFound()
       const scope = runtime.resourceScope

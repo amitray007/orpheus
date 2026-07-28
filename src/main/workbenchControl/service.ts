@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type {
+  PaneLayoutDeletionStateV1,
   PaneStateV1,
+  PaneTerminalLayoutMutationV1,
   RendererControlAck,
   RendererControlCommand,
   WorkbenchDiffTarget,
@@ -19,6 +21,30 @@ import type {
 import { RendererCommandError } from './rendererCommandBroker'
 
 export type PaneTarget = { layoutId: string; terminalId?: string; panelId: string }
+
+export class PaneManagementPortError extends Error {
+  constructor(
+    readonly code: 'capacity' | 'conflict' | 'not_found' | 'invalid_shape' | 'failed',
+    message: string
+  ) {
+    super(message)
+  }
+}
+
+export type CreateWorkspaceTerminalInput = {
+  layoutName?: string
+  terminalName?: string
+  initialCommand?: string
+}
+
+export type ProvisionedPaneTarget = {
+  layoutId: string
+  panelId: string
+  terminalId: string
+  layoutUpdatedAt: number
+  terminalUpdatedAt: number
+  initialCommand: string
+}
 
 type OperationMeta = {
   id: string
@@ -73,6 +99,25 @@ const OPERATIONS = {
     permission: TERMINAL_PERMISSION,
     tier: 1,
     effects: [UI_PRESENT_EFFECT, 'ui.focus']
+  },
+  createWorkspaceTerminal: {
+    id: 'panes.createWorkspaceTerminal',
+    permission: 'panes.manage',
+    tier: 3,
+    effects: [
+      'db.write',
+      'surface.mount',
+      'process.spawn',
+      'shell.execute',
+      UI_PRESENT_EFFECT,
+      'ui.focus'
+    ]
+  },
+  deleteTerminalLayout: {
+    id: 'panes.deleteTerminalLayout',
+    permission: 'panes.manage',
+    tier: 3,
+    effects: ['surface.destroy', 'process.terminate', 'db.write', 'ui.reconcile']
   }
 } as const satisfies Record<string, OperationMeta>
 
@@ -99,8 +144,30 @@ export type WorkbenchControlPorts = {
   panes: {
     resolve: (layoutId: string, terminalId?: string) => PaneTarget | null
     start: (layoutId: string, terminalId: string) => Promise<'started' | 'retained'>
+    startProvisioned: (
+      layoutId: string,
+      terminalId: string,
+      initialCommand: string
+    ) => Promise<'started' | 'retained'>
     stop: (layoutId: string, terminalId: string) => Promise<'stopped' | 'absent'>
     focus: (layoutId: string, terminalId: string) => Promise<void>
+    provision: (
+      workspaceId: string,
+      input: CreateWorkspaceTerminalInput
+    ) => Promise<ProvisionedPaneTarget>
+    deleteDedicated: (
+      workspaceId: string,
+      input: {
+        layoutId: string
+        terminalId: string
+        expectedLayoutUpdatedAt: number
+        expectedTerminalUpdatedAt: number
+      }
+    ) => Promise<{
+      target: ProvisionedPaneTarget
+      terminalState: 'stopped' | 'absent'
+      persistence: 'deleted' | 'retained'
+    }>
   }
   audit?: WorkspaceAuditPort
   onAuditFailure?: (error: unknown, record: WorkspaceControlAuditRecord) => void | Promise<void>
@@ -220,6 +287,29 @@ function validPaneState(value: unknown, target: PaneTarget): value is PaneStateV
   if (value.focusedTerminalId != null && !terminalIds.includes(value.focusedTerminalId))
     return false
   return target.terminalId == null || terminalIds.includes(target.terminalId)
+}
+
+function validPaneDeletionState(
+  value: unknown,
+  deletedLayoutId: string
+): value is PaneLayoutDeletionStateV1 {
+  return (
+    record(value) &&
+    hasOnly(value, [
+      'schemaVersion',
+      'observedAt',
+      'source',
+      'deletedLayoutId',
+      'selectedLayoutId'
+    ]) &&
+    value.schemaVersion === 1 &&
+    typeof value.observedAt === 'number' &&
+    Number.isFinite(value.observedAt) &&
+    value.source === 'renderer-live' &&
+    value.deletedLayoutId === deletedLayoutId &&
+    (value.selectedLayoutId === null ||
+      (typeof value.selectedLayoutId === 'string' && value.selectedLayoutId !== deletedLayoutId))
+  )
 }
 
 function controlCodeForRendererError(code: RendererCommandError['code']): ControlErrorCode {
@@ -422,6 +512,196 @@ export class WorkbenchControlService {
         return action === 'focus'
           ? this.focusTerminal(target, context)
           : this.setTerminalRunning(action, target, context)
+      })
+    )
+  }
+
+  createWorkspaceTerminal(
+    input: CreateWorkspaceTerminalInput,
+    context: ControlContext
+  ): Promise<WorkspaceOperationReceipt<PaneTerminalLayoutMutationV1>> {
+    const { workspaceId } = bound(context)
+    return this.serialize(`pane-provision:${workspaceId}`, () =>
+      this.runMutation(OPERATIONS.createWorkspaceTerminal, input, context, async () => {
+        let target: ProvisionedPaneTarget
+        try {
+          target = await this.ports.panes.provision(workspaceId, input)
+        } catch (error) {
+          throw this.paneManagementError(error)
+        }
+
+        const value: PaneTerminalLayoutMutationV1 = {
+          layoutId: target.layoutId,
+          panelId: target.panelId,
+          terminalId: target.terminalId,
+          layoutUpdatedAt: target.layoutUpdatedAt,
+          terminalUpdatedAt: target.terminalUpdatedAt
+        }
+        const effects: EffectReceipt[] = [
+          { effect: 'db.write', status: 'applied', resourceId: target.layoutId }
+        ]
+
+        try {
+          const started = await this.ports.panes.startProvisioned(
+            target.layoutId,
+            target.terminalId,
+            target.initialCommand
+          )
+          effects.push(
+            {
+              effect: 'surface.mount',
+              status: 'applied',
+              resourceId: `pane:${target.layoutId}:${target.terminalId}`
+            },
+            ...(started === 'started'
+              ? ([
+                  {
+                    effect: 'process.spawn',
+                    status: 'applied',
+                    resourceId: `pane:${target.layoutId}:${target.terminalId}`
+                  }
+                ] satisfies EffectReceipt[])
+              : [])
+          )
+        } catch {
+          effects.push(
+            {
+              effect: 'surface.mount',
+              status: 'failed',
+              resourceId: `pane:${target.layoutId}:${target.terminalId}`
+            },
+            {
+              effect: 'process.spawn',
+              status: 'failed',
+              resourceId: `pane:${target.layoutId}:${target.terminalId}`
+            }
+          )
+          return { value, effects, status: 'partial' }
+        }
+
+        try {
+          const pane = this.paneValue(
+            await this.executeRenderer(context.requestId, {
+              kind: 'panes.presentCreatedTerminal',
+              layoutId: target.layoutId,
+              terminalId: target.terminalId
+            }),
+            {
+              layoutId: target.layoutId,
+              panelId: target.panelId,
+              terminalId: target.terminalId
+            }
+          )
+          if (!pane.selected || pane.focusedTerminalId !== target.terminalId) {
+            throw orchestrationError('failed', 'Renderer did not present the created terminal.')
+          }
+          effects.push({
+            effect: UI_PRESENT_EFFECT,
+            status: 'applied',
+            resourceId: target.layoutId,
+            message:
+              'Renderer semantically selected the created layout and terminal; this is not native mount proof.'
+          })
+        } catch {
+          effects.push({
+            effect: UI_PRESENT_EFFECT,
+            status: 'failed',
+            resourceId: target.layoutId
+          })
+          return { value, effects, status: 'partial' }
+        }
+
+        effects.push({
+          effect: 'ui.focus',
+          status: 'skipped',
+          resourceId: `pane:${target.layoutId}:${target.terminalId}`,
+          message: 'First-responder focus cannot be confirmed by the native surface API.'
+        })
+        return { value, effects }
+      })
+    )
+  }
+
+  deleteTerminalLayout(
+    input: {
+      layoutId: string
+      terminalId: string
+      expectedLayoutUpdatedAt: number
+      expectedTerminalUpdatedAt: number
+    },
+    context: ControlContext
+  ): Promise<WorkspaceOperationReceipt<PaneTerminalLayoutMutationV1>> {
+    const { workspaceId } = bound(context)
+    return this.serialize(`pane-layout:${input.layoutId}`, () =>
+      this.runMutation(OPERATIONS.deleteTerminalLayout, input, context, async () => {
+        let deleted: {
+          target: ProvisionedPaneTarget
+          terminalState: 'stopped' | 'absent'
+          persistence: 'deleted' | 'retained'
+        }
+        try {
+          deleted = await this.ports.panes.deleteDedicated(workspaceId, input)
+        } catch (error) {
+          throw this.paneManagementError(error)
+        }
+        const { target } = deleted
+        const stopped = deleted.terminalState === 'stopped'
+        const effects: EffectReceipt[] = [
+          {
+            effect: 'surface.destroy',
+            status: stopped ? 'applied' : 'skipped',
+            resourceId: `pane:${target.layoutId}:${target.terminalId}`
+          },
+          {
+            effect: 'process.terminate',
+            status: 'skipped',
+            resourceId: `pane:${target.layoutId}:${target.terminalId}`,
+            message: stopped
+              ? 'Native teardown was accepted; asynchronous process exit is not confirmed.'
+              : 'No mounted native surface was present.'
+          },
+          {
+            effect: 'db.write',
+            status: deleted.persistence === 'deleted' ? 'applied' : 'failed',
+            resourceId: target.layoutId,
+            ...(deleted.persistence === 'retained'
+              ? { message: 'Persisted layout was retained and can be remounted.' }
+              : {})
+          }
+        ]
+        const value: PaneTerminalLayoutMutationV1 = {
+          layoutId: target.layoutId,
+          panelId: target.panelId,
+          terminalId: target.terminalId,
+          layoutUpdatedAt: target.layoutUpdatedAt,
+          terminalUpdatedAt: target.terminalUpdatedAt
+        }
+        if (deleted.persistence === 'retained') {
+          return { value, effects, status: 'partial' }
+        }
+        try {
+          const ack = await this.executeRenderer(context.requestId, {
+            kind: 'panes.reconcileDeletedLayout',
+            layoutId: target.layoutId,
+            panelId: target.panelId
+          })
+          if (!validPaneDeletionState(ack.value, target.layoutId)) {
+            throw orchestrationError('failed', 'Renderer returned an invalid pane deletion state.')
+          }
+          effects.push({
+            effect: 'ui.reconcile',
+            status: 'applied',
+            resourceId: target.layoutId
+          })
+          return { value, effects }
+        } catch {
+          effects.push({
+            effect: 'ui.reconcile',
+            status: 'failed',
+            resourceId: target.layoutId
+          })
+          return { value, effects, status: 'partial' }
+        }
       })
     )
   }
@@ -685,6 +965,22 @@ export class WorkbenchControlService {
       throw orchestrationError('not_found', 'Pane resource was not found.')
     }
     throw orchestrationError('forbidden', `Permission denied: ${permission}`)
+  }
+
+  private paneManagementError(error: unknown): WorkspaceOrchestrationError {
+    if (!(error instanceof PaneManagementPortError)) {
+      return orchestrationError('failed', 'Pane terminal management failed.')
+    }
+    if (error.code === 'capacity' || error.code === 'conflict') {
+      return orchestrationError(
+        'conflict',
+        'Pane terminal management conflicted with current state.'
+      )
+    }
+    if (error.code === 'not_found' || error.code === 'invalid_shape') {
+      return orchestrationError('not_found', 'Pane resource was not found.')
+    }
+    return orchestrationError('failed', 'Pane terminal management failed.')
   }
 
   private workbenchValue(ack: RendererControlAck, workspaceId: string): WorkbenchStateV1 {

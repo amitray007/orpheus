@@ -2,25 +2,28 @@ import { createHash } from 'node:crypto'
 
 const SECRET_KEY =
   /(?:token|secret|password|authorization|cookie|lease|credential|api[_-]?key|access[_-]?key|private[_-]?key|environment|env|bytes|sequence|keycode)/i
-const TEXT_KEY = /(?:^|_)(?:text|task|prompt|content|input)(?:$|_)/i
+const TEXT_KEY = /(?:(?:^|_)(?:text|task|prompt|content|input)(?:$|_)|command$)/i
 const SECRET_VALUE =
   /(?:\bbearer\s+\S+|(?:api[_-]?key|token|secret|password|authorization|cookie|lease)\s*[:=]\s*\S+|\bsk[-_](?:ant[-_])?[A-Za-z0-9_-]+|\bgh[pousr]_[A-Za-z0-9_]+|\bgithub_pat_[A-Za-z0-9_]+|\bxox[aboprs]-[A-Za-z0-9-]+)/i
 const MAX_SAFE_STRING = 512
 
-function textMetadata(value: string): Record<string, unknown> {
+function textMetadata(value: string, includeSummary: boolean): Record<string, unknown> {
   const byteLength = Buffer.byteLength(value, 'utf8')
-  return {
+  const metadata: Record<string, unknown> = {
     sha256: createHash('sha256').update(value, 'utf8').digest('hex'),
-    byteLength,
-    summary: `[text ${byteLength} bytes]`
+    byteLength
   }
+  if (includeSummary) metadata['summary'] = `[text ${byteLength} bytes]`
+  return metadata
 }
 
 function redactValue(value: unknown, key: string | null, seen: WeakSet<object>): unknown {
   if (key != null && SECRET_KEY.test(key)) return '[REDACTED]'
   if (typeof value === 'string') {
     if (SECRET_VALUE.test(value)) return '[REDACTED]'
-    if (key != null && TEXT_KEY.test(key)) return textMetadata(value)
+    if (key != null && TEXT_KEY.test(key)) {
+      return textMetadata(value, !/command$/i.test(key))
+    }
     if (SECRET_VALUE.test(value)) return '[REDACTED]'
     return value.length <= MAX_SAFE_STRING ? value : `${value.slice(0, MAX_SAFE_STRING)}…`
   }

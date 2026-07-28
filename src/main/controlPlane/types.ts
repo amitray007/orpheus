@@ -19,6 +19,7 @@ export type ControlPermission =
   | 'reviews.resolve'
   | 'ui.workbench.control'
   | 'terminals.control'
+  | 'panes.manage'
   | 'automations.manage'
   | 'settings.read'
   | 'settings.workspace.patch'

@@ -52,7 +52,19 @@ import {
   setWorkspaceCwd
 } from './workspaces'
 import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
-import { getLayout, listAutoStartLayouts, listTerminals } from './paneStore'
+import {
+  createDedicatedWorkspaceTerminal,
+  deleteLayout as deletePaneLayoutRow,
+  deletePanel as deletePanePanelRow,
+  deleteTerminal as deletePaneTerminalRow,
+  deleteDedicatedWorkspaceTerminal,
+  getLayout,
+  getTerminal,
+  listAutoStartLayouts,
+  listAgentManagedLayoutsByOwner,
+  listLayouts,
+  listTerminals
+} from './paneStore'
 import { getAppUiState, updateAppUiState } from './uiState'
 import { onActivityBatch } from './activitySink'
 import {
@@ -164,6 +176,7 @@ import { createRendererCommandTransport, registerWorkbenchControlIpc } from './i
 import { RendererCommandBroker } from './workbenchControl/rendererCommandBroker'
 import { WorkbenchControlService } from './workbenchControl/service'
 import { createMainPaneControlPort } from './workbenchControl/mainPaneAdapter'
+import { teardownPaneSurfaceStrict } from './workbenchControl/paneSurfaceTeardown'
 import { isCanonicalWorkspacePath } from './workbenchControl/pathSafety'
 import { createControlAuditStore } from './controlPlane/controlAudit'
 import {
@@ -588,6 +601,7 @@ function destroyWorkspaceRuntime(id: string, knownCwd?: string | null): void {
   // Same trigger (g) applies to Panes tab surfaces (see
   // paneSurfacesByWorkspace's header comment).
   destroyPaneSurfacesForWorkspace(id)
+  destroyAgentPaneSurfacesForOwner(id)
   teardownWorkspaceResources(id, knownCwd ?? ws?.cwd ?? null)
 }
 
@@ -1131,6 +1145,7 @@ registerProjectsIpc({
     // Same trigger (g) applies to Panes tab surfaces (see
     // paneSurfacesByWorkspace's header comment).
     destroyPaneSurfacesForWorkspace(workspaceId)
+    destroyAgentPaneSurfacesForOwner(workspaceId)
   },
   teardownWorkspaceResources
 })
@@ -2120,6 +2135,55 @@ function destroyPaneSurfacesForWorkspace(workspaceId: string): void {
   broadcastLiveLayouts()
 }
 
+function destroyPaneSurface(layoutId: string, paneId: string): 'stopped' | 'absent' {
+  return teardownPaneSurfaceStrict({
+    layoutId,
+    terminalId: paneId,
+    getPhase: (surfaceId) => {
+      const phase = loadTerminalAddon().getSurfacePhase(surfaceId)
+      if (
+        phase !== 'none' &&
+        phase !== 'hidden' &&
+        phase !== 'attached' &&
+        phase !== 'visible' &&
+        phase !== 'freeing'
+      ) {
+        throw new Error(`Unknown pane native surface phase: ${String(phase)}`)
+      }
+      return phase
+    },
+    isRegistered: (targetLayoutId, targetPaneId) =>
+      paneSurfacesByWorkspace.get(targetLayoutId)?.has(targetPaneId) === true,
+    destroy: (surfaceId) => {
+      loadTerminalAddon().destroy(surfaceId)
+      terminalObservationService?.recordPaneLifecycle(
+        layoutId,
+        paneId,
+        getNativeSurfacePhase(surfaceId)
+      )
+    },
+    unregister: unregisterPaneSurface
+  })
+}
+
+/** Strict delete-path teardown: unlike lifecycle cleanup, any registered
+ * surface destroy failure aborts the renderer-requested DB delete. */
+function destroyPaneSurfacesForDelete(layoutId: string): void {
+  const paneIds = new Set([
+    ...(paneSurfacesByWorkspace.get(layoutId) ?? []),
+    ...listTerminals(layoutId).map((terminal) => terminal.id)
+  ])
+  for (const paneId of paneIds) {
+    destroyPaneSurface(layoutId, paneId)
+  }
+}
+
+function destroyAgentPaneSurfacesForOwner(workspaceId: string): void {
+  for (const layout of listAgentManagedLayoutsByOwner(workspaceId)) {
+    destroyPaneSurfacesForDelete(layout.id)
+  }
+}
+
 // Fix #23 — for panes, the `workspaceId` param slot actually carries the
 // LAYOUT id (PaneCell calls window.api.panes.mount(layoutId, paneId, ...);
 // the param is named workspaceId only because pane:mount's shape mirrors
@@ -2486,7 +2550,23 @@ registerFooterActionsIpc()
 
 registerReviewsIpc()
 
-registerPanesIpc()
+registerPanesIpc({
+  deletePanel: (panelId) => {
+    for (const layout of listLayouts(panelId)) {
+      destroyPaneSurfacesForDelete(layout.id)
+    }
+    deletePanePanelRow(panelId)
+  },
+  deleteLayout: (layoutId) => {
+    destroyPaneSurfacesForDelete(layoutId)
+    deletePaneLayoutRow(layoutId)
+  },
+  deleteTerminal: (terminalId) => {
+    const terminal = getTerminal(terminalId)
+    if (terminal != null) destroyPaneSurface(terminal.layoutId, terminal.id)
+    deletePaneTerminalRow(terminalId)
+  }
+})
 
 const rendererCommandBroker = new RendererCommandBroker(
   createRendererCommandTransport(getMainWindow)
@@ -2675,6 +2755,9 @@ if (!app.requestSingleInstanceLock()) {
         panes: createMainPaneControlPort({
           getLayout,
           listTerminals,
+          getWorkspace: (workspaceId) => getWorkspace(workspaceId) ?? null,
+          createDedicated: createDedicatedWorkspaceTerminal,
+          deleteDedicated: deleteDedicatedWorkspaceTerminal,
           startConfigured: (layout, terminal) => {
             const window = getMainWindow()
             if (window == null || window.isDestroyed()) {
@@ -2694,11 +2777,7 @@ if (!app.requestSingleInstanceLock()) {
             return retained ? 'retained' : 'started'
           },
           stopSurface: (layoutId, terminalId) => {
-            const slotId = paneSlotId(layoutId, terminalId)
-            if (loadTerminalAddon().getSurfacePhase(slotId) === 'none') return 'absent'
-            loadTerminalAddon().destroy(slotId)
-            unregisterPaneSurface(layoutId, terminalId)
-            return 'stopped'
+            return destroyPaneSurface(layoutId, terminalId)
           },
           focusSurface: (layoutId, terminalId) => {
             loadTerminalAddon().focus(paneSlotId(layoutId, terminalId))
@@ -3007,6 +3086,7 @@ if (!app.requestSingleInstanceLock()) {
                 // Same trigger (g) applies to Panes tab surfaces (see
                 // paneSurfacesByWorkspace's header comment).
                 destroyPaneSurfacesForWorkspace(workspaceId)
+                destroyAgentPaneSurfacesForOwner(workspaceId)
               },
               teardownWorkspaceResources,
               performClose: (workspaceId) => performClose(workspaceId),

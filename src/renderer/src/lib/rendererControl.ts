@@ -1,4 +1,5 @@
 import type {
+  PaneLayoutDeletionStateV1,
   PaneStateV1,
   RendererControlCommand,
   WorkbenchStateV1
@@ -6,6 +7,7 @@ import type {
 import { getFilesTabEntry, setFilesTabEntry } from './filesTabStore'
 import { getPaneRunning, setPaneRunning } from './paneRunStateStore'
 import { getPanesSelection, setActiveLayout, setActivePanel } from './panesSelectionStore'
+import { bumpPanesRefresh } from './panesRefreshStore'
 import {
   getControlledPaneFocus,
   getWorkbenchDiffPath,
@@ -78,6 +80,29 @@ async function selectPaneLayout(layoutId: string): Promise<PaneStateV1> {
   return paneState(layoutId)
 }
 
+async function reconcileDeletedPaneLayout(
+  layoutId: string,
+  panelId: string
+): Promise<PaneLayoutDeletionStateV1> {
+  bumpPanesRefresh()
+  const selection = getPanesSelection()
+  let selectedLayoutId = selection.activeLayoutId
+  if (selection.activeLayoutId === layoutId) {
+    const remaining = await window.api.panes.listLayouts(panelId)
+    selectedLayoutId = remaining[0]?.id ?? null
+    setControlledPaneFocus(layoutId, null)
+    setActiveLayout(selectedLayoutId)
+    await window.api.uiState.update({ lastLayoutId: selectedLayoutId })
+  }
+  return {
+    schemaVersion: 1,
+    observedAt: Date.now(),
+    source: 'renderer-live',
+    deletedLayoutId: layoutId,
+    selectedLayoutId
+  }
+}
+
 export async function executeRendererControl(command: RendererControlCommand): Promise<unknown> {
   switch (command.kind) {
     case 'workbench.readState':
@@ -132,6 +157,15 @@ export async function executeRendererControl(command: RendererControlCommand): P
       setControlledPaneFocus(command.layoutId, command.terminalId)
       return paneState(command.layoutId)
     }
+    case 'panes.presentCreatedTerminal': {
+      bumpPanesRefresh()
+      await selectPaneLayout(command.layoutId)
+      setPaneRunning(command.terminalId, true)
+      setControlledPaneFocus(command.layoutId, command.terminalId)
+      return paneState(command.layoutId)
+    }
+    case 'panes.reconcileDeletedLayout':
+      return reconcileDeletedPaneLayout(command.layoutId, command.panelId)
     case 'panes.commitTerminalState':
       setPaneRunning(command.terminalId, command.desiredState === 'running')
       if (

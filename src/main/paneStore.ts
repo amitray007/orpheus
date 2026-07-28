@@ -24,6 +24,13 @@
 import { randomUUID } from 'node:crypto'
 import { getDb } from './db'
 import type { PanePanel, PanePanelKind, PaneLayout, PaneTerminal, SplitTree } from '../shared/types'
+import { PaneProvisioningStoreError } from './workbenchControl/paneManagementErrors'
+import {
+  layoutMutationReleasesAgentOwner,
+  terminalMutationReleasesAgentOwner
+} from './workbenchControl/paneOwnership'
+import { nextPaneRevision } from './workbenchControl/revisions'
+export { PaneProvisioningStoreError } from './workbenchControl/paneManagementErrors'
 
 // ---------------------------------------------------------------------------
 // Row shapes from SQLite
@@ -50,6 +57,7 @@ type PaneLayoutRow = {
   created_at: number
   updated_at: number
   auto_start: number
+  agent_owner_workspace_id: string | null
 }
 
 type PaneTerminalRow = {
@@ -250,6 +258,18 @@ export function getLayout(id: string): PaneLayout | null {
   return row ? layoutFromRow(row) : null
 }
 
+export function listAgentManagedLayoutsByOwner(workspaceId: string): PaneLayout[] {
+  const db = getDb()
+  const rows = db
+    .prepare(
+      `SELECT * FROM pane_layouts
+       WHERE agent_owner_workspace_id = ?
+       ORDER BY position ASC, created_at ASC`
+    )
+    .all(workspaceId) as PaneLayoutRow[]
+  return rows.map(layoutFromRow)
+}
+
 export interface CreateLayoutInput {
   panelId: string
   name: string
@@ -289,16 +309,21 @@ export function updateLayout(id: string, patch: UpdateLayoutInput): PaneLayout {
   const existing = db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(id) as PaneLayoutRow | undefined
   if (!existing) throw new Error(`Pane layout not found: ${id}`)
 
-  const now = Date.now()
+  const now = nextPaneRevision(existing.updated_at)
   const name = patch.name ?? existing.name
   const dir = patch.dir ?? existing.dir
   const splitTreeJson =
     patch.splitTree !== undefined ? JSON.stringify(patch.splitTree) : existing.split_tree_json
   const position = patch.position ?? existing.position
+  const clearAgentOwner = layoutMutationReleasesAgentOwner(patch)
 
   db.prepare(
-    'UPDATE pane_layouts SET name = ?, dir = ?, split_tree_json = ?, position = ?, updated_at = ? WHERE id = ?'
-  ).run(name, dir, splitTreeJson, position, now, id)
+    `UPDATE pane_layouts
+     SET name = ?, dir = ?, split_tree_json = ?, position = ?, updated_at = ?,
+         agent_owner_workspace_id =
+           CASE WHEN ? = 1 THEN NULL ELSE agent_owner_workspace_id END
+     WHERE id = ?`
+  ).run(name, dir, splitTreeJson, position, now, clearAgentOwner ? 1 : 0, id)
 
   return layoutFromRow(db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(id) as PaneLayoutRow)
 }
@@ -316,7 +341,14 @@ export function deleteLayout(id: string): void {
  *  PaneLayout as a one-line passthrough. */
 export function setLayoutAutoStart(id: string, autoStart: boolean): PaneLayout {
   const db = getDb()
-  db.prepare('UPDATE pane_layouts SET auto_start = ? WHERE id = ?').run(autoStart ? 1 : 0, id)
+  const existing = db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(id) as PaneLayoutRow | undefined
+  if (existing == null) throw new Error(`Pane layout not found: ${id}`)
+  const updatedAt = nextPaneRevision(existing.updated_at)
+  db.prepare(
+    `UPDATE pane_layouts
+     SET auto_start = ?, updated_at = ?, agent_owner_workspace_id = NULL
+     WHERE id = ?`
+  ).run(autoStart ? 1 : 0, updatedAt, id)
   return layoutFromRow(db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(id) as PaneLayoutRow)
 }
 
@@ -343,6 +375,14 @@ export function listTerminals(layoutId: string): PaneTerminal[] {
   return rows.map(terminalFromRow)
 }
 
+export function getTerminal(id: string): PaneTerminal | null {
+  const db = getDb()
+  const row = db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(id) as
+    | PaneTerminalRow
+    | undefined
+  return row == null ? null : terminalFromRow(row)
+}
+
 export interface CreateTerminalInput {
   layoutId: string
   /** The setup rule — '' means a plain shell. */
@@ -354,20 +394,234 @@ export interface CreateTerminalInput {
   position: number
 }
 
+export const PANE_PANEL_TERMINAL_CAP = 12
+export const AGENT_WORKSPACE_LAYOUT_CAP = 4
+
+export type DedicatedWorkspaceTerminal = {
+  layout: PaneLayout
+  terminal: PaneTerminal
+}
+
+export interface CreateDedicatedWorkspaceTerminalInput {
+  workspaceId: string
+  dir: string
+  layoutName: string
+  terminalName: string
+}
+
+/**
+ * Creates the bootstrap layout + terminal + root split-tree leaf as one
+ * SQLite transaction. This is deliberately narrower than the renderer CRUD:
+ * callers cannot choose a panel, position, tree, or auto-start state.
+ */
+export function createDedicatedWorkspaceTerminal(
+  input: CreateDedicatedWorkspaceTerminalInput
+): DedicatedWorkspaceTerminal {
+  ensureGeneralPanel()
+  const db = getDb()
+  const create = db.transaction((): DedicatedWorkspaceTerminal => {
+    const panel = db
+      .prepare(
+        `SELECT * FROM pane_panels
+         WHERE kind = 'general'
+         ORDER BY position ASC, created_at ASC
+         LIMIT 1`
+      )
+      .get() as PanePanelRow | undefined
+    if (panel == null) {
+      throw new PaneProvisioningStoreError('not_found', 'Pane panel was not found.')
+    }
+
+    const panelCount = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM pane_terminals AS terminals
+           INNER JOIN pane_layouts AS layouts ON layouts.id = terminals.layout_id
+           WHERE layouts.panel_id = ?`
+        )
+        .get(panel.id) as { count: number }
+    ).count
+    if (panelCount >= PANE_PANEL_TERMINAL_CAP) {
+      throw new PaneProvisioningStoreError('capacity', 'Pane panel capacity was reached.')
+    }
+    const ownerCount = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM pane_layouts
+           WHERE panel_id = ? AND agent_owner_workspace_id = ?`
+        )
+        .get(panel.id, input.workspaceId) as { count: number }
+    ).count
+    if (ownerCount >= AGENT_WORKSPACE_LAYOUT_CAP) {
+      throw new PaneProvisioningStoreError('capacity', 'Workspace agent pane capacity was reached.')
+    }
+
+    const now = Date.now()
+    const layoutId = randomUUID()
+    const terminalId = randomUUID()
+    const layoutPosition =
+      ((
+        db
+          .prepare('SELECT MAX(position) AS maxPos FROM pane_layouts WHERE panel_id = ?')
+          .get(panel.id) as { maxPos: number | null }
+      ).maxPos ?? -1) + 1
+
+    db.prepare(
+      `INSERT INTO pane_layouts (
+         id, panel_id, name, dir, split_tree_json, position, created_at, updated_at,
+         auto_start, agent_owner_workspace_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+    ).run(
+      layoutId,
+      panel.id,
+      input.layoutName,
+      input.dir,
+      JSON.stringify({ paneId: terminalId }),
+      layoutPosition,
+      now,
+      now,
+      input.workspaceId
+    )
+    db.prepare(
+      `INSERT INTO pane_terminals (
+         id, layout_id, command, name, position, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, 0, ?, ?)`
+    ).run(terminalId, layoutId, '', input.terminalName, now, now)
+
+    return {
+      layout: layoutFromRow(db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(layoutId) as PaneLayoutRow),
+      terminal: terminalFromRow(
+        db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(terminalId) as PaneTerminalRow
+      )
+    }
+  })
+  return create()
+}
+
+export interface DeleteDedicatedWorkspaceTerminalInput {
+  workspaceId: string
+  layoutId: string
+  terminalId: string
+  expectedLayoutUpdatedAt: number
+  expectedTerminalUpdatedAt: number
+  dir: string
+}
+
+/**
+ * Validates the exact owned single-pane shape and dual CAS, performs native
+ * teardown outside SQLite, then revalidates and attempts the final delete.
+ * If state changes or SQLite fails after teardown, the row is retained and
+ * reported as recoverable so a later start can remount it.
+ */
+export function deleteDedicatedWorkspaceTerminal<T>(
+  input: DeleteDedicatedWorkspaceTerminalInput,
+  beforeDelete: (layout: PaneLayout, terminal: PaneTerminal) => T
+): {
+  layout: PaneLayout
+  terminal: PaneTerminal
+  teardown: T
+  persisted: 'deleted' | 'retained'
+} {
+  const db = getDb()
+  const read = (): { layout: PaneLayout; terminal: PaneTerminal } => {
+    const layoutRow = db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(input.layoutId) as
+      | PaneLayoutRow
+      | undefined
+    if (layoutRow == null) {
+      throw new PaneProvisioningStoreError('not_found', 'Pane resource was not found.')
+    }
+    const layout = layoutFromRow(layoutRow)
+    if (layout.updatedAt !== input.expectedLayoutUpdatedAt) {
+      throw new PaneProvisioningStoreError('conflict', 'Pane layout changed.')
+    }
+    if (layout.dir !== input.dir) {
+      throw new PaneProvisioningStoreError('not_found', 'Pane resource was not found.')
+    }
+    if (layoutRow.agent_owner_workspace_id !== input.workspaceId) {
+      throw new PaneProvisioningStoreError('not_found', 'Pane resource was not found.')
+    }
+    const terminalRows = db
+      .prepare(
+        'SELECT * FROM pane_terminals WHERE layout_id = ? ORDER BY position ASC, created_at ASC'
+      )
+      .all(input.layoutId) as PaneTerminalRow[]
+    if (
+      terminalRows.length !== 1 ||
+      terminalRows[0].id !== input.terminalId ||
+      layout.splitTree == null ||
+      !('paneId' in layout.splitTree) ||
+      layout.splitTree.paneId !== input.terminalId
+    ) {
+      throw new PaneProvisioningStoreError(
+        'invalid_shape',
+        'Pane layout is not a dedicated single-terminal layout.'
+      )
+    }
+    if (terminalRows[0].updated_at !== input.expectedTerminalUpdatedAt) {
+      throw new PaneProvisioningStoreError('conflict', 'Pane terminal changed.')
+    }
+    return { layout, terminal: terminalFromRow(terminalRows[0]) }
+  }
+
+  const snapshot = read()
+  const teardown = beforeDelete(snapshot.layout, snapshot.terminal)
+  try {
+    const remove = db.transaction(() => {
+      read()
+      const result = db
+        .prepare(
+          `DELETE FROM pane_layouts
+           WHERE id = ? AND updated_at = ?
+             AND EXISTS (
+               SELECT 1 FROM pane_terminals
+               WHERE id = ? AND layout_id = ? AND updated_at = ?
+             )`
+        )
+        .run(
+          input.layoutId,
+          input.expectedLayoutUpdatedAt,
+          input.terminalId,
+          input.layoutId,
+          input.expectedTerminalUpdatedAt
+        ) as { changes: number }
+      if (result.changes !== 1) {
+        throw new PaneProvisioningStoreError('conflict', 'Pane layout changed.')
+      }
+    })
+    remove()
+    return { ...snapshot, teardown, persisted: 'deleted' }
+  } catch {
+    return { ...snapshot, teardown, persisted: 'retained' }
+  }
+}
+
 export function createTerminal(input: CreateTerminalInput): PaneTerminal {
   const db = getDb()
   const id = randomUUID()
   const now = Date.now()
   const name = input.name ?? ''
-
-  db.prepare(
-    `INSERT INTO pane_terminals (id, layout_id, command, name, position, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, input.layoutId, input.command, name, input.position, now, now)
-
-  return terminalFromRow(
-    db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(id) as PaneTerminalRow
-  )
+  const create = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO pane_terminals (id, layout_id, command, name, position, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, input.layoutId, input.command, name, input.position, now, now)
+    const layout = db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(input.layoutId) as
+      | PaneLayoutRow
+      | undefined
+    if (layout != null) {
+      db.prepare(
+        `UPDATE pane_layouts
+         SET agent_owner_workspace_id = NULL, updated_at = ?
+         WHERE id = ?`
+      ).run(nextPaneRevision(layout.updated_at, now), input.layoutId)
+    }
+    return terminalFromRow(
+      db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(id) as PaneTerminalRow
+    )
+  })
+  return create()
 }
 
 export interface UpdateTerminalInput {
@@ -385,21 +639,54 @@ export function updateTerminal(id: string, patch: UpdateTerminalInput): PaneTerm
     | undefined
   if (!existing) throw new Error(`Pane terminal not found: ${id}`)
 
-  const now = Date.now()
+  const now = nextPaneRevision(existing.updated_at)
   const command = patch.command ?? existing.command
   const name = patch.name ?? existing.name
   const position = patch.position ?? existing.position
 
-  db.prepare(
-    'UPDATE pane_terminals SET command = ?, name = ?, position = ?, updated_at = ? WHERE id = ?'
-  ).run(command, name, position, now, id)
-
-  return terminalFromRow(
-    db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(id) as PaneTerminalRow
-  )
+  const clearAgentOwner = terminalMutationReleasesAgentOwner(patch)
+  const update = db.transaction(() => {
+    db.prepare(
+      'UPDATE pane_terminals SET command = ?, name = ?, position = ?, updated_at = ? WHERE id = ?'
+    ).run(command, name, position, now, id)
+    if (clearAgentOwner) {
+      const layout = db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(existing.layout_id) as
+        | PaneLayoutRow
+        | undefined
+      if (layout != null) {
+        db.prepare(
+          `UPDATE pane_layouts
+           SET agent_owner_workspace_id = NULL, updated_at = ?
+           WHERE id = ?`
+        ).run(nextPaneRevision(layout.updated_at, now), existing.layout_id)
+      }
+    }
+    return terminalFromRow(
+      db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(id) as PaneTerminalRow
+    )
+  })
+  return update()
 }
 
 export function deleteTerminal(id: string): void {
   const db = getDb()
-  db.prepare('DELETE FROM pane_terminals WHERE id = ?').run(id)
+  const remove = db.transaction(() => {
+    const terminal = db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(id) as
+      | PaneTerminalRow
+      | undefined
+    if (terminal == null) return
+    db.prepare('DELETE FROM pane_terminals WHERE id = ?').run(id)
+    const layout = db.prepare(SELECT_LAYOUT_BY_ID_SQL).get(terminal.layout_id) as
+      | PaneLayoutRow
+      | undefined
+    if (layout != null) {
+      const now = Date.now()
+      db.prepare(
+        `UPDATE pane_layouts
+         SET agent_owner_workspace_id = NULL, updated_at = ?
+         WHERE id = ?`
+      ).run(nextPaneRevision(layout.updated_at, now), terminal.layout_id)
+    }
+  })
+  remove()
 }

@@ -265,11 +265,15 @@ for (const description of allDescriptions) {
 assert.ok(
   workbenchIds.every((id) => {
     const description = registry.describe(id)
-    return (
-      description?.permission ===
-        (id.startsWith('panes.') && id.endsWith('Terminal')
+    const expectedPermission =
+      id === 'panes.createWorkspaceTerminal' || id === 'panes.deleteTerminalLayout'
+        ? 'panes.manage'
+        : id.startsWith('panes.') && id.endsWith('Terminal')
           ? 'terminals.control'
-          : 'ui.workbench.control') && description.allowedSurfaces.join(',') === 'renderer,mcp'
+          : 'ui.workbench.control'
+    return (
+      description?.permission === expectedPermission &&
+      description.allowedSurfaces.join(',') === 'renderer,mcp'
     )
   }),
   'Phase 4 permissions and surfaces must stay explicit'
