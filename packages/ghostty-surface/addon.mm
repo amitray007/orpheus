@@ -1,6 +1,6 @@
 // ghostty-surface — generic libghostty surface lifecycle addon.
 //
-// Exports four synchronous NAPI functions (all called on the AppKit main thread
+// Exports synchronous NAPI functions (all called on the AppKit main thread
 // from the Electron main process):
 //
 //   mount(handleBuffer, { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd?, command? })
@@ -8,6 +8,7 @@
 //   hide(workspaceId)    → void   (keeps surface alive, just removes from superview)
 //   resize(workspaceId, { x, y, w, h }, scaleFactor) → void
 //   destroy(workspaceId) → void   (full teardown; call only on archive/project-remove)
+//   readScreenTail(workspaceId, maxBytes, maxLines) → bounded UTF-8 screen text
 //
 // Persistence model:
 //   Each workspace owns exactly one GhosttySurfaceEntry keyed by workspace.id.
@@ -35,6 +36,8 @@
 #include <map>
 #include <atomic>
 #include <cinttypes>
+#include <chrono>
+#include <algorithm>
 #include <unistd.h>
 
 // GhosttyKit C API
@@ -141,6 +144,21 @@ struct GhosttySurfaceEntry {
 
 // workspaceId → entry
 static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
+
+// Screen text is sensitive and intentionally remains ephemeral: this cache is
+// process-memory-only, never logged or persisted, expires after 500ms, and is
+// erased synchronously when its surface is destroyed.
+static constexpr size_t kMaxScreenTailBytes = 2 * 1024 * 1024;
+static constexpr auto kScreenTailCacheTtl = std::chrono::milliseconds(500);
+
+struct ScreenTailCacheEntry {
+    std::string text;
+    bool truncated;
+    double capturedAtMs;
+    std::chrono::steady_clock::time_point cachedAt;
+};
+
+static std::map<std::string, ScreenTailCacheEntry> g_screenTailCache;
 
 // ---------------------------------------------------------------------------
 // U6a slot model — relaxes the single-visible invariant from "at most one
@@ -3348,6 +3366,9 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     entry.lastRect      = CGRectMake(rx, ry, rw, rh);
     entry.lastScale     = scaleFactor;
     entry.generation    = createGen;
+    // A surface id may be reused after deferred teardown. Never let the new
+    // surface inherit even the previous entry's sub-500ms text snapshot.
+    g_screenTailCache.erase(workspaceId);
     g_surfaces[workspaceId] = entry;
     g_surfaceToWorkspaceId[surface] = workspaceId;
     // Brand-new surface: mark visible in ITS OWN slot directly (no eviction —
@@ -3648,6 +3669,145 @@ static Napi::Value Focus(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
+// Return the first byte at or after the requested tail boundary that is not a
+// UTF-8 continuation byte. Ghostty supplies UTF-8; moving forward preserves
+// complete code points without exceeding the byte limit.
+static size_t utf8TailStart(const char* text, size_t length, size_t maxBytes) {
+    if (length <= maxBytes) return 0;
+    size_t start = length - maxBytes;
+    while (start < length &&
+           (static_cast<unsigned char>(text[start]) & 0xC0) == 0x80) {
+        start++;
+    }
+    return start;
+}
+
+static Napi::Object unavailableScreenTail(Napi::Env env) {
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("available", Napi::Boolean::New(env, false));
+    result.Set("text", Napi::String::New(env, ""));
+    result.Set("bytes", Napi::Number::New(env, 0));
+    result.Set("lines", Napi::Number::New(env, 0));
+    result.Set("truncated", Napi::Boolean::New(env, false));
+    result.Set("capturedAt", env.Null());
+    return result;
+}
+
+static Napi::Object boundedScreenTail(
+    Napi::Env env,
+    const ScreenTailCacheEntry& cached,
+    size_t maxBytes,
+    size_t maxLines
+) {
+    const size_t byteStart = utf8TailStart(cached.text.data(), cached.text.size(), maxBytes);
+    size_t lineStart = byteStart;
+    size_t newlineCount = 0;
+    for (size_t i = cached.text.size(); i > byteStart; i--) {
+        if (cached.text[i - 1] != '\n') continue;
+        newlineCount++;
+        if (newlineCount == maxLines) {
+            lineStart = i;
+            break;
+        }
+    }
+
+    const char* boundedStart = cached.text.data() + lineStart;
+    const size_t boundedLength = cached.text.size() - lineStart;
+    const size_t lines = boundedLength == 0
+        ? 0
+        : 1 + static_cast<size_t>(
+              std::count(boundedStart, boundedStart + boundedLength, '\n'));
+
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("available", Napi::Boolean::New(env, true));
+    result.Set("text", Napi::String::New(env, boundedStart, boundedLength));
+    result.Set("bytes", Napi::Number::New(env, static_cast<double>(boundedLength)));
+    result.Set("lines", Napi::Number::New(env, static_cast<double>(lines)));
+    result.Set(
+        "truncated",
+        Napi::Boolean::New(env, cached.truncated || byteStart > 0 || lineStart > byteStart));
+    result.Set("capturedAt", Napi::Number::New(env, cached.capturedAtMs));
+    return result;
+}
+
+// NAPI: readScreenTail(workspaceId, maxBytes, maxLines)
+//
+// Reads the current screen/scrollback text through libghostty's authoritative
+// surface API. The native boundary returns only a bounded UTF-8 tail; terminal
+// text is never logged, persisted, or included in lifecycle diagnostics.
+static Napi::Value ReadScreenTail(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 3 || !info[0].IsString() ||
+        !info[1].IsNumber() || !info[2].IsNumber()) {
+        Napi::TypeError::New(
+            env,
+            "readScreenTail requires (workspaceId, maxBytes, maxLines)"
+        ).ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    const int64_t requestedBytes = info[1].As<Napi::Number>().Int64Value();
+    const int64_t requestedLines = info[2].As<Napi::Number>().Int64Value();
+    if (requestedBytes <= 0 || requestedLines <= 0) {
+        Napi::RangeError::New(env, "maxBytes and maxLines must be positive integers")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const size_t maxBytes = static_cast<size_t>(
+        std::min<int64_t>(requestedBytes, static_cast<int64_t>(kMaxScreenTailBytes)));
+    const size_t maxLines = static_cast<size_t>(requestedLines);
+    auto surfaceIt = g_surfaces.find(workspaceId);
+    if (surfaceIt == g_surfaces.end() || !surfaceIt->second.surface) {
+        return unavailableScreenTail(env);
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    auto cacheIt = g_screenTailCache.find(workspaceId);
+    if (cacheIt == g_screenTailCache.end() ||
+        now - cacheIt->second.cachedAt >= kScreenTailCacheTtl) {
+        ghostty_selection_s selection = {};
+        selection.top_left.tag = GHOSTTY_POINT_SCREEN;
+        selection.top_left.coord = GHOSTTY_POINT_COORD_TOP_LEFT;
+        selection.bottom_right.tag = GHOSTTY_POINT_SCREEN;
+        selection.bottom_right.coord = GHOSTTY_POINT_COORD_BOTTOM_RIGHT;
+        selection.rectangle = false;
+
+        ghostty_text_s raw = {};
+        ghostty_surface_t surface = surfaceIt->second.surface;
+        if (!ghostty_surface_read_text(surface, selection, &raw)) {
+            return unavailableScreenTail(env);
+        }
+
+        const size_t rawLength = raw.text == nullptr ? 0 : static_cast<size_t>(raw.text_len);
+        const size_t hardStart =
+            raw.text == nullptr ? 0 : utf8TailStart(raw.text, rawLength, kMaxScreenTailBytes);
+        std::string cachedText;
+        if (raw.text != nullptr && rawLength > hardStart) {
+            cachedText.assign(raw.text + hardStart, rawLength - hardStart);
+        }
+        ghostty_surface_free_text(surface, &raw);
+
+        const double capturedAtMs = static_cast<double>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+            ).count());
+        cacheIt = g_screenTailCache
+            .insert_or_assign(
+                workspaceId,
+                ScreenTailCacheEntry{
+                    std::move(cachedText),
+                    hardStart > 0,
+                    capturedAtMs,
+                    now
+                })
+            .first;
+    }
+
+    return boundedScreenTail(env, cacheIt->second, maxBytes, maxLines);
+}
+
 static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -3657,6 +3817,7 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     }
 
     std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    g_screenTailCache.erase(workspaceId);
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
         NSLog(@"[ghostty-surface] destroy workspaceId=%s: no entry (no-op)", workspaceId.c_str());
@@ -3972,6 +4133,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
     exports.Set("focus",             Napi::Function::New(env, Focus));
     exports.Set("getSurfacePhase",   Napi::Function::New(env, GetSurfacePhase));
+    exports.Set("readScreenTail",    Napi::Function::New(env, ReadScreenTail));
     exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
     exports.Set("setOcclusionCallback",     Napi::Function::New(env, SetOcclusionCallback));
     exports.Set("setActionTraceCallback",   Napi::Function::New(env, SetActionTraceCallback));

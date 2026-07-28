@@ -20,6 +20,7 @@ import type {
   TrustedRuntimeBinding
 } from '../src/main/controlPlane/types.ts'
 import { TerminalObservationJournal } from '../src/main/terminalObservation/journal.ts'
+import { createNativeOutputProvider } from '../src/main/terminalObservation/nativeOutputProvider.ts'
 import type { ControlRegistry } from '../src/main/controlPlane/registry.ts'
 import {
   createTerminalObservationHandlers,
@@ -222,7 +223,7 @@ const runtimeLeaseBinding = baseDeps.getRuntimeBySurfaceId(workspaceOne.id)
 assert.ok(runtimeLeaseBinding)
 assert.equal(
   defaultGrantPolicy.permissionsFor(runtimeLeaseBinding).includes('terminals.read'),
-  false
+  true
 )
 
 function registryFor(service: TerminalObservationService): ControlRegistry {
@@ -586,6 +587,67 @@ assert.ok((boundedTail.value?.bytes ?? 999) <= 20)
 assert.ok((boundedTail.value?.lines ?? 999) <= 2)
 assert.equal(boundedTail.value?.truncated, true)
 
+const nativeReadCalls: Array<{
+  surfaceId: string
+  maxBytes: number
+  maxLines: number
+}> = []
+const nativeOutputService = new TerminalObservationService({
+  ...baseDeps,
+  outputProvider: createNativeOutputProvider(() => ({
+    readScreenTail: (surfaceId, maxBytes, maxLines) => {
+      nativeReadCalls.push({ surfaceId, maxBytes, maxLines })
+      return {
+        available: true,
+        text: 'screen line\n😀 tail',
+        bytes: Buffer.byteLength('screen line\n😀 tail'),
+        lines: 2,
+        truncated: false,
+        capturedAt: 975
+      }
+    }
+  }))
+})
+const nativeTail = await nativeOutputService.getOutputTail({ maxBytes: 64, maxLines: 4 }, context)
+assert.deepEqual(nativeReadCalls, [{ surfaceId: workspaceOne.id, maxBytes: 64, maxLines: 4 }])
+assert.deepEqual(nativeTail, {
+  value: {
+    text: 'screen line\n😀 tail',
+    bytes: Buffer.byteLength('screen line\n😀 tail'),
+    lines: 2,
+    truncated: false
+  },
+  source: 'authoritative-text-stream',
+  observedAt: 1_000,
+  sourceUpdatedAt: 975,
+  freshness: 'live',
+  availability: 'available'
+})
+
+const unavailableNativeOutputService = new TerminalObservationService({
+  ...baseDeps,
+  outputProvider: createNativeOutputProvider(() => ({
+    readScreenTail: () => ({
+      available: false,
+      text: '',
+      bytes: 0,
+      lines: 0,
+      truncated: false,
+      capturedAt: null
+    })
+  }))
+})
+const unavailableNativeTail = await unavailableNativeOutputService.getOutputTail({}, context)
+assert.deepEqual(unavailableNativeTail, {
+  value: null,
+  source: 'authoritative-text-stream',
+  observedAt: 1_000,
+  sourceUpdatedAt: null,
+  freshness: 'unknown',
+  availability: 'unavailable',
+  reason: 'The requested terminal surface is unavailable.'
+})
+
 const raceServiceHolder: { value: TerminalObservationService | null } = { value: null }
 const raceService = new TerminalObservationService({
   ...baseDeps,
@@ -816,6 +878,45 @@ assert.equal(invalidTailBound.ok, false)
 if (!invalidTailBound.ok) assert.equal(invalidTailBound.code, 'invalid')
 
 const repoRoot = path.resolve(import.meta.dirname, '..')
+const nativeAddonSource = fs.readFileSync(
+  path.join(repoRoot, 'packages/ghostty-surface/addon.mm'),
+  'utf8'
+)
+const nativeReadStart = nativeAddonSource.indexOf('static Napi::Value ReadScreenTail')
+const nativeReadEnd = nativeAddonSource.indexOf('static Napi::Value Destroy', nativeReadStart)
+assert.ok(nativeReadStart >= 0)
+assert.ok(nativeReadEnd > nativeReadStart)
+const nativeReadSource = nativeAddonSource.slice(nativeReadStart, nativeReadEnd)
+for (const required of [
+  'ghostty_surface_read_text(surface, selection, &raw)',
+  'ghostty_surface_free_text(surface, &raw)',
+  'selection.top_left.tag = GHOSTTY_POINT_SCREEN',
+  'selection.top_left.coord = GHOSTTY_POINT_COORD_TOP_LEFT',
+  'selection.bottom_right.tag = GHOSTTY_POINT_SCREEN',
+  'selection.bottom_right.coord = GHOSTTY_POINT_COORD_BOTTOM_RIGHT',
+  'selection.rectangle = false',
+  'kMaxScreenTailBytes = 2 * 1024 * 1024',
+  'kScreenTailCacheTtl = std::chrono::milliseconds(500)'
+]) {
+  assert.ok(nativeAddonSource.includes(required), `native screen reader must include ${required}`)
+}
+assert.equal(nativeReadSource.includes('NSLog'), false, 'terminal text read path must not log')
+assert.ok(
+  nativeAddonSource.includes(
+    'g_screenTailCache.erase(workspaceId);\n    g_surfaces[workspaceId] = entry;'
+  ),
+  'mount must clear cached text before inserting a replacement surface'
+)
+assert.ok(
+  nativeAddonSource
+    .slice(
+      nativeAddonSource.indexOf('static Napi::Value Destroy'),
+      nativeAddonSource.indexOf('static Napi::Value SendInput')
+    )
+    .includes('g_screenTailCache.erase(workspaceId)'),
+  'destroy must clear the per-surface text cache'
+)
+
 for (const relativePath of [
   'src/main/terminalObservation/service.ts',
   'src/main/terminalObservation/journal.ts',

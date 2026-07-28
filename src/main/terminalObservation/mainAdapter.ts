@@ -5,7 +5,10 @@ import type { RuntimeLeaseRegistry } from '../controlPlane/runtimeLeases'
 import { getLiveSessionState, getWorkspaceFileInfo } from '../sessionState'
 import { getWorkspaceActivity, onWorkspaceStatusChange } from '../orpheusNotify'
 import { getLayout, listTerminals } from '../paneStore'
+import { getAddonRef } from '../actions/addonSurface'
+import type { GhosttySurfaceAddon } from '../../../packages/ghostty-surface/index'
 import type { NativeSurfacePhase } from './types'
+import { createNativeOutputProvider } from './nativeOutputProvider'
 import {
   TerminalObservationService,
   type PaneTerminalSnapshot,
@@ -124,6 +127,9 @@ export function createMainTerminalObservation(deps: MainTerminalObservationDeps)
     getWorkspaceActivity,
     workspaceClaudeCommand,
     workbenchCommand: () => process.env['SHELL'] || '/bin/zsh',
+    outputProvider: createNativeOutputProvider(
+      () => getAddonRef() as Pick<GhosttySurfaceAddon, 'readScreenTail'> | null
+    ),
     readTranscript: (workspaceId, options, context) =>
       Promise.resolve(
         deps.reads.getWorkspaceTranscript(
