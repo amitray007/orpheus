@@ -15,8 +15,14 @@ import {
 import { withSettingsResourcePolicy } from './settingsResourcePolicy'
 import { withAutomationPolicy } from './automationPolicy'
 import { withControlToolExposurePolicy, type ControlToolExposureStore } from './controlToolExposure'
+import {
+  createReviewMutationRejectionAuditor,
+  type ReviewMutationService,
+  withReviewMutationPolicy
+} from './reviewMutation'
 
 const SETTINGS_RESOURCE_OPERATIONS = new Set<string>(SETTINGS_RESOURCE_OPERATION_IDS)
+const REVIEW_MUTATION_OPERATION = 'reviews.setResolved'
 
 export function createConfiguredControlRegistry(config: {
   authorization: ControlAuthorizationPolicy
@@ -25,13 +31,19 @@ export function createConfiguredControlRegistry(config: {
   terminalObservation?: TerminalObservationService
   settingsResources?: SettingsResourceService
   toolExposure?: Pick<ControlToolExposureStore, 'isEnabled'>
+  reviewMutations?: ReviewMutationService
 }): ControlRegistry {
   const workspaceService = config.workspaceOrchestration
   const settingsService = config.settingsResources
+  const reviewService = config.reviewMutations
+  const reviewPolicy =
+    reviewService == null
+      ? config.authorization
+      : withReviewMutationPolicy(config.authorization, reviewService)
   const terminalPolicy =
     config.terminalObservation == null
-      ? config.authorization
-      : withTerminalObservationPolicy(config.authorization, config.terminalObservation)
+      ? reviewPolicy
+      : withTerminalObservationPolicy(reviewPolicy, config.terminalObservation)
   const workspacePolicy =
     workspaceService == null ? terminalPolicy : withWorkspaceMutationPolicy(terminalPolicy)
   const settingsPolicy =
@@ -48,10 +60,15 @@ export function createConfiguredControlRegistry(config: {
     workspaceService == null ? null : createWorkspaceRejectionAuditor(workspaceService)
   const settingsAuditor =
     settingsService == null ? null : createSettingsResourceRejectionAuditor(settingsService)
+  const reviewAuditor =
+    reviewService == null ? null : createReviewMutationRejectionAuditor(reviewService)
   let rejectionAuditor: ControlRejectionAuditor | undefined
-  if (workspaceAuditor != null || settingsAuditor != null) {
+  if (workspaceAuditor != null || settingsAuditor != null || reviewAuditor != null) {
     rejectionAuditor = {
       auditRejected(input) {
+        if (input.description.id === REVIEW_MUTATION_OPERATION) {
+          return reviewAuditor?.auditRejected(input)
+        }
         return SETTINGS_RESOURCE_OPERATIONS.has(input.description.id)
           ? settingsAuditor?.auditRejected(input)
           : workspaceAuditor?.auditRejected(input)

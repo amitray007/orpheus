@@ -10,6 +10,7 @@ import type { WorkspaceOrchestrationService } from '../workspaceOrchestration/se
 import type { WorkbenchControlService } from '../workbenchControl/service'
 import { createWorkbenchCapabilities } from './workbenchCapabilities'
 import type { SettingsResourceService } from './settingsResourceService'
+import type { ReviewMutationService } from './reviewMutation'
 
 export function bootControlRegistry(
   registry: ControlRegistry,
@@ -18,10 +19,12 @@ export function bootControlRegistry(
   workspaceService?: WorkspaceOrchestrationService,
   workbenchService?: WorkbenchControlService,
   terminalObservationHandlers?: TerminalObservationHandlers,
-  settingsResourceService?: SettingsResourceService
+  settingsResourceService?: SettingsResourceService,
+  reviewMutationService?: ReviewMutationService
 ): void {
   const [listCapability, setResolvedCapability] = createReviewCapabilities(reviewHandlers, {
-    mcpRead: readHandlers != null
+    mcpRead: readHandlers != null,
+    mcpMutation: reviewMutationService
   })
   registry.register(listCapability)
   registry.register(setResolvedCapability)

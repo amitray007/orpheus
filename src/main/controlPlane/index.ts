@@ -16,6 +16,8 @@ import type { TerminalObservationService } from '../terminalObservation/service'
 import { createTerminalObservationHandlers } from '../terminalObservation/service'
 import type { SettingsResourceService } from './settingsResourceService'
 import type { ControlToolExposureStore } from './controlToolExposure'
+import type { ReviewMutationService } from './reviewMutation'
+import { createMainReviewMutationService } from './reviewMutationMain'
 
 export type Phase2ControlPlaneConfig = {
   authorization: ControlAuthorizationPolicy
@@ -25,16 +27,29 @@ export type Phase2ControlPlaneConfig = {
   terminalObservation?: TerminalObservationService
   settingsResources?: SettingsResourceService
   toolExposure?: Pick<ControlToolExposureStore, 'isEnabled'>
+  reviewMutations?: ReviewMutationService
 }
 
 let phase2Config: Phase2ControlPlaneConfig | null = null
 let registry: ControlRegistry | null = null
 let booted = false
+let mainReviewMutations: ReviewMutationService | null = null
+
+function getReviewMutations(): ReviewMutationService {
+  if (phase2Config?.reviewMutations != null) return phase2Config.reviewMutations
+  mainReviewMutations ??= createMainReviewMutationService()
+  return mainReviewMutations
+}
 
 function getRegistry(): ControlRegistry {
   if (registry == null) {
     registry =
-      phase2Config == null ? new ControlRegistry() : createConfiguredControlRegistry(phase2Config)
+      phase2Config == null
+        ? new ControlRegistry()
+        : createConfiguredControlRegistry({
+            ...phase2Config,
+            reviewMutations: getReviewMutations()
+          })
   }
   return registry
 }
@@ -66,7 +81,8 @@ export function bootControlPlane(): void {
     phase2Config?.terminalObservation == null
       ? undefined
       : createTerminalObservationHandlers(phase2Config.terminalObservation),
-    phase2Config?.settingsResources
+    phase2Config?.settingsResources,
+    phase2Config == null ? undefined : getReviewMutations()
   )
   booted = true
 }

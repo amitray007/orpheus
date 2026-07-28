@@ -6,6 +6,7 @@ import type {
   ReviewListInput,
   ReviewSetResolvedInput
 } from './types'
+import type { ReviewMutationService } from './reviewMutation'
 
 export const REVIEW_LIST_CONTROL_ID = 'reviews.list'
 export const REVIEW_SET_RESOLVED_CONTROL_ID = 'reviews.setResolved'
@@ -54,11 +55,16 @@ function isReviewListInput(input: unknown, context: ControlContext): input is Re
   )
 }
 
-function isReviewSetResolvedInput(input: unknown): input is ReviewSetResolvedInput {
+function isReviewSetResolvedInput(
+  input: unknown,
+  context: ControlContext
+): input is ReviewSetResolvedInput {
   if (input == null || typeof input !== 'object') return false
   const record = input as Record<string, unknown>
+  const id = record['id']
   return (
-    typeof record['id'] === 'string' &&
+    typeof id === 'string' &&
+    (context.consumer !== 'mcp' || (id.length >= 1 && id.length <= 128 && id.trim() === id)) &&
     typeof record['resolved'] === 'boolean' &&
     Object.keys(record).every((key) => key === 'id' || key === 'resolved')
   )
@@ -66,7 +72,10 @@ function isReviewSetResolvedInput(input: unknown): input is ReviewSetResolvedInp
 
 export function createReviewCapabilities(
   handlers: ReviewCapabilityHandlers,
-  options?: { mcpRead?: boolean }
+  options?: {
+    mcpRead?: boolean
+    mcpMutation?: Pick<ReviewMutationService, 'setResolved'>
+  }
 ): [
   ControlDescriptor<ReviewListInput, LocalReviewComment[]>,
   ControlDescriptor<ReviewSetResolvedInput, LocalReviewComment>
@@ -104,17 +113,25 @@ export function createReviewCapabilities(
         additionalProperties: false,
         required: ['id', 'resolved'],
         properties: {
-          id: { type: 'string' },
+          id: { type: 'string', minLength: 1, maxLength: 128 },
           resolved: { type: 'boolean' }
         }
       },
       outputSchema: REVIEW_OUTPUT_SCHEMA,
-      allowedSurfaces: ['renderer', 'command-socket'],
+      allowedSurfaces:
+        options?.mcpMutation != null
+          ? ['renderer', 'command-socket', 'mcp']
+          : ['renderer', 'command-socket'],
       permission: 'reviews.resolve',
       scope: { kind: 'resource', inputField: 'id' },
       risk: { tier: 2, label: 'scoped mutation' },
-      validateInput: isReviewSetResolvedInput,
-      handler: (input, context) => handlers.setResolved(input.id, input.resolved, context)
+      declaredEffects: ['db.write'],
+      validateInput: (input, context) => isReviewSetResolvedInput(input, context),
+      handler: (input, context) =>
+        context.consumer === 'mcp'
+          ? (options?.mcpMutation?.setResolved(input, context) ??
+            Promise.reject(new Error('Review mutation service is unavailable.')))
+          : handlers.setResolved(input.id, input.resolved, context)
     }
   ]
 }

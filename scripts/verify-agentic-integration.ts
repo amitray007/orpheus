@@ -7,6 +7,7 @@ import { createReadCapabilities } from '../src/main/controlPlane/readCapabilitie
 import { createTrustedRuntimeReadPolicy } from '../src/main/controlPlane/readPolicy'
 import { ControlRegistry } from '../src/main/controlPlane/registry'
 import { createReviewCapabilities } from '../src/main/controlPlane/reviewCapabilities'
+import { ReviewMutationService } from '../src/main/controlPlane/reviewMutation'
 import {
   BASE_RUNTIME_CONTROL_PERMISSIONS,
   DEFAULT_RUNTIME_CONTROL_PERMISSIONS
@@ -106,6 +107,12 @@ const settingsService = {
 const terminalService = {
   isInputAuthorized: () => true
 } as unknown as TerminalObservationService
+const reviewMutationService = new ReviewMutationService({
+  resolveOwnership: unreachable,
+  getWorkspaceProjectId: unreachable,
+  setResolved: unreachable,
+  audit: { append: unreachable }
+})
 
 const basePolicy = createTrustedRuntimeReadPolicy({
   getWorkspaceProjectId: () => 'project-1'
@@ -115,7 +122,8 @@ const registry = createConfiguredControlRegistry({
   workspaceOrchestration: workspaceService,
   workbenchControl: workbenchService,
   terminalObservation: terminalService,
-  settingsResources: settingsService
+  settingsResources: settingsService,
+  reviewMutations: reviewMutationService
 })
 bootControlRegistry(
   registry,
@@ -124,10 +132,14 @@ bootControlRegistry(
   workspaceService,
   workbenchService,
   terminalHandlers,
-  settingsService
+  settingsService,
+  reviewMutationService
 )
 
-const reviewIds = createReviewCapabilities(reviewHandlers, { mcpRead: true }).map(({ id }) => id)
+const reviewIds = createReviewCapabilities(reviewHandlers, {
+  mcpRead: true,
+  mcpMutation: reviewMutationService
+}).map(({ id }) => id)
 const readIds = createReadCapabilities(readHandlers).map(({ id }) => id)
 const workbenchIds = createWorkbenchCapabilities(workbenchService).map(({ id }) => id)
 const terminalIds = createTerminalObservationCapabilities(terminalHandlers).map(({ id }) => id)
@@ -181,7 +193,7 @@ const allDescriptions = registry.list()
 const mcpIds = allDescriptions
   .filter(({ allowedSurfaces }) => allowedSurfaces.includes('mcp'))
   .map(({ id }) => id)
-assert.equal(mcpIds.length, expectedIds.length - 1, 'only reviews.setResolved is not MCP-exposed')
+assert.equal(mcpIds.length, expectedIds.length, 'every registered operation is MCP-exposed')
 
 const defaultIds = registry
   .listForContext(context(DEFAULT_RUNTIME_CONTROL_PERMISSIONS))
