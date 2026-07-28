@@ -395,6 +395,19 @@ const mainLifecycleSource = readFileSync(
   join(root, 'src/main/controlPlane/mainLifecycle.ts'),
   'utf8'
 )
+const exposureConstructionAt = mainLifecycleSource.indexOf('new ControlToolExposureStore(')
+const controlConfigurationAt = mainLifecycleSource.indexOf('configurePhase2ControlPlane({')
+const controlBootAt = mainLifecycleSource.indexOf('bootControlPlane()')
+const exposureInitializationAt = mainLifecycleSource.indexOf(
+  'toolExposure.initializeDescriptions()'
+)
+assert.ok(exposureConstructionAt >= 0)
+assert.ok(controlConfigurationAt > exposureConstructionAt)
+assert.ok(controlBootAt > controlConfigurationAt)
+assert.ok(
+  exposureInitializationAt > controlBootAt,
+  'the exposure catalog must initialize only after the configured registry boots'
+)
 const schemaSource = readFileSync(join(root, 'src/main/db/schema.ts'), 'utf8')
 const workspacesSource = readFileSync(join(root, 'src/main/workspaces.ts'), 'utf8')
 const notifySource = readFileSync(join(root, 'src/main/orpheusNotify.ts'), 'utf8')

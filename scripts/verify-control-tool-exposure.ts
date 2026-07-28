@@ -89,11 +89,22 @@ const descriptions: ControlDescription[] = [
   }
 ]
 let now = 100
+let catalogReady = false
+let catalogReads = 0
 const exposure = new ControlToolExposureStore(
   db,
-  () => descriptions,
+  () => {
+    catalogReads++
+    assert.equal(catalogReady, true, 'the exposure catalog must not be read before control boot')
+    return descriptions
+  },
   () => now++
 )
+assert.equal(catalogReads, 0, 'constructing exposure must not instantiate the control registry')
+catalogReady = true
+exposure.initializeDescriptions()
+exposure.initializeDescriptions()
+assert.equal(catalogReads, 1, 'catalog initialization must be explicit and idempotent')
 
 // Missing rows are enabled, stale preference rows are not hydrated into the
 // bounded live-catalog cache, and renderer-only operations never appear as

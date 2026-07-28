@@ -89,6 +89,7 @@ export function startMainControlPlaneLifecycle(
     automationManagement
   })
   bootControlPlane()
+  toolExposure.initializeDescriptions()
   registerControlToolsIpc(toolExposure)
   registerAutomationsIpc(
     automations.service,

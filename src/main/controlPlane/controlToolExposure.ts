@@ -75,21 +75,15 @@ function maxUpdatedAt(...maps: Map<string, PreferenceRow>[]): number | null {
 export class ControlToolExposureStore {
   private catalogRevision = 1
   private readonly catalogWaiters = new Set<CatalogWaiter>()
-  private readonly descriptions: readonly ControlDescription[]
+  private descriptions: readonly ControlDescription[] | null = null
   private readonly categoryPreferences: Map<string, PreferenceRow>
   private readonly toolPreferences: Map<string, PreferenceRow>
 
   constructor(
     private readonly db: DbLike,
-    listDescriptions: () => readonly ControlDescription[],
+    private readonly listDescriptions: () => readonly ControlDescription[],
     private readonly now: () => number = Date.now
   ) {
-    this.descriptions = Object.freeze(
-      [...listDescriptions()]
-        .filter((description) => description.allowedSurfaces.includes('mcp'))
-        .sort((a, b) => a.id.localeCompare(b.id))
-    )
-    const operationIds = new Set(this.descriptions.map((description) => description.id))
     this.categoryPreferences = preferenceMap(
       (
         this.db
@@ -100,12 +94,33 @@ export class ControlToolExposureStore {
       ).filter((row) => CATEGORY_IDS.has(row.id as ControlToolCategory))
     )
     this.toolPreferences = preferenceMap(
-      (
-        this.db
-          .prepare('SELECT operation_id AS id, enabled, updated_at FROM control_tool_preferences')
-          .all() as PreferenceRow[]
-      ).filter((row) => operationIds.has(row.id))
+      this.db
+        .prepare('SELECT operation_id AS id, enabled, updated_at FROM control_tool_preferences')
+        .all() as PreferenceRow[]
     )
+  }
+
+  /**
+   * Capture the immutable MCP catalog only after the global control registry
+   * has been configured and booted. Construction happens before configuration
+   * so the exposure policy can participate in that boot; eagerly listing here
+   * would instantiate the compatibility registry and make configuration fail.
+   *
+   * The method remains lazy/idempotent for focused consumers that do not use
+   * the main-process lifecycle owner.
+   */
+  initializeDescriptions(): void {
+    if (this.descriptions != null) return
+    const descriptions = Object.freeze(
+      [...this.listDescriptions()]
+        .filter((description) => description.allowedSurfaces.includes('mcp'))
+        .sort((a, b) => a.id.localeCompare(b.id))
+    )
+    const operationIds = new Set(descriptions.map((description) => description.id))
+    for (const operationId of this.toolPreferences.keys()) {
+      if (!operationIds.has(operationId)) this.toolPreferences.delete(operationId)
+    }
+    this.descriptions = descriptions
   }
 
   isEnabled(operationId: string): boolean {
@@ -288,7 +303,8 @@ export class ControlToolExposureStore {
   }
 
   private mcpDescriptions(): ControlDescription[] {
-    return [...this.descriptions]
+    this.initializeDescriptions()
+    return [...(this.descriptions ?? [])]
   }
 
   private exposureSnapshot(): string {
