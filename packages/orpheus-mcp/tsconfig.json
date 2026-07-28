@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.node.json",
+  "include": ["src/**/*"],
+  "compilerOptions": {
+    "composite": false,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "rootDir": "src",
+    "types": ["node"]
+  }
+}

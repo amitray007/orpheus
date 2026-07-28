@@ -2,3 +2,8 @@
 id = "GHSA-mh99-v99m-4gvg"
 ignoreUntil = 2026-10-25
 reason = "Legacy brace-expansion 1.x/2.x is required by current ESLint/electron-builder tooling; the only OSV-listed fix is incompatible 5.0.8. Re-evaluate before expiry."
+
+[[IgnoredVulns]]
+id = "GHSA-frvp-7c67-39w9"
+ignoreUntil = 2026-10-26
+reason = "@modelcontextprotocol/sdk 1.29.0 (latest stable) requires @hono/node-server 1.x. The advisory affects Windows serve-static routing; Orpheus is macOS-only and uses MCP over stdio, so this adapter path is unreachable. Re-evaluate before expiry or when the MCP SDK accepts @hono/node-server >=2.0.5."

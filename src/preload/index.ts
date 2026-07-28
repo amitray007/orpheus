@@ -11,6 +11,7 @@ import type {
   SessionsPagedRequest,
   SessionsPagedResult,
   WorkspaceRecord,
+  WorkspaceOpenRequest,
   WorkspaceStatus,
   WorkspaceActivityDetail,
   CreateWorktreeParams,
@@ -101,8 +102,17 @@ import type {
   OverlayShowResult,
   OverlayEvent,
   TerminalMountResult,
-  TerminalRect
+  TerminalRect,
+  ControlToolsSettings,
+  ControlToolsUpdate,
+  ControlToolsReset,
+  AutomationDefinition,
+  AutomationDefinitionDraft,
+  AutomationCatalog,
+  AutomationRunWithEligibility,
+  AutomationChangedEvent
 } from '../shared/types'
+import type { RendererControlAck, RendererControlRequest } from '../shared/workbenchControl'
 
 // ---------------------------------------------------------------------------
 // Generic typed IPC helpers. `invoke` and `subscribe` are typed against the
@@ -126,6 +136,51 @@ function subscribe<C extends PushChannel>(
 
 // Custom APIs for renderer
 const api = {
+  control: {
+    markRendererReady: (): Promise<void> => invoke('control:rendererReady'),
+    acknowledgeRendererCommand: (ack: RendererControlAck): Promise<boolean> =>
+      invoke('control:ackRendererCommand', ack),
+    onRendererCommand: (cb: (request: RendererControlRequest) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.controlRendererCommand, cb)
+  },
+  controlTools: {
+    get: (): Promise<ControlToolsSettings> => invoke('controlTools:get'),
+    update: (update: ControlToolsUpdate): Promise<ControlToolsSettings> =>
+      invoke('controlTools:update', update),
+    reset: (reset: ControlToolsReset): Promise<ControlToolsSettings> =>
+      invoke('controlTools:reset', reset)
+  },
+  automations: {
+    list: (enabledOnly = false): Promise<AutomationDefinition[]> =>
+      invoke('automations:list', { enabledOnly }),
+    get: (id: string): Promise<AutomationDefinition> => invoke('automations:get', { id }),
+    catalog: (): Promise<AutomationCatalog> => invoke('automations:catalog'),
+    create: (draft: AutomationDefinitionDraft): Promise<AutomationDefinition> =>
+      invoke('automations:create', { draft }),
+    update: (
+      id: string,
+      expectedUpdatedAt: number,
+      draft: AutomationDefinitionDraft
+    ): Promise<AutomationDefinition> =>
+      invoke('automations:update', { id, expectedUpdatedAt, draft }),
+    setEnabled: (
+      id: string,
+      expectedUpdatedAt: number,
+      enabled: boolean
+    ): Promise<AutomationDefinition> =>
+      invoke('automations:setEnabled', { id, expectedUpdatedAt, enabled }),
+    delete: (id: string, expectedUpdatedAt: number): Promise<AutomationDefinition> =>
+      invoke('automations:delete', { id, expectedUpdatedAt }),
+    listRuns: (automationId?: string, limit?: number): Promise<AutomationRunWithEligibility[]> =>
+      invoke('automations:listRuns', {
+        ...(automationId === undefined ? {} : { automationId }),
+        ...(limit === undefined ? {} : { limit })
+      }),
+    retryRun: (runId: string): Promise<AutomationRunWithEligibility> =>
+      invoke('automations:retryRun', { runId }),
+    onChanged: (cb: (event: AutomationChangedEvent) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.automationsChanged, cb)
+  },
   app: {
     getVersion: (): Promise<string> => invoke('app:getVersion'),
     getPaths: (): Promise<{ userData: string; logs: string }> => invoke('app:getPaths'),
@@ -134,7 +189,12 @@ const api = {
   },
   window: {
     openDevTools: (): Promise<void> => invoke('window:openDevTools'),
-    reload: (): Promise<void> => invoke('window:reload')
+    reload: (): Promise<void> => invoke('window:reload'),
+    isVisible: (): Promise<boolean> => invoke('window:isVisible'),
+    getNativeOcclusionVisible: (): Promise<boolean | null> =>
+      invoke('window:getNativeOcclusionVisible'),
+    onVisibilityChanged: (cb: (event: { visible: boolean }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.windowVisibilityChanged, cb)
   },
   debug: {
     onActionTrace: (cb: (e: { tagName: string }) => void): (() => void) =>
@@ -364,12 +424,8 @@ const api = {
       subscribe(PUSH_CHANNELS.workspacesChanged, cb),
     onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.terminalActiveWorkspaceChanged, cb),
-    onWorkspaceRequestOpen: (
-      cb: (e: { workspaceId: string; focus: boolean }) => void
-    ): (() => void) =>
-      subscribe(PUSH_CHANNELS.workspaceRequestOpen, (e) =>
-        cb({ workspaceId: e.workspaceId, focus: e.focus !== false })
-      ),
+    onWorkspaceRequestOpen: (cb: (e: WorkspaceOpenRequest) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspaceRequestOpen, cb),
     convertToLocal: (id: string): Promise<WorkspaceRecord> =>
       invoke('workspaces:convertToLocal', { id }),
     // Footer Model chip: persists a model override and suppresses the

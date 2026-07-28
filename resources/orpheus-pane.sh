@@ -14,10 +14,14 @@
 [[ -n "${ORPHEUS_USER_PATH:-}" ]] && export PATH="${ORPHEUS_USER_PATH}"
 [[ -n "${ORPHEUS_BIN_DIR:-}" ]] && export PATH="${ORPHEUS_BIN_DIR}:${PATH}"
 
-if [[ -n "${ORPHEUS_PANE_CMD:-}" ]]; then
-  eval "${ORPHEUS_PANE_CMD}"
+typeset pane_initial_command="${ORPHEUS_PANE_CMD:-}"
+unset ORPHEUS_PANE_CMD
+if [[ -n "${pane_initial_command}" ]]; then
+  eval "${pane_initial_command}"
+  unset pane_initial_command
   echo
   echo "[pane command exited — dropping to zsh]"
 fi
+unset pane_initial_command
 
 exec zsh -i

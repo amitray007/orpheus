@@ -14,6 +14,8 @@ export type SectionId =
   | 'orpheus-sidebar'
   | 'orpheus-navigation'
   | 'orpheus-terminal'
+  | 'orpheus-agent-tools'
+  | 'orpheus-automations'
   | 'orpheus-window'
   | 'orpheus-notifications'
   | 'orpheus-workspaces'
@@ -44,6 +46,10 @@ const SECTION_LABEL_MEMORY_AND_CONTEXT = 'Memory & Context'
 const SECTION_ID_CLAUDE_TOOLS: SectionId = 'claude-tools'
 const SECTION_ID_CLAUDE_DEVELOPER: SectionId = 'claude-developer'
 const SECTION_ID_ORPHEUS_TERMINAL: SectionId = 'orpheus-terminal'
+const SECTION_ID_ORPHEUS_AGENT_TOOLS: SectionId = 'orpheus-agent-tools'
+const SECTION_LABEL_AGENT_TOOLS = 'Agent Tools'
+const SECTION_ID_ORPHEUS_AUTOMATIONS: SectionId = 'orpheus-automations'
+const SECTION_LABEL_AUTOMATIONS = 'Automations'
 const SECTION_ID_ORPHEUS_WINDOW: SectionId = 'orpheus-window'
 const SECTION_ID_ORPHEUS_NOTIFICATIONS: SectionId = 'orpheus-notifications'
 
@@ -1904,6 +1910,101 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     description: 'Providers connected to the managed routing proxy and their health.',
     mapsTo: [],
     keywords: ['auth files', 'connected accounts', 'oauth', 'provider health']
+  },
+
+  // ---------------------------------------------------------------------------
+  // Orpheus › Agent Tools
+  // ---------------------------------------------------------------------------
+  {
+    sectionId: SECTION_ID_ORPHEUS_AGENT_TOOLS,
+    sectionGroup: 'Orpheus',
+    sectionLabel: SECTION_LABEL_AGENT_TOOLS,
+    settingId: '_section',
+    label: SECTION_LABEL_AGENT_TOOLS,
+    description: 'Choose which Orpheus semantic tools are exposed to agents through MCP.',
+    mapsTo: [],
+    keywords: [
+      'agent tools',
+      'mcp tools',
+      'semantic operations',
+      'tool exposure',
+      'available tools',
+      'control tools'
+    ]
+  },
+  {
+    sectionId: SECTION_ID_ORPHEUS_AGENT_TOOLS,
+    sectionGroup: 'Orpheus',
+    sectionLabel: SECTION_LABEL_AGENT_TOOLS,
+    settingId: 'tool-categories',
+    label: 'Tool categories',
+    description: 'Expose or hide related groups of Orpheus tools.',
+    mapsTo: [],
+    keywords: ['categories', 'group tools', 'disable category', 'enable category', 'mcp exposure']
+  },
+  {
+    sectionId: SECTION_ID_ORPHEUS_AGENT_TOOLS,
+    sectionGroup: 'Orpheus',
+    sectionLabel: SECTION_LABEL_AGENT_TOOLS,
+    settingId: 'individual-tools',
+    label: 'Individual tools',
+    description: 'Fine-tune exposure for a specific semantic operation.',
+    mapsTo: [],
+    keywords: ['operation id', 'query', 'mutation', 'risk tier', 'per tool', 'individual tool']
+  },
+  {
+    sectionId: SECTION_ID_ORPHEUS_AGENT_TOOLS,
+    sectionGroup: 'Orpheus',
+    sectionLabel: SECTION_LABEL_AGENT_TOOLS,
+    settingId: 'reset-agent-tools',
+    label: 'Reset Agent Tools',
+    description: 'Restore the default where every Orpheus semantic tool is available.',
+    mapsTo: [],
+    keywords: ['reset tools', 'restore defaults', 'all tools', 'default exposure']
+  },
+
+  // ---------------------------------------------------------------------------
+  // Orpheus › Automations
+  // ---------------------------------------------------------------------------
+  {
+    sectionId: SECTION_ID_ORPHEUS_AUTOMATIONS,
+    sectionGroup: 'Orpheus',
+    sectionLabel: SECTION_LABEL_AUTOMATIONS,
+    settingId: 'automation-definitions',
+    label: 'Automation definitions',
+    description: 'Create, enable, disable, edit, and delete bounded local automations.',
+    mapsTo: [],
+    keywords: ['scheduled tasks', 'background jobs', 'recurring', 'definitions', 'enable disable']
+  },
+  {
+    sectionId: SECTION_ID_ORPHEUS_AUTOMATIONS,
+    sectionGroup: 'Orpheus',
+    sectionLabel: SECTION_LABEL_AUTOMATIONS,
+    settingId: 'automation-triggers',
+    label: 'Automation triggers',
+    description: 'Run an automation on a schedule or allowlisted Orpheus event.',
+    mapsTo: [],
+    keywords: ['schedule', 'interval', 'event', 'workspace completed', 'trigger']
+  },
+  {
+    sectionId: SECTION_ID_ORPHEUS_AUTOMATIONS,
+    sectionGroup: 'Orpheus',
+    sectionLabel: SECTION_LABEL_AUTOMATIONS,
+    settingId: 'automation-safety-budgets',
+    label: 'Automation safety budgets',
+    description: 'Bound timeouts, concurrency, retries, elapsed time, and rolling starts.',
+    mapsTo: [],
+    keywords: ['timeout', 'concurrency', 'retry', 'budget', 'rate limit', 'rolling window']
+  },
+  {
+    sectionId: SECTION_ID_ORPHEUS_AUTOMATIONS,
+    sectionGroup: 'Orpheus',
+    sectionLabel: SECTION_LABEL_AUTOMATIONS,
+    settingId: 'automation-run-history',
+    label: 'Automation run history',
+    description: 'Review redacted run status and manually retry eligible failures.',
+    mapsTo: [],
+    keywords: ['runs', 'status', 'failed', 'retry', 'history', 'result']
   },
 
   // ---------------------------------------------------------------------------

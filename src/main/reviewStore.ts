@@ -58,6 +58,11 @@ type ReviewCommentRow = {
   updated_at: number
 }
 
+export type ReviewCommentOwnership = {
+  id: string
+  workspaceId: string
+}
+
 function coerceSide(raw: string | null): GhReviewCommentSide | null {
   return raw === 'LEFT' || raw === 'RIGHT' ? raw : null
 }
@@ -89,6 +94,13 @@ export function listByWorkspace(workspaceId: string): LocalReviewComment[] {
     .prepare('SELECT * FROM review_comments WHERE workspace_id = ? ORDER BY created_at ASC')
     .all(workspaceId) as ReviewCommentRow[]
   return rows.map(fromRow)
+}
+
+export function getReviewCommentOwnership(id: string): ReviewCommentOwnership | null {
+  const row = getDb()
+    .prepare('SELECT id, workspace_id FROM review_comments WHERE id = ?')
+    .get(id) as Pick<ReviewCommentRow, 'id' | 'workspace_id'> | undefined
+  return row == null ? null : { id: row.id, workspaceId: row.workspace_id }
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +169,31 @@ export function setResolved(id: string, resolved: boolean): LocalReviewComment {
     | undefined
   if (!row) throw new Error(`Local review comment not found: ${id}`)
   return fromRow(row)
+}
+
+/**
+ * Runtime-scoped mutation primitive. The workspace predicate is part of the
+ * UPDATE itself, so ownership is checked again synchronously at the effect
+ * boundary rather than relying on an earlier catalog/policy lookup.
+ */
+export function setResolvedForWorkspace(
+  id: string,
+  workspaceId: string,
+  resolved: boolean
+): LocalReviewComment | null {
+  const db = getDb()
+  const result = db
+    .prepare(
+      `UPDATE review_comments
+          SET resolved = ?, updated_at = ?
+        WHERE id = ? AND workspace_id = ?`
+    )
+    .run(resolved ? 1 : 0, Date.now(), id, workspaceId)
+  if (result.changes !== 1) return null
+  const row = db
+    .prepare('SELECT * FROM review_comments WHERE id = ? AND workspace_id = ?')
+    .get(id, workspaceId) as ReviewCommentRow | undefined
+  return row == null ? null : fromRow(row)
 }
 
 export function remove(id: string): void {

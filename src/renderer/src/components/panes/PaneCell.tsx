@@ -353,27 +353,15 @@ function usePaneSurface(
     // resizes/destroys this pane's surface.
   }, [active, animating, running, layoutId, paneId, command, containerRef])
 
-  // True teardown — a SEPARATE `[]`-keyed effect so its cleanup fires only
-  // on this cell's own unmount (nav away / layout switch / pane removed
-  // from the tree), never on an active/animating/running/command toggle
-  // above. HIDE, never destroy — mirrors TerminalTab.tsx's own teardown
-  // effect: surfaces are destroyed ONLY by explicit ✕-close (handled in
-  // PaneCell's handleClose, which reaches into the createdRef/
-  // pendingCloseRef this hook returns), a setup-rule relaunch, an explicit
-  // stop (both handled by the effect above), or workspace/project archival
-  // (main-side).
+  // True teardown marker — a SEPARATE `[]`-keyed effect so an in-flight
+  // mount resolving after this cell unmounts can hide itself in the mount
+  // continuation above. The lifecycle effect's cleanup is the single owner
+  // of hiding an already-mounted surface, so this cleanup must not issue a
+  // duplicate pane:hide IPC on navigation/layout teardown.
   useEffect(() => {
     return () => {
       unmountedRef.current = true
-      if (!createdRef.current) return
-      window.api.panes
-        .hide(layoutId, paneId)
-        .catch((e) => console.error('[PaneCell] post-unmount hide failed:', e))
     }
-    // layoutId/paneId are stable for this cell's lifetime (SplitTree keys
-    // each PaneCell by paneId; a pane never changes which layout owns it
-    // without a fresh cell being created).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return { createdRef, pendingCloseRef }

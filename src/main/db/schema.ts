@@ -38,6 +38,20 @@ const LOG_LEVEL = ['debug', 'info', 'warn', 'error'] as const
 // routing_proxy_providers.provider_id, which is deliberately free-text so
 // adding a new PROVIDER never requires a schema change.
 const PROVIDER_AUTH_METHOD = ['oauth', 'apiKey', 'openaiCompatible'] as const
+const AUTOMATION_TRIGGER_KIND = ['schedule', 'event'] as const
+const AUTOMATION_SCOPE_KIND = ['app', 'project', 'workspace'] as const
+const AUTOMATION_IDEMPOTENCY = ['none', 'keyed', 'natural'] as const
+const AUTOMATION_RUN_STATUS = [
+  'queued',
+  'running',
+  'retry_wait',
+  'succeeded',
+  'failed',
+  'timed_out',
+  'interrupted',
+  'cancelled',
+  'budget_exhausted'
+] as const
 
 // 'panes' added (KTD2 nav-rail work) so lastViewKind='panes' doesn't violate
 // the CHECK; 'dashboard' is kept for legacy rows and a future rail surface
@@ -949,7 +963,15 @@ export const schema: SchemaDef = {
       // add-column path (no backfill needed since the default covers it).
       // When set, all of this layout's panes are background-mounted at
       // app launch, regardless of which surface is visible.
-      auto_start: bool('auto_start', '0')
+      auto_start: bool('auto_start', '0'),
+      // Server-owned ownership for agent-created bootstrap layouts. User
+      // renderer CRUD always receives the default NULL; only the main control
+      // plane transaction writes the exact trusted lease workspace ID. This
+      // is an authorization fact for the paired cleanup operation and is
+      // intentionally not exposed to the renderer's PaneLayout model. It is
+      // deliberately not an FK: deleting a workspace must not cascade into a
+      // user's terminal layout, and a stale owner makes cleanup fail closed.
+      agent_owner_workspace_id: { type: 'TEXT' }
     },
     foreignKeys: [{ columns: ['panel_id'], ref: 'pane_panels(id)', onDelete: 'CASCADE' }],
     indexes: {
@@ -1020,6 +1042,187 @@ export const schema: SchemaDef = {
       key: TEXT_PK,
       payload_json: TEXT_NOT_NULL,
       fetched_at: INTEGER_NOT_NULL
+    }
+  },
+
+  // Dedicated structural control audit. This is intentionally separate from
+  // Quick Actions history: parameters are recursively redacted before this
+  // append-only row is written, and task/send text is stored only as metadata.
+  control_audit: {
+    columns: {
+      audit_id: TEXT_PK,
+      request_id: TEXT_NOT_NULL,
+      occurred_at: INTEGER_NOT_NULL,
+      consumer: TEXT_NOT_NULL,
+      operation_id: TEXT_NOT_NULL,
+      operation_version: INTEGER_NOT_NULL,
+      principal_kind: TEXT_NOT_NULL,
+      runtime_id: 'TEXT',
+      project_id: 'TEXT',
+      workspace_ids_json: TEXT_NOT_NULL,
+      permission: TEXT_NOT_NULL,
+      tier: INTEGER_NOT_NULL,
+      decision: TEXT_NOT_NULL,
+      declared_effects_json: TEXT_NOT_NULL,
+      redacted_params_json: TEXT_NOT_NULL,
+      receipts_json: TEXT_NOT_NULL,
+      result_code: TEXT_NOT_NULL,
+      correlation_json: TEXT_NOT_NULL
+    },
+    indexes: {
+      idx_control_audit_request: ['request_id'],
+      idx_control_audit_occurred: ['occurred_at DESC'],
+      idx_control_audit_operation: ['operation_id', 'occurred_at DESC']
+    }
+  },
+
+  // User-controlled MCP exposure. Missing rows intentionally mean enabled,
+  // so existing and newly registered tools are available without migration
+  // seeding. Category and exact-operation preferences are independent:
+  // disabling either one hides and rejects the operation.
+  control_tool_category_preferences: {
+    columns: {
+      category_id: TEXT_PK,
+      enabled: bool('enabled', '1'),
+      updated_at: INTEGER_NOT_NULL
+    }
+  },
+
+  control_tool_preferences: {
+    columns: {
+      operation_id: TEXT_PK,
+      enabled: bool('enabled', '1'),
+      updated_at: INTEGER_NOT_NULL
+    }
+  },
+
+  // Durable automation intent. Permissions and risk grants are deliberately
+  // absent: main resolves those from a server-owned grant source on create,
+  // enable, recovery, and immediately before invocation.
+  automation_definitions: {
+    columns: {
+      id: TEXT_PK,
+      name: TEXT_NOT_NULL,
+      trigger_kind: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('trigger_kind', AUTOMATION_TRIGGER_KIND)
+      },
+      trigger_json: TEXT_NOT_NULL,
+      operation_id: TEXT_NOT_NULL,
+      operation_version: INTEGER_NOT_NULL,
+      params_json: TEXT_NOT_NULL,
+      scope_kind: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('scope_kind', AUTOMATION_SCOPE_KIND)
+      },
+      project_id: 'TEXT',
+      workspace_id: 'TEXT',
+      enabled: bool('enabled', '0'),
+      idempotency_mode: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('idempotency_mode', AUTOMATION_IDEMPOTENCY)
+      },
+      timeout_ms: INTEGER_NOT_NULL,
+      concurrency_limit: INTEGER_NOT_NULL,
+      retry_max_attempts: INTEGER_NOT_NULL,
+      retry_base_delay_ms: INTEGER_NOT_NULL,
+      retry_max_delay_ms: INTEGER_NOT_NULL,
+      run_max_elapsed_ms: INTEGER_NOT_NULL,
+      rolling_window_ms: INTEGER_NOT_NULL,
+      rolling_max_starts: INTEGER_NOT_NULL,
+      next_run_at: 'INTEGER',
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL
+    },
+    indexes: {
+      idx_automation_definitions_due: ['enabled', 'trigger_kind', 'next_run_at'],
+      idx_automation_definitions_operation: ['operation_id']
+    }
+  },
+
+  // One row per logical trigger occurrence. Attempts update the same row and
+  // retain one stable idempotency key across retry/restart.
+  automation_runs: {
+    columns: {
+      id: TEXT_PK,
+      automation_id: TEXT_NOT_NULL,
+      trigger_kind: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('trigger_kind', AUTOMATION_TRIGGER_KIND)
+      },
+      trigger_key: TEXT_NOT_NULL,
+      trigger_occurred_at: INTEGER_NOT_NULL,
+      idempotency_key: TEXT_NOT_NULL,
+      // Scheduler-owned occurrences are generation zero. Manual retries keep
+      // the same logical idempotency key and append a new generation row so
+      // the original terminal history remains immutable.
+      retry_generation: { type: 'INTEGER', notNull: true, default: '0' },
+      retry_of_run_id: 'TEXT',
+      status: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('status', AUTOMATION_RUN_STATUS)
+      },
+      attempt: INTEGER_NOT_NULL,
+      queued_at: INTEGER_NOT_NULL,
+      started_at: 'INTEGER',
+      finished_at: 'INTEGER',
+      next_attempt_at: 'INTEGER',
+      result_code: 'TEXT',
+      result_json: 'TEXT',
+      error_json: 'TEXT',
+      request_id: 'TEXT',
+      audit_id: 'TEXT'
+    },
+    foreignKeys: [
+      { columns: ['automation_id'], ref: 'automation_definitions(id)', onDelete: 'CASCADE' }
+    ],
+    indexes: {
+      idx_automation_runs_automation_queued: ['automation_id', 'queued_at DESC'],
+      idx_automation_runs_automation_started: ['automation_id', 'started_at'],
+      idx_automation_runs_automation_runnable: [
+        'automation_id',
+        'status',
+        'next_attempt_at',
+        'queued_at'
+      ],
+      idx_automation_runs_runnable: ['status', 'next_attempt_at', 'queued_at'],
+      idx_automation_runs_request: ['request_id'],
+      idx_automation_runs_audit: ['audit_id'],
+      idx_automation_runs_idempotency: {
+        columns: ['automation_id', 'idempotency_key', 'retry_generation'],
+        unique: true
+      }
+    }
+  },
+
+  // Durable domain-event outbox. Workspace completion occurrences are inserted
+  // in the same SQLite transaction as the authoritative workspace status
+  // transition, then replayed into idempotent automation_runs rows at startup.
+  automation_event_occurrences: {
+    columns: {
+      id: TEXT_PK,
+      event_type: TEXT_NOT_NULL,
+      occurred_at: INTEGER_NOT_NULL,
+      project_id: 'TEXT',
+      workspace_id: 'TEXT',
+      delivery_attempts: { type: 'INTEGER', notNull: true, default: '0' },
+      next_attempt_at: 'INTEGER',
+      delivered_at: 'INTEGER',
+      created_at: INTEGER_NOT_NULL
+    },
+    indexes: {
+      idx_automation_event_occurrences_pending: [
+        'delivered_at',
+        'next_attempt_at',
+        'occurred_at',
+        'id'
+      ],
+      idx_automation_event_occurrences_delivered: ['delivered_at DESC', 'id DESC']
     }
   },
 
@@ -1134,6 +1337,10 @@ export {
   CLOUD_PROVIDER,
   LOG_LEVEL,
   PROVIDER_AUTH_METHOD,
+  AUTOMATION_TRIGGER_KIND,
+  AUTOMATION_SCOPE_KIND,
+  AUTOMATION_IDEMPOTENCY,
+  AUTOMATION_RUN_STATUS,
   LAST_VIEW_KIND,
   PROJECTS_LAST_VIEW_KIND,
   THEME,

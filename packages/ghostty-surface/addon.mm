@@ -1,6 +1,6 @@
 // ghostty-surface — generic libghostty surface lifecycle addon.
 //
-// Exports four synchronous NAPI functions (all called on the AppKit main thread
+// Exports synchronous NAPI functions (all called on the AppKit main thread
 // from the Electron main process):
 //
 //   mount(handleBuffer, { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd?, command? })
@@ -8,6 +8,7 @@
 //   hide(workspaceId)    → void   (keeps surface alive, just removes from superview)
 //   resize(workspaceId, { x, y, w, h }, scaleFactor) → void
 //   destroy(workspaceId) → void   (full teardown; call only on archive/project-remove)
+//   readScreenTail(workspaceId, maxBytes, maxLines) → bounded UTF-8 screen text
 //
 // Persistence model:
 //   Each workspace owns exactly one GhosttySurfaceEntry keyed by workspace.id.
@@ -35,6 +36,8 @@
 #include <map>
 #include <atomic>
 #include <cinttypes>
+#include <chrono>
+#include <algorithm>
 #include <unistd.h>
 
 // GhosttyKit C API
@@ -105,6 +108,7 @@
 // can reference them. Mirrored from the title TSFN pattern further below.
 static Napi::ThreadSafeFunction g_occlusionTSFN;
 static bool g_occlusionTSFNActive = false;
+static void orpheusPushOcclusion(const std::string& workspaceId, bool occluded);
 
 // Liveness-tick globals — declared before the class so keyDown:, mouseDown:,
 // and handleOcclusionChange: can reference them.
@@ -141,6 +145,86 @@ struct GhosttySurfaceEntry {
 
 // workspaceId → entry
 static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
+
+// Every live Ghostty surface owns a shell that must keep processing while
+// hidden. Keep a baseline user-initiated + idle-sleep-disabled activity while
+// ANY live surface exists; navigation must never App-Nap-throttle a background
+// pane. Add the stronger latency-critical assertion only while at least one
+// live surface is attached to the window hierarchy.
+//
+// g_surfaces is main-thread-owned. The defensive dispatch keeps activity
+// ownership on that same thread if a future lifecycle caller arrives elsewhere.
+static __strong id<NSObject> g_terminalLiveActivity = nil;
+static __strong id<NSObject> g_terminalVisibleLatencyActivity = nil;
+static __strong NSTimer* g_terminalSafetyTimer = nil;
+static void reconcileTerminalSafetyTimer(bool hasAttachedVisibleSurface);
+
+static void reconcileTerminalActivities() {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            reconcileTerminalActivities();
+        });
+        return;
+    }
+
+    const bool hasLiveSurface = std::any_of(
+        g_surfaces.begin(),
+        g_surfaces.end(),
+        [](const auto& pair) {
+            const GhosttySurfaceEntry& entry = pair.second;
+            return entry.surface != nullptr;
+        });
+    const bool hasAttachedVisibleSurface = std::any_of(
+        g_surfaces.begin(),
+        g_surfaces.end(),
+        [](const auto& pair) {
+            const GhosttySurfaceEntry& entry = pair.second;
+            if (entry.surface == nullptr || !entry.isAttached || entry.view == nil) {
+                return false;
+            }
+            NSWindow* window = entry.view.window;
+            return window != nil &&
+                   (window.occlusionState & NSWindowOcclusionStateVisible) != 0;
+        });
+
+    if (hasLiveSurface && !g_terminalLiveActivity) {
+        g_terminalLiveActivity = [[NSProcessInfo processInfo]
+            beginActivityWithOptions:(NSActivityUserInitiated |
+                                      NSActivityIdleSystemSleepDisabled)
+                              reason:@"Live terminal processing"];
+    }
+
+    if (hasAttachedVisibleSurface && !g_terminalVisibleLatencyActivity) {
+        g_terminalVisibleLatencyActivity = [[NSProcessInfo processInfo]
+            beginActivityWithOptions:NSActivityLatencyCritical
+                              reason:@"Visible terminal rendering"];
+    } else if (!hasAttachedVisibleSurface && g_terminalVisibleLatencyActivity) {
+        [[NSProcessInfo processInfo] endActivity:g_terminalVisibleLatencyActivity];
+        g_terminalVisibleLatencyActivity = nil;
+    }
+
+    if (!hasLiveSurface && g_terminalLiveActivity) {
+        [[NSProcessInfo processInfo] endActivity:g_terminalLiveActivity];
+        g_terminalLiveActivity = nil;
+    }
+
+    reconcileTerminalSafetyTimer(hasAttachedVisibleSurface);
+}
+
+// Screen text is sensitive and intentionally remains ephemeral: this cache is
+// process-memory-only, never logged or persisted, expires after 500ms, and is
+// erased synchronously when its surface is destroyed.
+static constexpr size_t kMaxScreenTailBytes = 2 * 1024 * 1024;
+static constexpr auto kScreenTailCacheTtl = std::chrono::milliseconds(500);
+
+struct ScreenTailCacheEntry {
+    std::string text;
+    bool truncated;
+    double capturedAtMs;
+    std::chrono::steady_clock::time_point cachedAt;
+};
+
+static std::map<std::string, ScreenTailCacheEntry> g_screenTailCache;
 
 // ---------------------------------------------------------------------------
 // U6a slot model — relaxes the single-visible invariant from "at most one
@@ -1093,6 +1177,10 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
 }
 
 - (void)handleOcclusionChange:(NSNotification*)note {
+    // NSView attachment does not change when the whole window is minimized or
+    // occluded. Reconcile the visible-only activity and damage timer from the
+    // window's current AppKit visibility before any optional JS notification.
+    reconcileTerminalActivities();
     if (!g_occlusionTSFNActive) return;
     if (!self.workspaceId) return;
 
@@ -1126,10 +1214,20 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
         }
     }
 
-    // Fire callback to JS
+    // Fire callback to JS.
     std::string wsId = [self.workspaceId UTF8String];
-    bool isOccluded = (bool)occluded;
-    auto* occData = new std::pair<std::string, bool>(wsId, isOccluded);
+    orpheusPushOcclusion(wsId, (bool)occluded);
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+@end
+
+static void orpheusPushOcclusion(const std::string& workspaceId, bool occluded) {
+    if (!g_occlusionTSFNActive) return;
+    auto* occData = new std::pair<std::string, bool>(workspaceId, occluded);
     napi_status occSt = g_occlusionTSFN.NonBlockingCall(
         occData,
         [](Napi::Env env, Napi::Function jsCb, std::pair<std::string, bool>* data) {
@@ -1142,12 +1240,6 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
     );
     if (occSt != napi_ok) { delete occData; }
 }
-
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-}
-
-@end
 
 // GhosttySurfaceEntry + g_surfaces are declared above @implementation
 // OrpheusGhosttyView (search "GhosttySurfaceEntry + g_surfaces") so the view's
@@ -2021,12 +2113,41 @@ static uv_async_t g_tickAsync;
 static std::atomic<bool> g_tickAsyncInited{false};
 
 // Safety-net damage flag. Set (from wakeup_cb on Ghostty's IO thread) whenever
-// Ghostty has IO activity that should produce a frame. Drained by a 10Hz
-// NSTimer on the main thread that issues one ghostty_surface_draw per attached
-// surface when the flag is set. Guarantees any damage presents within 100ms
-// even if the internal display link misses it (e.g. right after a re-attach).
-// At true idle the flag stays 0 → zero GPU work.
+// Ghostty has IO activity that should produce a frame. Drained by a
+// lifecycle-owned 10Hz NSTimer on the main thread that issues one
+// ghostty_surface_draw per attached, non-occluded surface when the flag is set.
+// Guarantees visible damage presents within 100ms even if the internal display
+// link misses it (e.g. right after a re-attach). The timer is invalidated when
+// no surface is visible; hidden shell/PTY processing does not depend on it.
 static std::atomic<uint32_t> g_damageFlag{0};
+
+static void reconcileTerminalSafetyTimer(bool hasAttachedVisibleSurface) {
+    if (hasAttachedVisibleSurface && !g_terminalSafetyTimer) {
+        g_terminalSafetyTimer = [NSTimer timerWithTimeInterval:0.1
+                                                       repeats:YES
+                                                         block:^(NSTimer* /*timer*/) {
+            if (!g_damageFlag.exchange(0, std::memory_order_acq_rel)) return;
+            for (auto& pair : g_surfaces) {
+                GhosttySurfaceEntry& entry = pair.second;
+                NSWindow* window = entry.view ? entry.view.window : nil;
+                const bool shouldDraw =
+                    entry.surface != nullptr &&
+                    entry.isAttached &&
+                    window != nil &&
+                    (window.occlusionState & NSWindowOcclusionStateVisible) != 0;
+                if (!shouldDraw) continue;
+                ghostty_surface_draw(entry.surface);
+                entry.liveTick++;
+                orpheusPushLiveness(pair.first, false);
+            }
+        }];
+        [[NSRunLoop mainRunLoop] addTimer:g_terminalSafetyTimer
+                                  forMode:NSRunLoopCommonModes];
+    } else if (!hasAttachedVisibleSurface && g_terminalSafetyTimer) {
+        [g_terminalSafetyTimer invalidate];
+        g_terminalSafetyTimer = nil;
+    }
+}
 
 static void tick_async_cb(uv_async_t* /*handle*/) {
     if (g_inited.load(std::memory_order_acquire) && g_app) {
@@ -2388,15 +2509,13 @@ static ghostty_config_t buildGhosttyConfig(const char* resDir) {
 
     ghostty_config_finalize(cfg);
 
-    // Log any config diagnostics so theme/parse errors are visible in Console.app.
+    // Config diagnostic text can echo user-authored config values (including
+    // credentials passed to commands). Keep the failure count visible without
+    // copying untrusted config content into Console.app.
     uint32_t diagCount = ghostty_config_diagnostics_count(cfg);
     if (diagCount > 0) {
-        NSLog(@"[ghostty-surface] %u config diagnostic(s):", (unsigned)diagCount);
-        for (uint32_t i = 0; i < diagCount; i++) {
-            ghostty_diagnostic_s diag = ghostty_config_get_diagnostic(cfg, i);
-            NSLog(@"[ghostty-surface]   diag[%u]: %s", (unsigned)i,
-                  diag.message ? diag.message : "(null)");
-        }
+        NSLog(@"[ghostty-surface] %u config diagnostic(s); message text omitted",
+              (unsigned)diagCount);
     } else {
         NSLog(@"[ghostty-surface] config loaded cleanly (0 diagnostics)");
     }
@@ -2463,41 +2582,9 @@ static bool ensureApp() {
     g_inited.store(true, std::memory_order_release);
     NSLog(@"[ghostty-surface] ghostty app ready");
 
-    // Safety-net 10Hz timer: if g_damageFlag was raised by wakeup_cb (meaning
-    // Ghostty has IO activity), issue one synchronous draw per attached surface
-    // on the main thread. This guarantees any missed frame from the internal
-    // display link presents within 100ms. At idle g_damageFlag==0 → no GPU
-    // work. Added to NSRunLoopCommonModes so it fires during scroll/tracking.
-    // g_surfaces is only mutated on the main thread; the timer fires on main
-    // (same thread), so iteration is safe without additional locking.
-    NSTimer* safetyTimer = [NSTimer timerWithTimeInterval:0.1
-                                                  repeats:YES
-                                                    block:^(NSTimer* /*t*/) {
-        if (!g_damageFlag.exchange(0, std::memory_order_acq_rel)) return;
-        for (auto& kv : g_surfaces) {
-            GhosttySurfaceEntry& e = kv.second;
-            if (e.isAttached && e.surface) {
-                ghostty_surface_draw(e.surface);
-                kv.second.liveTick++;
-                orpheusPushLiveness(kv.first, false);
-            }
-        }
-    }];
-    [[NSRunLoop mainRunLoop] addTimer:safetyTimer forMode:NSRunLoopCommonModes];
-
-    // Prevent App Nap: a backgrounded Orpheus would otherwise have its main-thread
-    // NSTimers (incl. the 10Hz terminal safety timer) coalesced/suspended, which
-    // stalls terminal rendering until foreground. Hold a user-initiated activity
-    // for the process lifetime. NSActivityLatencyCritical keeps timers prompt even
-    // in background; NSActivityIdleSystemSleepDisabled ensures the 10Hz safety timer
-    // survives display sleep.
-    // ARC: __strong static keeps the object alive without manual retain.
-    static __strong id<NSObject> s_appNapActivity = nil;
-    if (!s_appNapActivity) {
-        s_appNapActivity = [[NSProcessInfo processInfo]
-            beginActivityWithOptions:(NSActivityUserInitiated | NSActivityLatencyCritical | NSActivityIdleSystemSleepDisabled)
-                              reason:@"Active terminal rendering"];
-    }
+    // Activity and the damage safety timer start lazily with the first surface.
+    // Hidden/occluded shells keep baseline processing but own no render timer
+    // or latency-critical assertion until they are actually visible again.
 
     return true;
 }
@@ -2965,6 +3052,19 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
         }
         // Already hidden — no-op.
     }
+
+    // Publish the current AppKit state on every attach/reconcile. The main
+    // process retains this as the authoritative initial snapshot for renderer
+    // consumers that subscribe after an earlier occlusion edge.
+    if (entry.isAttached) {
+        NSWindow* window = entry.view.window;
+        const bool occluded =
+            window == nil ||
+            (window.occlusionState & NSWindowOcclusionStateVisible) == 0;
+        orpheusPushOcclusion(workspaceId, occluded);
+    }
+
+    reconcileTerminalActivities();
 }
 
 // ---------------------------------------------------------------------------
@@ -3286,7 +3386,10 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         surface_cfg.env_var_count = (size_t)envVarStructs.size();
         NSLog(@"[ghostty-surface] surface env_vars count=%zu", envVarStructs.size());
         for (const auto& ev : envVarStructs) {
-            NSLog(@"[ghostty-surface]   env %s=%s", ev.key, ev.value);
+            // Environment values can contain API credentials, command-server
+            // tokens, runtime lease tokens, and user-configured secrets. Keep
+            // diagnostics useful without ever crossing that logging boundary.
+            NSLog(@"[ghostty-surface]   env key=%s", ev.key);
         }
     } else {
         surface_cfg.env_vars     = nullptr;
@@ -3306,13 +3409,13 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     @try {
         surface = ghostty_surface_new(g_app, &surface_cfg);
     } @catch (NSException* ex) {
-        NSLog(@"[ghostty-surface] ghostty_surface_new EXCEPTION: %@", ex.reason);
+        NSLog(@"[ghostty-surface] ghostty_surface_new EXCEPTION (reason omitted)");
         // Free strdup'd env var strings before returning.
         for (char* p : envVarKeys)   free(p);
         for (char* p : envVarValues) free(p);
         [termView removeFromSuperview];
-        Napi::Error::New(env, std::string("ghostty_surface_new threw: ") +
-                         [[ex reason] UTF8String]).ThrowAsJavaScriptException();
+        Napi::Error::New(env, "E_GHOSTTY_SURFACE_CREATE_EXCEPTION")
+            .ThrowAsJavaScriptException();
         return env.Undefined();
     }
 
@@ -3322,7 +3425,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
     if (!surface) {
         [termView removeFromSuperview];
-        Napi::Error::New(env, "ghostty_surface_new returned NULL").ThrowAsJavaScriptException();
+        Napi::Error::New(env, "E_GHOSTTY_SURFACE_CREATE_NULL").ThrowAsJavaScriptException();
         return env.Undefined();
     }
 
@@ -3347,6 +3450,9 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     entry.lastRect      = CGRectMake(rx, ry, rw, rh);
     entry.lastScale     = scaleFactor;
     entry.generation    = createGen;
+    // A surface id may be reused after deferred teardown. Never let the new
+    // surface inherit even the previous entry's sub-500ms text snapshot.
+    g_screenTailCache.erase(workspaceId);
     g_surfaces[workspaceId] = entry;
     g_surfaceToWorkspaceId[surface] = workspaceId;
     // Brand-new surface: mark visible in ITS OWN slot directly (no eviction —
@@ -3647,6 +3753,145 @@ static Napi::Value Focus(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
+// Return the first byte at or after the requested tail boundary that is not a
+// UTF-8 continuation byte. Ghostty supplies UTF-8; moving forward preserves
+// complete code points without exceeding the byte limit.
+static size_t utf8TailStart(const char* text, size_t length, size_t maxBytes) {
+    if (length <= maxBytes) return 0;
+    size_t start = length - maxBytes;
+    while (start < length &&
+           (static_cast<unsigned char>(text[start]) & 0xC0) == 0x80) {
+        start++;
+    }
+    return start;
+}
+
+static Napi::Object unavailableScreenTail(Napi::Env env) {
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("available", Napi::Boolean::New(env, false));
+    result.Set("text", Napi::String::New(env, ""));
+    result.Set("bytes", Napi::Number::New(env, 0));
+    result.Set("lines", Napi::Number::New(env, 0));
+    result.Set("truncated", Napi::Boolean::New(env, false));
+    result.Set("capturedAt", env.Null());
+    return result;
+}
+
+static Napi::Object boundedScreenTail(
+    Napi::Env env,
+    const ScreenTailCacheEntry& cached,
+    size_t maxBytes,
+    size_t maxLines
+) {
+    const size_t byteStart = utf8TailStart(cached.text.data(), cached.text.size(), maxBytes);
+    size_t lineStart = byteStart;
+    size_t newlineCount = 0;
+    for (size_t i = cached.text.size(); i > byteStart; i--) {
+        if (cached.text[i - 1] != '\n') continue;
+        newlineCount++;
+        if (newlineCount == maxLines) {
+            lineStart = i;
+            break;
+        }
+    }
+
+    const char* boundedStart = cached.text.data() + lineStart;
+    const size_t boundedLength = cached.text.size() - lineStart;
+    const size_t lines = boundedLength == 0
+        ? 0
+        : 1 + static_cast<size_t>(
+              std::count(boundedStart, boundedStart + boundedLength, '\n'));
+
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("available", Napi::Boolean::New(env, true));
+    result.Set("text", Napi::String::New(env, boundedStart, boundedLength));
+    result.Set("bytes", Napi::Number::New(env, static_cast<double>(boundedLength)));
+    result.Set("lines", Napi::Number::New(env, static_cast<double>(lines)));
+    result.Set(
+        "truncated",
+        Napi::Boolean::New(env, cached.truncated || byteStart > 0 || lineStart > byteStart));
+    result.Set("capturedAt", Napi::Number::New(env, cached.capturedAtMs));
+    return result;
+}
+
+// NAPI: readScreenTail(workspaceId, maxBytes, maxLines)
+//
+// Reads the current screen/scrollback text through libghostty's authoritative
+// surface API. The native boundary returns only a bounded UTF-8 tail; terminal
+// text is never logged, persisted, or included in lifecycle diagnostics.
+static Napi::Value ReadScreenTail(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 3 || !info[0].IsString() ||
+        !info[1].IsNumber() || !info[2].IsNumber()) {
+        Napi::TypeError::New(
+            env,
+            "readScreenTail requires (workspaceId, maxBytes, maxLines)"
+        ).ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    const int64_t requestedBytes = info[1].As<Napi::Number>().Int64Value();
+    const int64_t requestedLines = info[2].As<Napi::Number>().Int64Value();
+    if (requestedBytes <= 0 || requestedLines <= 0) {
+        Napi::RangeError::New(env, "maxBytes and maxLines must be positive integers")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const size_t maxBytes = static_cast<size_t>(
+        std::min<int64_t>(requestedBytes, static_cast<int64_t>(kMaxScreenTailBytes)));
+    const size_t maxLines = static_cast<size_t>(requestedLines);
+    auto surfaceIt = g_surfaces.find(workspaceId);
+    if (surfaceIt == g_surfaces.end() || !surfaceIt->second.surface) {
+        return unavailableScreenTail(env);
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    auto cacheIt = g_screenTailCache.find(workspaceId);
+    if (cacheIt == g_screenTailCache.end() ||
+        now - cacheIt->second.cachedAt >= kScreenTailCacheTtl) {
+        ghostty_selection_s selection = {};
+        selection.top_left.tag = GHOSTTY_POINT_SCREEN;
+        selection.top_left.coord = GHOSTTY_POINT_COORD_TOP_LEFT;
+        selection.bottom_right.tag = GHOSTTY_POINT_SCREEN;
+        selection.bottom_right.coord = GHOSTTY_POINT_COORD_BOTTOM_RIGHT;
+        selection.rectangle = false;
+
+        ghostty_text_s raw = {};
+        ghostty_surface_t surface = surfaceIt->second.surface;
+        if (!ghostty_surface_read_text(surface, selection, &raw)) {
+            return unavailableScreenTail(env);
+        }
+
+        const size_t rawLength = raw.text == nullptr ? 0 : static_cast<size_t>(raw.text_len);
+        const size_t hardStart =
+            raw.text == nullptr ? 0 : utf8TailStart(raw.text, rawLength, kMaxScreenTailBytes);
+        std::string cachedText;
+        if (raw.text != nullptr && rawLength > hardStart) {
+            cachedText.assign(raw.text + hardStart, rawLength - hardStart);
+        }
+        ghostty_surface_free_text(surface, &raw);
+
+        const double capturedAtMs = static_cast<double>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+            ).count());
+        cacheIt = g_screenTailCache
+            .insert_or_assign(
+                workspaceId,
+                ScreenTailCacheEntry{
+                    std::move(cachedText),
+                    hardStart > 0,
+                    capturedAtMs,
+                    now
+                })
+            .first;
+    }
+
+    return boundedScreenTail(env, cacheIt->second, maxBytes, maxLines);
+}
+
 static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -3656,6 +3901,7 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     }
 
     std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    g_screenTailCache.erase(workspaceId);
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
         NSLog(@"[ghostty-surface] destroy workspaceId=%s: no entry (no-op)", workspaceId.c_str());
@@ -3690,6 +3936,7 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
         doomed.view.surface = nullptr;
         [doomed.view removeFromSuperview];
     }
+    reconcileTerminalActivities();
 
     // ---- Asynchronous, slow — process teardown after the IPC return ----
     // ghostty_surface_free MUST run on the main thread per Ghostty's API
@@ -3971,6 +4218,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
     exports.Set("focus",             Napi::Function::New(env, Focus));
     exports.Set("getSurfacePhase",   Napi::Function::New(env, GetSurfacePhase));
+    exports.Set("readScreenTail",    Napi::Function::New(env, ReadScreenTail));
     exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
     exports.Set("setOcclusionCallback",     Napi::Function::New(env, SetOcclusionCallback));
     exports.Set("setActionTraceCallback",   Napi::Function::New(env, SetActionTraceCallback));

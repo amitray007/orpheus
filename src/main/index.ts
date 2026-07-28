@@ -1,8 +1,11 @@
+import './safeConsole'
 import { APP_NAME, APP_ID, isDev } from './appMode'
 import {
   startSessionStateService,
   setSessionReadyHandler,
-  isWorkspaceSessionReady
+  setRuntimeSessionObserver,
+  isWorkspaceSessionReady,
+  getWorkspaceFileInfo
 } from './sessionState'
 import { monitorEventLoopDelay } from 'perf_hooks'
 import {
@@ -27,26 +30,41 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import * as childProcess from 'node:child_process'
 import { promisify } from 'node:util'
+import { pathToFileURL } from 'node:url'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import type { DoctorResult } from '../shared/types'
+import type { AutomationChangedEvent, DoctorResult } from '../shared/types'
 import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
 import { startGitWatch, stopGitWatch, stopAllGitWatches } from './git'
 import { stopFilesWatch } from './filesWatcher'
 import { getDb } from './db'
 import { getProject } from './projects'
-import { reconcileWorktree } from './worktrees'
+import { isWorktreeDirty, reconcileWorktree } from './worktrees'
 import {
   getWorkspace,
   archiveWorkspace,
   closeWorkspace,
+  listWorkspacesForProject,
+  listChildWorkspaces,
   setWorkspaceLastTitle,
   getAllWorkspaceLastTitles,
   resetTransientStatusesOnStartup,
   setWorkspaceCwd
 } from './workspaces'
 import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
-import { getLayout, listAutoStartLayouts, listTerminals } from './paneStore'
+import {
+  createDedicatedWorkspaceTerminal,
+  deleteLayout as deletePaneLayoutRow,
+  deletePanel as deletePanePanelRow,
+  deleteTerminal as deletePaneTerminalRow,
+  deleteDedicatedWorkspaceTerminal,
+  getLayout,
+  getTerminal,
+  listAutoStartLayouts,
+  listAgentManagedLayoutsByOwner,
+  listLayouts,
+  listTerminals
+} from './paneStore'
 import { getAppUiState, updateAppUiState } from './uiState'
 import { onActivityBatch } from './activitySink'
 import {
@@ -54,7 +72,9 @@ import {
   ensureManagedHooks,
   uninstallManagedHooks,
   clearWorkspaceActivity,
-  setAutoCloseHandler
+  setAutoCloseHandler,
+  onWorkspaceStatusPersisting,
+  onWorkspaceStatusCommitted
 } from './orpheusNotify'
 import {
   configureLoadingOverlay,
@@ -80,12 +100,12 @@ import {
   composeLaunchForMount
 } from './orpheusSurfaceAdapter'
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
+import { prepareTerminalLaunchEnv } from './terminalLaunchEnv'
 import { buildAppMenu } from './appMenu'
 import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor } from '../shared/types'
 import type { SplitTree, PaneLayout, TerminalRect, TerminalMountResult } from '../shared/types'
-import type { DiagEvent } from '../shared/types'
 import { bootActions, setTerminalAddonRef, registerWebContentsCleanup } from './actions/index'
 import { evictAccumulator } from './actions/session'
 import { seedDefaultFooterActions } from './footerActions'
@@ -98,6 +118,7 @@ import {
   diag
 } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
+import { redactErrorForLog, redactErrorMessage, redactLogString } from './logRedaction'
 import { startPowerAwake } from './powerAwake'
 import { startCommandServer } from './commandServer'
 import type { CommandServerDeps } from './commandServer'
@@ -127,6 +148,7 @@ import {
 } from './workspaceResources'
 import { handle } from './ipc/handle'
 import { isSafeExternalUrl } from './ipc/validate'
+import { isTrustedRendererUrl } from './rendererTrust'
 import { registerGitIpc } from './ipc/git'
 import { registerFilesIpc } from './ipc/files'
 import { registerShellIpc } from './ipc/shell'
@@ -150,6 +172,37 @@ import { registerClaudeUsageIpc } from './ipc/claudeUsage'
 import { registerClaudeActivityIpc } from './ipc/claudeActivity'
 import { registerFooterActionsIpc } from './ipc/footerActions'
 import { registerReviewsIpc } from './ipc/reviews'
+import { createRendererCommandTransport, registerWorkbenchControlIpc } from './ipc/workbenchControl'
+import { RendererCommandBroker } from './workbenchControl/rendererCommandBroker'
+import { WorkbenchControlService } from './workbenchControl/service'
+import { createMainPaneControlPort } from './workbenchControl/mainPaneAdapter'
+import {
+  resolvePaneBackgroundScaleFactor,
+  startProvisionedPaneSurface
+} from './workbenchControl/paneProvisioningStart'
+import { teardownPaneSurfaceStrict } from './workbenchControl/paneSurfaceTeardown'
+import { isCanonicalWorkspacePath } from './workbenchControl/pathSafety'
+import { createControlAuditStore } from './controlPlane/controlAudit'
+import { invokeControl, listControl } from './controlPlane'
+import {
+  startMainControlPlaneLifecycle,
+  type MainControlPlaneLifecycle
+} from './controlPlane/mainLifecycle'
+import { createTrustedRuntimeReadPolicy } from './controlPlane/readPolicy'
+import { createMainReadHandlers } from './controlPlane/mainReadHandlers'
+import { createMainSettingsResourceService } from './controlPlane/mainSettingsResourceService'
+import { RuntimeLeaseRegistry } from './controlPlane/runtimeLeases'
+import type { RuntimeLeaseIssue } from './controlPlane/runtimeLeases'
+import {
+  createMainWorkspaceOrchestration,
+  type WorkspaceOrchestrationService
+} from './workspaceOrchestration'
+import { RuntimeControlGrantPolicy } from './controlPlane/runtimeGrants'
+import { createRuntimeResourceScopeSource } from './controlPlane/runtimeResourceScope'
+import {
+  WorkspaceOpenRequestQueue,
+  type WorkspaceOpenRequest
+} from './workspaceOrchestration/openRequestQueue'
 import { registerPanesIpc } from './ipc/panes'
 import { registerKeepAwakeIpc } from './ipc/keepAwake'
 import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
@@ -165,11 +218,62 @@ import { registerActionsIpc } from './ipc/actions'
 import { registerOverlayIpc } from './ipc/overlay'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
+import { WorkspaceControlAdapter } from './workspaceControlAdapter'
+import {
+  createMainTerminalObservation,
+  paneSurfaceId,
+  type NativeSurfacePhase,
+  type TerminalObservationService
+} from './terminalObservation'
 
 let notifyServer: { sockPath: string; close: () => void } | null = null
-let commandServer: { sockPath: string; token: string; close: () => void } | null = null
+let commandServer: {
+  sockPath: string
+  token: string
+  ready: Promise<void>
+  close: () => void
+} | null = null
 let sessionStateService: { stop: () => void } | null = null
 let powerAwakeCleanup: (() => void) | null = null
+const runtimeLeases = new RuntimeLeaseRegistry()
+let workspaceOrchestrationService: WorkspaceOrchestrationService | null = null
+let terminalObservationService: TerminalObservationService | null = null
+let terminalObservationCleanup: (() => void) | null = null
+let controlPlaneLifecycle: MainControlPlaneLifecycle | null = null
+let unmanagedMountWarningEmitted = false
+
+setRuntimeSessionObserver(({ workspaceId, claudeConversationId, session }) => {
+  const binding = runtimeLeases.getBySurfaceId(workspaceId)
+  if (binding != null) {
+    if (
+      binding.claudeConversationId != null &&
+      binding.claudeConversationId !== claudeConversationId
+    ) {
+      runtimeLeases.revokeBySurface(workspaceId)
+    } else if (session != null) {
+      runtimeLeases.observeClaude({
+        workspaceId,
+        claudeConversationId,
+        pid: session.pid
+      })
+    } else if (binding.state === 'live') {
+      // A fresh pending mount legitimately has no session file during Claude
+      // startup. Preserve it until its TTL; once a runtime was observed live,
+      // disappearance means the wrapper has fallen through to an interactive
+      // shell and must no longer authenticate as the Claude agent.
+      runtimeLeases.observeClaude({
+        workspaceId,
+        claudeConversationId,
+        pid: null
+      })
+    }
+  }
+  terminalObservationService?.recordRuntimeSessionObservation({
+    workspaceId,
+    claudeConversationId,
+    session
+  })
+})
 
 /**
  * Declarative reconcile: reads hooksIntegrationEnabled and either starts the
@@ -183,13 +287,13 @@ function reconcileHooks(): void {
       try {
         notifyServer = startNotifyServer()
       } catch (err) {
-        console.error('[orpheusNotify] failed to start notify server:', err)
+        console.error('[orpheusNotify] failed to start notify server:', redactErrorForLog(err))
       }
     }
     try {
       ensureManagedHooks()
     } catch (err) {
-      console.error('[orpheusNotify] failed to install managed hooks:', err)
+      console.error('[orpheusNotify] failed to install managed hooks:', redactErrorForLog(err))
     }
   } else {
     if (notifyServer) {
@@ -199,19 +303,29 @@ function reconcileHooks(): void {
     try {
       uninstallManagedHooks()
     } catch (err) {
-      console.error('[orpheusNotify] failed to uninstall managed hooks:', err)
+      console.error('[orpheusNotify] failed to uninstall managed hooks:', redactErrorForLog(err))
     }
   }
 }
 
 // Cached main window reference — avoids BrowserWindow.getAllWindows() in hot paths.
 let mainWindowRef: BrowserWindow | null = null
+let rendererWorkspaceOpenReady = false
+let nativeWindowOcclusionVisible: boolean | null = null
+const workspaceOpenRequests = new WorkspaceOpenRequestQueue()
 
 function getMainWindow(): BrowserWindow | null {
   if (mainWindowRef && !mainWindowRef.isDestroyed()) return mainWindowRef
   // Fallback — should only happen if the window was destroyed unexpectedly.
   mainWindowRef = BrowserWindow.getAllWindows()[0] ?? null
   return mainWindowRef
+}
+
+function trustedRendererEntryUrl(): string {
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    return process.env['ELECTRON_RENDERER_URL']
+  }
+  return pathToFileURL(join(__dirname, '../renderer/index.html')).toString()
 }
 
 // Ask the renderer to open (and mount) the given workspace. Mirrors the
@@ -224,10 +338,35 @@ function getMainWindow(): BrowserWindow | null {
 // what the user is looking at). Defaults to true so existing callers that
 // don't pass it keep the pre-existing "always navigate" behavior.
 function requestOpenWorkspace(workspaceId: string, focus: boolean = true): void {
-  getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceRequestOpen, { workspaceId, focus })
+  workspaceOpenRequests.request(
+    { kind: 'renderer-open', workspaceId, focus },
+    deliverWorkspaceOpenRequest
+  )
 }
 
-let titleCallbackRegistered = false
+// Runtime orchestration already holds the project mutation lease. Carry the
+// snapshot cwd so the renderer can mount without re-entering workspaces:open.
+function requestOrchestrationMount(workspaceId: string, cwd: string): void {
+  workspaceOpenRequests.request(
+    { kind: 'orchestration-mount', workspaceId, focus: false, cwd },
+    deliverWorkspaceOpenRequest
+  )
+}
+
+function deliverWorkspaceOpenRequest(request: WorkspaceOpenRequest): boolean {
+  const window = getMainWindow()
+  if (!rendererWorkspaceOpenReady || window == null || window.webContents.isDestroyed()) {
+    return false
+  }
+  try {
+    window.webContents.send(PUSH_CHANNELS.workspaceRequestOpen, request)
+    return true
+  } catch {
+    return false
+  }
+}
+
+let terminalCallbacksRegistered = false
 let loadingOverlayWired = false
 
 // Theme palettes for the loading overlay. Must mirror src/renderer/src/assets/main.css.
@@ -307,10 +446,15 @@ function ensureLoadingOverlayWiring(addon: GhosttySurfaceAddon): void {
   })
 }
 
-function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
-  if (titleCallbackRegistered) return
-  titleCallbackRegistered = true
+function ensureTerminalCallbackWiring(addon: GhosttySurfaceAddon): void {
+  if (terminalCallbacksRegistered) return
   addon.setTitleCallback((surfaceKey: string, title: string) => {
+    // Panes have persisted user-authored names in paneStore; their shell title
+    // is not a workspace title. Ignore it before normalization so command
+    // title churn cannot populate workspaceResources or broadcast events for
+    // synthetic `pane:<layoutId>:<paneId>` keys.
+    if (isPaneSlotId(surfaceKey)) return
+
     // Claude Code prefixes titles with a cycling spinner glyph (✱ ✶ ✻ ✺ ✦ …)
     // and a space. Strip leading non-letter/non-digit characters so the
     // sidebar shows clean text and so our own loader UI can layer in front.
@@ -345,7 +489,11 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
     if (getTitle(workspaceId) === (cleaned ?? undefined)) return
     if (!cleaned && getTitle(workspaceId) === undefined) return
 
-    console.log('[title] native fired', { workspaceId, raw: title, cleaned })
+    console.log('[title] native fired', {
+      workspaceId,
+      titleBytes: Buffer.byteLength(title, 'utf8'),
+      hasCleanedTitle: cleaned != null
+    })
     if (cleaned) {
       setTitle(workspaceId, cleaned)
     } else {
@@ -356,10 +504,11 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
     try {
       setWorkspaceLastTitle(workspaceId, cleaned)
     } catch (err) {
-      console.error('[title] failed to persist last_title', err)
+      console.error('[title] failed to persist last_title', redactErrorForLog(err))
     }
   })
   addon.setOcclusionCallback((workspaceId: string, occluded: boolean) => {
+    nativeWindowOcclusionVisible = !occluded
     getMainWindow()?.webContents.send(PUSH_CHANNELS.terminalSleepStateChanged, {
       workspaceId,
       sleeping: occluded
@@ -387,6 +536,7 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
       win?.webContents.send(PUSH_CHANNELS.addonActionTrace, { tagName })
     })
   }
+  terminalCallbacksRegistered = true
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +551,7 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
 // Do NOT call on terminal:destroy alone, because destroy is also issued during
 // live restarts (WorkspaceView.handleRestart) where the workspace stays alive.
 function teardownWorkspaceResources(workspaceId: string, cwd: string | null): void {
+  runtimeLeases.revokeByWorkspace(workspaceId)
   // The 5-map registry slice (launchSnapshots, dirty, titles, overlay
   // fallback timers, injectLocks) lives in workspaceResources.ts, which
   // stays a leaf with no knowledge of these cross-module concerns.
@@ -417,16 +568,13 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
   stopFilesWatch(workspaceId)
 }
 
-function performClose(id: string): WorkspaceRecord | undefined {
-  // NOTE: close keeps the worktree on disk (reconciled on next open); only
-  // archive/project-delete tears it down. Do NOT add worktree removal here.
+function destroyWorkspaceRuntime(id: string, knownCwd?: string | null): void {
+  workspaceOpenRequests.cancel(id)
   const ws = getWorkspace(id)
-  // Capture the live terminal title BEFORE teardownWorkspaceResources clears it,
-  // so the closed workspace keeps its name in the sidebar.
-  const lastTitle = getTitle(id) ?? null
   if (terminalAddon) {
     try {
       terminalAddon.destroy(id)
+      terminalObservationService?.recordWorkspaceLifecycle(id, getNativeSurfacePhase(id))
     } catch {
       // Surface not mounted or already destroyed — ignore.
     }
@@ -439,7 +587,17 @@ function performClose(id: string): WorkspaceRecord | undefined {
   // Same trigger (g) applies to Panes tab surfaces (see
   // paneSurfacesByWorkspace's header comment).
   destroyPaneSurfacesForWorkspace(id)
-  teardownWorkspaceResources(id, ws?.cwd ?? null)
+  destroyAgentPaneSurfacesForOwner(id)
+  teardownWorkspaceResources(id, knownCwd ?? ws?.cwd ?? null)
+}
+
+function performClose(id: string): WorkspaceRecord | undefined {
+  // NOTE: close keeps the worktree on disk (reconciled on next open); only
+  // archive/project-delete tears it down. Do NOT add worktree removal here.
+  // Capture the live terminal title BEFORE teardownWorkspaceResources clears it,
+  // so the closed workspace keeps its name in the sidebar.
+  const lastTitle = getTitle(id) ?? null
+  destroyWorkspaceRuntime(id)
   return closeWorkspace(id, lastTitle)
 }
 
@@ -447,7 +605,6 @@ async function performArchive(
   id: string,
   force: boolean = false
 ): Promise<{ archived: boolean; wasDirty: boolean }> {
-  // Capture cwd before the DB row is gone so teardown can stop the git watcher.
   const ws = getWorkspace(id)
   // Run archiveWorkspace FIRST. For worktree-backed workspaces with a dirty
   // worktree and force=false it returns { archived: false, wasDirty: true }
@@ -459,28 +616,29 @@ async function performArchive(
     // show a confirm dialog and re-invoke with force:true.
     return result
   }
-  // Archive succeeded: destroy the libghostty surface now that the DB row is
-  // gone. Silently no-ops when the terminal was never mounted.
-  if (terminalAddon) {
-    try {
-      terminalAddon.destroy(id)
-    } catch {
-      // Surface not mounted or already destroyed — ignore.
-    }
-  }
-  // Trigger (g): workspace archive is one of the only two allowed workbench
-  // terminal destroy points — destroy ALL of this workspace's workbench
-  // surfaces here, authoritatively, regardless of what's currently mounted
-  // in the renderer (see workbenchSurfacesByWorkspace's header comment).
-  destroyWorkbenchSurfacesForWorkspace(id)
-  // Same trigger (g) applies to Panes tab surfaces (see
-  // paneSurfacesByWorkspace's header comment).
-  destroyPaneSurfacesForWorkspace(id)
-  // Evict all per-workspace in-memory state via the unified teardown so
-  // archived workspaces don't leak into any runtime cache.
-  teardownWorkspaceResources(id, ws?.cwd ?? null)
+  // Archive succeeded: destroy all runtime resources now that the DB row is gone.
+  destroyWorkspaceRuntime(id, ws?.cwd ?? null)
   return result
 }
+
+const workspaceControlAdapter = new WorkspaceControlAdapter({
+  invoke: invokeControl,
+  getProject,
+  getWorkspace,
+  isDirtyArchiveTarget: async (workspaceId) => {
+    const workspace = getWorkspace(workspaceId)
+    if (workspace?.worktreeParentCwd == null || listChildWorkspaces(workspaceId).length > 0) {
+      return false
+    }
+    return isWorktreeDirty(workspace.cwd)
+  },
+  acknowledgeRendererOpen: (workspaceId) => {
+    if (workspaceOrchestrationService == null) {
+      throw new Error('Workspace orchestration is not available.')
+    }
+    return workspaceOrchestrationService.acknowledgeRendererOpen(workspaceId)
+  }
+})
 
 // ---------------------------------------------------------------------------
 // Claude session-ID capture (v26)
@@ -526,7 +684,7 @@ function applyGlobalHotkey(hotkey: string): boolean {
     registeredHotkey = hotkey
     return true
   } catch (err) {
-    console.error('[shortcut] register threw:', err)
+    console.error('[shortcut] register threw:', redactErrorForLog(err))
     return false
   }
 }
@@ -536,10 +694,14 @@ function applyGlobalHotkey(hotkey: string): boolean {
 // Must never throw — this runs from inside error handlers.
 function writeCrashFile(err: unknown): void {
   try {
-    fs.writeFileSync(
-      path.join(app.getPath('userData'), 'orpheus-crash.log'),
-      `${new Date().toISOString()}\n${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`
-    )
+    const crashPath = path.join(app.getPath('userData'), 'orpheus-crash.log')
+    const detail =
+      err instanceof Error ? redactLogString(err.stack ?? err.message) : redactErrorMessage(err)
+    fs.writeFileSync(crashPath, `${new Date().toISOString()}\n${detail}\n`, {
+      encoding: 'utf8',
+      mode: 0o600
+    })
+    fs.chmodSync(crashPath, 0o600)
   } catch {
     /* last-resort logging must never throw */
   }
@@ -570,7 +732,7 @@ process.on('uncaughtException', (err) => {
   writeCrashFile(err)
   dialog.showErrorBox(
     'Orpheus — Unexpected Error',
-    'Orpheus encountered an unexpected error and must close.\n\n' + (err?.message ?? String(err))
+    'Orpheus encountered an unexpected error and must close. A redacted crash report was saved.'
   )
   app.exit(1)
 })
@@ -610,7 +772,7 @@ function focusWorkspaceTerminal(): boolean {
     loadTerminalAddon().focus(ws)
     return true
   } catch (err) {
-    console.error('[lifecycle] focusWorkspaceTerminal failed:', err)
+    console.error('[lifecycle] focusWorkspaceTerminal failed:', redactErrorForLog(err))
     return false
   }
 }
@@ -633,11 +795,12 @@ function kickActiveTerminal(): void {
     console.log('[lifecycle] terminal kick (wake)')
     loadTerminalAddon().focus(ws)
   } catch (err) {
-    console.error('[lifecycle] terminal kick failed:', err)
+    console.error('[lifecycle] terminal kick failed:', redactErrorForLog(err))
   }
 }
 
 function createWindow(): void {
+  nativeWindowOcclusionVisible = null
   // ---------------------------------------------------------------------------
   // Restore saved window geometry
   // ---------------------------------------------------------------------------
@@ -702,10 +865,33 @@ function createWindow(): void {
     }
   })
 
+  const pushWindowVisibility = (): void => {
+    if (mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
+    mainWindow.webContents.send(PUSH_CHANNELS.windowVisibilityChanged, {
+      visible: mainWindow.isVisible() && !mainWindow.isMinimized()
+    })
+  }
+  mainWindow.on('show', pushWindowVisibility)
+  mainWindow.on('hide', pushWindowVisibility)
+  mainWindow.on('minimize', pushWindowVisibility)
+  mainWindow.on('restore', pushWindowVisibility)
+
   // Cache the main window reference for use in hot-path broadcasts.
   mainWindowRef = mainWindow
+  rendererWorkspaceOpenReady = false
   mainWindow.on('closed', () => {
-    if (mainWindowRef === mainWindow) mainWindowRef = null
+    if (mainWindowRef === mainWindow) {
+      mainWindowRef = null
+      rendererWorkspaceOpenReady = false
+    }
+  })
+  mainWindow.webContents.on('did-start-loading', () => {
+    rendererWorkspaceOpenReady = false
+  })
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (mainWindowRef !== mainWindow || mainWindow.webContents.isDestroyed()) return
+    rendererWorkspaceOpenReady = true
+    workspaceOpenRequests.flush(deliverWorkspaceOpenRequest)
   })
 
   // Register subscription cleanup so actions:subscribe subscriptions are
@@ -728,7 +914,7 @@ function createWindow(): void {
     try {
       loadTerminalAddon().installBackstop(mainWindow.getNativeWindowHandle())
     } catch (err) {
-      console.error('[lifecycle] installBackstop failed:', err)
+      console.error('[lifecycle] installBackstop failed:', redactErrorForLog(err))
     }
     try {
       initOverlayLayer(mainWindow, loadTerminalAddon(), {
@@ -737,7 +923,7 @@ function createWindow(): void {
       })
       setOverlayTheme(getAppUiState().theme)
     } catch (err) {
-      console.error('[overlayLayer] init failed:', err)
+      console.error('[overlayLayer] init failed:', redactErrorForLog(err))
     }
     if (isDev) {
       mainWindow.setTitle(app.getName())
@@ -747,6 +933,9 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler((details) => {
     if (isSafeExternalUrl(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    if (!isTrustedRendererUrl(navigationUrl, trustedRendererEntryUrl())) event.preventDefault()
   })
 
   // On macOS, standard Electron behavior keeps the app frontmost when the
@@ -932,7 +1121,10 @@ async function checkClaude(): Promise<{
 // IPC handlers
 // ---------------------------------------------------------------------------
 
-registerMiscIpc({ getProject })
+registerMiscIpc({
+  getProject,
+  getNativeWindowOcclusionVisible: () => nativeWindowOcclusionVisible
+})
 
 // ---------------------------------------------------------------------------
 // Projects IPC
@@ -954,6 +1146,7 @@ registerProjectsIpc({
     // Same trigger (g) applies to Panes tab surfaces (see
     // paneSurfacesByWorkspace's header comment).
     destroyPaneSurfacesForWorkspace(workspaceId)
+    destroyAgentPaneSurfacesForOwner(workspaceId)
   },
   teardownWorkspaceResources
 })
@@ -964,7 +1157,10 @@ registerProjectsIpc({
 
 registerWorktreesIpc()
 
-registerWorkspacesIpc({ performArchive, performClose })
+registerWorkspacesIpc({
+  workspaceControl: workspaceControlAdapter,
+  performForcedArchive: (workspaceId) => performArchive(workspaceId, true)
+})
 
 // ---------------------------------------------------------------------------
 // Sessions IPC — extracted to ipc/sessions.ts.
@@ -998,7 +1194,10 @@ handle('ghosttySettings:update', (_e, patch) => {
     const addon = loadTerminalAddon()
     addon.reloadGhosttyConfig()
   } catch (err) {
-    console.warn('[ghosttySettings] reloadGhosttyConfig failed (non-fatal):', err)
+    console.warn(
+      '[ghosttySettings] reloadGhosttyConfig failed (non-fatal):',
+      redactErrorForLog(err)
+    )
   }
   return result
 })
@@ -1021,7 +1220,18 @@ registerOrpheusConfigIpc({ getProject })
 // Diagnostics IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.on('diag:event', (_e, evt: DiagEvent) => {
+ipcMain.on('diag:event', (event, evt: unknown) => {
+  const window = getMainWindow()
+  if (window == null || window.isDestroyed() || event.sender.id !== window.webContents.id) return
+  const senderFrame = event.senderFrame
+  if (senderFrame == null || senderFrame !== event.sender.mainFrame) return
+  const trustedEntry = trustedRendererEntryUrl()
+  if (
+    !isTrustedRendererUrl(senderFrame.url, trustedEntry) ||
+    !isTrustedRendererUrl(window.webContents.getURL(), trustedEntry)
+  ) {
+    return
+  }
   ingestDiagEvent(evt)
 })
 
@@ -1103,17 +1313,33 @@ function loadTerminalAddon(): GhosttySurfaceAddon {
 
   console.log('[terminal] loading addon via loadOrpheusSurface')
   try {
-    terminalAddon = loadOrpheusSurface()
+    const addon = loadOrpheusSurface()
+    // Callback wiring is part of addon initialization, not claude-terminal
+    // mounting. Workbench and pane surfaces can be the first native surface,
+    // and their initial AppKit occlusion snapshot must never be dropped.
+    ensureTerminalCallbackWiring(addon)
+    terminalAddon = addon
     console.log('[terminal] addon loaded OK')
     // Wire the addon reference into the actions registry so terminal.*
     // actions can delegate through the same addon instance.
-    setTerminalAddonRef(terminalAddon)
-    return terminalAddon
+    setTerminalAddonRef(addon)
+    return addon
   } catch (err) {
     const msg = String(err)
     terminalAddonError = msg
-    console.error('[terminal] addon load FAILED:', msg)
+    console.error('[terminal] addon load FAILED:', redactLogString(msg))
     throw err
+  }
+}
+
+function getNativeSurfacePhase(surfaceId: string): NativeSurfacePhase {
+  try {
+    const phase = loadTerminalAddon().getSurfacePhase(surfaceId)
+    return phase === 'hidden' || phase === 'attached' || phase === 'visible' || phase === 'freeing'
+      ? phase
+      : 'none'
+  } catch {
+    return 'none'
   }
 }
 
@@ -1186,9 +1412,86 @@ async function reconcileWorktreeForMount(
  *  span. Mutates `launchOut` (a single-slot box) so the caller can read back the
  *  composed launch after the trace completes — mirrors the original closure's
  *  `launch` outer-scope assignment exactly. */
-async function traceTerminalMount(
+function issueRuntimeLeaseForMount(
+  workspace: WorkspaceRecord,
+  addon: GhosttySurfaceAddon
+): RuntimeLeaseIssue {
+  const existingBinding = runtimeLeases.getBySurfaceId(workspace.id)
+  if (existingBinding != null) {
+    let phase: ReturnType<GhosttySurfaceAddon['getSurfacePhase']> = 'none'
+    try {
+      phase = addon.getSurfacePhase(workspace.id)
+    } catch {
+      phase = 'none'
+    }
+    if (phase === 'none' || phase === 'freeing') {
+      runtimeLeases.revokeBySurface(workspace.id)
+    }
+  }
+
+  return runtimeLeases.issueOrReuseClaude({
+    surfaceId: workspace.id,
+    workspaceId: workspace.id,
+    projectId: workspace.projectId,
+    claudeConversationId: workspace.claudeSessionId,
+    parentWorkspaceId: workspace.parentWorkspaceId,
+    forkedFromConversationId: workspace.forkedFromSessionId
+  })
+}
+
+function prepareMountControl(
+  workspace: WorkspaceRecord,
+  addon: GhosttySurfaceAddon
+): {
+  activeCommandServer: typeof commandServer
+  leaseIssue: RuntimeLeaseIssue | null
+} {
+  const activeCommandServer = commandServer
+  if (activeCommandServer == null) {
+    if (!unmanagedMountWarningEmitted) {
+      unmanagedMountWarningEmitted = true
+      console.warn('[terminal] control server unavailable; launching Claude without managed MCP')
+    }
+    return { activeCommandServer: null, leaseIssue: null }
+  }
+  return {
+    activeCommandServer,
+    leaseIssue: issueRuntimeLeaseForMount(workspace, addon)
+  }
+}
+
+function revokeMountLeaseIfManaged(
   workspaceId: string,
-  projectId: string | undefined,
+  leaseIssue: RuntimeLeaseIssue | null
+): void {
+  if (leaseIssue != null) runtimeLeases.revokeBySurface(workspaceId)
+}
+
+function reconcileMountLeaseResult(
+  workspaceId: string,
+  addon: GhosttySurfaceAddon,
+  mountResult: { created: boolean },
+  leaseIssue: RuntimeLeaseIssue | null
+): void {
+  if (leaseIssue == null) return
+  if (mountResult.created && !leaseIssue.created) {
+    runtimeLeases.revokeBySurface(workspaceId)
+    try {
+      addon.destroy(workspaceId)
+    } catch {
+      /* surface is already tearing down */
+    }
+    throw new Error('Runtime lease generation did not match the created surface.')
+  }
+  if (!mountResult.created && leaseIssue.created) {
+    // The existing process cannot receive the newly generated token because
+    // native reattach does not relaunch its command environment.
+    runtimeLeases.revokeBySurface(workspaceId)
+  }
+}
+
+async function traceTerminalMount(
+  workspace: WorkspaceRecord,
   effectiveCwd: string | undefined,
   nativeHandle: Buffer,
   addon: GhosttySurfaceAddon,
@@ -1200,8 +1503,12 @@ async function traceTerminalMount(
   },
   precomposedLaunch: ReturnType<typeof composeLaunchForMount>
 ): Promise<{ workspaceId: string; created: boolean }> {
+  const workspaceId = workspace.id
+  const projectId = workspace.projectId
   const _mountStart = Date.now()
   return diag.trace('terminal.mount', { workspaceId }, (s) => {
+    const { activeCommandServer, leaseIssue } = prepareMountControl(workspace, addon)
+
     // Assemble the surface env as a child span nested under terminal.mount.
     // buildMountEnv is sync; use diag.span (not diag.trace). precomposedLaunch
     // was already composed once by the caller (for the isRoutedMount gate) —
@@ -1213,8 +1520,9 @@ async function traceTerminalMount(
           workspaceId,
           projectId,
           notifyServer?.sockPath,
-          commandServer ?? undefined,
-          precomposedLaunch
+          activeCommandServer ?? undefined,
+          precomposedLaunch,
+          leaseIssue == null ? undefined : { binding: leaseIssue.binding, token: leaseIssue.token }
         )
       )
     } catch (err) {
@@ -1226,6 +1534,7 @@ async function traceTerminalMount(
         workspaceId,
         data: { stack: err instanceof Error ? err.stack : null }
       })
+      revokeMountLeaseIfManaged(workspaceId, leaseIssue)
       throw err
     }
     const { command, env: surfaceEnv, launch: composedLaunch, authEnv } = buildResult
@@ -1233,11 +1542,11 @@ async function traceTerminalMount(
     launchOut.authEnv = authEnv
 
     console.log(
-      '[terminal] mount workspaceId=%s flags=%s settingsJson=%s envKeys=%s',
+      '[terminal] mount workspaceId=%s flagsBytes=%d settingsBytes=%d envKeys=%s',
       workspaceId,
-      composedLaunch.flags || '(none)',
-      composedLaunch.settingsJson || '(none)',
-      Object.keys(surfaceEnv).join(',')
+      Buffer.byteLength(composedLaunch.flags, 'utf8'),
+      Buffer.byteLength(composedLaunch.settingsJson, 'utf8'),
+      Object.keys(surfaceEnv).sort().join(',')
     )
 
     let mountResult: { workspaceId: string; created: boolean }
@@ -1248,7 +1557,7 @@ async function traceTerminalMount(
         scaleFactor,
         cwd: effectiveCwd,
         command,
-        env: surfaceEnv
+        env: prepareTerminalLaunchEnv(surfaceEnv)
       })
     } catch (err) {
       logDiagMain({
@@ -1259,8 +1568,15 @@ async function traceTerminalMount(
         workspaceId,
         data: { stack: err instanceof Error ? err.stack : null }
       })
+      revokeMountLeaseIfManaged(workspaceId, leaseIssue)
       throw err
     }
+
+    reconcileMountLeaseResult(workspaceId, addon, mountResult, leaseIssue)
+    terminalObservationService?.recordWorkspaceLifecycle(
+      workspaceId,
+      getNativeSurfacePhase(workspaceId)
+    )
     s.mark(mountResult.created ? 'surface-created' : 'surface-reattached')
     logDiagMain({
       category: 'lifecycle',
@@ -1329,7 +1645,6 @@ function handlePostMountOverlay(workspaceId: string, created: boolean, routed: b
 
 handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
   const addon = loadTerminalAddon()
-  ensureTitleCallback(addon)
   ensureLoadingOverlayWiring(addon)
   const win = BrowserWindow.fromWebContents(e.sender)
   if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
@@ -1405,9 +1720,14 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     launch?: ReturnType<typeof buildMountEnv>['launch']
     authEnv?: ReturnType<typeof buildMountEnv>['authEnv']
   } = {}
+  const runtimeWorkspace = getWorkspace(workspaceId)
+  if (runtimeWorkspace == null || runtimeWorkspace.archivedAt != null) {
+    hideLoadingOverlay(workspaceId)
+    return { workspaceId, aborted: 'gone' as const }
+  }
+
   const result = await traceTerminalMount(
-    workspaceId,
-    projectId,
+    runtimeWorkspace,
     effectiveCwd,
     nativeHandle,
     addon,
@@ -1459,6 +1779,7 @@ handle('terminal:hide', (_e, { workspaceId }): void => {
   hideLoadingOverlay(workspaceId)
   try {
     addon.hide(workspaceId)
+    terminalObservationService?.recordWorkspaceLifecycle(workspaceId, 'hidden')
   } catch (err) {
     logDiagMain({
       category: 'error',
@@ -1624,7 +1945,13 @@ function destroyWorkbenchSurfacesForWorkspace(workspaceId: string): void {
   const addon = loadTerminalAddon()
   for (const terminalId of ids) {
     try {
-      addon.destroy(workbenchSlotId(workspaceId, terminalId))
+      const surfaceId = workbenchSlotId(workspaceId, terminalId)
+      addon.destroy(surfaceId)
+      terminalObservationService?.recordWorkbenchLifecycle(
+        workspaceId,
+        terminalId,
+        getNativeSurfacePhase(surfaceId)
+      )
     } catch {
       // Surface not mounted or already destroyed — ignore.
     }
@@ -1654,9 +1981,16 @@ handle('workbench:mount', (e, { workspaceId, rect, scaleFactor, terminalId }) =>
     scaleFactor,
     cwd,
     command: shell,
-    env: {}
+    env: prepareTerminalLaunchEnv({})
   })
   registerWorkbenchSurface(workspaceId, terminalId)
+  if (terminalId !== undefined) {
+    terminalObservationService?.recordWorkbenchLifecycle(
+      workspaceId,
+      terminalId,
+      getNativeSurfacePhase(slotId)
+    )
+  }
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
@@ -1680,11 +2014,22 @@ handle('workbench:resize', (_e, { workspaceId, rect, scaleFactor, terminalId }):
 handle('workbench:hide', (_e, { workspaceId, terminalId }): void => {
   const addon = loadTerminalAddon()
   addon.hide(workbenchSlotId(workspaceId, terminalId))
+  if (terminalId !== undefined) {
+    terminalObservationService?.recordWorkbenchLifecycle(workspaceId, terminalId, 'hidden')
+  }
 })
 
 handle('workbench:destroy', (_e, { workspaceId, terminalId }): void => {
   const addon = loadTerminalAddon()
-  addon.destroy(workbenchSlotId(workspaceId, terminalId))
+  const surfaceId = workbenchSlotId(workspaceId, terminalId)
+  addon.destroy(surfaceId)
+  if (terminalId !== undefined) {
+    terminalObservationService?.recordWorkbenchLifecycle(
+      workspaceId,
+      terminalId,
+      getNativeSurfacePhase(surfaceId)
+    )
+  }
   unregisterWorkbenchSurface(workspaceId, terminalId)
 })
 
@@ -1714,6 +2059,10 @@ handle('workbench:destroy', (_e, { workspaceId, terminalId }): void => {
 
 function paneSlotId(workspaceId: string, paneId: string): string {
   return `pane:${workspaceId}:${paneId}`
+}
+
+function isPaneSlotId(surfaceKey: string): boolean {
+  return surfaceKey.startsWith('pane:')
 }
 
 /** Resolves the orpheus-pane.sh wrapper's absolute path — same packaged-vs-
@@ -1780,13 +2129,68 @@ function destroyPaneSurfacesForWorkspace(workspaceId: string): void {
   const addon = loadTerminalAddon()
   for (const paneId of ids) {
     try {
-      addon.destroy(paneSlotId(workspaceId, paneId))
+      const surfaceId = paneSlotId(workspaceId, paneId)
+      addon.destroy(surfaceId)
+      terminalObservationService?.recordPaneLifecycle(
+        workspaceId,
+        paneId,
+        getNativeSurfacePhase(surfaceId)
+      )
     } catch {
       // Surface not mounted or already destroyed — ignore.
     }
   }
   paneSurfacesByWorkspace.delete(workspaceId)
   broadcastLiveLayouts()
+}
+
+function destroyPaneSurface(layoutId: string, paneId: string): 'stopped' | 'absent' {
+  return teardownPaneSurfaceStrict({
+    layoutId,
+    terminalId: paneId,
+    getPhase: (surfaceId) => {
+      const phase = loadTerminalAddon().getSurfacePhase(surfaceId)
+      if (
+        phase !== 'none' &&
+        phase !== 'hidden' &&
+        phase !== 'attached' &&
+        phase !== 'visible' &&
+        phase !== 'freeing'
+      ) {
+        throw new Error(`Unknown pane native surface phase: ${String(phase)}`)
+      }
+      return phase
+    },
+    isRegistered: (targetLayoutId, targetPaneId) =>
+      paneSurfacesByWorkspace.get(targetLayoutId)?.has(targetPaneId) === true,
+    destroy: (surfaceId) => {
+      loadTerminalAddon().destroy(surfaceId)
+      terminalObservationService?.recordPaneLifecycle(
+        layoutId,
+        paneId,
+        getNativeSurfacePhase(surfaceId)
+      )
+    },
+    unregister: unregisterPaneSurface
+  })
+}
+
+/** Strict delete-path teardown: unlike lifecycle cleanup, any registered
+ * surface destroy failure aborts the renderer-requested DB delete. */
+function destroyPaneSurfacesForDelete(layoutId: string): void {
+  const paneIds = new Set([
+    ...(paneSurfacesByWorkspace.get(layoutId) ?? []),
+    ...listTerminals(layoutId).map((terminal) => terminal.id)
+  ])
+  for (const paneId of paneIds) {
+    destroyPaneSurface(layoutId, paneId)
+  }
+}
+
+function destroyAgentPaneSurfacesForOwner(workspaceId: string): void {
+  for (const layout of listAgentManagedLayoutsByOwner(workspaceId)) {
+    destroyPaneSurfacesForDelete(layout.id)
+  }
 }
 
 // Fix #23 — for panes, the `workspaceId` param slot actually carries the
@@ -1823,9 +2227,10 @@ function mountPaneBackground(
     scaleFactor,
     cwd,
     command: paneWrapperPath(),
-    env: { ORPHEUS_PANE_CMD: command }
+    env: prepareTerminalLaunchEnv({ ORPHEUS_PANE_CMD: command })
   })
   registerPaneSurface(layoutId, paneId)
+  terminalObservationService?.recordPaneLifecycle(layoutId, paneId, getNativeSurfacePhase(slotId))
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
@@ -1854,18 +2259,22 @@ function collectLeafPaneIds(tree: SplitTree): string[] {
  *  (mountPaneBackground/addon.hide are both sync) — callers invoke it
  *  alongside genuinely async neighbors (getMainWindow/IPC), but there is no
  *  await inside it. */
-function mountLayoutBackground(nativeHandle: Buffer, layout: PaneLayout): void {
+function mountLayoutBackground(window: BrowserWindow, layout: PaneLayout): void {
   if (!layout.splitTree) return
   const leafPaneIds = collectLeafPaneIds(layout.splitTree)
   if (leafPaneIds.length === 0) return
 
+  const nativeHandle = window.getNativeWindowHandle()
   const terminals = listTerminals(layout.id)
   const commandByPaneId = new Map(terminals.map((t) => [t.id, t.command]))
 
   // Synthetic default rect — panes get real bounds once the layout is
   // actually shown; a hidden surface's rect doesn't need to be accurate.
   const rect: TerminalRect = { x: 0, y: 0, w: 800, h: 600 }
-  const scaleFactor = 1
+  const scaleFactor = resolvePaneBackgroundScaleFactor({
+    getWindowBounds: () => window.getBounds(),
+    resolveDisplayScaleFactor: (bounds) => screen.getDisplayMatching(bounds).scaleFactor
+  })
 
   for (const paneId of leafPaneIds) {
     const command = commandByPaneId.get(paneId)
@@ -1874,16 +2283,17 @@ function mountLayoutBackground(nativeHandle: Buffer, layout: PaneLayout): void {
       mountPaneBackground(nativeHandle, layout.id, paneId, rect, scaleFactor, command)
       try {
         loadTerminalAddon().hide(paneSlotId(layout.id, paneId))
+        terminalObservationService?.recordPaneLifecycle(layout.id, paneId, 'hidden')
       } catch (err) {
         console.error(
           `[panes] background hide failed for pane ${paneId} in layout ${layout.id}:`,
-          err
+          redactErrorForLog(err)
         )
       }
     } catch (err) {
       console.error(
         `[panes] background mount failed for pane ${paneId} in layout ${layout.id}:`,
-        err
+        redactErrorForLog(err)
       )
     }
   }
@@ -1902,27 +2312,20 @@ function mountLayoutBackground(nativeHandle: Buffer, layout: PaneLayout): void {
 function autoStartFlaggedLayouts(): void {
   const win = getMainWindow()
   if (!win) return
-  let nativeHandle: Buffer
-  try {
-    nativeHandle = win.getNativeWindowHandle()
-  } catch (err) {
-    console.error('[panes] auto-start: no native window handle:', err)
-    return
-  }
 
   let layouts: PaneLayout[]
   try {
     layouts = listAutoStartLayouts()
   } catch (err) {
-    console.error('[panes] auto-start: failed to list auto-start layouts:', err)
+    console.error('[panes] auto-start: failed to list auto-start layouts:', redactErrorForLog(err))
     return
   }
 
   for (const layout of layouts) {
     try {
-      mountLayoutBackground(nativeHandle, layout)
+      mountLayoutBackground(win, layout)
     } catch (err) {
-      console.error(`[panes] auto-start: failed for layout ${layout.id}:`, err)
+      console.error(`[panes] auto-start: failed for layout ${layout.id}:`, redactErrorForLog(err))
     }
   }
 }
@@ -1943,11 +2346,18 @@ handle('pane:resize', (_e, { workspaceId, paneId, rect, scaleFactor }): void => 
 handle('pane:hide', (_e, { workspaceId, paneId }): void => {
   const addon = loadTerminalAddon()
   addon.hide(paneSlotId(workspaceId, paneId))
+  terminalObservationService?.recordPaneLifecycle(workspaceId, paneId, 'hidden')
 })
 
 handle('pane:destroy', (_e, { workspaceId, paneId }): void => {
   const addon = loadTerminalAddon()
-  addon.destroy(paneSlotId(workspaceId, paneId))
+  const surfaceId = paneSlotId(workspaceId, paneId)
+  addon.destroy(surfaceId)
+  terminalObservationService?.recordPaneLifecycle(
+    workspaceId,
+    paneId,
+    getNativeSurfacePhase(surfaceId)
+  )
   unregisterPaneSurface(workspaceId, paneId)
 })
 
@@ -1960,8 +2370,7 @@ handle('panes:startLayoutBackground', (_e, { id }): void => {
   if (!win) return
   const layout = getLayout(id)
   if (!layout) return
-  const nativeHandle = win.getNativeWindowHandle()
-  mountLayoutBackground(nativeHandle, layout)
+  mountLayoutBackground(win, layout)
 })
 
 handle('panes:stopLayout', (_e, { id }): void => {
@@ -2021,6 +2430,10 @@ handle('terminal:destroy', (_e, { workspaceId }): void => {
   const addon = loadTerminalAddon()
   try {
     addon.destroy(workspaceId)
+    terminalObservationService?.recordWorkspaceLifecycle(
+      workspaceId,
+      getNativeSurfacePhase(workspaceId)
+    )
   } catch (err) {
     logDiagMain({
       category: 'error',
@@ -2031,6 +2444,11 @@ handle('terminal:destroy', (_e, { workspaceId }): void => {
       data: { stack: err instanceof Error ? err.stack : null }
     })
     throw err
+  } finally {
+    // Revocation is independent of native destruction completing. In
+    // particular, live restart can leave the native surface in `freeing`
+    // briefly; the next mount must receive a fresh runtime generation.
+    runtimeLeases.revokeBySurface(workspaceId)
   }
   logDiagMain({
     category: 'lifecycle',
@@ -2137,7 +2555,28 @@ registerFooterActionsIpc()
 
 registerReviewsIpc()
 
-registerPanesIpc()
+registerPanesIpc({
+  deletePanel: (panelId) => {
+    for (const layout of listLayouts(panelId)) {
+      destroyPaneSurfacesForDelete(layout.id)
+    }
+    deletePanePanelRow(panelId)
+  },
+  deleteLayout: (layoutId) => {
+    destroyPaneSurfacesForDelete(layoutId)
+    deletePaneLayoutRow(layoutId)
+  },
+  deleteTerminal: (terminalId) => {
+    const terminal = getTerminal(terminalId)
+    if (terminal != null) destroyPaneSurface(terminal.layoutId, terminal.id)
+    deletePaneTerminalRow(terminalId)
+  }
+})
+
+const rendererCommandBroker = new RendererCommandBroker(
+  createRendererCommandTransport(getMainWindow)
+)
+registerWorkbenchControlIpc({ broker: rendererCommandBroker, getMainWindow })
 
 registerKeepAwakeIpc()
 
@@ -2210,13 +2649,13 @@ if (!app.requestSingleInstanceLock()) {
       try {
         getDb()
       } catch (err) {
-        console.error('[startup] database migration failed:', err)
+        console.error('[startup] database migration failed:', redactErrorForLog(err))
         writeCrashFile(err)
         dialog.showErrorBox(
           'Orpheus — Database Error',
           'The database could not be migrated to the latest version and the app cannot start safely.\n\n' +
             'Your data has not been modified. A backup may exist alongside the database file.\n\n' +
-            String(err instanceof Error ? err.message : err)
+            redactErrorMessage(err)
         )
         app.exit(1)
         return
@@ -2238,7 +2677,7 @@ if (!app.requestSingleInstanceLock()) {
           }
         })
       } catch (err) {
-        console.error('[startup] failed to build application menu:', err)
+        console.error('[startup] failed to build application menu:', redactErrorForLog(err))
       }
 
       // Wire the workspaceResources registry's main→renderer broadcast bridge
@@ -2248,15 +2687,217 @@ if (!app.requestSingleInstanceLock()) {
         broadcast: (channel, payload) => getMainWindow()?.webContents.send(channel, payload)
       })
 
-      // Boot Quick Actions registry — registers all action descriptors so they're
-      // available before any IPC can invoke them.
-      bootActions()
+      const workspaceOrchestration = createMainWorkspaceOrchestration({
+        runtimeLeases,
+        requestOpenWorkspace,
+        requestOrchestrationMount,
+        getSurfacePhase: getNativeSurfacePhase,
+        isWorkspaceSessionReady,
+        canInject: terminalActions.canInject,
+        sendInput: (workspaceId, text) =>
+          terminalActions.sendInput(loadTerminalAddon(), workspaceId, text),
+        submit: (workspaceId) => terminalActions.submit(loadTerminalAddon(), workspaceId),
+        destroyWorkspaceRuntime
+      })
+      workspaceOrchestrationService = workspaceOrchestration.service
+      const runtimeControlGrants = new RuntimeControlGrantPolicy(undefined, {
+        getCurrentBinding: (runtimeId) => runtimeLeases.getByRuntimeId(runtimeId),
+        getResourceScope: createRuntimeResourceScopeSource(getDb())
+      })
+      const workbenchControlAudit = createControlAuditStore(getDb())
+      const workbenchControl = new WorkbenchControlService({
+        renderer: {
+          execute: (requestId, command) => rendererCommandBroker.execute(requestId, command)
+        },
+        authorization: {
+          revalidate: ({ context, permission, layoutId, terminalId }) => {
+            const trusted = context.trustedRuntime
+            if (trusted == null) return 'forbidden'
+            const binding = runtimeLeases.getByRuntimeId(trusted.runtimeId)
+            if (
+              binding == null ||
+              binding.workspaceId !== trusted.workspaceId ||
+              binding.projectId !== trusted.projectId ||
+              binding.surfaceId !== trusted.surfaceId
+            ) {
+              return 'forbidden'
+            }
+            if (!runtimeControlGrants.permissionsFor(binding).includes(permission)) {
+              return 'forbidden'
+            }
+            if (layoutId == null) return 'allow'
+            const scope = runtimeControlGrants.scopeFor(binding)
+            if (!scope?.layoutIds.includes(layoutId)) return 'not_found'
+            if (
+              terminalId != null &&
+              !scope.surfaceIds.includes(`pane:${layoutId}:${terminalId}`)
+            ) {
+              return 'not_found'
+            }
+            return 'allow'
+          }
+        },
+        paths: {
+          isSafe: (workspaceId, relativePath, options) => {
+            const workspace = getWorkspace(workspaceId)
+            return workspace == null
+              ? false
+              : isCanonicalWorkspacePath(workspace.cwd, relativePath, options)
+          }
+        },
+        panes: createMainPaneControlPort({
+          getLayout,
+          listTerminals,
+          getWorkspace: (workspaceId) => getWorkspace(workspaceId) ?? null,
+          createDedicated: createDedicatedWorkspaceTerminal,
+          deleteDedicated: deleteDedicatedWorkspaceTerminal,
+          startConfigured: (layout, terminal) => {
+            const window = getMainWindow()
+            if (window == null || window.isDestroyed()) {
+              throw new Error('Pane terminal is unavailable.')
+            }
+            const slotId = paneSlotId(layout.id, terminal.id)
+            return startProvisionedPaneSurface({
+              getWindowBounds: () => window.getBounds(),
+              resolveDisplayScaleFactor: (bounds) => screen.getDisplayMatching(bounds).scaleFactor,
+              getSurfacePhase: () => loadTerminalAddon().getSurfacePhase(slotId),
+              mount: (scaleFactor) => {
+                mountPaneBackground(
+                  window.getNativeWindowHandle(),
+                  layout.id,
+                  terminal.id,
+                  { x: 0, y: 0, w: 800, h: 600 },
+                  scaleFactor,
+                  terminal.command
+                )
+              },
+              hide: () => loadTerminalAddon().hide(slotId)
+            })
+          },
+          stopSurface: (layoutId, terminalId) => {
+            return destroyPaneSurface(layoutId, terminalId)
+          },
+          focusSurface: (layoutId, terminalId) => {
+            loadTerminalAddon().focus(paneSlotId(layoutId, terminalId))
+          }
+        }),
+        audit: workbenchControlAudit,
+        onAuditFailure: (error, record) => {
+          console.error(
+            '[controlAudit] Phase 4 append failed:',
+            record.auditId,
+            redactErrorForLog(error)
+          )
+        }
+      })
+      const mainReads = createMainReadHandlers({
+        statusObservation: (workspaceId, observedAt) => {
+          const workspace = getWorkspace(workspaceId)
+          const live = getWorkspaceFileInfo(workspaceId)
+          return {
+            value:
+              workspace == null
+                ? null
+                : {
+                    persistedStatus: workspace.status,
+                    liveStatus: live.status,
+                    ...(live.waitingFor ? { waitingFor: live.waitingFor } : {})
+                  },
+            source: 'claude-session-file',
+            observedAt,
+            sourceUpdatedAt: live.statusUpdatedAt ?? null,
+            availability:
+              workspace == null || live.availability === 'unavailable'
+                ? 'unavailable'
+                : 'available',
+            stale: live.availability === 'unavailable' ? null : false,
+            ...(workspace == null
+              ? { reason: 'Workspace was not found.' }
+              : live.availability === 'unavailable'
+                ? { reason: 'Claude live session is unavailable.' }
+                : {})
+          }
+        }
+      })
+      const terminalObservation = createMainTerminalObservation({
+        runtimeLeases,
+        reads: mainReads,
+        listWorkspaces: (projectId) => listWorkspacesForProject(projectId, { scope: 'active' }),
+        getWorkspace: (workspaceId) => getWorkspace(workspaceId) ?? null,
+        listWorkbenchTerminalIds: (workspaceId) => [
+          ...(workbenchSurfacesByWorkspace.get(workspaceId) ?? [])
+        ],
+        hasWorkbenchTerminal: (workspaceId, terminalId) =>
+          workbenchSurfacesByWorkspace.get(workspaceId)?.has(terminalId) === true,
+        hasPaneSurface: (layoutId, paneId) =>
+          paneSurfacesByWorkspace.get(layoutId)?.has(paneId) === true,
+        getPaneTargetBySurfaceId: (surfaceId) => {
+          for (const [layoutId, paneIds] of paneSurfacesByWorkspace) {
+            for (const paneId of paneIds) {
+              if (paneSurfaceId(layoutId, paneId) !== surfaceId) continue
+              const layout = getLayout(layoutId)
+              const terminal = listTerminals(layoutId).find((candidate) => candidate.id === paneId)
+              if (layout == null || terminal == null) return null
+              return {
+                layoutId,
+                paneId,
+                cwd: layout.dir,
+                command: terminal.command,
+                updatedAt: Math.max(layout.updatedAt, terminal.updatedAt)
+              }
+            }
+          }
+          return null
+        },
+        getNativePhase: getNativeSurfacePhase
+      })
+      terminalObservationService = terminalObservation.service
+      terminalObservationCleanup = terminalObservation.dispose
+
+      // Boot the control registry, durable automation runtime, IPC surfaces,
+      // scheduler, and event bridge under one paired lifecycle owner.
+      const broadcastAutomationChanged = (event: AutomationChangedEvent): void => {
+        const win = getMainWindow()
+        if (win == null || win.isDestroyed() || win.webContents.isDestroyed()) return
+        try {
+          win.webContents.send(PUSH_CHANNELS.automationsChanged, event)
+        } catch {
+          // Best-effort invalidation: a window teardown race must not change
+          // the result of a mutation that has already committed.
+        }
+      }
+      controlPlaneLifecycle = startMainControlPlaneLifecycle({
+        db: getDb(),
+        controlPlane: {
+          authorization: createTrustedRuntimeReadPolicy({
+            getWorkspaceProjectId: (workspaceId) => getWorkspace(workspaceId)?.projectId ?? null
+          }),
+          reads: mainReads,
+          workspaceOrchestration: workspaceOrchestration.service,
+          workbenchControl,
+          terminalObservation: terminalObservation.service,
+          settingsResources: createMainSettingsResourceService()
+        },
+        getProject,
+        getWorkspace,
+        broadcastAutomationChanged,
+        subscribePersisting: onWorkspaceStatusPersisting,
+        subscribeCommitted: onWorkspaceStatusCommitted,
+        onAutomationEventError: (error) => {
+          console.error('[automations] workspace event failed:', redactErrorForLog(error))
+        },
+        onSchedulerStartError: () => {
+          console.error('[automations] startup reconciliation failed')
+        }
+      })
+      const controlToolExposure = controlPlaneLifecycle.toolExposure
+      bootActions(workspaceControlAdapter)
 
       // Seed default footer actions on first install (idempotent: no-op if rows exist).
       try {
         seedDefaultFooterActions()
       } catch (err) {
-        console.error('[footerActions] failed to seed defaults:', err)
+        console.error('[footerActions] failed to seed defaults:', redactErrorForLog(err))
       }
 
       // Refresh model context/pricing from models.dev — fire-and-forget, never
@@ -2272,7 +2913,7 @@ if (!app.requestSingleInstanceLock()) {
           console.log('[startup] cleared', cleared, 'stale workspace activity statuses')
         }
       } catch (err) {
-        console.error('[startup] failed to clear stale activity statuses:', err)
+        console.error('[startup] failed to clear stale activity statuses:', redactErrorForLog(err))
       }
 
       // Seed the in-memory workspaceTitles map from the DB so the sidebar /
@@ -2283,14 +2924,12 @@ if (!app.requestSingleInstanceLock()) {
           seedTitle(id, title)
         }
       } catch (err) {
-        console.error('[startup] failed to seed workspaceTitles from DB:', err)
+        console.error('[startup] failed to seed workspaceTitles from DB:', redactErrorForLog(err))
       }
 
       app.on('browser-window-created', (_, window) => {
         optimizer.watchWindowShortcuts(window)
       })
-
-      createWindow()
 
       // Kick the active terminal on system wake events so the CVDisplayLink
       // restarts after display sleep / screen lock / user-switch.
@@ -2318,7 +2957,7 @@ if (!app.requestSingleInstanceLock()) {
         applyLaunchAtLogin(state.launchAtLogin)
         applyGlobalHotkey(state.globalHotkey)
       } catch (err) {
-        console.error('[startup] failed to apply launch/hotkey settings:', err)
+        console.error('[startup] failed to apply launch/hotkey settings:', redactErrorForLog(err))
       }
 
       // Start the update auto-check loop (30s initial delay, then every 6h).
@@ -2340,9 +2979,10 @@ if (!app.requestSingleInstanceLock()) {
       // pushes fresh totals to the renderer silently on each tick.
       startClaudeActivityPoller()
 
-      // Defer notify server + hook reconcile until after the first frame — keeps
-      // createWindow() hot so the UI appears faster on launch.
-      setImmediate(() => {
+      // Defer background service composition by one event-loop turn. The
+      // command server is still created before createWindow below, so no
+      // renderer can race its first terminal mount ahead of the control socket.
+      async function startDeferredServices(): Promise<void> {
         // Wire up the activity batch channel regardless of hook integration state —
         // the batch listener is always needed for file-based status updates.
         onActivityBatch((updates) => {
@@ -2381,7 +3021,17 @@ if (!app.requestSingleInstanceLock()) {
         if (!commandServer) {
           try {
             const cmdDeps: CommandServerDeps = {
+              runtimeLeases,
+              listControl,
+              invokeControl,
+              getControlCatalogRevision: () => controlToolExposure.getCatalogRevision(),
+              waitForControlCatalogRevision: (afterRevision, timeoutMs, signal) =>
+                controlToolExposure.waitForCatalogRevision(afterRevision, timeoutMs, signal),
+              workspaceOrchestration: workspaceOrchestration.service,
+              workspaceWaitEngine: workspaceOrchestration.waits,
+              runtimeControlGrants,
               destroySurface: (workspaceId) => {
+                runtimeLeases.revokeBySurface(workspaceId)
                 if (terminalAddon) {
                   try {
                     terminalAddon.destroy(workspaceId)
@@ -2395,6 +3045,7 @@ if (!app.requestSingleInstanceLock()) {
                 // Same trigger (g) applies to Panes tab surfaces (see
                 // paneSurfacesByWorkspace's header comment).
                 destroyPaneSurfacesForWorkspace(workspaceId)
+                destroyAgentPaneSurfacesForOwner(workspaceId)
               },
               teardownWorkspaceResources,
               performClose: (workspaceId) => performClose(workspaceId),
@@ -2406,107 +3057,32 @@ if (!app.requestSingleInstanceLock()) {
                 focus: boolean = true,
                 submit: boolean = true
               ): Promise<string | null> => {
-                // Ask the renderer to open + mount the workspace. focus=true (default)
-                // navigates the UI there (the normal nav path); focus=false performs a
-                // background mount — the surface becomes injectable without stealing
-                // the user's view.
                 requestOpenWorkspace(workspaceId, focus)
-                // Poll with a bounded timeout (25 s) for THREE conditions:
-                //   1. getSurfacePhase() confirms an actual mounted surface (not 'none') —
-                //      QA fix #3: a brand-new workspace has no activityMap entry yet, and
-                //      getWorkspaceActivity() defaults an absent entry to 'idle', so
-                //      canInject() alone reports "injectable" on the very first poll tick,
-                //      before requestOpenWorkspace() has actually finished mounting the NSView.
-                //   2. terminalActions.canInject() — status is 'idle' or 'awaiting_input'.
-                //   3. isWorkspaceSessionReady() — CLAUDE ITSELF has booted and registered
-                //      its ~/.claude/sessions/<pid>.json (status busy/idle/waiting). For a
-                //      FRESHLY-CREATED workspace the terminal surface mounts within ~100ms,
-                //      but claude takes several seconds to launch + reach its interactive
-                //      prompt. Without this check, injection races ahead of claude's boot —
-                //      the text lands in an empty shell (or before claude's TUI is reading
-                //      input) and is silently lost: no transcript is ever written, even
-                //      though this function reports success. This was the root cause of
-                //      `ws new --task` reporting seedWarning:null while producing no
-                //      transcript and leaving status at awaiting_input forever.
-                //
-                // TIMEOUT: bumped from 10 s → 25 s. The old timeout only had to cover
-                // surface-mount time (~100ms); now the poll also waits out claude's full
-                // boot + session-registration sequence, which can take 3-8 s in practice
-                // (binary launch, MCP/tool init, session file write). 25 s leaves generous
-                // headroom over the observed worst case without hanging indefinitely.
-                const POLL_INTERVAL_MS = 300
                 const TIMEOUT_MS = 25_000
-                const deadline = Date.now() + TIMEOUT_MS
-                let injectable = false
-                while (Date.now() < deadline) {
-                  let mounted = false
-                  try {
-                    const phase = loadTerminalAddon().getSurfacePhase(workspaceId)
-                    mounted = phase === 'hidden' || phase === 'attached' || phase === 'visible'
-                  } catch {
-                    mounted = false
-                  }
-                  if (
-                    mounted &&
-                    terminalActions.canInject(workspaceId) &&
-                    isWorkspaceSessionReady(workspaceId)
-                  ) {
-                    injectable = true
-                    break
-                  }
-                  await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
-                }
-                if (!injectable) {
+                const ready = await workspaceOrchestration.runtime.waitUntilReady(
+                  workspaceId,
+                  Date.now() + TIMEOUT_MS
+                )
+                if (!ready) {
                   return (
                     `seed-timeout: claude did not become ready within ${Math.round(TIMEOUT_MS / 1000)}s; ` +
                     'task not injected. The workspace was created but claude may still be booting ' +
                     '— open it manually and paste the task text once it reaches the prompt.'
                   )
                 }
-                // Critical section: stage text and (optionally) submit it. Locked per
-                // workspace (RACE-10) so a concurrent injection into the same workspace
-                // can't interleave its own stage/submit sequence with this one — the
-                // 25s open+poll above intentionally runs OUTSIDE the lock so concurrent
-                // calls don't stack slow waits behind each other.
-                return withInjectLock(workspaceId, async (): Promise<string | null> => {
-                  const addon = loadTerminalAddon()
-                  const inputResult = terminalActions.sendInput(addon, workspaceId, taskText)
-                  if (!inputResult.ok) {
-                    return `seed-failed: could not send task text — ${inputResult.error ?? UNKNOWN_ERROR_MESSAGE}`
-                  }
-                  // submit=false: caller wants the task STAGED (typed into claude's input
-                  // box) but not sent — e.g. for review/editing before the user presses
-                  // Enter themselves. Skip the delay + submit entirely; the text sitting
-                  // in the input box is the desired end state, not an intermediate one.
-                  if (!submit) {
-                    return null
-                  }
-                  // sendInput (ghostty_surface_text) and submit (ghostty_surface_key,
-                  // a synthetic Return) are two different libghostty code paths. Claude's
-                  // full-screen TUI reads the PTY asynchronously, so it needs a moment to
-                  // ingest the just-committed text before a Return keypress is meaningful.
-                  // Firing Return microseconds later races ahead of that ingestion and the
-                  // line never actually submits — the text just sits in the input box.
-                  // SUBMIT_DELAY_MS bridges that gap: imperceptible to a human, ample for
-                  // the TUI's read loop (terminal paste-then-submit automation typically
-                  // needs 50-200ms; 150 is a safe middle).
-                  await delay(SUBMIT_DELAY_MS)
-                  const submitResult = terminalActions.submit(addon, workspaceId)
-                  if (!submitResult.ok) {
-                    // If the workspace flipped to 'busy' during the delay, that most
-                    // likely means claude already started processing the text we just
-                    // staged (canInject() — and therefore submit — goes false the moment
-                    // status leaves idle/awaiting_input). Treat this as a soft signal
-                    // rather than a hard failure: the submit may well have raced a
-                    // status flip caused by the text itself landing. Only a genuine,
-                    // non-busy failure is reported as an error.
-                    if (submitResult.code === 'busy') {
-                      return `seed-submit-busy: text was sent; workspace became busy before the explicit submit — it may have already been submitted`
-                    }
-                    return `seed-submit-failed: text was sent but submit failed — ${submitResult.error ?? UNKNOWN_ERROR_MESSAGE}`
-                  }
-                  return null
-                })
+                const result = await workspaceOrchestration.runtime.stageText(
+                  workspaceId,
+                  taskText,
+                  submit
+                )
+                if (result.ok) return null
+                if (result.stage === 'send') {
+                  return `seed-failed: could not send task text — ${result.error ?? UNKNOWN_ERROR_MESSAGE}`
+                }
+                if (result.code === 'busy') {
+                  return `seed-submit-busy: text was sent; workspace became busy before the explicit submit — it may have already been submitted`
+                }
+                return `seed-submit-failed: text was sent but submit failed — ${result.error ?? UNKNOWN_ERROR_MESSAGE}`
               },
               sendToWorkspace: async (
                 workspaceId: string,
@@ -2720,11 +3296,20 @@ if (!app.requestSingleInstanceLock()) {
                 return { ok: false, error: firstAttempt.error ?? 'send failed' }
               }
             }
-            commandServer = startCommandServer(cmdDeps)
+            const startedCommandServer = startCommandServer(cmdDeps)
+            try {
+              await startedCommandServer.ready
+              commandServer = startedCommandServer
+            } catch (err) {
+              startedCommandServer.close()
+              throw err
+            }
           } catch (err) {
-            console.error('[commandServer] failed to start:', err)
+            console.error('[commandServer] failed to start:', redactErrorForLog(err))
           }
         }
+
+        createWindow()
 
         setAutoCloseHandler((workspaceId) => {
           performClose(workspaceId)
@@ -2743,13 +3328,13 @@ if (!app.requestSingleInstanceLock()) {
         try {
           sessionStateService = startSessionStateService()
         } catch (err) {
-          console.error('[sessionState] failed to start:', err)
+          console.error('[sessionState] failed to start:', redactErrorForLog(err))
         }
 
         try {
           powerAwakeCleanup = startPowerAwake(getMainWindow)
         } catch (err) {
-          console.error('[powerAwake] failed to start:', err)
+          console.error('[powerAwake] failed to start:', redactErrorForLog(err))
         }
 
         // Fix 4 — background-mount every auto-start-flagged pane layout now that
@@ -2757,13 +3342,19 @@ if (!app.requestSingleInstanceLock()) {
         try {
           autoStartFlaggedLayouts()
         } catch (err) {
-          console.error('[panes] auto-start: unexpected failure:', err)
+          console.error('[panes] auto-start: unexpected failure:', redactErrorForLog(err))
         }
-      })
 
-      app.on('activate', function () {
-        if (BrowserWindow.getAllWindows().length === 0) createWindow()
-        else kickActiveTerminal()
+        app.on('activate', function () {
+          if (BrowserWindow.getAllWindows().length === 0) createWindow()
+          else kickActiveTerminal()
+        })
+      }
+
+      setImmediate(() => {
+        void startDeferredServices().catch((err: unknown) => {
+          console.error('[startup] deferred service composition failed:', redactErrorForLog(err))
+        })
       })
     })
     .catch((err: unknown) => {
@@ -2776,16 +3367,22 @@ if (!app.requestSingleInstanceLock()) {
       })
       dialog.showErrorBox(
         'Orpheus — Startup Error',
-        'Orpheus failed to start.\n\n' + String(err instanceof Error ? err.message : err)
+        'Orpheus failed to start.\n\n' + redactErrorMessage(err)
       )
       app.exit(1)
     })
 
   app.on('will-quit', () => {
+    controlPlaneLifecycle?.dispose()
+    controlPlaneLifecycle = null
     globalShortcut.unregisterAll()
+    runtimeLeases.revokeAll()
     notifyServer?.close()
     commandServer?.close()
     sessionStateService?.stop()
+    terminalObservationCleanup?.()
+    terminalObservationCleanup = null
+    terminalObservationService = null
     powerAwakeCleanup?.()
     stopStatusPoller()
     stopUsagePoller()

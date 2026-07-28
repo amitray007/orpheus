@@ -37,11 +37,15 @@ import type {
   PinnedItem,
   ProjectRecord,
   SessionRecord,
+  WorkspaceOpenRequest,
   WorkspaceRecord,
   GitStatus,
   GhPullRequest
 } from '@shared/types'
+import { rendererControlRequiresPresentation } from '@shared/workbenchControl'
 import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
+import { executeRendererControl } from '@/lib/rendererControl'
+import { mountWorkspaceInBackground } from './backgroundWorkspaceMount'
 
 const Sidebar = memo(SidebarBase)
 const MainContent = memo(MainContentBase)
@@ -122,6 +126,44 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const runWorktreeArchiveFlowRef = useRef<
     (workspace: WorkspaceRecord, projectId: string) => Promise<void>
   >(async () => {})
+
+  useEffect(() => {
+    const unsubscribe = window.api.control.onRendererCommand((request) => {
+      void (async () => {
+        try {
+          const command = request.command
+          if (rendererControlRequiresPresentation(command) && 'workspaceId' in command) {
+            const projectId = Object.entries(workspacesByProjectRef.current).find(([, rows]) =>
+              rows.some((workspace) => workspace.id === command.workspaceId)
+            )?.[0]
+            if (projectId == null) throw new Error('Workspace is unavailable in the renderer.')
+            handleSelectWorkspaceRef.current(command.workspaceId, projectId)
+          } else if (rendererControlRequiresPresentation(command)) {
+            setView({ kind: 'panes' })
+            setSidebarContext('panes')
+          }
+          const value = await executeRendererControl(command)
+          await window.api.control.acknowledgeRendererCommand({
+            requestId: request.requestId,
+            generation: request.generation,
+            status: 'completed',
+            observedAt: Date.now(),
+            value
+          })
+        } catch (error) {
+          await window.api.control.acknowledgeRendererCommand({
+            requestId: request.requestId,
+            generation: request.generation,
+            status: 'failed',
+            observedAt: Date.now(),
+            error: error instanceof Error ? error.message : String(error)
+          })
+        }
+      })()
+    })
+    void window.api.control.markRendererReady()
+    return unsubscribe
+  }, [])
   // De-races the archive navigation double-fire: finishWorktreeArchive (called
   // by the local runWorktreeArchiveFlow, awaited right after the archive IPC
   // resolves) and the workspaces:archived broadcast listener (below, fired for
@@ -636,37 +678,13 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // launched claude process inherits Electron's own cwd (effectively the
   // user's home directory) instead of the workspace's project directory —
   // that was a real bug here. WorkspaceView always passes workspace.cwd (see
-  // its own terminal.mount call sites); this path must do the same. Since
-  // onWorkspaceRequestOpen only carries {workspaceId, focus} (no projectId),
-  // and a workspace freshly created via `ws new --background` may not be in
-  // workspacesByProject yet, we resolve cwd via window.api.workspaces.open()
-  // below, which reads the DB row directly and is authoritative regardless of
-  // renderer state.
-  const backgroundMountWorkspace = useCallback((workspaceId: string): void => {
+  // its own terminal.mount call sites); this path must do the same.
+  // Renderer-originated background opens still acknowledge through
+  // workspaces.open before mounting, preserving the close/archive race guard.
+  // Orchestration-originated requests already hold the project mutation lease,
+  // so they carry main's authoritative cwd and skip that re-entrant mutation.
+  const backgroundMountWorkspace = useCallback((request: WorkspaceOpenRequest): void => {
     void (async (): Promise<void> => {
-      // Resolve the workspace's cwd BEFORE mounting. window.api.workspaces.open()
-      // reads straight from the DB (see openWorkspace() in src/main/workspaces.ts),
-      // so it's authoritative even for a workspace the renderer hasn't fetched
-      // into workspacesByProject yet (e.g. one just created by `ws new
-      // --background` from the CLI). This also doubles as the "genuinely open
-      // the workspace" call the code already needed to make (closedAt/
-      // lastOpenedAt), so we just do it first instead of after mount.
-      let cwd: string | undefined
-      try {
-        const opened = await window.api.workspaces.open(workspaceId)
-        cwd = opened.cwd
-        setWorkspacesByProject((prev) => {
-          const projectId = opened.projectId
-          const list = prev[projectId]
-          if (!list) return prev
-          return {
-            ...prev,
-            [projectId]: list.map((w) => (w.id === workspaceId ? opened : w))
-          }
-        })
-      } catch (err) {
-        console.error('[dashboard] background mount: failed to resolve workspace cwd:', err)
-      }
       try {
         const scaleFactor = window.devicePixelRatio ?? 1
         const rect = {
@@ -675,16 +693,28 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           w: Math.max(1, Math.round(window.innerWidth || 1)),
           h: Math.max(1, Math.round(window.innerHeight || 1))
         }
-        await window.api.terminal.mount(workspaceId, rect, scaleFactor, cwd)
-        // Mount can attach the surface as frontmost momentarily; hide it right
-        // away so it never becomes visible/steals draw time while the user is
-        // looking at a different workspace (or no workspace at all).
-        await window.api.terminal.hide(workspaceId).catch(() => {})
+        const opened = await mountWorkspaceInBackground(request, {
+          acknowledgeOpen: (workspaceId) => window.api.workspaces.open(workspaceId),
+          mount: (workspaceId, cwd) =>
+            window.api.terminal.mount(workspaceId, rect, scaleFactor, cwd),
+          hide: (workspaceId) => window.api.terminal.hide(workspaceId)
+        })
+        if (opened != null) {
+          setWorkspacesByProject((prev) => {
+            const projectId = opened.projectId
+            const list = prev[projectId]
+            if (!list) return prev
+            return {
+              ...prev,
+              [projectId]: list.map((w) => (w.id === request.workspaceId ? opened : w))
+            }
+          })
+        }
         // RACE-3: addon.mount unconditionally promotes this background-mounted
         // workspace to native visibility, transiently stealing it from whatever
         // the user is actually looking at. Re-promote the viewed workspace.
         const vid = selectedWorkspaceIdRef.current
-        if (vid && vid !== workspaceId) {
+        if (vid && vid !== request.workspaceId) {
           const remount = getActiveRemount()
           if (remount) remount()
         }
@@ -893,11 +923,12 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   //
   // Uses the same zero-dep ref pattern as onNavigateTo so it never re-subscribes.
   useEffect(() => {
-    return window.api.workspaces.onWorkspaceRequestOpen(({ workspaceId, focus }) => {
-      if (!focus) {
-        backgroundMountWorkspace(workspaceId)
+    return window.api.workspaces.onWorkspaceRequestOpen((request) => {
+      if (!request.focus) {
+        backgroundMountWorkspace(request)
         return
       }
+      const { workspaceId } = request
       const byProject = workspacesByProjectRef.current
       const wsToProject = new Map<string, string>()
       for (const [projectId, wsList] of Object.entries(byProject)) {
@@ -1783,6 +1814,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       >
         <PanelsSection
           collapsed={sidebarCollapsed}
+          animateRunningStatus={view.kind === 'panes'}
           onActivate={() => handleSelectSurface('panes')}
         />
         {sidebarNavigation}

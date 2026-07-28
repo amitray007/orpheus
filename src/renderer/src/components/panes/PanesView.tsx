@@ -63,6 +63,7 @@ import { useUiState } from '@/lib/uiStateStore'
 import { restartPane } from '@/lib/paneRunStateStore'
 import { useIsLayoutLive } from '@/lib/paneLiveLayoutsStore'
 import { bumpPanesRefresh } from '@/lib/panesRefreshStore'
+import { useControlledPaneFocus } from '@/lib/workbenchControlStore'
 import { Toggle } from '../dashboard/settings/primitives'
 import { usePanesData } from './usePanesData'
 import { SplitTree } from './SplitTree'
@@ -284,6 +285,10 @@ export function PanesView(): React.JSX.Element {
   }, [activeLayout?.id, activeLayout?.splitTree])
 
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null)
+  const controlledPaneFocus = useControlledPaneFocus(activeLayoutId)
+  useEffect(() => {
+    if (controlledPaneFocus != null) queueMicrotask(() => setFocusedPaneId(controlledPaneFocus))
+  }, [controlledPaneFocus])
   const [draggingPaneId, setDraggingPaneId] = useState<string | null>(null)
   const [transientMessage, setTransientMessage] = useState<string | null>(null)
 

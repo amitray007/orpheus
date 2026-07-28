@@ -3,29 +3,37 @@ import * as fs from 'node:fs'
 import * as nodePath from 'node:path'
 import * as crypto from 'node:crypto'
 import { app } from 'electron'
-import { getDb } from './db'
 import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
-import {
-  createWorkspace,
-  getWorkspace,
-  reopenWorkspace,
-  renameWorkspace,
-  listChildWorkspaces,
-  getWorkspaceLineage
-} from './workspaces'
-import { getClaudeGlobalSettings } from './claudeSettings'
+import { getWorkspace, listChildWorkspaces } from './workspaces'
 import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getProject } from './projects'
 import { withReconciledEffort } from './effortReconciliation'
 import { CLAUDE_EFFORT_VALUES } from '../shared/types'
 import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 import { onWorkspaceStatusChange } from './orpheusNotify'
-import { getWorkspaceFileInfo, getWorkspaceFileStatusSync, forceReconcile } from './sessionState'
+import { getWorkspaceFileInfo } from './sessionState'
 import {
-  listByWorkspace as listLocalReviewComments,
-  setResolved as setLocalReviewCommentResolved
-} from './reviewStore'
+  commandReviewContext,
+  invokeReviewList,
+  invokeReviewSetResolved,
+  resolveCommandReviewListInput,
+  resolveCommandReviewSetResolvedInput
+} from './reviewControlAdapter'
+import type { ClaudeRuntimeBinding, RuntimeLeaseRegistry } from './controlPlane/runtimeLeases'
+import { RuntimeControlGrantPolicy } from './controlPlane/runtimeGrants'
+import type {
+  ControlContext,
+  ControlDescription,
+  ControlInvoker,
+  ControlPermission,
+  TrustedRuntimeBinding
+} from './controlPlane/types'
+import type { WorkspaceOperationActor } from './workspaceOrchestration/types'
+import type { WorkspaceOrchestrationService } from './workspaceOrchestration/service'
+import { legacyWaitReason, type MainWorkspaceWaitEngine } from './workspaceOrchestration/waitEngine'
+import { parseCommandAction } from './commandAction'
+import { redactErrorForLog, redactErrorMessage } from './logRedaction'
 
 // ---------------------------------------------------------------------------
 // Deps injected from index.ts (these live as locals there, so we receive them
@@ -33,6 +41,18 @@ import {
 // ---------------------------------------------------------------------------
 
 export type CommandServerDeps = {
+  runtimeLeases: RuntimeLeaseRegistry
+  workspaceOrchestration: WorkspaceOrchestrationService
+  workspaceWaitEngine: MainWorkspaceWaitEngine
+  runtimeControlGrants: RuntimeControlGrantPolicy
+  listControl: (context: ControlContext) => ControlDescription[]
+  invokeControl: ControlInvoker
+  getControlCatalogRevision: () => number
+  waitForControlCatalogRevision: (
+    afterRevision: number,
+    timeoutMs: number,
+    signal: AbortSignal
+  ) => Promise<{ revision: number; changed: boolean }>
   /** Destroy the libghostty surface for a workspace (no-op if not mounted). */
   destroySurface: (workspaceId: string) => void
   /**
@@ -123,6 +143,32 @@ type CmdBody = {
   context?: { workspaceId?: string }
 }
 
+type ControlRequest =
+  | { protocolVersion: 1; op: 'catalog' }
+  | { protocolVersion: 1; op: 'catalog.wait'; afterRevision: number }
+  | { protocolVersion: 1; op: 'invoke'; id: string; input: unknown }
+
+const CONTROL_CATALOG_WAIT_MS = 25_000
+const EMPTY_RUNTIME_RESOURCE_SCOPE = Object.freeze({
+  selfOnly: true as const,
+  layoutIds: Object.freeze([]),
+  surfaceIds: Object.freeze([])
+})
+
+const COMMAND_SOCKET_PERMISSIONS = Object.freeze([
+  'identity.read',
+  'projects.read',
+  'workspaces.read',
+  'workspaces.create',
+  'workspaces.open',
+  'workspaces.send',
+  'workspaces.wait',
+  'workspaces.close',
+  'workspaces.rename',
+  'workspaces.archive',
+  'reviews.read'
+] satisfies ControlPermission[])
+
 // The value a dispatch handler resolves to — always fed straight into
 // JSON.stringify({ ok: true, data }) by the /cmd envelope, so it's
 // constrained to JSON-serializable shapes rather than bare `unknown`.
@@ -156,132 +202,6 @@ function isValidUntilMode(v: string): v is UntilMode {
 // Repeated wait-outcome literal — hoisted since it's returned from several
 // branches of the ws-wait status resolution below.
 const BLOCKED_INPUT = 'blocked-input'
-
-/**
- * Collect the full subtree rooted at `rootId` (BFS over listChildWorkspaces),
- * returning ids in BFS discovery order (root first). Used by
- * workspace.archive's recursive mode: callers walk the result in reverse so
- * children are archived before parents. A visited Set guards against
- * infinite loops from corrupted parent_workspace_id cycles.
- */
-function collectWorkspaceSubtreeIds(rootId: string): string[] {
-  const subtreeIds: string[] = []
-  const visited = new Set<string>()
-  const queue: string[] = [rootId]
-  while (queue.length > 0) {
-    const current = queue.shift()!
-    if (visited.has(current)) continue // cycle guard
-    visited.add(current)
-    subtreeIds.push(current)
-    const children = listChildWorkspaces(current)
-    for (const child of children) {
-      if (!visited.has(child.id)) {
-        queue.push(child.id)
-      }
-    }
-  }
-  return subtreeIds
-}
-
-/**
- * Resolve `workspace.create`'s parent workspace id (explicit arg > caller's
- * context workspace) and, when an explicit parentWorkspaceId was supplied,
- * run its two validations before returning it:
- *   - CROSS-PROJECT VALIDATION — explicit parentWorkspaceId must belong to
- *     the same project. A crafted parent from a different project could
- *     bypass depth/children caps (the lineage and children queries are
- *     project-unaware). context.workspaceId is trusted as the real caller;
- *     only an explicitly supplied parentWorkspaceId is validated.
- *   - GUARDRAIL CHECK (children cap / depth cap) — only runs when there is
- *     an explicit parent, mirroring the original inline `if (parentId != null)`.
- * Throws the same errors, in the same order, as the original inline code.
- */
-function resolveAndValidateParentWorkspaceId(
-  args: Record<string, unknown>,
-  context: { workspaceId?: string }
-): string | null {
-  // Determine parent workspace id: explicit arg > caller's context workspace
-  const parentId: string | null =
-    typeof args.parentWorkspaceId === 'string'
-      ? args.parentWorkspaceId
-      : (context?.workspaceId ?? null)
-
-  if (
-    typeof args.parentWorkspaceId === 'string' &&
-    args.parentWorkspaceId !== context?.workspaceId
-  ) {
-    const parentRow = getDb()
-      .prepare('SELECT id, project_id FROM workspaces WHERE id = ? AND archived_at IS NULL')
-      .get(args.parentWorkspaceId) as { id: string; project_id: string } | undefined
-    if (!parentRow) {
-      throw new Error(`parent workspace not found or archived: ${args.parentWorkspaceId}`)
-    }
-    if (parentRow.project_id !== args.projectId) {
-      throw new Error(
-        `parent workspace ${args.parentWorkspaceId} belongs to a different project — ` +
-          `cross-project parenting is not allowed`
-      )
-    }
-  }
-
-  if (parentId != null) {
-    const globalSettings = getClaudeGlobalSettings()
-    const maxChildren = globalSettings.maxWorkspaceChildren ?? 10
-    const maxDepth = globalSettings.maxWorkspaceDepth ?? 3
-
-    // Children check: how many non-archived children does the parent already have?
-    const existingChildren = listChildWorkspaces(parentId)
-    if (existingChildren.length >= maxChildren) {
-      throw new Error(
-        `Max children (${maxChildren}) reached for this workspace. Don't spawn more workspaces — ` +
-          `use subagents (Agent tool) or teammates within an existing workspace instead, ` +
-          `or archive finished workers to free slots.`
-      )
-    }
-
-    // Depth check: how deep in the lineage would the new workspace be?
-    // getWorkspaceLineage returns root→parent chain (inclusive of parent).
-    // The new workspace would be at depth lineage.length + 1.
-    const lineage = getWorkspaceLineage(parentId)
-    const newDepth = lineage.length + 1
-    if (newDepth > maxDepth) {
-      throw new Error(
-        `Max workspace depth (${maxDepth}) would be exceeded. Don't nest workspaces further — ` +
-          `use subagents (Agent tool) or teammates within an existing workspace instead.`
-      )
-    }
-  }
-
-  return parentId
-}
-
-/**
- * `workspace.create`'s fork support: when --fork is requested, look up the
- * parent's claudeSessionId to seed forkedFromSessionId. Returns null when
- * --fork was not requested (args.fork !== true). Throws the same errors, in
- * the same order, as the original inline code.
- */
-function resolveForkedFromSessionId(
-  args: Record<string, unknown>,
-  parentId: string | null
-): string | null {
-  if (args.fork !== true) return null
-  if (parentId == null) {
-    throw new Error(
-      '--fork requires a parent workspace. Run from inside a workspace (ORPHEUS_WORKSPACE_ID) or pass --parent.'
-    )
-  }
-  const parentWs = getWorkspace(parentId)
-  if (parentWs == null) {
-    throw new Error(`parent workspace not found: ${parentId}`)
-  }
-  if (parentWs.claudeSessionId == null) {
-    throw new Error(
-      `parent workspace ${parentId} has no claude session yet — cannot fork before a session is established`
-    )
-  }
-  return parentWs.claudeSessionId
-}
 
 /**
  * Build the workspace-level settings override (model / permissionMode /
@@ -331,12 +251,136 @@ function buildWorkspaceSettingsOverride(args: Record<string, unknown>): {
   return settingsOverride
 }
 
+function commandWorkspaceActor(
+  args: Record<string, unknown>,
+  context: { workspaceId?: string }
+): WorkspaceOperationActor {
+  const explicitProjectId = typeof args.projectId === 'string' ? args.projectId : null
+  const targetWorkspaceId =
+    typeof args.id === 'string'
+      ? args.id
+      : typeof args.workspaceId === 'string'
+        ? args.workspaceId
+        : context.workspaceId
+  const targetProjectId =
+    explicitProjectId ??
+    (targetWorkspaceId == null ? null : (getWorkspace(targetWorkspaceId)?.projectId ?? null))
+  return {
+    requestId: crypto.randomUUID(),
+    consumer: 'command-socket',
+    principal: { kind: 'cli', runtimeId: null },
+    boundProjectId: targetProjectId,
+    boundWorkspaceId: context.workspaceId ?? null,
+    permissions: COMMAND_SOCKET_PERMISSIONS
+  }
+}
+
+function orchestrationMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+async function activateLegacyCreatedWorkspace(
+  deps: CommandServerDeps,
+  actor: WorkspaceOperationActor,
+  workspaceId: string,
+  taskText: string | null,
+  submit: boolean,
+  focus: boolean
+): Promise<string | null> {
+  const presentation = focus ? 'focus' : 'background'
+  try {
+    if (taskText == null) {
+      // A taskless legacy create still activates the workspace, but it has no
+      // requested terminal-input effect whose readiness must be proven before
+      // returning. Preserve the historical fire-and-forget renderer request so
+      // `ws new --empty` and fork-only creation return immediately instead of
+      // waiting for the bounded task-readiness deadline and reporting a
+      // misleading seed warning.
+      deps.requestOpenWorkspace(workspaceId, focus)
+    } else if (submit) {
+      await deps.workspaceOrchestration.startTask(
+        { workspaceId, text: taskText, presentation },
+        actor
+      )
+    } else {
+      await deps.workspaceOrchestration.send(
+        { workspaceId, text: taskText, submit: false, presentation },
+        actor
+      )
+    }
+    return null
+  } catch (error) {
+    return orchestrationMessage(error)
+  }
+}
+
+async function handleLegacyWorkspaceCreate(
+  args: Record<string, unknown>,
+  context: { workspaceId?: string },
+  deps: CommandServerDeps
+): Promise<JsonValue> {
+  if (typeof args.projectId !== 'string') throw new Error('args.projectId is required')
+  if (typeof args.cwd !== 'string') throw new Error('args.cwd is required')
+  if (getProject(args.projectId) == null) throw new Error(`project not found: ${args.projectId}`)
+
+  const actor = commandWorkspaceActor(args, context)
+  const created = await deps.workspaceOrchestration.create(
+    {
+      mode: 'local',
+      ...(typeof args.name === 'string' && args.name !== '' ? { name: args.name } : {}),
+      ...(typeof args.parentWorkspaceId === 'string'
+        ? { parentWorkspaceId: args.parentWorkspaceId }
+        : {}),
+      ...(args.fork === true ? { fork: true } : {})
+    },
+    actor
+  )
+  const workspaceId = created.value.workspace.workspaceId
+  let workspace = getWorkspace(workspaceId)
+  if (workspace == null) throw new Error(`workspace not found: ${workspaceId}`)
+
+  const settingsOverride = withReconciledEffort(
+    buildWorkspaceSettingsOverride(args),
+    workspace.projectId,
+    workspace.id
+  )
+  if (Object.keys(settingsOverride).length > 0) {
+    updateClaudeWorkspaceSettings(workspace.id, settingsOverride)
+  }
+
+  const taskText = typeof args.task === 'string' && args.task !== '' ? args.task : null
+  const seedWarning = await activateLegacyCreatedWorkspace(
+    deps,
+    actor,
+    workspaceId,
+    taskText,
+    args.submit !== false,
+    args.focus !== false
+  )
+
+  workspace = getWorkspace(workspaceId) ?? workspace
+  return { workspace, seedWarning }
+}
+
+function collectWorkspaceSubtreeIds(rootId: string): string[] {
+  const order: string[] = []
+  const visited = new Set<string>()
+  const visit = (workspaceId: string): void => {
+    if (visited.has(workspaceId)) return
+    visited.add(workspaceId)
+    for (const child of listChildWorkspaces(workspaceId)) visit(child.id)
+    order.push(workspaceId)
+  }
+  visit(rootId)
+  return order
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch table — one entry per supported CLI action.
 // ---------------------------------------------------------------------------
 
 function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> {
-  return {
+  const dispatch: Record<string, DispatchFn> = {
     // Create a new workspace inside a project.
     // Args:
     //   projectId (required) — the project to create the workspace under
@@ -351,78 +395,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     //   submit? (boolean)    — whether a seeded task is submitted (typed + Enter) after
     //                          staging, vs left staged/unsent for review. Default true
     //                          (omitted → submit). Only meaningful together with task.
-    'workspace.create': async (args, context, innerDeps) => {
-      if (typeof args.projectId !== 'string') throw new Error('args.projectId is required')
-      if (typeof args.cwd !== 'string') throw new Error('args.cwd is required')
-      const projectExists = getDb()
-        .prepare('SELECT id FROM projects WHERE id = ?')
-        .get(args.projectId)
-      if (!projectExists) throw new Error(`project not found: ${args.projectId}`)
-
-      const parentId = resolveAndValidateParentWorkspaceId(args, context)
-      const forkedFromSessionId = resolveForkedFromSessionId(args, parentId)
-
-      const name = typeof args.name === 'string' && args.name !== '' ? args.name : 'New workspace'
-      const ws = createWorkspace({
-        projectId: args.projectId,
-        name,
-        cwd: args.cwd,
-        forkedFromSessionId,
-        parentWorkspaceId: parentId
-      })
-
-      // Apply workspace-level settings overrides (model / permissionMode / effort)
-      // These are stored in claude_workspace_settings and picked up by composeClaudeLaunch.
-      // withReconciledEffort (model-routing unit 11, work item 4 — the CLI/
-      // command-server path was the one persistence path that bypassed this
-      // reconciliation entirely, since it writes via updateClaudeWorkspaceSettings
-      // directly rather than through the claudeWorkspaceSettings:update IPC
-      // handler) reconciles the newly-created workspace's effort against
-      // whichever model was chosen, UNLESS the caller also passed --effort
-      // explicitly (never overriding explicit CLI intent).
-      const settingsOverride = withReconciledEffort(
-        buildWorkspaceSettingsOverride(args),
-        ws.projectId,
-        ws.id
-      )
-      if (Object.keys(settingsOverride).length > 0) {
-        updateClaudeWorkspaceSettings(ws.id, settingsOverride)
-      }
-
-      // ACTIVATION (user directive): a newly created workspace must never be left
-      // created-but-closed. Previously requestOpenWorkspace only fired via
-      // openAndSeed, and only when --task was given — a task-less `ws new` just
-      // inserted the DB row and returned, leaving the workspace looking CLOSED/
-      // inactive in the UI (closedAt is null by default, but the renderer never
-      // mounts+selects it, so nothing about the workspace is "live" until the
-      // user manually clicks it). Fix: ALWAYS activate.
-      //   - task present    → openAndSeed (opens via requestOpenWorkspace internally,
-      //                       then injects the task once the surface is injectable).
-      //   - task absent     → requestOpenWorkspace directly (opens/mounts, no injection).
-      // Either way the renderer receives the open signal and mounts the workspace;
-      // closedAt is never set on a freshly created workspace (createWorkspace doesn't
-      // touch it), so this only affects whether the surface is actually live.
-      // focus: whether to navigate the UI to the newly created workspace
-      // (true) or background-mount it (false, mount+inject without stealing
-      // the user's view). Defaults to true — CLI callers resolve their own
-      // default (ws-new.ts defaults --background) and always pass an explicit
-      // boolean, but this default keeps any other caller's pre-existing
-      // "always navigate" behavior.
-      const focus = args.focus !== false
-      // submit: whether a seeded task should be typed + Enter (true, default) or
-      // merely staged in claude's input box unsent (false, --no-submit). Only
-      // meaningful when a task is present; irrelevant for a task-less create.
-      const submit = args.submit !== false
-      let seedWarning: string | null = null
-      const taskText = typeof args.task === 'string' && args.task !== '' ? args.task : null
-      if (taskText != null) {
-        seedWarning = await innerDeps.openAndSeed(ws.id, taskText, focus, submit)
-      } else {
-        innerDeps.requestOpenWorkspace(ws.id, focus)
-      }
-
-      return { workspace: ws, seedWarning }
-    },
+    'workspace.create': handleLegacyWorkspaceCreate,
 
     // Archive (permanently delete) a workspace — mirrors the workspaces:archive IPC
     // handler in index.ts via the shared performArchive dep.
@@ -438,46 +411,24 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // { ok: false, error: '...' } and which the CLI's not-found heuristic maps
     // to exit 3. The same check applies to the recursive root — if the root
     // itself doesn't exist, refuse before doing any BFS/teardown work.
-    'workspace.archive': async (args, context) => {
+    'workspace.archive': async (args, context, innerDeps) => {
       if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
+      if (getWorkspace(args.id) == null) throw new Error(`workspace not found: ${args.id}`)
       const recursive = args.recursive === true
-
-      // Root-must-exist check (single AND recursive) — see comment above.
-      const root = getWorkspace(args.id)
-      if (root == null) {
-        throw new Error(`workspace not found: ${args.id}`)
+      const targets = recursive ? collectWorkspaceSubtreeIds(args.id) : [args.id]
+      if (context.workspaceId != null && targets.includes(context.workspaceId)) {
+        throw new Error('cannot archive the workspace running this command')
       }
-
-      if (recursive) {
-        // Collect the full subtree rooted at args.id (BFS), then archive leaves-up.
-        const subtreeIds = collectWorkspaceSubtreeIds(args.id)
-
-        // Self-action guard: refuse if the caller's own workspace is within the subtree.
-        if (context?.workspaceId != null && subtreeIds.includes(context.workspaceId)) {
-          throw new Error(
-            `cannot archive your own workspace (id=${context.workspaceId}): it is within the requested subtree`
-          )
-        }
-
-        // Archive leaves-up: reverse the BFS order so children come before parents.
-        // Each subtree member is guaranteed to exist (it was discovered via
-        // listChildWorkspaces from a live parent), so no per-id existence check
-        // is needed here — only the root needed the explicit check above.
-        for (let i = subtreeIds.length - 1; i >= 0; i--) {
-          await deps.performArchive(subtreeIds[i])
-        }
-
-        return { archived: true, count: subtreeIds.length }
+      const result = await innerDeps.workspaceOrchestration.archive(
+        { workspaceId: args.id, recursive },
+        commandWorkspaceActor(args, context)
+      )
+      if (result.status === 'partial') {
+        throw new Error('workspace archive completed partially')
       }
-
-      // Non-recursive (single) archive.
-      // Self-action guard: refuse if caller is archiving their own workspace.
-      if (context?.workspaceId != null && args.id === context.workspaceId) {
-        throw new Error(`cannot archive your own workspace (id=${args.id})`)
-      }
-
-      await deps.performArchive(args.id)
-      return { archived: true }
+      return recursive
+        ? { archived: true, count: result.value.workspaces.length }
+        : { archived: true }
     },
 
     // Close a workspace (sets closed_at). The CLI caller is headless and
@@ -490,16 +441,17 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // dispatch reported { workspace: null } (success-shaped) even when args.id
     // never existed. Fix: getWorkspace(id) FIRST; existence-before-self-guard
     // so a genuine not-found isn't masked as a self-action refusal.
-    'workspace.close': (args, context) => {
+    'workspace.close': async (args, context, innerDeps) => {
       if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
-      if (getWorkspace(args.id) == null) {
-        throw new Error(`workspace not found: ${args.id}`)
+      if (getWorkspace(args.id) == null) throw new Error(`workspace not found: ${args.id}`)
+      if (context.workspaceId === args.id) {
+        throw new Error('cannot close the workspace running this command')
       }
-      if (context?.workspaceId != null && args.id === context.workspaceId) {
-        throw new Error(`cannot close your own workspace (id=${args.id})`)
-      }
-      const workspace = deps.performClose(args.id)
-      return { workspace: workspace ?? null }
+      await innerDeps.workspaceOrchestration.close(
+        { workspaceId: args.id },
+        commandWorkspaceActor(args, context)
+      )
+      return { workspace: getWorkspace(args.id) }
     },
 
     // Reopen a previously-closed workspace (clears closed_at).
@@ -509,13 +461,13 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // of throwing, so previously this dispatch reported { workspace: null }
     // (success-shaped) even when args.id never existed. Fix: getWorkspace(id)
     // FIRST.
-    'workspace.reopen': (args) => {
+    'workspace.reopen': async (args, context, innerDeps) => {
       if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
-      if (getWorkspace(args.id) == null) {
-        throw new Error(`workspace not found: ${args.id}`)
-      }
-      const workspace = reopenWorkspace(args.id)
-      return { workspace: workspace ?? null }
+      await innerDeps.workspaceOrchestration.reopen(
+        { workspaceId: args.id },
+        commandWorkspaceActor(args, context)
+      )
+      return { workspace: getWorkspace(args.id) }
     },
 
     // Rename a workspace.
@@ -527,10 +479,16 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // also sanitizes/caps the name (see sanitizeWorkspaceName in workspaces.ts:
     // strips control chars, collapses whitespace, trims, caps at 200 chars
     // with an ellipsis, and rejects an empty-after-trim name).
-    'workspace.rename': (args) => {
+    'workspace.rename': async (args, context, innerDeps) => {
       if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
       if (typeof args.name !== 'string') throw new Error('args.name is required')
-      return renameWorkspace(args.id, args.name)
+      await innerDeps.workspaceOrchestration.rename(
+        { workspaceId: args.id, name: args.name },
+        commandWorkspaceActor(args, context)
+      )
+      const workspace = getWorkspace(args.id)
+      if (workspace == null) throw new Error(`workspace not found: ${args.id}`)
+      return workspace
     },
 
     // Ask the renderer to open (and mount) a workspace. Used by U8 (ws new
@@ -540,7 +498,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // "open this" intent); false performs a background mount (mounts the
     // surface so it becomes injectable without changing what the user is
     // looking at).
-    'workspace.open': (args) => {
+    'workspace.open': async (args, context, innerDeps) => {
       if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
       // DATA-INTEGRITY FIX (QA — mirrors workspace.archive/close/reopen): previously
       // this dispatch never checked existence, so `ws open <nonexistent-id>` reported
@@ -548,11 +506,19 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       // Fix: getWorkspace(id) FIRST; a null result throws 'workspace not found: <id>',
       // which the CLI's not-found heuristic maps to exit 3 — consistent with archive/
       // close/reopen/rename.
-      if (getWorkspace(args.id) == null) {
+      const workspace = getWorkspace(args.id)
+      if (workspace == null) {
         throw new Error(`workspace not found: ${args.id}`)
       }
       const focus = args.focus !== false
-      deps.requestOpenWorkspace(args.id, focus)
+      const actor = commandWorkspaceActor(args, context)
+      if (workspace.closedAt != null) {
+        await innerDeps.workspaceOrchestration.reopen({ workspaceId: args.id }, actor)
+      }
+      await innerDeps.workspaceOrchestration.open(
+        { workspaceId: args.id, presentation: focus ? 'focus' : 'background' },
+        actor
+      )
       return { requested: true }
     },
 
@@ -580,7 +546,24 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       // to true; ws-send.ts defaults --background and always passes an
       // explicit boolean.
       const focus = args.focus !== false
-      const result = await innerDeps.sendToWorkspace(args.id, { text, submit, key }, focus)
+      const result =
+        key != null || text == null
+          ? await innerDeps.sendToWorkspace(args.id, { text, submit, key }, focus)
+          : await innerDeps.workspaceOrchestration
+              .send(
+                {
+                  workspaceId: args.id,
+                  text,
+                  submit,
+                  presentation: focus ? 'focus' : 'background'
+                },
+                commandWorkspaceActor(args, _context)
+              )
+              .then(() => ({ ok: true as const }))
+              .catch((error: unknown) => ({
+                ok: false as const,
+                error: orchestrationMessage(error)
+              }))
       if (!result.ok) {
         throw new Error(result.error ?? 'send failed')
       }
@@ -619,11 +602,12 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     //   workspaceId — falls back to context.workspaceId (the same
     //                 caller-identity convention whoami.resolve above uses),
     //                 so a workspace-scoped agent doesn't need to pass it.
-    'reviews.list': (args, context) => {
-      const workspaceId =
-        context?.workspaceId ?? (typeof args?.workspaceId === 'string' ? args.workspaceId : null)
-      if (!workspaceId) throw new Error('workspaceId is required (no context workspace either)')
-      return listLocalReviewComments(workspaceId)
+    'reviews.list': async (args, context) => {
+      return invokeReviewList(
+        deps.invokeControl,
+        resolveCommandReviewListInput(args, context),
+        commandReviewContext(context?.workspaceId ?? null)
+      )
     },
 
     // Resolve-back — the write-side counterpart to reviews.list, mirrored
@@ -640,12 +624,15 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // Comment ids are globally unique (randomUUID), so — unlike reviews.list —
     // there is no workspaceId to resolve/scope by here; mirrors the
     // reviews:setResolved IPC handler, which also takes only { id, resolved }.
-    'reviews.setResolved': (args) => {
-      if (typeof args.id !== 'string' || args.id === '') throw new Error(ARGS_ID_REQUIRED_ERROR)
-      if (typeof args.resolved !== 'boolean') throw new Error('args.resolved is required (boolean)')
-      return setLocalReviewCommentResolved(args.id, args.resolved)
+    'reviews.setResolved': async (args, context) => {
+      return invokeReviewSetResolved(
+        deps.invokeControl,
+        resolveCommandReviewSetResolvedInput(args, ARGS_ID_REQUIRED_ERROR),
+        commandReviewContext(context?.workspaceId ?? null)
+      )
     }
   }
+  return dispatch
 }
 
 // ---------------------------------------------------------------------------
@@ -733,6 +720,137 @@ function readBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<
   })
 }
 
+function writeJsonResponse(res: http.ServerResponse, status: number, payload: unknown): void {
+  if (res.writableEnded) return
+  try {
+    res.writeHead(status, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(payload))
+  } catch {
+    /* client disconnected */
+  }
+}
+
+function writeControlError(
+  res: http.ServerResponse,
+  status: number,
+  code: string,
+  message: string
+): void {
+  writeJsonResponse(res, status, { ok: false, error: { code, message } })
+}
+
+function resolveRuntimeLease(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  runtimeLeases: RuntimeLeaseRegistry
+): ClaudeRuntimeBinding | null {
+  const token = req.headers['x-orpheus-runtime-lease']
+  if (typeof token !== 'string') {
+    writeControlError(res, 401, 'unauthorized', 'A valid runtime lease is required.')
+    return null
+  }
+  const binding = runtimeLeases.resolve(token)
+  if (binding == null) {
+    writeControlError(res, 401, 'unauthorized', 'A valid runtime lease is required.')
+    return null
+  }
+  return binding
+}
+
+function trustedRuntimeBinding(
+  binding: ClaudeRuntimeBinding,
+  grants: RuntimeControlGrantPolicy,
+  includeResourceScope: boolean
+): TrustedRuntimeBinding {
+  return Object.freeze({
+    runtimeId: binding.runtimeId,
+    runtimeKind: binding.runtimeKind,
+    surfaceId: binding.surfaceId,
+    workspaceId: binding.workspaceId,
+    projectId: binding.projectId,
+    claudeConversationId: binding.claudeConversationId,
+    issuedAt: binding.issuedAt,
+    permissions: grants.permissionsFor(binding),
+    resourceScope: includeResourceScope ? grants.scopeFor(binding) : EMPTY_RUNTIME_RESOURCE_SCOPE
+  })
+}
+
+function runtimeControlContext(
+  binding: ClaudeRuntimeBinding,
+  grants: RuntimeControlGrantPolicy,
+  includeResourceScope = true
+): ControlContext {
+  const trustedRuntime = trustedRuntimeBinding(binding, grants, includeResourceScope)
+  return {
+    principal: { type: 'workspace-agent', id: binding.runtimeId },
+    consumer: 'mcp',
+    workspaceId: binding.workspaceId,
+    projectId: binding.projectId,
+    requestId: crypto.randomUUID(),
+    trustedRuntime
+  }
+}
+
+function parseControlRequest(value: unknown): ControlRequest | null {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  if (record['protocolVersion'] !== 1) return null
+  if (record['op'] === 'catalog') {
+    return Object.keys(record).every((key) => key === 'protocolVersion' || key === 'op')
+      ? { protocolVersion: 1, op: 'catalog' }
+      : null
+  }
+  if (
+    record['op'] === 'catalog.wait' &&
+    Number.isSafeInteger(record['afterRevision']) &&
+    (record['afterRevision'] as number) >= 1 &&
+    Object.keys(record).every(
+      (key) => key === 'protocolVersion' || key === 'op' || key === 'afterRevision'
+    )
+  ) {
+    return {
+      protocolVersion: 1,
+      op: 'catalog.wait',
+      afterRevision: record['afterRevision'] as number
+    }
+  }
+  if (
+    record['op'] === 'invoke' &&
+    typeof record['id'] === 'string' &&
+    record['id'].length > 0 &&
+    Object.hasOwn(record, 'input') &&
+    Object.keys(record).every(
+      (key) => key === 'protocolVersion' || key === 'op' || key === 'id' || key === 'input'
+    )
+  ) {
+    return {
+      protocolVersion: 1,
+      op: 'invoke',
+      id: record['id'],
+      input: record['input']
+    }
+  }
+  return null
+}
+
+function publishedControlDescription(description: ControlDescription): {
+  id: string
+  version: 1
+  kind: 'query' | 'mutation'
+  description: string
+  inputSchema: Readonly<Record<string, unknown>>
+  outputSchema: Readonly<Record<string, unknown>>
+} {
+  return {
+    id: description.id,
+    version: description.version,
+    kind: description.kind,
+    description: description.description,
+    inputSchema: description.inputSchema,
+    outputSchema: description.outputSchema
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Subscription cap — prevents unbounded open /subscribe connections.
 // ---------------------------------------------------------------------------
@@ -813,22 +931,6 @@ function parseSubscribeRequestBody(raw: Buffer): SubscribeRequestParseResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Write a JSON response for /cmd, guarding against a client that already
- * disconnected (writableEnded, or writeHead/end throwing mid-flight) exactly
- * as every call site's original inline `if (!res.writableEnded) { try {...}
- * catch { /* client disconnected *\/ } }` did.
- */
-function writeCmdJsonResponse(res: http.ServerResponse, status: number, payload: unknown): void {
-  if (res.writableEnded) return
-  try {
-    res.writeHead(status, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(payload))
-  } catch {
-    /* client disconnected */
-  }
-}
-
-/**
  * Resolve the dispatch handler for `action`, mirroring the original inline
  * lookup exactly: only an own-property hit that is actually a function
  * counts as a handler (guards against action strings colliding with
@@ -861,11 +963,11 @@ async function dispatchCmdAndRespond(
 ): Promise<void> {
   try {
     const data = await handler(args, context, deps)
-    writeCmdJsonResponse(res, 200, { ok: true, data })
+    writeJsonResponse(res, 200, { ok: true, data })
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.error('[commandServer] handler error:', err)
-    writeCmdJsonResponse(res, 200, { ok: false, error: message })
+    const message = redactErrorMessage(err)
+    console.error('[commandServer] handler error:', redactErrorForLog(err))
+    writeJsonResponse(res, 200, { ok: false, error: message })
   }
 }
 
@@ -883,6 +985,7 @@ async function dispatchCmdAndRespond(
 export function startCommandServer(deps: CommandServerDeps): {
   sockPath: string
   token: string
+  ready: Promise<void>
   close: () => void
 } {
   const userData = app.getPath('userData')
@@ -914,14 +1017,124 @@ export function startCommandServer(deps: CommandServerDeps): {
   }
 
   const dispatch = makeDispatchTable(deps)
+  const catalogWaitControllers = new Set<AbortController>()
 
   let listening = false
+  let readySettled = false
+  let resolveReady!: () => void
+  let rejectReady!: (error: Error) => void
+  const ready = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve
+    rejectReady = reject
+  })
+
+  // --------------------------------------------------------------------------
+  // POST /control — runtime-lease-scoped Phase 2 MCP control protocol
+  // --------------------------------------------------------------------------
+  function handleControl(req: http.IncomingMessage, res: http.ServerResponse): void {
+    // Runtime authentication is intentionally separate from the legacy global
+    // command token. A missing, invalid, or revoked runtime lease never falls
+    // back to x-orpheus-token.
+    const binding = resolveRuntimeLease(req, res, deps.runtimeLeases)
+    if (binding == null) return
+
+    void (async () => {
+      try {
+        const raw = await readBody(req, res)
+        if (raw == null) return
+
+        let parsedJson: unknown
+        try {
+          parsedJson = JSON.parse(raw.toString('utf-8'))
+        } catch {
+          writeControlError(res, 400, 'invalid', 'Invalid JSON body.')
+          return
+        }
+
+        const request = parseControlRequest(parsedJson)
+        if (request == null) {
+          writeControlError(res, 400, 'invalid', 'Invalid or unsupported control request.')
+          return
+        }
+
+        const context = runtimeControlContext(
+          binding,
+          deps.runtimeControlGrants,
+          request.op === 'invoke' &&
+            (request.id.startsWith('workbench.') ||
+              request.id.startsWith('panes.') ||
+              request.id.startsWith('terminals.'))
+        )
+        if (request.op === 'catalog') {
+          const capabilities = deps.listControl(context).map(publishedControlDescription)
+          writeJsonResponse(res, 200, {
+            ok: true,
+            data: {
+              protocolVersion: 1,
+              revision: deps.getControlCatalogRevision(),
+              capabilities
+            }
+          })
+          return
+        }
+        if (request.op === 'catalog.wait') {
+          if (request.afterRevision > deps.getControlCatalogRevision()) {
+            writeControlError(res, 400, 'invalid', 'Control catalog revision is invalid.')
+            return
+          }
+          const controller = new AbortController()
+          catalogWaitControllers.add(controller)
+          const abortWait = (): void => controller.abort()
+          res.once('close', abortWait)
+          try {
+            const result = await deps.waitForControlCatalogRevision(
+              request.afterRevision,
+              CONTROL_CATALOG_WAIT_MS,
+              controller.signal
+            )
+            if (!controller.signal.aborted && !res.destroyed) {
+              writeJsonResponse(res, 200, {
+                ok: true,
+                data: { protocolVersion: 1, ...result }
+              })
+            }
+          } catch (error) {
+            if (!controller.signal.aborted) throw error
+          } finally {
+            catalogWaitControllers.delete(controller)
+            res.removeListener('close', abortWait)
+          }
+          return
+        }
+
+        const result = await deps.invokeControl({
+          id: request.id,
+          input: request.input,
+          context
+        })
+        if (result.ok) {
+          writeJsonResponse(res, 200, { ok: true, data: result.value })
+        } else {
+          writeControlError(res, 200, result.code, result.error)
+        }
+      } catch {
+        writeControlError(res, 500, 'failed', 'Control request failed.')
+      }
+    })()
+
+    req.on('error', () => {
+      // Connection reset or early destroy — nothing to respond to.
+    })
+  }
 
   // --------------------------------------------------------------------------
   // POST /subscribe — long-lived streaming subscription endpoint (U11)
   // --------------------------------------------------------------------------
   function handleSubscribe(req: http.IncomingMessage, res: http.ServerResponse): void {
     if (!authenticate(req, res, token)) return
+    // /subscribe owns its validated deadline (up to one hour). Disable the
+    // server's 30-second idle socket timeout for this long-lived NDJSON route.
+    req.socket.setTimeout(0)
 
     // --- Concurrent subscription cap ---
     if (activeSubscriptionCount >= MAX_CONCURRENT_SUBSCRIPTIONS) {
@@ -975,6 +1188,7 @@ export function startCommandServer(deps: CommandServerDeps): {
         return
       }
       const { workspaceIds, until, effectiveTimeoutMs } = parsed
+      const waitSession = deps.workspaceWaitEngine.createSession(workspaceIds)
 
       // Start streaming response — keep connection open
       res.writeHead(200, {
@@ -991,7 +1205,6 @@ export function startCommandServer(deps: CommandServerDeps): {
       // is only mapped to 'died' when it transitions from a known-alive state to unknown.
       // This prevents ws-wait from falsely dying for a just-created workspace whose session
       // file hasn't appeared yet (startup race: ws new --task → ws wait <id> → 'died').
-      const everSeenAlive = new Set<string>()
 
       // NOT-FOUND VALIDATION (QA fix — `ws wait <nonexistent-id>` was resolving as
       // 'died', conflating "genuinely dead" with "never existed"). Validate every
@@ -1038,9 +1251,6 @@ export function startCommandServer(deps: CommandServerDeps): {
       //      ground-truth re-reads still can't find a live session — i.e. genuinely
       //      dead (session file gone / pid not alive), not just "the debounced cache
       //      hasn't caught up yet".
-      const SUBSCRIPTION_GRACE_MS = 5000
-      const subscriptionStartedAt = Date.now()
-
       // Derive terminal exit reason for a workspace from its live session file info.
       // Returns '' (empty string) when the workspace is still busy (not yet terminal).
       // Async: may force a reconcile() pass to get a ground-truth read before
@@ -1092,134 +1302,11 @@ export function startCommandServer(deps: CommandServerDeps): {
       // full rationale: DB cross-check, ground-truth reconcile, grace window).
       // Mutates `everSeenAlive` in place exactly as the inline code did (same
       // Set instance, passed through).
-      async function deriveReasonForUnknownFileStatus(
-        workspaceId: string,
-        waitingFor: string,
-        fromTransition: boolean
-      ): Promise<string> {
-        const ws = getWorkspace(workspaceId)
-
-        if (ws == null) {
-          // Workspace row is gone entirely — cannot be live. Distinguish
-          // "never existed" from "existed and was destroyed": if this
-          // subscription never observed the workspace alive, treat it as
-          // 'not-found' rather than 'died' (matches the subscribe-start
-          // validation above). Otherwise it was alive and is now genuinely
-          // gone → 'died'.
-          return everSeenAlive.has(workspaceId) ? 'died' : 'not-found'
-        }
-        if (ws.archivedAt != null) {
-          // Archived — teardown already happened; treat as died (not a live wait target).
-          return 'died'
-        }
-        if (ws.closedAt != null) {
-          // Deliberately closed — not live, but not a crash either. 'died' is the
-          // closest terminal bucket ws-wait has; the caller closed it on purpose.
-          return 'died'
-        }
-        if (ws.status === 'awaiting_input' || ws.status === 'idle') {
-          // The DB already recorded the turn's terminal outcome (awaiting_input/idle)
-          // via setStatusFromFile before this file read raced past it. Report the
-          // real outcome — never 'died' — even though the file momentarily reads
-          // 'unknown'.
-          return 'done'
-        }
-        if (ws.status === 'attention') {
-          // DB says the workspace is blocked on something; file's waitingFor detail
-          // isn't available in this race, so default to the more common case.
-          return waitingFor.toLowerCase().includes('permission')
-            ? 'blocked-permission'
-            : BLOCKED_INPUT
-        }
-        if (ws.status === 'in_progress') {
-          // DB says the workspace is still actively running — 'unknown' here is a
-          // transient file-read race, not a death. Keep waiting.
-          return ''
-        }
-
-        // GROUND TRUTH before any 'died' conclusion: force a synchronous reconcile
-        // (refreshes liveSessionMap from disk right now, not on the next debounce
-        // tick) and re-read. If the workspace is actually busy/idle/waiting, use
-        // that — it was never dead, just a cold cache.
-        await forceReconcile()
-        const refreshedInfo = getWorkspaceFileInfo(workspaceId)
-        if (refreshedInfo.status === 'busy') {
-          everSeenAlive.add(workspaceId)
-          return ''
-        }
-        if (refreshedInfo.status === 'idle') {
-          everSeenAlive.add(workspaceId)
-          return 'done'
-        }
-        if (refreshedInfo.status === 'waiting') {
-          everSeenAlive.add(workspaceId)
-          const refreshedWaitingFor = (refreshedInfo.waitingFor ?? '').toLowerCase()
-          return refreshedWaitingFor.includes('permission') ? 'blocked-permission' : BLOCKED_INPUT
-        }
-
-        // Second, independent ground-truth source: read the session file straight
-        // off disk, bypassing liveSessionMap entirely, in case the map is still
-        // cold even right after a forced reconcile (e.g. the file only appeared
-        // mid-reconcile, or the pid/sessionId pairing hasn't been observed yet).
-        const syncStatus = getWorkspaceFileStatusSync(workspaceId)
-        if (syncStatus === 'busy') {
-          everSeenAlive.add(workspaceId)
-          return ''
-        }
-        if (syncStatus === 'idle') {
-          everSeenAlive.add(workspaceId)
-          return 'done'
-        }
-        if (syncStatus === 'waiting') {
-          everSeenAlive.add(workspaceId)
-          return BLOCKED_INPUT
-        }
-
-        // Still genuinely unknown after BOTH ground-truth refreshes. Only now
-        // consider 'died' — and only once the subscription's startup grace window
-        // has elapsed. A workspace that was just created/sent-to is transitioning;
-        // giving it a few seconds to flush its first status file prevents the
-        // false-died race this fix targets.
-        const withinGraceWindow = Date.now() - subscriptionStartedAt < SUBSCRIPTION_GRACE_MS
-        if (withinGraceWindow) {
-          return '' // still within grace — not yet terminal
-        }
-
-        // Genuine death = confirmed gone even after ground-truth refresh, AND
-        // either this is a real transition event (the workspace was live and its
-        // status observably changed) or it was previously seen alive and has now
-        // disappeared. Otherwise (initial check, workspace never observed alive,
-        // grace window elapsed with no session ever appearing) keep waiting — the
-        // subscription timeout is the backstop for a workspace that never starts.
-        if (fromTransition || everSeenAlive.has(workspaceId)) {
-          return 'died'
-        }
-        return '' // startup grace — not yet terminal
-      }
-
       async function deriveReason(workspaceId: string, fromTransition: boolean): Promise<string> {
-        const info = getWorkspaceFileInfo(workspaceId)
-        const fileStatus = info.status
-        const waitingFor = info.waitingFor ?? ''
-
-        if (fileStatus === 'busy' || fileStatus === 'idle' || fileStatus === 'waiting') {
-          everSeenAlive.add(workspaceId)
-        }
-
-        if (fileStatus === 'unknown') {
-          return deriveReasonForUnknownFileStatus(workspaceId, waitingFor, fromTransition)
-        }
-        if (fileStatus === 'idle') {
-          return 'done'
-        }
-        if (fileStatus === 'waiting') {
-          if (waitingFor.toLowerCase().includes('permission')) {
-            return 'blocked-permission'
-          }
-          return BLOCKED_INPUT
-        }
-        // fileStatus === 'busy' — still running; not yet terminal
-        return ''
+        void fromTransition
+        const observation = await waitSession.observe(workspaceId)
+        if (observation == null) return 'not-found'
+        return legacyWaitReason(until, observation) ?? ''
       }
 
       // Apply the caller's --until mode to a raw reason from deriveReason().
@@ -1301,6 +1388,7 @@ export function startCommandServer(deps: CommandServerDeps): {
           unsubscribe()
           unsubscribe = null
         }
+        waitSession.dispose()
         if (!res.writableEnded) {
           try {
             res.end()
@@ -1407,20 +1495,24 @@ export function startCommandServer(deps: CommandServerDeps): {
         if (raw == null) return // readBody already responded (413)
 
         // --- Parse JSON body ---
-        let body: CmdBody
+        let body: unknown
         try {
-          body = JSON.parse(raw.toString('utf-8')) as CmdBody
+          body = JSON.parse(raw.toString('utf-8')) as unknown
         } catch {
-          writeCmdJsonResponse(res, 400, { ok: false, error: 'invalid JSON body' })
+          writeJsonResponse(res, 400, { ok: false, error: 'invalid JSON body' })
           return
         }
 
-        const { action, args = {}, context = {} } = body
-
+        const action = parseCommandAction(body)
+        if (action == null) {
+          writeJsonResponse(res, 400, { ok: false, error: 'invalid action' })
+          return
+        }
+        const { args = {}, context = {} } = body as CmdBody
         // --- Dispatch ---
         const handler = resolveCmdHandler(dispatch, action)
         if (!handler) {
-          writeCmdJsonResponse(res, 400, { ok: false, error: `unknown action: ${action}` })
+          writeJsonResponse(res, 400, { ok: false, error: `unknown action: ${action}` })
           return
         }
 
@@ -1443,6 +1535,11 @@ export function startCommandServer(deps: CommandServerDeps): {
   }
 
   const server = http.createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/control') {
+      handleControl(req, res)
+      return
+    }
+
     if (req.method === 'POST' && req.url === '/subscribe') {
       handleSubscribe(req, res)
       return
@@ -1466,25 +1563,46 @@ export function startCommandServer(deps: CommandServerDeps): {
     try {
       fs.chmodSync(sockPath, 0o600)
     } catch (err) {
-      console.warn('[commandServer] could not chmod cmd.sock to 0600:', err)
+      console.error('[commandServer] could not chmod cmd.sock to 0600:', redactErrorForLog(err))
+      if (!readySettled) {
+        readySettled = true
+        rejectReady(new Error('Command socket permissions could not be secured.'))
+      }
+      server.close()
+      listening = false
+      try {
+        fs.unlinkSync(sockPath)
+      } catch {
+        /* ignore */
+      }
+      return
     }
     console.log('[commandServer] listening on', sockPath)
+    readySettled = true
+    resolveReady()
   })
 
   server.on('error', (err) => {
-    console.error('[commandServer] server error:', err)
+    console.error('[commandServer] server error:', redactErrorForLog(err))
     // Clean up the socket file so a subsequent start doesn't hit EADDRINUSE.
     try {
       fs.unlinkSync(sockPath)
     } catch {
       /* ignore — file may not exist if listen never bound */
     }
+    if (!readySettled) {
+      readySettled = true
+      rejectReady(err)
+    }
   })
 
   return {
     sockPath,
     token,
+    ready,
     close(): void {
+      for (const controller of catalogWaitControllers) controller.abort()
+      catalogWaitControllers.clear()
       if (
         typeof (server as http.Server & { closeAllConnections?: () => void })
           .closeAllConnections === 'function'

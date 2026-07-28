@@ -30,6 +30,7 @@ import type {
   DoctorResult,
   HealthReport,
   WorkspaceRecord,
+  WorkspaceOpenRequest,
   WorkspaceStatus,
   WorkspaceActivityDetail,
   AppUiState,
@@ -121,8 +122,17 @@ import type {
   PaneTerminal,
   SplitTree,
   OAuthStartResult,
-  OAuthPollResult
+  OAuthPollResult,
+  ControlToolsSettings,
+  ControlToolsUpdate,
+  ControlToolsReset,
+  AutomationDefinition,
+  AutomationDefinitionDraft,
+  AutomationCatalog,
+  AutomationRunWithEligibility,
+  AutomationChangedEvent
 } from './types'
+import type { RendererControlAck, RendererControlRequest } from './workbenchControl'
 
 // ---------------------------------------------------------------------------
 // Invoke channels (request/response)
@@ -135,6 +145,38 @@ import type {
  * overload) and are migrated domain-by-domain in follow-up commits.
  */
 export interface InvokeChannelMap {
+  'control:ackRendererCommand': { req: [RendererControlAck]; res: boolean }
+  'control:rendererReady': { req: []; res: void }
+  'controlTools:get': { req: []; res: ControlToolsSettings }
+  'controlTools:update': { req: [ControlToolsUpdate]; res: ControlToolsSettings }
+  'controlTools:reset': { req: [ControlToolsReset]; res: ControlToolsSettings }
+  'automations:list': {
+    req: [{ enabledOnly?: boolean }]
+    res: AutomationDefinition[]
+  }
+  'automations:get': { req: [{ id: string }]; res: AutomationDefinition }
+  'automations:catalog': { req: []; res: AutomationCatalog }
+  'automations:create': {
+    req: [{ draft: AutomationDefinitionDraft }]
+    res: AutomationDefinition
+  }
+  'automations:update': {
+    req: [{ id: string; expectedUpdatedAt: number; draft: AutomationDefinitionDraft }]
+    res: AutomationDefinition
+  }
+  'automations:setEnabled': {
+    req: [{ id: string; expectedUpdatedAt: number; enabled: boolean }]
+    res: AutomationDefinition
+  }
+  'automations:delete': {
+    req: [{ id: string; expectedUpdatedAt: number }]
+    res: AutomationDefinition
+  }
+  'automations:listRuns': {
+    req: [{ automationId?: string; limit?: number }]
+    res: AutomationRunWithEligibility[]
+  }
+  'automations:retryRun': { req: [{ runId: string }]; res: AutomationRunWithEligibility }
   'app:getVersion': { req: []; res: string }
   'app:getPaths': { req: []; res: { userData: string; logs: string } }
   'app:offeredModes': {
@@ -147,6 +189,8 @@ export interface InvokeChannelMap {
   'health:get': { req: []; res: HealthReport }
   'window:openDevTools': { req: []; res: void }
   'window:reload': { req: []; res: void }
+  'window:isVisible': { req: []; res: boolean }
+  'window:getNativeOcclusionVisible': { req: []; res: boolean | null }
   'config:openFolder': { req: []; res: string | null }
   'orpheusConfig:get': {
     req: [{ projectId: string }]
@@ -910,6 +954,9 @@ export type Res<C extends InvokeChannel> = InvokeChannelMap[C]['res']
  * own `overlayRenderer:*` channels and is out of scope here.)
  */
 export interface RendererPushMap {
+  'control:rendererCommand': RendererControlRequest
+  'automations:changed': AutomationChangedEvent
+  'window:visibilityChanged': { visible: boolean }
   'addon:actionTrace': { tagName: string }
   'terminal:canInjectChanged': { workspaceId: string; canInject: boolean }
   'terminal:sleepStateChanged': { workspaceId: string; sleeping: boolean }
@@ -940,7 +987,7 @@ export interface RendererPushMap {
     detail: WorkspaceActivityDetail
   }>
   'workspace:navigateTo': { workspaceId: string; projectId?: string }
-  'workspace:requestOpen': { workspaceId: string; focus?: boolean }
+  'workspace:requestOpen': WorkspaceOpenRequest
   'workspaces:created': { workspace: WorkspaceRecord }
   'workspaces:archived': { workspaceId: string; projectId: string }
   'workspaces:changed': { workspace: WorkspaceRecord }
@@ -1014,6 +1061,9 @@ export type PushPayload<C extends PushChannel> = RendererPushMap[C]
  * to compile if the two ever drift apart.
  */
 export const PUSH_CHANNELS = {
+  controlRendererCommand: 'control:rendererCommand',
+  automationsChanged: 'automations:changed',
+  windowVisibilityChanged: 'window:visibilityChanged',
   addonActionTrace: 'addon:actionTrace',
   terminalCanInjectChanged: 'terminal:canInjectChanged',
   terminalSleepStateChanged: 'terminal:sleepStateChanged',

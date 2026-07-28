@@ -58,6 +58,8 @@ import {
 } from '@/lib/panesSelectionStore'
 import { bumpPanesRefresh } from '@/lib/panesRefreshStore'
 import { useIsLayoutLive } from '@/lib/paneLiveLayoutsStore'
+import { usePageVisibility } from '@/lib/usePageVisibility'
+import { deleteLayoutAndReconcile } from './paneLayoutDeletion'
 
 const ADD_LAYOUT_LABEL = 'Add Layout'
 
@@ -182,6 +184,7 @@ async function confirmDeletePanel(panel: PanePanel, layoutCount: number): Promis
 interface LayoutSubRowProps {
   layout: PaneLayout
   active: boolean
+  animateRunningStatus: boolean
   renaming: boolean
   onSelect: () => void
   onBeginRename: () => void
@@ -205,13 +208,15 @@ interface LayoutSubRowProps {
  */
 function LayoutStatusIcon({
   active,
-  isRunning
+  isRunning,
+  animated
 }: {
   active: boolean
   isRunning: boolean
+  animated: boolean
 }): React.JSX.Element {
   if (isRunning) {
-    return <ActivityIndicator detail="working" />
+    return <ActivityIndicator detail="working" animated={animated} />
   }
   return (
     <Stack
@@ -225,6 +230,7 @@ function LayoutStatusIcon({
 function LayoutSubRow({
   layout,
   active,
+  animateRunningStatus,
   renaming,
   onSelect,
   onBeginRename,
@@ -363,7 +369,7 @@ function LayoutSubRow({
         aria-label={layout.name}
       >
         <span className="flex items-center justify-center w-3 h-3 flex-shrink-0">
-          <LayoutStatusIcon active={active} isRunning={isRunning} />
+          <LayoutStatusIcon active={active} isRunning={isRunning} animated={animateRunningStatus} />
         </span>
         {renaming ? (
           <RenameInput
@@ -587,6 +593,14 @@ interface PanelsSectionProps {
    * icon-rail UI yet (unlike Projects' CollapsedProjectList).
    */
   collapsed?: boolean
+  /**
+   * Running layouts remain visibly marked outside the Panes destination, but
+   * their 80ms braille ticker is disabled there so a retained sidebar does not
+   * keep the renderer and GPU active while Home or Settings is otherwise idle.
+   * PanelsSection also pauses the ticker while this window is hidden or
+   * occluded; layout liveness and background pane processes remain unchanged.
+   */
+  animateRunningStatus?: boolean
   /** Navigate the main content back to Panes when this retained tree is used
    * from Home or Settings. Selection state itself stays owned by the panes
    * selection store. */
@@ -595,6 +609,7 @@ interface PanelsSectionProps {
 
 export function PanelsSection({
   collapsed = false,
+  animateRunningStatus = true,
   onActivate
 }: PanelsSectionProps): React.JSX.Element {
   const [panels, setPanels] = useState<PanePanel[]>([])
@@ -603,6 +618,8 @@ export function PanelsSection({
   const [renamingPanelId, setRenamingPanelId] = useState<string | null>(null)
   const [renamingLayoutId, setRenamingLayoutId] = useState<string | null>(null)
   const { activePanelId, activeLayoutId } = usePanesSelection()
+  const pageVisible = usePageVisibility()
+  const shouldAnimateRunningStatus = animateRunningStatus && pageVisible
 
   const loadPanels = useCallback(() => {
     window.api.panes
@@ -712,7 +729,7 @@ export function PanelsSection({
   // Panes view stuck showing the just-deleted layout) — delete a layout,
   // confirm first (destructive, FK CASCADE takes its terminals with it).
   //
-  // Two things make this robust against the bug this handler used to have:
+  // Three things make this robust against the bug this handler used to have:
   //
   // 1. Reads the CURRENT selection via getPanesSelection() rather than the
   //    `activeLayoutId` destructured from usePanesSelection() at render
@@ -721,31 +738,37 @@ export function PanelsSection({
   //    (the user could switch layouts while the confirm dialog is up) — so
   //    checking the LIVE selection at the moment of deletion is the only
   //    way to reliably know whether the just-deleted layout was active.
-  // 2. Re-lists the panel's layouts directly from the source of truth
+  // 2. Invalidates PanesView's independent snapshot immediately after the
+  //    source deletion, before clearing or replacing the shared active
+  //    layout selection. Otherwise an active final-layout delete can expose
+  //    activeLayoutId=null while PanesView still considers its stale list
+  //    ready, allowing its default-selection effect to re-seed the deleted
+  //    id.
+  // 3. Re-lists the panel's layouts directly from the source of truth
   //    (window.api.panes.listLayouts) rather than trusting the
   //    in-memory layoutsByPanel list, which could itself be stale. If the
   //    deleted layout was active, prefer selecting a SIBLING layout that
   //    still exists in this panel (nicer UX than dropping to the empty
   //    state) — else fall back to null.
   //
-  // bumpPanesRefresh() at the end is the other half of the fix: it forces
-  // usePanesData (PanesView's data hook) to refetch too, so its `layouts`
-  // list also drops the deleted row and PanesView's seeding effect never
-  // sees a stale list that still contains it.
   function handleDeleteLayout(panel: PanePanel, layout: PaneLayout): void {
     void (async () => {
       const confirmed = await confirmDeleteLayout(layout)
       if (!confirmed) return
       try {
-        await window.api.panes.deleteLayout(layout.id)
-        loadLayouts(panel.id)
-        const wasActive = getPanesSelection().activeLayoutId === layout.id
-        if (wasActive) {
-          const remaining = await window.api.panes.listLayouts(panel.id)
-          const sibling = remaining.find((l) => l.id !== layout.id)
-          setActiveLayout(sibling ? sibling.id : null)
-        }
-        bumpPanesRefresh()
+        const remaining = await deleteLayoutAndReconcile({
+          layoutId: layout.id,
+          deleteLayout: window.api.panes.deleteLayout,
+          invalidatePanesSnapshot: bumpPanesRefresh,
+          listRemainingLayouts: () => window.api.panes.listLayouts(panel.id),
+          getActiveLayoutId: () => getPanesSelection().activeLayoutId,
+          selectLayout: setActiveLayout
+        })
+        setLayoutsByPanel((prev) => {
+          const next = new Map(prev)
+          next.set(panel.id, remaining)
+          return next
+        })
       } catch (err) {
         console.error('[PanelsSection] deleteLayout failed', err, layout.id)
       }
@@ -858,6 +881,7 @@ export function PanelsSection({
                         key={layout.id}
                         layout={layout}
                         active={activePanelId === panel.id && activeLayoutId === layout.id}
+                        animateRunningStatus={shouldAnimateRunningStatus}
                         renaming={renamingLayoutId === layout.id}
                         onSelect={() => {
                           onActivate()

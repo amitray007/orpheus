@@ -27,7 +27,8 @@ import {
   SquaresFour,
   Compass,
   ShareNetwork,
-  EyeSlash
+  EyeSlash,
+  Clock
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -85,6 +86,16 @@ const OrpheusTerminalSection = lazy(() =>
 const OrpheusWorkbenchSection = lazy(() =>
   import('./settings/OrpheusWorkbenchSection').then((m) => ({
     default: m.OrpheusWorkbenchSection
+  }))
+)
+const OrpheusAgentToolsSection = lazy(() =>
+  import('./settings/OrpheusAgentToolsSection').then((m) => ({
+    default: m.OrpheusAgentToolsSection
+  }))
+)
+const OrpheusAutomationsSection = lazy(() =>
+  import('./settings/OrpheusAutomationsSection').then((m) => ({
+    default: m.OrpheusAutomationsSection
   }))
 )
 const OrpheusNavigationSection = lazy(() =>
@@ -173,6 +184,8 @@ export type SectionId =
   | 'orpheus-navigation'
   | 'orpheus-terminal'
   | 'orpheus-workbench'
+  | 'orpheus-agent-tools'
+  | 'orpheus-automations'
   | 'orpheus-window'
   | 'orpheus-notifications'
   | 'orpheus-workspaces'
@@ -235,6 +248,18 @@ const GROUPS: SectionGroup[] = [
         label: 'Workbench',
         icon: SquaresFour,
         Component: OrpheusWorkbenchSection
+      },
+      {
+        id: 'orpheus-agent-tools',
+        label: 'Agent Tools',
+        icon: Wrench,
+        Component: OrpheusAgentToolsSection
+      },
+      {
+        id: 'orpheus-automations',
+        label: 'Automations',
+        icon: Clock,
+        Component: OrpheusAutomationsSection
       },
       { id: 'orpheus-window', label: 'Window', icon: AppWindow, Component: OrpheusWindowSection },
       {

@@ -43,7 +43,7 @@
  */
 
 import { registerCommand } from '../registry.js'
-import { sendCommand } from '../socket-client.js'
+import { sendCommand, AppNotRunningError } from '../socket-client.js'
 import {
   printResult,
   printTable,
@@ -143,6 +143,7 @@ registerCommand('reviews list', {
     try {
       result = await sendCommand('reviews.list', undefined, context)
     } catch (err) {
+      if (err instanceof AppNotRunningError) throw err
       printError(err, { exitCode: isNotFoundError(errorMessage(err)) ? 3 : 1 })
       return
     }
@@ -207,6 +208,7 @@ function registerSetResolvedCommand(
       try {
         result = await sendCommand('reviews.setResolved', { id, resolved }, context)
       } catch (err) {
+        if (err instanceof AppNotRunningError) throw err
         printError(err, { exitCode: isNotFoundError(errorMessage(err)) ? 3 : 1 })
         return
       }

@@ -33,14 +33,11 @@
  *                       user's view around); pass --focus to opt into navigating.
  *                       --focus and --background are mutually exclusive.
  *
- * STRICTNESS — --task XOR --empty is required
- * --------------------------------------------
- * `ws new` with NEITHER --task NOR --empty/--blank is a usage error (exit 2):
- * an agent calling this CLI must declare intent up front — either seed the
- * workspace with a task, or explicitly acknowledge it wants a blank one. This
- * makes empty-workspace creation intentional rather than an accident of
- * forgetting --task. Passing BOTH --task and --empty is also a usage error
- * (they're contradictory declarations of intent).
+ * STRICTNESS — creation intent is required
+ * ----------------------------------------
+ * `ws new` requires --task, --empty/--blank, or --fork. Forking is itself a
+ * complete creation intent and does not require an initial task. --task and
+ * --empty remain mutually exclusive; --fork may be combined with --task.
  *
  * An --empty workspace still goes through the normal create + activate path
  * (the server opens it in the GUI same as any other workspace) — --empty only
@@ -78,8 +75,15 @@
 import { registerCommand } from '../registry.js'
 import { openDb } from '../reads/db.js'
 import { resolveContext, noProjectMessage } from '../context.js'
-import { sendCommand } from '../socket-client.js'
-import { printResult, printKeyValue, printError, printUsageError, printLines } from '../output.js'
+import { sendCommand, AppNotRunningError } from '../socket-client.js'
+import {
+  isJsonMode,
+  printResult,
+  printKeyValue,
+  printError,
+  printUsageError,
+  printLines
+} from '../output.js'
 import { resolveFocus } from '../focus.js'
 import type { WorkspaceRecord } from '../reads/db.js'
 import { CLAUDE_EFFORT_VALUES } from '@shared/types'
@@ -89,10 +93,14 @@ import { CLAUDE_EFFORT_VALUES } from '@shared/types'
 // ---------------------------------------------------------------------------
 
 type TaskIntentResult = { ok: true } | { ok: false; error: string }
+type WorkspaceCreateCommandResult = {
+  workspace: WorkspaceRecord
+  seedWarning: string | null
+}
 
 /**
- * STRICTNESS: require --task XOR --empty/--blank (an agent must declare
- * intent — see module doc).
+ * STRICTNESS: require --task, --empty/--blank, or --fork (an agent must
+ * declare creation intent — see module doc).
  *
  * --task is trimmed before the emptiness check: a whitespace-only value
  * ("   ") was explicitly passed but carries no real task text, so it is
@@ -103,10 +111,11 @@ type TaskIntentResult = { ok: true } | { ok: false; error: string }
  * clearly intended to provide a task — tell them it was blank and to
  * either provide real text or use --empty.
  */
-function resolveTaskIntent(flags: Record<string, unknown>): TaskIntentResult {
+export function resolveTaskIntent(flags: Record<string, unknown>): TaskIntentResult {
   const rawTask = typeof flags.task === 'string' ? flags.task : undefined
   const trimmedTask = rawTask?.trim()
   const hasEmpty = flags.empty === true || flags.blank === true
+  const hasFork = flags.fork === true
 
   if (rawTask != null && trimmedTask === '') {
     return {
@@ -119,12 +128,13 @@ function resolveTaskIntent(flags: Record<string, unknown>): TaskIntentResult {
 
   const hasTask = trimmedTask != null && trimmedTask !== ''
 
-  if (!hasTask && !hasEmpty) {
+  if (!hasTask && !hasEmpty && !hasFork) {
     return {
       ok: false,
       error:
         'ws new requires declaring intent: pass --task "<work>" to start with a task, ' +
-        'or --empty (or --blank) to explicitly create an empty workspace.'
+        '--empty (or --blank) to explicitly create an empty workspace, or --fork ' +
+        'to create from the parent session without an initial task.'
     }
   }
   if (hasTask && hasEmpty) {
@@ -132,6 +142,24 @@ function resolveTaskIntent(flags: Record<string, unknown>): TaskIntentResult {
   }
 
   return { ok: true }
+}
+
+/**
+ * `--no-submit` is an explicit request to leave the supplied text staged in
+ * Claude's input. If main reports a seed warning, that requested side effect
+ * did not complete. Preserve the legacy result envelope (including the created
+ * workspace id for cleanup) but make the command non-successful via exit 1.
+ */
+export function didRequestedTaskStagingFail(
+  flags: Record<string, unknown>,
+  result: Pick<WorkspaceCreateCommandResult, 'seedWarning'>
+): boolean {
+  return (
+    flags['no-submit'] === true &&
+    typeof flags.task === 'string' &&
+    flags.task.trim() !== '' &&
+    result.seedWarning != null
+  )
 }
 
 /** Build the args object for the workspace.create socket call from flags. */
@@ -208,15 +236,16 @@ function printNewWorkspaceSummary(ws: WorkspaceRecord): void {
 
 registerCommand('ws new', {
   usage:
-    'ws new (--task <text> | --empty) [--no-submit] [--fork] [--name <n>] [--model <m>] [--permission-mode <p>] [--effort <e>] [--project <p>] [--focus | --background]',
-  help: 'Create a new workspace (must declare --task <text> or --empty)',
+    'ws new (--task <text> | --empty | --fork) [--no-submit] [--name <n>] [--model <m>] [--permission-mode <p>] [--effort <e>] [--project <p>] [--focus | --background]',
+  help: 'Create a new workspace (declare --task, --empty, or --fork)',
   longDesc:
     'An Orpheus workspace IS a claude session — creating one always starts claude. ' +
     '--task seeds and submits an initial prompt; --empty/--blank explicitly creates ' +
     'a workspace with a running claude session but no seeded task (idle at the ' +
-    "prompt). Exactly one of --task or --empty/--blank is required — ws new won't " +
-    'guess your intent. The primary tool for agent fan-out: spawn a worker with ' +
-    '--task for fresh work, or --fork to hand it your own session history.',
+    'prompt). --fork is a complete creation intent without an initial task, and may ' +
+    'also be combined with --task. --task and --empty/--blank remain mutually exclusive. ' +
+    'The primary tool for agent fan-out: spawn a worker with --task for fresh work, ' +
+    'or --fork to hand it your own session history.',
   maxPositionals: 0,
   flags: {
     task: {
@@ -224,7 +253,7 @@ registerCommand('ws new', {
       valueHint: '<text>',
       desc: 'Seed prompt: after the workspace is created, this text is typed into the new claude session and submitted (Enter pressed) automatically.',
       notes:
-        'Mutually exclusive with --empty/--blank; exactly one is required. Pass --no-submit to stage the text without pressing Enter.'
+        'Mutually exclusive with --empty/--blank. May be combined with --fork. Pass --no-submit to stage the text without pressing Enter.'
     },
     'no-submit': {
       type: 'boolean',
@@ -235,12 +264,12 @@ registerCommand('ws new', {
     empty: {
       type: 'boolean',
       desc: 'Explicitly create a workspace with a running claude session but no seeded task (idle at the prompt). Alias: --blank.',
-      notes: 'Mutually exclusive with --task; exactly one is required.'
+      notes: 'Mutually exclusive with --task. Not required when --fork is present.'
     },
     blank: {
       type: 'boolean',
       desc: 'Alias for --empty.',
-      notes: 'Mutually exclusive with --task; exactly one is required.'
+      notes: 'Mutually exclusive with --task. Not required when --fork is present.'
     },
     fork: {
       type: 'boolean',
@@ -297,9 +326,8 @@ registerCommand('ws new', {
     'orpheus --json ws new --task "run the test suite" | jq -r .workspace.id'
   ],
   handler: async (ctx) => {
-    // STRICTNESS: require --task XOR --empty/--blank (an agent must declare
-    // intent — see module doc). Checked before any DB/socket work so the
-    // usage error is fast and side-effect-free.
+    // STRICTNESS: require --task, --empty/--blank, or --fork. Checked before
+    // any DB/socket work so the usage error is fast and side-effect-free.
     const taskIntent = resolveTaskIntent(ctx.flags)
     if (!taskIntent.ok) {
       printUsageError(taskIntent.error)
@@ -341,12 +369,13 @@ registerCommand('ws new', {
     try {
       result = await sendCommand('workspace.create', args)
     } catch (err) {
+      if (err instanceof AppNotRunningError) throw err
       printError(err)
       return
     }
 
     // The server returns { workspace: WorkspaceRecord, seedWarning: string | null }
-    const data = result as { workspace: WorkspaceRecord; seedWarning: string | null } | null
+    const data = result as WorkspaceCreateCommandResult | null
 
     if (data == null || data.workspace == null) {
       printError('unexpected response from server: missing workspace record')
@@ -359,9 +388,18 @@ registerCommand('ws new', {
       printNewWorkspaceSummary(ws)
     })
 
-    // Surface seed warning separately so it's visible even in pretty mode
-    if (data.seedWarning != null) {
+    // JSON already carries seedWarning in the stable result envelope. Printing
+    // a second free-form line would make stdout invalid JSON.
+    if (data.seedWarning != null && !isJsonMode()) {
       printLines('', `warning: ${data.seedWarning}`)
+    }
+
+    // The workspace itself was created, so retain the legacy response envelope
+    // and its id. A requested no-submit stage that did not happen is still a
+    // command failure: callers must not proceed as though text is waiting in
+    // the prompt.
+    if (didRequestedTaskStagingFail(ctx.flags, data)) {
+      process.exitCode = 1
     }
   }
 })
