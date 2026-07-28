@@ -33,7 +33,7 @@ import type { WorkspaceOperationActor } from './workspaceOrchestration/types'
 import type { WorkspaceOrchestrationService } from './workspaceOrchestration/service'
 import { legacyWaitReason, type MainWorkspaceWaitEngine } from './workspaceOrchestration/waitEngine'
 import { parseCommandAction } from './commandAction'
-import { redactErrorForLog, redactErrorMessage } from './logRedaction'
+import { redactErrorForLog, redactLogString } from './logRedaction'
 
 // ---------------------------------------------------------------------------
 // Deps injected from index.ts (these live as locals there, so we receive them
@@ -739,6 +739,20 @@ function writeControlError(
   writeJsonResponse(res, status, { ok: false, error: { code, message } })
 }
 
+const COMMAND_FAILED_ERROR = 'Command failed.'
+
+/**
+ * Keep useful domain-error messages in the authenticated command protocol
+ * without stringifying arbitrary thrown values. `String(error)` can invoke a
+ * custom `toString()` and expose stack text; a standard Error's message does
+ * not automatically contain its stack, so retain only its redacted first line.
+ */
+function clientSafeCommandErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) return COMMAND_FAILED_ERROR
+  const firstLine = error.message.split(/\r?\n/u, 1)[0]?.trim()
+  return firstLine ? redactLogString(firstLine) : COMMAND_FAILED_ERROR
+}
+
 function resolveRuntimeLease(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -965,7 +979,7 @@ async function dispatchCmdAndRespond(
     const data = await handler(args, context, deps)
     writeJsonResponse(res, 200, { ok: true, data })
   } catch (err) {
-    const message = redactErrorMessage(err)
+    const message = clientSafeCommandErrorMessage(err)
     console.error('[commandServer] handler error:', redactErrorForLog(err))
     writeJsonResponse(res, 200, { ok: false, error: message })
   }

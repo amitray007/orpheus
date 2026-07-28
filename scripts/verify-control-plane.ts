@@ -327,6 +327,11 @@ assert.throws(
   assert.match(commandSource, /resolveCommandReviewSetResolvedInput/)
   assert.match(commandSource, /\{ ok: true, data \}/)
   assert.match(commandSource, /\{ ok: false, error: message \}/)
+  const commandDispatchStart = commandSource.indexOf('async function dispatchCmdAndRespond(')
+  const commandDispatchEnd = commandSource.indexOf('// Server lifecycle', commandDispatchStart)
+  const commandDispatchSource = commandSource.slice(commandDispatchStart, commandDispatchEnd)
+  assert.match(commandDispatchSource, /clientSafeCommandErrorMessage\(err\)/)
+  assert.doesNotMatch(commandDispatchSource, /String\(err\)|redactErrorMessage\(err\)|err\.stack/)
 
   const quickActionsSource = readRepoFile('src/main/actions/index.ts')
   assert.doesNotMatch(quickActionsSource, /reviews\.list|reviews\.setResolved/)
