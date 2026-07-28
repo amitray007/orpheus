@@ -189,6 +189,7 @@ export interface InvokeChannelMap {
   'health:get': { req: []; res: HealthReport }
   'window:openDevTools': { req: []; res: void }
   'window:reload': { req: []; res: void }
+  'window:isVisible': { req: []; res: boolean }
   'config:openFolder': { req: []; res: string | null }
   'orpheusConfig:get': {
     req: [{ projectId: string }]
@@ -954,6 +955,7 @@ export type Res<C extends InvokeChannel> = InvokeChannelMap[C]['res']
 export interface RendererPushMap {
   'control:rendererCommand': RendererControlRequest
   'automations:changed': AutomationChangedEvent
+  'window:visibilityChanged': { visible: boolean }
   'addon:actionTrace': { tagName: string }
   'terminal:canInjectChanged': { workspaceId: string; canInject: boolean }
   'terminal:sleepStateChanged': { workspaceId: string; sleeping: boolean }
@@ -1060,6 +1062,7 @@ export type PushPayload<C extends PushChannel> = RendererPushMap[C]
 export const PUSH_CHANNELS = {
   controlRendererCommand: 'control:rendererCommand',
   automationsChanged: 'automations:changed',
+  windowVisibilityChanged: 'window:visibilityChanged',
   addonActionTrace: 'addon:actionTrace',
   terminalCanInjectChanged: 'terminal:canInjectChanged',
   terminalSleepStateChanged: 'terminal:sleepStateChanged',

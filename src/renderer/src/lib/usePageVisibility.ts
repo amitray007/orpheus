@@ -4,17 +4,41 @@ export function shouldAnimatePage(documentVisible: boolean, nativeWindowVisible:
   return documentVisible && nativeWindowVisible
 }
 
+export type WindowVisibilityState = Readonly<{
+  visible: boolean
+  pushVersion: number
+}>
+
+export const INITIAL_WINDOW_VISIBILITY: WindowVisibilityState = {
+  visible: false,
+  pushVersion: 0
+}
+
+export function applyWindowVisibilityPush(
+  state: WindowVisibilityState,
+  visible: boolean
+): WindowVisibilityState {
+  return { visible, pushVersion: state.pushVersion + 1 }
+}
+
+export function applyInitialWindowVisibility(
+  state: WindowVisibilityState,
+  visible: boolean
+): WindowVisibilityState {
+  return state.pushVersion === 0 ? { visible, pushVersion: 0 } : state
+}
+
 /**
  * Tracks whether Chromium is actually presenting this renderer page.
- * Native terminal sleep state comes from the host NSWindow's AppKit occlusion
- * state, so it remains correct when Ghostty's NSView is first responder.
- * Page Visibility remains a separate hide/minimize guard.
+ * BrowserWindow show/hide state provides the initial snapshot and lifecycle
+ * events. Native terminal sleep state adds AppKit occlusion and remains correct
+ * when Ghostty's NSView is first responder. Page Visibility is a final guard.
  */
 export function usePageVisibility(): boolean {
   const [documentVisible, setDocumentVisible] = useState(
     () => typeof document === 'undefined' || document.visibilityState === 'visible'
   )
-  const [nativeWindowVisible, setNativeWindowVisible] = useState(true)
+  const [windowVisibility, setWindowVisibility] = useState(INITIAL_WINDOW_VISIBILITY)
 
   useEffect(() => {
     const onVisibilityChange = (): void => {
@@ -27,13 +51,31 @@ export function usePageVisibility(): boolean {
   }, [])
 
   useEffect(() => {
-    const unsubscribe = window.api.terminal.onSleepStateChanged(({ sleeping }) => {
-      setNativeWindowVisible(!sleeping)
+    let active = true
+    const unsubscribeWindow = window.api.window.onVisibilityChanged(({ visible }) => {
+      if (active) setWindowVisibility((state) => applyWindowVisibilityPush(state, visible))
     })
+    const unsubscribeOcclusion = window.api.terminal.onSleepStateChanged(({ sleeping }) => {
+      if (active) setWindowVisibility((state) => applyWindowVisibilityPush(state, !sleeping))
+    })
+    void window.api.window
+      .isVisible()
+      .then((visible) => {
+        if (active) {
+          setWindowVisibility((state) => applyInitialWindowVisibility(state, visible))
+        }
+      })
+      .catch(() => {
+        // Fail closed: the static running indicator remains visible, but no
+        // animation starts without an authoritative presentation snapshot.
+      })
+
     return () => {
-      unsubscribe()
+      active = false
+      unsubscribeWindow()
+      unsubscribeOcclusion()
     }
   }, [])
 
-  return shouldAnimatePage(documentVisible, nativeWindowVisible)
+  return shouldAnimatePage(documentVisible, windowVisibility.visible)
 }

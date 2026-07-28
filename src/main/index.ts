@@ -856,6 +856,17 @@ function createWindow(): void {
     }
   })
 
+  const pushWindowVisibility = (): void => {
+    if (mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
+    mainWindow.webContents.send(PUSH_CHANNELS.windowVisibilityChanged, {
+      visible: mainWindow.isVisible() && !mainWindow.isMinimized()
+    })
+  }
+  mainWindow.on('show', pushWindowVisibility)
+  mainWindow.on('hide', pushWindowVisibility)
+  mainWindow.on('minimize', pushWindowVisibility)
+  mainWindow.on('restore', pushWindowVisibility)
+
   // Cache the main window reference for use in hot-path broadcasts.
   mainWindowRef = mainWindow
   rendererWorkspaceOpenReady = false

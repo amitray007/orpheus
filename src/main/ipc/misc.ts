@@ -4,7 +4,7 @@
 // Grab-bag of small, self-contained IPC handlers moved verbatim out of
 // index.ts (STR-1): pins:listAll, contextMenu:show, notifications:test,
 // config:openFolder, app:getVersion/getPaths/offeredModes,
-// window:openDevTools/reload. None of these close over index.ts-local
+// window:openDevTools/reload/isVisible. None of these close over index.ts-local
 // mutable state; app:offeredModes and contextMenu:show only need a couple
 // of read-only lookups passed in via deps.
 // ---------------------------------------------------------------------------
@@ -84,6 +84,11 @@ export function registerMiscIpc(deps: MiscIpcDeps): void {
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) return
     win.webContents.reload()
+  })
+
+  handle('window:isVisible', (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    return win != null && !win.isDestroyed() && win.isVisible() && !win.isMinimized()
   })
 
   // ---------------------------------------------------------------------------

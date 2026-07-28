@@ -189,7 +189,10 @@ const api = {
   },
   window: {
     openDevTools: (): Promise<void> => invoke('window:openDevTools'),
-    reload: (): Promise<void> => invoke('window:reload')
+    reload: (): Promise<void> => invoke('window:reload'),
+    isVisible: (): Promise<boolean> => invoke('window:isVisible'),
+    onVisibilityChanged: (cb: (event: { visible: boolean }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.windowVisibilityChanged, cb)
   },
   debug: {
     onActionTrace: (cb: (e: { tagName: string }) => void): (() => void) =>
