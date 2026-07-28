@@ -25,6 +25,7 @@ import {
   getLiveSessionSnapshot,
   RuntimeObservationDeduper
 } from './sessionStateObservation'
+import { SessionStateFreshnessGate } from './sessionStateFreshness'
 export { _mapFileStatus } from './sessionStatusMap'
 
 // ---------------------------------------------------------------------------
@@ -97,6 +98,7 @@ let dirty = false
  * folded into that single-flight queue.
  */
 let reconcileInProgress = false
+const activeFreshness = new SessionStateFreshnessGate(() => forceReconcile())
 
 let watcher: fs.FSWatcher | null = null
 let debounceTimer: NodeJS.Timeout | null = null
@@ -278,6 +280,14 @@ export async function forceReconcile(): Promise<void> {
   } finally {
     reconcileInProgress = false
   }
+}
+
+/**
+ * Active wait/open/seed freshness seam. Callers share one reconciliation
+ * flight and reuse any watcher-driven pass completed within maxAgeMs.
+ */
+export function reconcileSessionStateFresh(maxAgeMs = 1_000): Promise<void> {
+  return activeFreshness.refresh(maxAgeMs)
 }
 
 export function setSessionReadyHandler(fn: (workspaceId: string) => void): void {
@@ -767,6 +777,7 @@ function reconcile(): Promise<void> {
 
   // 7. Emit perf span if slow
   emitReconcilePerfSpan(t0)
+  activeFreshness.markReconciled()
 
   return Promise.resolve()
 }

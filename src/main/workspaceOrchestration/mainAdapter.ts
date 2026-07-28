@@ -26,6 +26,7 @@ import {
   worktreeSlug
 } from '../worktrees'
 import { getTitle, withInjectLock } from '../workspaceResources'
+import { reconcileSessionStateFresh } from '../sessionState'
 import { WorkspaceOrchestrationService } from './service'
 import { WorkspaceRuntimeCoordinator } from './runtimeCoordinator'
 import { MainWorkspaceWaitEngine } from './waitEngine'
@@ -308,6 +309,7 @@ export function createMainWorkspaceOrchestration(
     requestOpen: (workspace) =>
       deps.requestOrchestrationMount(workspace.workspaceId, workspace.cwd),
     getSurfacePhase: deps.getSurfacePhase,
+    refreshSessionState: reconcileSessionStateFresh,
     isSessionReady: deps.isWorkspaceSessionReady,
     canInject: deps.canInject,
     sendInput: deps.sendInput,

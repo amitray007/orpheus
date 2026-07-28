@@ -14,6 +14,7 @@ import type { WorkspaceOrchestrationService } from '../src/main/workspaceOrchest
 import { WorkspaceRuntimeCoordinator } from '../src/main/workspaceOrchestration/runtimeCoordinator.ts'
 import { WorkspaceOpenRequestQueue } from '../src/main/workspaceOrchestration/openRequestQueue.ts'
 import { WaitLifecycleGeneration } from '../src/main/workspaceOrchestration/waitState.ts'
+import { SessionStateFreshnessGate } from '../src/main/sessionStateFreshness.ts'
 import type { WorkspaceOpenRequest } from '../src/shared/types.ts'
 
 const ALL_RUNTIME_PERMISSIONS = [
@@ -254,6 +255,7 @@ let requestedWorkspaceCwd: string | null = null
 let sentText = ''
 let submitCount = 0
 let destroyCount = 0
+let refreshCount = 0
 const runtime = new WorkspaceRuntimeCoordinator({
   requestOpen: (workspace) => {
     openRequests++
@@ -261,6 +263,9 @@ const runtime = new WorkspaceRuntimeCoordinator({
     phase.value = 'attached'
   },
   getSurfacePhase: () => phase.value,
+  refreshSessionState: () => {
+    refreshCount++
+  },
   isSessionReady: () => phase.value === 'attached',
   canInject: () => true,
   sendInput: (_workspaceId, text) => {
@@ -296,7 +301,10 @@ const started = await runtime.ensureOpen(snapshot)
 assert.equal(started.runtimeState, 'started')
 assert.equal(openRequests, 1)
 assert.equal(requestedWorkspaceCwd, '/project')
+assert.ok(refreshCount > 0)
+const refreshesBeforeReadyWait = refreshCount
 assert.equal(await runtime.waitUntilReady(snapshot.workspaceId, Date.now() + 10), true)
+assert.ok(refreshCount > refreshesBeforeReadyWait)
 await runtime.sendText(snapshot.workspaceId, 'ship it', true)
 assert.equal(sentText, 'ship it')
 assert.equal(submitCount, 1)
@@ -307,6 +315,32 @@ assert.equal(submitCount, 1)
 assert.equal((await runtime.ensureOpen(snapshot)).runtimeState, 'retained')
 await runtime.teardown(snapshot.workspaceId)
 assert.equal(destroyCount, 1)
+
+let freshnessNow = 0
+let reconcileCalls = 0
+let finishReconcile: (() => void) | null = null
+const freshnessGate = new SessionStateFreshnessGate(
+  () =>
+    new Promise<void>((resolve) => {
+      reconcileCalls++
+      finishReconcile = resolve
+    }),
+  () => freshnessNow
+)
+const firstFreshness = freshnessGate.refresh()
+const sharedFreshness = freshnessGate.refresh()
+await Promise.resolve()
+assert.equal(reconcileCalls, 1)
+finishReconcile?.()
+await Promise.all([firstFreshness, sharedFreshness])
+await freshnessGate.refresh()
+assert.equal(reconcileCalls, 1, 'a fresh watcher/active pass must suppress another full scan')
+freshnessNow = 1_000
+const expiredFreshness = freshnessGate.refresh()
+await Promise.resolve()
+assert.equal(reconcileCalls, 2)
+finishReconcile?.()
+await expiredFreshness
 
 const openQueue = new WorkspaceOpenRequestQueue()
 const deliveredOpenRequests: WorkspaceOpenRequest[] = []
@@ -422,8 +456,7 @@ const waitEngineSource = fs.readFileSync(
   path.join(repoRoot, 'src/main/workspaceOrchestration/waitEngine.ts'),
   'utf8'
 )
-assert.match(waitEngineSource, /private reconcileFlight: Promise<void> \| null = null/)
-assert.match(waitEngineSource, /RECONCILE_COALESCE_MS/)
+assert.match(waitEngineSource, /await reconcileSessionStateFresh\(\)/)
 assert.match(waitEngineSource, /backstopMs \* 2/)
 assert.match(waitEngineSource, /private readonly changeWaiters = new Set<ChangeWaiter>\(\)/)
 assert.equal((waitEngineSource.match(/onWorkspaceStatusChange\(/g) ?? []).length, 1)

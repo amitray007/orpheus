@@ -12,6 +12,7 @@ export type RuntimeCoordinatorDeps = {
   openTimeoutMs?: number
   requestOpen: (workspace: WorkspaceSnapshot) => void
   getSurfacePhase: (workspaceId: string) => SurfacePhase
+  refreshSessionState?: () => void | Promise<void>
   isSessionReady: (workspaceId: string) => boolean
   canInject: (workspaceId: string) => boolean
   sendInput: (
@@ -70,11 +71,14 @@ export class WorkspaceRuntimeCoordinator implements WorkspaceRuntimePort {
       const wasMounted = mounted(initialPhase)
       if (!wasMounted) this.deps.requestOpen(workspace)
       const deadlineAt = this.now() + (this.deps.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS)
-      while (
-        this.now() < deadlineAt &&
-        (!mounted(this.safePhase(workspace.workspaceId)) ||
-          !this.deps.isSessionReady(workspace.workspaceId))
-      ) {
+      while (this.now() < deadlineAt) {
+        await this.refreshSessionState()
+        if (
+          mounted(this.safePhase(workspace.workspaceId)) &&
+          this.deps.isSessionReady(workspace.workspaceId)
+        ) {
+          break
+        }
         await delay(Math.min(POLL_INTERVAL_MS, Math.max(1, deadlineAt - this.now())))
       }
       if (
@@ -95,6 +99,7 @@ export class WorkspaceRuntimeCoordinator implements WorkspaceRuntimePort {
 
   async waitUntilReady(workspaceId: string, deadlineAt: number): Promise<boolean> {
     while (this.now() < deadlineAt) {
+      await this.refreshSessionState()
       if (
         mounted(this.safePhase(workspaceId)) &&
         this.deps.isSessionReady(workspaceId) &&
@@ -178,6 +183,10 @@ export class WorkspaceRuntimeCoordinator implements WorkspaceRuntimePort {
     } catch {
       return 'none'
     }
+  }
+
+  private async refreshSessionState(): Promise<void> {
+    await this.deps.refreshSessionState?.()
   }
 
   private serialized<T>(workspaceId: string, action: () => Promise<T>): Promise<T> {

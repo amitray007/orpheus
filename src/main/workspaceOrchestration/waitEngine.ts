@@ -1,4 +1,8 @@
-import { forceReconcile, getWorkspaceFileInfo, getWorkspaceFileStatusSync } from '../sessionState'
+import {
+  getWorkspaceFileInfo,
+  getWorkspaceFileStatusSync,
+  reconcileSessionStateFresh
+} from '../sessionState'
 import { onWorkspaceStatusChange } from '../orpheusNotify'
 import { getWorkspace } from '../workspaces'
 import type { WorkspaceWaitObservation, WorkspaceWaitPort, WorkspaceWaitSession } from './types'
@@ -6,7 +10,6 @@ import { WaitLifecycleGeneration } from './waitState'
 export { isWaitTerminal, legacyWaitReason } from './waitState'
 
 const UNKNOWN_DEATH_GRACE_MS = 3_000
-const RECONCILE_COALESCE_MS = 250
 const MIN_BACKSTOP_MS = 125
 const MAX_BACKSTOP_MS = 1_000
 
@@ -39,8 +42,6 @@ function liveObservation(
 export class MainWorkspaceWaitEngine implements WorkspaceWaitPort {
   private readonly changeWaiters = new Set<ChangeWaiter>()
   private unsubscribeStatus: (() => void) | null = null
-  private reconcileFlight: Promise<void> | null = null
-  private lastReconciledAt = 0
 
   createSession(workspaceIds: readonly string[]): WorkspaceWaitSession {
     void workspaceIds
@@ -62,13 +63,14 @@ export class MainWorkspaceWaitEngine implements WorkspaceWaitPort {
     workspaceId: string,
     generation: WaitLifecycleGeneration
   ): Promise<WorkspaceWaitObservation | null> {
+    await reconcileSessionStateFresh()
     const workspace = getWorkspace(workspaceId)
     if (workspace == null) return null
     if (workspace.archivedAt != null || workspace.closedAt != null) {
       return { status: workspace.status, outcome: 'died' }
     }
 
-    let info = getWorkspaceFileInfo(workspaceId)
+    const info = getWorkspaceFileInfo(workspaceId)
     if (info.status === 'busy' || info.status === 'idle' || info.status === 'waiting') {
       generation.markAlive(workspaceId, Date.now())
       return liveObservation(info.status, info.waitingFor)
@@ -84,13 +86,6 @@ export class MainWorkspaceWaitEngine implements WorkspaceWaitPort {
       return { status: workspace.status }
     }
 
-    await this.reconcileFreshState()
-    info = getWorkspaceFileInfo(workspaceId)
-    if (info.status === 'busy' || info.status === 'idle' || info.status === 'waiting') {
-      generation.markAlive(workspaceId, Date.now())
-      return liveObservation(info.status, info.waitingFor)
-    }
-
     const syncStatus = getWorkspaceFileStatusSync(workspaceId)
     if (syncStatus === 'busy' || syncStatus === 'idle' || syncStatus === 'waiting') {
       generation.markAlive(workspaceId, Date.now())
@@ -101,18 +96,6 @@ export class MainWorkspaceWaitEngine implements WorkspaceWaitPort {
       return { status: 'unknown', outcome: 'died' }
     }
     return { status: 'unknown' }
-  }
-
-  private reconcileFreshState(): Promise<void> {
-    const now = Date.now()
-    if (now - this.lastReconciledAt < RECONCILE_COALESCE_MS) return Promise.resolve()
-    if (this.reconcileFlight != null) return this.reconcileFlight
-    const flight = forceReconcile().finally(() => {
-      this.lastReconciledAt = Date.now()
-      if (this.reconcileFlight === flight) this.reconcileFlight = null
-    })
-    this.reconcileFlight = flight
-    return flight
   }
 
   private waitForChange(
