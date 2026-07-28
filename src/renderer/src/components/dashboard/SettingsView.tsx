@@ -87,6 +87,11 @@ const OrpheusWorkbenchSection = lazy(() =>
     default: m.OrpheusWorkbenchSection
   }))
 )
+const OrpheusAgentToolsSection = lazy(() =>
+  import('./settings/OrpheusAgentToolsSection').then((m) => ({
+    default: m.OrpheusAgentToolsSection
+  }))
+)
 const OrpheusNavigationSection = lazy(() =>
   import('./settings/OrpheusNavigationSection').then((m) => ({
     default: m.OrpheusNavigationSection
@@ -173,6 +178,7 @@ export type SectionId =
   | 'orpheus-navigation'
   | 'orpheus-terminal'
   | 'orpheus-workbench'
+  | 'orpheus-agent-tools'
   | 'orpheus-window'
   | 'orpheus-notifications'
   | 'orpheus-workspaces'
@@ -235,6 +241,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Workbench',
         icon: SquaresFour,
         Component: OrpheusWorkbenchSection
+      },
+      {
+        id: 'orpheus-agent-tools',
+        label: 'Agent Tools',
+        icon: Wrench,
+        Component: OrpheusAgentToolsSection
       },
       { id: 'orpheus-window', label: 'Window', icon: AppWindow, Component: OrpheusWindowSection },
       {
