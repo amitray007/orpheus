@@ -584,7 +584,26 @@ let cachedState: AppUiState | null = null
 export function getAppUiState(): AppUiState {
   if (cachedState !== null) return cachedState
   const db = getDb()
-  const row = db.prepare('SELECT * FROM app_ui_state WHERE id = 1').get() as AppUiStateRow
+  let row = db.prepare('SELECT * FROM app_ui_state WHERE id = 1').get() as AppUiStateRow | undefined
+  if (!row) {
+    // The app-ui-state-seed data step (data-steps.ts) should always have
+    // inserted this singleton row by the time we get here. Self-heal instead
+    // of trusting that: insert it now and re-select.
+    console.warn('[uiState] app_ui_state row missing at id=1 — self-healing by inserting default')
+    db.prepare(`INSERT OR IGNORE INTO app_ui_state (id, updated_at) VALUES (1, ?)`).run(Date.now())
+    row = db.prepare('SELECT * FROM app_ui_state WHERE id = 1').get() as AppUiStateRow | undefined
+  }
+  if (!row) {
+    // Still missing (should be unreachable) — never let a missing UI-state
+    // row prevent the app from booting. rowToRecord's field-by-field `??`
+    // fallbacks already tolerate a sparse row, so pass a minimal stand-in
+    // (just the NOT NULL-with-no-default column) rather than throwing.
+    console.warn(
+      '[uiState] app_ui_state row still missing after self-heal — using in-memory defaults'
+    )
+    cachedState = rowToRecord({ updated_at: Date.now() } as AppUiStateRow)
+    return cachedState
+  }
   cachedState = rowToRecord(row)
   return cachedState
 }
