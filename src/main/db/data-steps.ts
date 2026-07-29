@@ -411,6 +411,60 @@ const dataSteps: DataStep[] = [
   },
 
   // -------------------------------------------------------------------------
+  // app_ui_state default row seed. Unlike keep_awake_settings, this singleton
+  // was NEVER seeded anywhere in the codebase — every existing install only
+  // has its row for historical reasons (an older migration path that no
+  // longer exists). getAppUiState() does `SELECT * ... WHERE id = 1` and
+  // trusts the row exists; on a genuinely fresh data dir (e.g. the Orpheus
+  // Nightly variant, which gets its own `~/Library/Application Support/...`
+  // dir) `app_ui_state` has zero rows and the app crashes at launch with
+  // "Cannot read properties of undefined (reading 'sidebar_width')".
+  //
+  // Same alwaysRun escape hatch as keep-awake-seed above, for the same
+  // reason: legacyThroughVersion: 0 alone would let seedLedgerFromLegacy
+  // treat "fresh install, nothing to fix" as "already applied," which is
+  // exactly wrong here — a fresh install is the one case that most needs
+  // this row inserted. alwaysRun: true guarantees runDataSteps executes it
+  // at least once on every install (fresh or legacy); the ledger then
+  // prevents it from running again.
+  //
+  // `id` and `updated_at` are supplied explicitly — every other column in
+  // the app_ui_state TableDef (schema.ts) either carries a NOT NULL DEFAULT
+  // or is nullable, and `updated_at` is the one NOT NULL column with no
+  // schema default (INTEGER_NOT_NULL), so it's the one value this step must
+  // provide. Keeping the column list minimal means new app_ui_state columns
+  // never require touching this step — they pick up their own schema
+  // default automatically, so this seed can't go stale as the table grows.
+  //
+  // `icon_pack_id` is the one deliberate exception to that "stay minimal"
+  // rule: its SQL DEFAULT in schema.ts is still `'legacy'` (kept that way on
+  // purpose — see the commit that made wisp the default pack — because
+  // flipping the column DEFAULT would trigger a full 12-step table rebuild
+  // via diffColumnDefinition on every existing user's DB, not worth it for a
+  // singleton settings table). iconPacks.ts's resolveSelectedPack/
+  // getIconPackCatalog fall back to 'wisp' at read time, so relying on the
+  // SQL default here would seed brand-new installs with icon_pack_id =
+  // 'legacy' baked into the row — which getAppUiState().iconPackId would
+  // then read back verbatim (row.icon_pack_id ?? 'legacy' never falls
+  // through, since 'legacy' is a real non-nullish string), reintroducing the
+  // exact boot-time icon flash the wisp default was meant to eliminate
+  // (index.ts calls applyPersistedIconPack(getAppUiState().iconPackId) at
+  // startup). Set it explicitly to 'wisp' so a fresh row matches the
+  // fallback default everywhere else. INSERT OR IGNORE means this can never
+  // touch an existing user's already-seeded row, however they set it.
+  // -------------------------------------------------------------------------
+  {
+    name: 'app-ui-state-seed',
+    legacyThroughVersion: 0,
+    alwaysRun: true,
+    run: (db) => {
+      db.prepare(
+        `INSERT OR IGNORE INTO app_ui_state (id, icon_pack_id, updated_at) VALUES (1, 'wisp', ?)`
+      ).run(Date.now())
+    }
+  },
+
+  // -------------------------------------------------------------------------
   // 6. Panes v2 (U4) — seed the one always-there `General` panel
   //    (docs/plans/2026-07-10-001-feat-panes-v2-toplevel-layouts-plan.md,
   //    R4/KTD2). Same fresh-install rationale + alwaysRun escape hatch as

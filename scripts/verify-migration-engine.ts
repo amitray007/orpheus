@@ -624,12 +624,12 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
   }
 
   // --- Fixture (d): app_ui_state singleton default -------------------------
-  // app_ui_state has no data-step seed (unlike e.g. keep-awake-seed) — the
-  // singleton row is inserted by application code, not the migration engine.
   // This fixture builds a fresh schema-synced DB, inserts the singleton row
   // with no explicit last_view_kind (relying purely on the column's DEFAULT
   // clause), and asserts it lands on 'sessions' (not the legacy 'dashboard'
-  // default) — plus that the DB is structurally converged + idempotent.
+  // default) — plus that the DB is structurally converged + idempotent. (The
+  // 'data-steps' section further below covers the app-ui-state-seed data
+  // step, which is what actually inserts this row on a real fresh install.)
   {
     const adb = new Database(':memory:')
     sync(adb, schema, { dbPath: ':memory:', legacyVersion: 0 })
@@ -797,6 +797,11 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
   // alwaysRun 'keep-awake-seed' step is NOT pre-marked — it must still get
   // a real run so the default row gets inserted.
   const dsdb3 = new Database(':memory:')
+  // app_ui_state (rendered from the real schema below) FKs to
+  // workspaces/projects/pane_panels/pane_layouts, none of which this
+  // narrowly-scoped fixture creates — same pattern as the other
+  // partial-schema fixtures in this file.
+  dsdb3.exec('PRAGMA foreign_keys = OFF')
   ensureLedger(dsdb3)
   seedLedgerFromLegacy(dsdb3, 0)
   const legacyStepNames = dataSteps.filter((s) => !s.alwaysRun).map((s) => s.name)
@@ -815,6 +820,7 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
   // v67/v68 footer steps: a pre-v67 DB (legacyVersion 66) must NOT be
   // pre-marked applied for either step, so they run for real on such a DB.
   const dsdb4 = new Database(':memory:')
+  dsdb4.exec('PRAGMA foreign_keys = OFF')
   ensureLedger(dsdb4)
   seedLedgerFromLegacy(dsdb4, 66)
   assert.ok(
@@ -880,6 +886,8 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   )`)
+  // app-ui-state-seed is also alwaysRun, so this sweep needs the table too.
+  dsdb4.exec(renderCreateTable('app_ui_state', schema.app_ui_state))
   runDataSteps(dsdb4, { preRebuild: false })
   runDataSteps(dsdb4, { preRebuild: true })
 
@@ -927,6 +935,16 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   )`)
+  // app-ui-state-seed (fresh-install crash fix) also needs its table to
+  // exist first — render it from the real schema.ts TableDef so this
+  // fixture stays honest about the actual NOT NULL/CHECK/DEFAULT shape
+  // rather than a hand-maintained stub.
+  dsdb3.exec(renderCreateTable('app_ui_state', schema.app_ui_state))
+  assert.equal(
+    (dsdb3.prepare('SELECT COUNT(*) c FROM app_ui_state').get() as { c: number }).c,
+    0,
+    'app_ui_state must start empty before the seed step runs'
+  )
   runDataSteps(dsdb3, { preRebuild: false })
   runDataSteps(dsdb3, { preRebuild: true })
   const seededRow = dsdb3
@@ -940,6 +958,45 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
   assert.ok(
     dsdb3.prepare("SELECT 1 FROM applied_data_steps WHERE name='keep-awake-seed'").get(),
     'keep-awake-seed must be recorded in the ledger after running'
+  )
+
+  // app-ui-state-seed — the fix for the Orpheus Nightly fresh-install crash
+  // (getAppUiState() dereferencing an undefined row). After the data steps
+  // run, the singleton row must exist exactly once.
+  assert.equal(
+    (dsdb3.prepare('SELECT COUNT(*) c FROM app_ui_state').get() as { c: number }).c,
+    1,
+    'app-ui-state-seed must insert exactly one app_ui_state row on a fresh install'
+  )
+  assert.ok(
+    dsdb3.prepare('SELECT 1 FROM app_ui_state WHERE id = 1').get(),
+    'the seeded app_ui_state row must have id = 1'
+  )
+  // icon_pack_id is seeded explicitly as 'wisp' rather than relying on the
+  // (deliberately still-'legacy') SQL DEFAULT — see the long comment on the
+  // data step. A fresh row must match iconPacks.ts's own 'wisp' fallback so
+  // applyPersistedIconPack(getAppUiState().iconPackId) never boots a fresh
+  // install into the legacy icon.
+  assert.equal(
+    (
+      dsdb3.prepare('SELECT icon_pack_id FROM app_ui_state WHERE id = 1').get() as {
+        icon_pack_id: string
+      }
+    ).icon_pack_id,
+    'wisp',
+    'app-ui-state-seed must seed icon_pack_id as wisp, not the legacy SQL DEFAULT'
+  )
+  assert.ok(
+    dsdb3.prepare("SELECT 1 FROM applied_data_steps WHERE name='app-ui-state-seed'").get(),
+    'app-ui-state-seed must be recorded in the ledger after running'
+  )
+  // Idempotency: running the data steps again (as later app boots do via
+  // getAppUiState()'s ledger-gated sweep) must not produce a second row.
+  runDataSteps(dsdb3, { preRebuild: false })
+  assert.equal(
+    (dsdb3.prepare('SELECT COUNT(*) c FROM app_ui_state').get() as { c: number }).c,
+    1,
+    're-running data steps must not duplicate the app_ui_state singleton row'
   )
 
   // Panes v2 (U4) — the General panel must be seeded exactly once, and a
