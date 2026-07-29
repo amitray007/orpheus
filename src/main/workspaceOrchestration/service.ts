@@ -358,7 +358,11 @@ export class WorkspaceOrchestrationService {
           workspaceId,
           projectId: project.projectId,
           name,
-          nameIsAuto: input.name == null,
+          // Explicit `nameIsAuto` wins (renderer-supplied placeholder names
+          // must not be mistaken for a deliberate user rename); when the
+          // caller doesn't know about the field, fall back to inferring from
+          // name presence so pre-existing callers keep their old behaviour.
+          nameIsAuto: input.nameIsAuto ?? input.name == null,
           cwd,
           parentWorkspaceId: parent?.workspaceId ?? null,
           forkedFromConversationId:

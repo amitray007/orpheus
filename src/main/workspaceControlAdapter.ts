@@ -99,7 +99,12 @@ export class WorkspaceControlAdapter {
     return this.createAndRead(
       senderId,
       project,
-      { mode: 'local', name: args.name, presentation: 'background' },
+      // `args.name` is always a renderer-generated placeholder ("Workspace N"),
+      // never a deliberate user rename, so nameIsAuto must stay true here even
+      // though a name is supplied — otherwise the title pipeline (terminal
+      // title / lastTitle) gets permanently masked by resolveWorkspaceName's
+      // manual-name early return.
+      { mode: 'local', name: args.name, nameIsAuto: true, presentation: 'background' },
       null
     )
   }
@@ -117,6 +122,9 @@ export class WorkspaceControlAdapter {
       {
         mode: 'worktree',
         name: params.name,
+        // Same reasoning as createLocal: params.name is a branch-derived
+        // placeholder from the renderer, not a user-chosen name.
+        nameIsAuto: true,
         ...(branch ? { branch } : {}),
         presentation: 'background'
       },

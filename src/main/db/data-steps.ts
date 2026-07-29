@@ -449,6 +449,56 @@ const dataSteps: DataStep[] = [
       if (!listTables(db).includes('diagnostics_events')) return
       db.prepare('DELETE FROM diagnostics_events').run()
     }
+  },
+
+  // -------------------------------------------------------------------------
+  // Regression repair: workspace creation used to pass the renderer's
+  // generated placeholder name ("Workspace N") as an explicit `name`, which
+  // made the orchestration service infer `nameIsAuto: false` (name != null)
+  // even though the user never chose that name. resolveWorkspaceName.ts hard
+  // early-returns on `!nameIsAuto`, so every such row got permanently stuck
+  // showing "Workspace N" instead of ever picking up the terminal-derived
+  // title, even though last_title/session titles kept updating correctly
+  // underneath. The code path is fixed (service.ts now honours an explicit
+  // nameIsAuto instead of inferring it from name presence), but existing rows
+  // are already poisoned with name_is_auto = 0 and need a one-time repair.
+  //
+  // Only flip name_is_auto back to 1 for rows that are unambiguously still
+  // sitting on an untouched placeholder: the literal default 'New workspace',
+  // or the generated `Workspace <N>` pattern with NOTHING else appended.
+  // SQLite has no regex, so this is built from three GLOB checks combined:
+  // `GLOB 'Workspace [0-9]*'` alone is not enough (its trailing `*` matches
+  // any suffix, so it would wrongly accept 'Workspace 12abc'); adding
+  // `NOT GLOB 'Workspace [0-9]* *'` rejects a second space-separated token
+  // (catching 'Workspace 4 extra' and a trailing-space 'Workspace 3 '); and
+  // `NOT GLOB '*[^0-9]'` rejects any non-digit trailing character (catching
+  // 'Workspace 12abc' and 'Workspace -3', whose sign character isn't a
+  // digit). Verified empirically against a copy of the real DB — see the
+  // task's verification notes. A row that fails any check (i.e. anything a
+  // user could plausibly have typed) is left alone — when in doubt, don't
+  // touch it, since incorrectly repairing a genuine user rename would be
+  // worse than leaving a false-negative unrepaired.
+  // -------------------------------------------------------------------------
+  {
+    name: 'workspace-name-is-auto-repair',
+    legacyThroughVersion: 0,
+    alwaysRun: true,
+    run: (db) => {
+      if (!listTables(db).includes('workspaces')) return
+      db.prepare(
+        `UPDATE workspaces
+         SET name_is_auto = 1
+         WHERE name_is_auto = 0
+           AND (
+             name = 'New workspace'
+             OR (
+               name GLOB 'Workspace [0-9]*'
+               AND name NOT GLOB 'Workspace [0-9]* *'
+               AND name NOT GLOB '*[^0-9]'
+             )
+           )`
+      ).run()
+    }
   }
 ]
 
