@@ -130,7 +130,9 @@ import type {
   AutomationDefinitionDraft,
   AutomationCatalog,
   AutomationRunWithEligibility,
-  AutomationChangedEvent
+  AutomationChangedEvent,
+  ProdImportPreflight,
+  ProdImportResult
 } from './types'
 import type { RendererControlAck, RendererControlRequest } from './workbenchControl'
 
@@ -702,6 +704,11 @@ export interface InvokeChannelMap {
   'updates:install': { req: []; res: void }
   'updates:restart': { req: []; res: void }
   'updates:getState': { req: []; res: UpdateSnapshot }
+  // Nightly-only, strictly one-way production→nightly data import (see
+  // src/main/db/importProdData.ts). The handler re-gates on isNightly
+  // itself — never rely on the renderer not calling this in other variants.
+  'prodImport:preflight': { req: []; res: ProdImportPreflight }
+  'prodImport:run': { req: []; res: ProdImportResult }
   // Managed routing proxy (model-routing unit 04) — see src/main/routingProxy/.
   'routingProxy:getState': { req: []; res: RoutingProxySnapshot }
   'routingProxy:setEnabled': { req: [{ enabled: boolean }]; res: RoutingProxySnapshot }

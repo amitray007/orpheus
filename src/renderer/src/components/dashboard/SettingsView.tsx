@@ -28,7 +28,8 @@ import {
   Compass,
   ShareNetwork,
   EyeSlash,
-  Clock
+  Clock,
+  Database
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -125,6 +126,11 @@ const OrpheusPrivacySection = lazy(() =>
 const OrpheusUpdatesSection = lazy(() =>
   import('./settings/OrpheusUpdatesSection').then((m) => ({ default: m.OrpheusUpdatesSection }))
 )
+const OrpheusProdImportSection = lazy(() =>
+  import('./settings/OrpheusProdImportSection').then((m) => ({
+    default: m.OrpheusProdImportSection
+  }))
+)
 const OrpheusModelRoutingSection = lazy(() =>
   import('./settings/OrpheusModelRoutingSection').then((m) => ({
     default: m.OrpheusModelRoutingSection
@@ -192,6 +198,7 @@ export type SectionId =
   | 'orpheus-keep-awake'
   | 'orpheus-privacy'
   | 'orpheus-updates'
+  | 'orpheus-prod-import'
   | 'orpheus-model-routing'
   | 'orpheus-status'
   | 'orpheus-footer'
@@ -292,6 +299,21 @@ const GROUPS: SectionGroup[] = [
         icon: ArrowsClockwise,
         Component: OrpheusUpdatesSection
       },
+      // Nightly-only: lets a nightly build pull a one-way, read-only copy of
+      // the user's real production data in for testing. Never shown in dev,
+      // worktree, or production builds — see OrpheusProdImportSection.tsx's
+      // header comment for why this mirrors OrpheusUpdatesSection's dev-only
+      // debug seam in the opposite direction.
+      ...(__ORPHEUS_MODE__ === 'nightly'
+        ? [
+            {
+              id: 'orpheus-prod-import' as const,
+              label: 'Import Production Data',
+              icon: Database,
+              Component: OrpheusProdImportSection
+            }
+          ]
+        : []),
       {
         id: 'orpheus-model-routing',
         label: 'Model Routing',

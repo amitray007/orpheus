@@ -154,6 +154,7 @@ import { registerFilesIpc } from './ipc/files'
 import { registerShellIpc } from './ipc/shell'
 import { registerSystemIpc } from './ipc/system'
 import { registerUpdatesIpc } from './ipc/updates'
+import { registerProdImportIpc } from './ipc/prodImport'
 import { registerRoutingProxyIpc } from './ipc/routingProxy'
 import { registerProvidersIpc } from './ipc/providers'
 import { registerAliasesIpc } from './ipc/aliases'
@@ -1266,6 +1267,8 @@ registerHooksIpc({ reconcileHooks })
 registerSystemIpc({ getAppUiState })
 
 registerUpdatesIpc()
+
+registerProdImportIpc()
 
 registerRoutingProxyIpc()
 

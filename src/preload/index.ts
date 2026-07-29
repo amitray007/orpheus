@@ -110,7 +110,9 @@ import type {
   AutomationDefinitionDraft,
   AutomationCatalog,
   AutomationRunWithEligibility,
-  AutomationChangedEvent
+  AutomationChangedEvent,
+  ProdImportPreflight,
+  ProdImportResult
 } from '../shared/types'
 import type { RendererControlAck, RendererControlRequest } from '../shared/workbenchControl'
 
@@ -920,6 +922,10 @@ const api = {
       subscribe(PUSH_CHANNELS.updatesDone, cb),
     onCheckResult: (cb: (result: UpdateCheckResult) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.updatesCheckResult, cb)
+  },
+  prodImport: {
+    preflight: (): Promise<ProdImportPreflight> => invoke('prodImport:preflight'),
+    run: (): Promise<ProdImportResult> => invoke('prodImport:run')
   },
   routingProxy: {
     getState: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:getState'),

@@ -11,10 +11,17 @@ import { runMigrations } from './cutover'
 
 let _db: Database.Database | null = null
 
+// Single source of truth for the on-disk path of THIS process's own DB
+// (nightly's, dev's, prod's — whichever variant is currently running). Never
+// hardcode 'orpheus.sqlite' + userData elsewhere; import this instead.
+export function getDbPath(): string {
+  return nodePath.join(app.getPath('userData'), 'orpheus.sqlite')
+}
+
 export function getDb(): Database.Database {
   if (_db) return _db
 
-  const dbPath = nodePath.join(app.getPath('userData'), 'orpheus.sqlite')
+  const dbPath = getDbPath()
   const db = new Database(dbPath)
 
   // WAL mode for better concurrent read performance
@@ -51,6 +58,20 @@ export function getDb(): Database.Database {
 // which already satisfies the security invariant of never logging cell
 // values since nothing is logged yet.
 export function migrate(db: Database.Database, dbPath?: string): void {
-  const resolvedPath = dbPath ?? nodePath.join(app.getPath('userData'), 'orpheus.sqlite')
+  const resolvedPath = dbPath ?? getDbPath()
   runMigrations(db, { dbPath: resolvedPath })
+}
+
+// Closes the cached singleton connection, if open, and clears it so a
+// subsequent getDb() call reopens fresh. Used only by the one-way
+// production→nightly import (importProdData.ts): the DB file must be closed
+// before it can be safely replaced on disk, and the app is relaunched
+// immediately after so a fresh getDb() reopens the just-imported file.
+// Never call this in any other flow — every other code path assumes the
+// singleton stays open for the life of the process.
+export function closeDb(): void {
+  if (_db) {
+    _db.close()
+    _db = null
+  }
 }

@@ -3123,3 +3123,40 @@ export interface ModelAliasesState {
   enabled: boolean
   aliases: ModelAliasSummary[]
 }
+
+// ---------------------------------------------------------------------------
+// "Import data from production Orpheus" (nightly-only) — see
+// src/main/db/importProdData.ts for the full one-way import implementation.
+// ---------------------------------------------------------------------------
+
+/** Read-only snapshot of whether an import is even possible, rendered by the
+ *  Settings UI before the user confirms. `prodDbPath` is shown so the user
+ *  can see exactly which file would be read. */
+export interface ProdImportPreflight {
+  prodDbPath: string
+  prodFound: boolean
+  /** true iff production's on-disk schema/ledger contains a table or a
+   *  named data-step this nightly build doesn't recognize — i.e. production
+   *  was migrated by a build newer than this one. Import is refused when
+   *  true (see isProdSchemaNewer's doc comment in importProdData.ts). */
+  schemaNewer: boolean
+}
+
+/** Discriminated result of actually running the import. `ok: true` is
+ *  never actually observed by the renderer in practice — a successful
+ *  import ends in app.relaunch()/app.exit(0) before any IPC response can be
+ *  serialized — but the type stays total so the handler/tests aren't forced
+ *  to lie about the return type. */
+export type ProdImportResult =
+  | { ok: true }
+  | {
+      ok: false
+      error:
+        | 'not_nightly'
+        | 'not_found'
+        | 'schema_newer'
+        | 'snapshot_failed'
+        | 'backup_failed'
+        | 'swap_failed'
+      message?: string
+    }
