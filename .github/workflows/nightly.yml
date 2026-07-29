@@ -1,0 +1,230 @@
+name: Nightly Build
+
+# How this works:
+#
+#   Manual-only (workflow_dispatch). Builds an unreleased snapshot of a given
+#   ref (default: staging) with a synthetic version string that is NEVER
+#   written back to package.json — computed entirely in-workflow so staging's
+#   package.json version never drifts (see CLAUDE.md failure mode #4, which
+#   this workflow must not repeat). Publishes the dmg + a matching cask to
+#   amitray007/homebrew-tap under nightly-scoped tags that can never collide
+#   with the stable release tags release-please.yml owns.
+#
+#   This workflow does NOT touch release-please.yml or release.yml, does NOT
+#   run on push/schedule, and does NOT bump any version anywhere on disk.
+#
+# Required secrets:
+#
+#   HOMEBREW_TAP_TOKEN — fine-grained PAT with `contents: write` on
+#     amitray007/homebrew-tap (already configured; same one release-please.yml
+#     and release.yml use).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag, or SHA to build'
+        required: false
+        default: staging
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref }}
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.10
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Compute nightly version
+        id: version
+        run: |
+          BASE=$(node -p "require('./package.json').version")
+          DATE=$(date -u +%Y%m%d)
+          SHORT_SHA=$(git rev-parse --short=8 HEAD)
+          VERSION="${BASE}-nightly.${DATE}.${SHORT_SHA}"
+
+          echo "[version] base=$BASE date=$DATE sha=$SHORT_SHA"
+          echo "[version] computed nightly version: $VERSION"
+
+          # NOTE: this is NEVER written to package.json. electron-builder will
+          # still read package.json's real version (e.g. 0.5.6) and name the
+          # dmg accordingly — we rename the artifact to embed $VERSION below,
+          # after the build, so package.json on disk is never touched.
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Typecheck (gate)
+        run: bun run typecheck
+
+      - name: Smoke-test DB migrations (gate)
+        run: bun run test:db
+
+      - name: Agentic regression (gate)
+        run: bun run test:agentic
+
+      - name: Build native + renderer (nightly variant)
+        run: |
+          bun run build:native
+          ORPHEUS_MODE=nightly bun run build
+
+      - name: Build .dmg
+        # --publish never is load-bearing: electron-builder otherwise sees
+        # CI=true and tries to implicitly publish to GitHub Releases without
+        # the right token, failing the step. We publish explicitly below.
+        run: bunx electron-builder --config electron-builder-nightly.yml --publish never
+
+      - name: Rename dmg + compute sha256
+        id: sha
+        run: |
+          NIGHTLY_VERSION="${{ steps.version.outputs.version }}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+
+          # electron-builder names the artifact from package.json's real
+          # version (e.g. dist-nightly/orpheus-0.5.6.dmg) — it has no idea
+          # about our synthetic nightly version string. The tap cask
+          # (scripts/orpheus-nightly-cask.template.rb) hard-codes the download
+          # URL to "orpheus-nightly-#{version}.dmg" under tag
+          # "orpheus-nightly-v#{version}". So we must rename the built dmg to
+          # match exactly before computing the sha256 that gets baked into
+          # the cask — sha and filename must describe the SAME bytes we
+          # upload.
+          SRC="dist-nightly/orpheus-${PKG_VERSION}.dmg"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::expected built dmg not found at $SRC"
+            ls -la dist-nightly || true
+            exit 1
+          fi
+
+          DEST="dist-nightly/orpheus-nightly-${NIGHTLY_VERSION}.dmg"
+          mv "$SRC" "$DEST"
+
+          if [ ! -f "$DEST" ]; then
+            echo "::error::renamed dmg not found at $DEST"
+            ls -la dist-nightly || true
+            exit 1
+          fi
+
+          SHA=$(shasum -a 256 "$DEST" | awk '{print $1}')
+          echo "[sha] dmg=$DEST sha256=$SHA"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "dmg=$DEST" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: amitray007/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Publish dmg to homebrew-tap release
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          NIGHTLY_VERSION="${{ steps.version.outputs.version }}"
+          TAP_TAG="orpheus-nightly-v${NIGHTLY_VERSION}"
+          DMG="${{ steps.sha.outputs.dmg }}"
+
+          # The homebrew-tap repo has IMMUTABLE releases enabled: assets must
+          # be attached AT CREATION (a separate `gh release upload` 422s, and
+          # the release can't be clobbered). So if a release for this tag
+          # already exists (e.g. a retried run), delete it + its tag first,
+          # then create fresh with the dmg attached in one shot. Mirrors
+          # release-please.yml's build-and-attach job exactly.
+          if gh release view "$TAP_TAG" --repo amitray007/homebrew-tap >/dev/null 2>&1; then
+            echo "[release] $TAP_TAG already exists (immutable) — deleting to recreate with asset"
+            gh release delete "$TAP_TAG" --repo amitray007/homebrew-tap --yes --cleanup-tag || \
+              gh release delete "$TAP_TAG" --repo amitray007/homebrew-tap --yes
+            # --cleanup-tag may not exist on older gh; fall back to explicit tag delete
+            gh api -X DELETE "repos/amitray007/homebrew-tap/git/refs/tags/$TAP_TAG" 2>/dev/null || true
+          fi
+
+          gh release create "$TAP_TAG" \
+            "$DMG" \
+            --repo amitray007/homebrew-tap \
+            --prerelease \
+            --title "Orpheus Nightly ${NIGHTLY_VERSION}" \
+            --notes "Orpheus nightly build ${NIGHTLY_VERSION}, built from amitray007/orpheus@${{ inputs.ref }} (${{ github.sha }}). Unstable — for testing only."
+
+      - name: Render and push nightly cask + scoped tag
+        run: |
+          NIGHTLY_VERSION="${{ steps.version.outputs.version }}"
+
+          mkdir -p homebrew-tap/Casks
+          sed -e "s/{{VERSION}}/${NIGHTLY_VERSION}/g" \
+              -e "s/{{SHA256}}/${{ steps.sha.outputs.sha }}/g" \
+              scripts/orpheus-nightly-cask.template.rb > homebrew-tap/Casks/orpheus-nightly.rb
+
+          cd homebrew-tap
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/orpheus-nightly.rb
+          git commit -m "orpheus-nightly: bump to ${NIGHTLY_VERSION}"
+
+          # Scoped tag namespace (orpheus-nightly/*) so it can never collide
+          # with the stable cask-repo tag namespace (orpheus/orpheus-v*) that
+          # release-please.yml's build-and-attach job pushes.
+          SCOPED_TAG="orpheus-nightly/orpheus-nightly-v${NIGHTLY_VERSION}"
+          git tag "$SCOPED_TAG"
+          git push origin HEAD "$SCOPED_TAG"
+
+      - name: Prune old nightly releases (keep 10 newest)
+        # Tolerant: a pruning failure must never fail the workflow after a
+        # successful publish above. Every command here is best-effort and
+        # logged; nothing in this step can affect the exit code of the job
+        # beyond this step itself (continue-on-error belt-and-suspenders).
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set +e
+          echo "[prune] listing nightly releases on amitray007/homebrew-tap"
+
+          # Fetch tag + createdAt, filter STRICTLY to the orpheus-nightly-v
+          # prefix so a stable "orpheus-v*" release can never be touched,
+          # then sort by actual creation date (not lexical tag order, since
+          # e.g. "0.5.10-nightly..." sorts before "0.5.6-nightly..." as text).
+          gh release list --repo amitray007/homebrew-tap --limit 200 \
+            --json tagName,createdAt \
+            --jq '.[] | select(.tagName | startswith("orpheus-nightly-v")) | [.createdAt, .tagName] | @tsv' \
+            > /tmp/nightly_releases.tsv
+
+          TOTAL=$(wc -l < /tmp/nightly_releases.tsv | tr -d ' ')
+          echo "[prune] found $TOTAL nightly release(s)"
+
+          # Newest first, skip the first 10, delete the rest.
+          sort -r /tmp/nightly_releases.tsv | tail -n +11 > /tmp/nightly_to_delete.tsv
+
+          TO_DELETE=$(wc -l < /tmp/nightly_to_delete.tsv | tr -d ' ')
+          echo "[prune] $TO_DELETE release(s) beyond the 10 newest will be removed"
+
+          while IFS=$'\t' read -r CREATED TAG; do
+            [ -z "$TAG" ] && continue
+            echo "[prune] deleting $TAG (created $CREATED)"
+            gh release delete "$TAG" --repo amitray007/homebrew-tap --yes --cleanup-tag || \
+              gh release delete "$TAG" --repo amitray007/homebrew-tap --yes || \
+              echo "[prune] WARN: failed to delete release $TAG"
+            gh api -X DELETE "repos/amitray007/homebrew-tap/git/refs/tags/$TAG" 2>/dev/null || true
+          done < /tmp/nightly_to_delete.tsv
+
+          echo "[prune] done"
+          exit 0
