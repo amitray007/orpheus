@@ -1290,9 +1290,35 @@ export function invalidateClaudeGlobalSettingsCache(): void {
 export function getClaudeGlobalSettings(): ClaudeGlobalSettings {
   if (cachedGlobalSettings) return cachedGlobalSettings
   const db = getDb()
-  const row = db
-    .prepare('SELECT * FROM claude_global_settings WHERE id = 1')
-    .get() as ClaudeSettingsRow
+  let row = db.prepare('SELECT * FROM claude_global_settings WHERE id = 1').get() as
+    | ClaudeSettingsRow
+    | undefined
+  if (!row) {
+    // The claude-global-settings-seed data step (data-steps.ts) should always
+    // have inserted this singleton row by the time we get here. Self-heal
+    // instead of trusting that: insert it now and re-select — mirrors
+    // getAppUiState()'s self-heal in uiState.ts for the sibling singleton.
+    console.warn(
+      '[claudeSettings] claude_global_settings row missing at id=1 — self-healing by inserting default'
+    )
+    db.prepare('INSERT OR IGNORE INTO claude_global_settings (id, updated_at) VALUES (1, ?)').run(
+      Date.now()
+    )
+    row = db.prepare('SELECT * FROM claude_global_settings WHERE id = 1').get() as
+      | ClaudeSettingsRow
+      | undefined
+  }
+  if (!row) {
+    // Still missing (should be unreachable). Unlike app_ui_state — which is
+    // pure UI preference and safe to fall back to in-memory defaults for —
+    // claude_global_settings carries the launch-composition source of truth
+    // (model, permissions, auth). Silently proceeding with a synthetic row
+    // could launch `claude` with the wrong permissions or auth. Fail loudly
+    // instead of letting `undefined` reach rowToRecord several frames deeper.
+    throw new Error(
+      'claude_global_settings: singleton row (id=1) missing and self-heal insert failed'
+    )
+  }
   cachedGlobalSettings = rowToRecord(row)
   return cachedGlobalSettings
 }
@@ -1457,9 +1483,19 @@ export function updateClaudeGlobalSettings(patch: ClaudeGlobalSettingsPatch): Cl
     ...values
   )
 
-  const row = db
-    .prepare('SELECT * FROM claude_global_settings WHERE id = 1')
-    .get() as ClaudeSettingsRow
+  // Same undefined-row hazard as getClaudeGlobalSettings(): if the singleton
+  // row were somehow missing, the UPDATE above silently affects 0 rows
+  // (SQLite doesn't error on that) and this re-select would return
+  // undefined, crashing rowToRecord several frames deeper. Invalidate the
+  // cache and route through getClaudeGlobalSettings()'s self-heal-then-throw
+  // guard instead of duplicating it here.
+  const row = db.prepare('SELECT * FROM claude_global_settings WHERE id = 1').get() as
+    | ClaudeSettingsRow
+    | undefined
+  if (!row) {
+    cachedGlobalSettings = null
+    return getClaudeGlobalSettings()
+  }
   const fresh = rowToRecord(row)
   // Refresh the module cache so subsequent readers (terminal:mount,
   // recomputeDirty) see the new values immediately.

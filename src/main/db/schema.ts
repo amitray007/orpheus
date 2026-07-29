@@ -262,7 +262,7 @@ export const schema: SchemaDef = {
   },
 
   // ---------------------------------------------------------------------
-  // claude_global_settings (119 columns)
+  // claude_global_settings (121 columns)
   // ---------------------------------------------------------------------
   claude_global_settings: {
     columns: {

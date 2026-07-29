@@ -465,6 +465,47 @@ const dataSteps: DataStep[] = [
   },
 
   // -------------------------------------------------------------------------
+  // claude_global_settings default row seed. Same missing-singleton-seed bug
+  // class as app_ui_state above: this singleton was NEVER seeded anywhere in
+  // the codebase — every existing install only has its row for historical
+  // reasons (an older migration path that no longer exists). getClaudeGlobal
+  // Settings() does `SELECT * ... WHERE id = 1` and (before the defense-in-
+  // depth fix in claudeSettings.ts) trusted the row exists; on a genuinely
+  // fresh data dir (e.g. the Orpheus Nightly variant, which gets its own
+  // `~/Library/Application Support/...` dir) `claude_global_settings` has
+  // zero rows and the app crashed at launch with "Cannot read properties of
+  // undefined (reading 'model')" inside rowToRecord.
+  //
+  // Same alwaysRun escape hatch as keep-awake-seed/app-ui-state-seed above,
+  // for the same reason: legacyThroughVersion: 0 alone would let
+  // seedLedgerFromLegacy treat "fresh install, nothing to fix" as "already
+  // applied," which is exactly wrong here — a fresh install is the one case
+  // that most needs this row inserted. alwaysRun: true guarantees
+  // runDataSteps executes it at least once on every install (fresh or
+  // legacy); the ledger then prevents it from running again.
+  //
+  // `id` and `updated_at` are supplied explicitly — every other column in
+  // the claude_global_settings TableDef (schema.ts, 121 columns) either
+  // carries a NOT NULL DEFAULT or is nullable, and `updated_at` is the one
+  // NOT NULL column with no schema default (INTEGER_NOT_NULL), so it's the
+  // one value this step must provide. Keeping the column list minimal means
+  // new claude_global_settings columns never require touching this step —
+  // they pick up their own schema default automatically, so this seed can't
+  // go stale as the table grows. INSERT OR IGNORE means this can never touch
+  // an existing user's already-seeded row, however they've configured it.
+  // -------------------------------------------------------------------------
+  {
+    name: 'claude-global-settings-seed',
+    legacyThroughVersion: 0,
+    alwaysRun: true,
+    run: (db) => {
+      db.prepare(`INSERT OR IGNORE INTO claude_global_settings (id, updated_at) VALUES (1, ?)`).run(
+        Date.now()
+      )
+    }
+  },
+
+  // -------------------------------------------------------------------------
   // 6. Panes v2 (U4) — seed the one always-there `General` panel
   //    (docs/plans/2026-07-10-001-feat-panes-v2-toplevel-layouts-plan.md,
   //    R4/KTD2). Same fresh-install rationale + alwaysRun escape hatch as
