@@ -250,9 +250,13 @@ function createValue(record: WorkspaceRecord): CreateWorkspaceValue {
     cwd: '/caller/controlled/path'
   })
   assert.strictEqual(result, created)
+  // nameIsAuto: true — the renderer's name is a generated placeholder
+  // ("Workspace N"), never a deliberate user rename, so the row must stay
+  // eligible for terminal-title updates.
   assert.deepEqual(invocations[0]?.input, {
     mode: 'local',
     name: 'Local created',
+    nameIsAuto: true,
     presentation: 'background'
   })
   assert.equal(invocations[0]?.context.projectId, 'project-1')
@@ -278,9 +282,11 @@ function createValue(record: WorkspaceRecord): CreateWorkspaceValue {
     await adapter.createWorktree(22, 'project-1', { name: 'Worktree', branch: '   ' }),
     created
   )
+  // Same as createLocal: the branch-derived name is a placeholder.
   assert.deepEqual(invocations[0]?.input, {
     mode: 'worktree',
     name: 'Worktree',
+    nameIsAuto: true,
     presentation: 'background'
   })
   assert.equal('cwd' in (invocations[0]?.input as Record<string, unknown>), false)
