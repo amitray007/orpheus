@@ -2667,14 +2667,19 @@ if (!app.requestSingleInstanceLock()) {
         app.exit(1)
         return
       }
-      startDiagnostics()
-      syncDiagFlags()
 
       // Apply the persisted icon pack to the live Dock icon on launch (Task 3
       // — "survives relaunch"). Fire-and-forget: total/never-throws internally
       // (see applyPersistedIconPack's doc comment), and must never block
-      // window creation on a slow/missing catalog.
+      // window creation on a slow/missing catalog. Runs as early as possible —
+      // right after getDb() succeeds, since applyPersistedIconPack reads
+      // getAppUiState() which requires a migrated DB connection — so it can't
+      // run any earlier than this. Placed before startDiagnostics()/
+      // syncDiagFlags() so it no longer waits on those steps.
       void applyPersistedIconPack(getAppUiState().iconPackId)
+
+      startDiagnostics()
+      syncDiagFlags()
 
       // Build the native app menu with the Privacy Mode checkbox item wired to
       // uiState — best-effort so a menu failure never blocks boot.

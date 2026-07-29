@@ -20,9 +20,13 @@
 //
 // Persistence: only the pack `id` is ever stored (see uiState.ts's
 // iconPackId column) — never a path or version, per the README's explicit
-// contract note. Unknown/missing ids fall back to 'legacy', then to the
-// first valid pack if legacy itself is absent, matching the Task 2
-// requirement.
+// contract note. A persisted id is read back verbatim whenever it matches a
+// pack in the catalog — so a user who deliberately picked 'legacy' (or any
+// other pack) keeps that choice forever; the fallback below only ever
+// triggers for a genuinely unknown/missing id (e.g. a brand-new install with
+// no row yet, or an id that no longer resolves to a real pack). That
+// fallback lands on 'wisp' (the default pack), then the first valid pack if
+// 'wisp' itself is somehow absent from the catalog.
 //
 // Live apply: app.dock.setIcon() (macOS-only, guarded) updates the running
 // Dock icon immediately from the variant's app/app.png (the manifest's
@@ -374,8 +378,11 @@ export async function discoverIconPacksAt(catalogRoot: string): Promise<Resolved
 }
 
 // ---------------------------------------------------------------------------
-// Fallback resolution — Task 2: unknown/missing persisted id falls back to
-// 'legacy', then to the first valid pack if legacy itself is absent.
+// Fallback resolution — a persisted id that matches a real pack wins,
+// verbatim, no matter what it is (this is how a user's deliberate choice of
+// 'legacy' survives forever). Only a genuinely unknown/missing persisted id
+// falls back — to 'wisp' (the default pack), then to the first valid pack if
+// 'wisp' itself is absent from the catalog.
 // ---------------------------------------------------------------------------
 
 export function resolveSelectedPack(
@@ -384,8 +391,8 @@ export function resolveSelectedPack(
 ): ResolvedIconPack | null {
   const exact = packs.find((p) => p.id === persistedId)
   if (exact) return exact
-  const legacy = packs.find((p) => p.id === 'legacy')
-  if (legacy) return legacy
+  const wisp = packs.find((p) => p.id === 'wisp')
+  if (wisp) return wisp
   return packs[0] ?? null
 }
 
@@ -425,7 +432,7 @@ export async function getIconPackCatalog(persistedId: string): Promise<{
     }))
   )
 
-  return { packs: summaries, selectedId: selected?.id ?? 'legacy' }
+  return { packs: summaries, selectedId: selected?.id ?? 'wisp' }
 }
 
 // ---------------------------------------------------------------------------
