@@ -757,7 +757,21 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
 
   db.prepare(`UPDATE app_ui_state SET ${setClauses.join(', ')} WHERE id = ?`).run(...values)
 
-  const row = db.prepare('SELECT * FROM app_ui_state WHERE id = 1').get() as AppUiStateRow
+  // Same undefined-row hazard getAppUiState() self-heals above: if the
+  // singleton row were missing, the UPDATE silently affects 0 rows (SQLite
+  // doesn't error on that) and this re-select returns undefined, crashing
+  // rowToRecord on the next property access. Unreachable today — createWindow()
+  // calls getAppUiState() (which seeds/self-heals) before any caller of this
+  // function can fire, and nothing ever DELETEs the row — but that's an
+  // ordering accident, not a guarantee this function can rely on. Route
+  // through getAppUiState()'s self-heal rather than duplicating it here.
+  const row = db.prepare('SELECT * FROM app_ui_state WHERE id = 1').get() as
+    | AppUiStateRow
+    | undefined
+  if (!row) {
+    cachedState = null
+    return getAppUiState()
+  }
   cachedState = rowToRecord(row)
   return cachedState
 }

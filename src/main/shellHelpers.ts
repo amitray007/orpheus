@@ -149,23 +149,41 @@ export async function openInEditor(path: string, preferredApp?: string): Promise
   try {
     // 0. Honor explicit preferred app (if it exists)
     if (preferredApp && appExists(preferredApp)) {
-      childProcess
-        .spawn('open', ['-a', preferredApp, path], { detached: true, stdio: 'ignore' })
-        .unref()
+      const child = childProcess.spawn('open', ['-a', preferredApp, path], {
+        detached: true,
+        stdio: 'ignore'
+      })
+      // spawn() emits an async 'error' (e.g. ENOENT) after this function has
+      // already returned, so it escapes the surrounding try/catch. With no
+      // listener, Node treats it as an uncaught exception and index.ts's
+      // uncaughtException handler calls app.exit(1) — crashing the app over
+      // a single "Open in Editor" click. Log instead of crashing.
+      child.on('error', (err) => console.warn('[shell] failed to launch editor:', err))
+      child.unref()
       return
     }
     // 1. Honour EDITOR / VISUAL env vars
     const envEditor = process.env.EDITOR || process.env.VISUAL
     if (envEditor) {
-      childProcess.spawn(envEditor, [path], { detached: true, stdio: 'ignore' }).unref()
+      // Same async-ENOENT hazard as above — and more likely to fire here:
+      // EDITOR/VISUAL is free-text from the user's env/dotfiles and commonly
+      // points at a binary (nvim, subl, hx, …) that isn't actually installed.
+      const child = childProcess.spawn(envEditor, [path], { detached: true, stdio: 'ignore' })
+      child.on('error', (err) => console.warn('[shell] failed to launch editor:', err))
+      child.unref()
       return
     }
     // 2. Detect installed .app bundles in /Applications
     const editors = listEditorApps()
     for (const editor of editors) {
-      childProcess
-        .spawn('open', ['-a', editor.name, path], { detached: true, stdio: 'ignore' })
-        .unref()
+      const child = childProcess.spawn('open', ['-a', editor.name, path], {
+        detached: true,
+        stdio: 'ignore'
+      })
+      // Same async-ENOENT hazard as above — guard so a bad `open` invocation
+      // can't take down the app.
+      child.on('error', (err) => console.warn('[shell] failed to launch editor:', err))
+      child.unref()
       return
     }
     // 3. OS default fallback
@@ -180,23 +198,36 @@ export async function openTerminal(path: string, preferredApp?: string): Promise
     if (process.platform === 'darwin') {
       // 0. Honor explicit preferred app (if it exists)
       if (preferredApp && appExists(preferredApp)) {
-        childProcess
-          .spawn('open', ['-a', preferredApp, path], { detached: true, stdio: 'ignore' })
-          .unref()
+        const child = childProcess.spawn('open', ['-a', preferredApp, path], {
+          detached: true,
+          stdio: 'ignore'
+        })
+        // spawn() emits an async 'error' (e.g. ENOENT) after this function
+        // has already returned, so it escapes the surrounding try/catch —
+        // an unhandled one becomes an uncaught exception and crashes the
+        // whole app (see index.ts's uncaughtException -> app.exit(1)).
+        child.on('error', (err) => console.warn('[shell] failed to launch terminal:', err))
+        child.unref()
         return
       }
       // 1. Detect installed terminal apps
       const terminals = listTerminalApps()
       for (const term of terminals) {
-        childProcess
-          .spawn('open', ['-a', term.name, path], { detached: true, stdio: 'ignore' })
-          .unref()
+        const child = childProcess.spawn('open', ['-a', term.name, path], {
+          detached: true,
+          stdio: 'ignore'
+        })
+        child.on('error', (err) => console.warn('[shell] failed to launch terminal:', err))
+        child.unref()
         return
       }
       // 2. Fallback: built-in Terminal
-      childProcess
-        .spawn('open', ['-a', 'Terminal', path], { detached: true, stdio: 'ignore' })
-        .unref()
+      const child = childProcess.spawn('open', ['-a', 'Terminal', path], {
+        detached: true,
+        stdio: 'ignore'
+      })
+      child.on('error', (err) => console.warn('[shell] failed to launch terminal:', err))
+      child.unref()
     } else {
       // Non-macOS: best-effort via shell.openPath
       await shell.openPath(path)
