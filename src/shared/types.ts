@@ -627,6 +627,11 @@ export type AppUiState = {
   // Privacy mode (v66) — when on, projects/workspaces flagged classified/
   // hidden get redacted/excluded treatment in the UI.
   privacyMode: boolean
+  // App icon pack — the selected pack `id` from the resources/icon-sets/
+  // catalog (see src/main/iconPacks.ts). Never a path or version. Default
+  // 'legacy'; falls back to 'legacy' then the first valid pack at read time
+  // if the persisted id's pack no longer exists on disk.
+  iconPackId: string
   updatedAt: number
 }
 
@@ -3122,4 +3127,68 @@ export interface ModelAliasTargetOption {
 export interface ModelAliasesState {
   enabled: boolean
   aliases: ModelAliasSummary[]
+}
+
+// ---------------------------------------------------------------------------
+// "Import data from production Orpheus" (nightly-only) — see
+// src/main/db/importProdData.ts for the full one-way import implementation.
+// ---------------------------------------------------------------------------
+
+/** Read-only snapshot of whether an import is even possible, rendered by the
+ *  Settings UI before the user confirms. `prodDbPath` is shown so the user
+ *  can see exactly which file would be read. */
+export interface ProdImportPreflight {
+  prodDbPath: string
+  prodFound: boolean
+  /** true iff production's on-disk schema/ledger contains a table or a
+   *  named data-step this nightly build doesn't recognize — i.e. production
+   *  was migrated by a build newer than this one. Import is refused when
+   *  true (see isProdSchemaNewer's doc comment in importProdData.ts). */
+  schemaNewer: boolean
+}
+
+/** Discriminated result of actually running the import. `ok: true` is
+ *  never actually observed by the renderer in practice — a successful
+ *  import ends in app.relaunch()/app.exit(0) before any IPC response can be
+ *  serialized — but the type stays total so the handler/tests aren't forced
+ *  to lie about the return type. */
+export type ProdImportResult =
+  | { ok: true }
+  | {
+      ok: false
+      error:
+        | 'not_nightly'
+        | 'not_found'
+        | 'schema_newer'
+        | 'snapshot_failed'
+        | 'backup_failed'
+        | 'swap_failed'
+      message?: string
+    }
+
+// ---------------------------------------------------------------------------
+// Icon packs — Settings > General "App icon" picker. See src/main/iconPacks.ts
+// for the discovery/validation service and resources/icon-sets/README.md for
+// the on-disk catalog contract.
+// ---------------------------------------------------------------------------
+
+/** One selectable icon pack, resolved for the CURRENT build variant only —
+ *  the renderer never sees the other variants' assets. `previewDataUri` is
+ *  the variant's previews/preview@2x.png, inlined as a data: URI (see
+ *  loadPreviewDataUri in iconPacks.ts) since the renderer sandbox cannot load
+ *  arbitrary main-process file paths directly. */
+export interface IconPackSummary {
+  id: string
+  name: string
+  description: string
+  /** Data URI of previews/preview@2x.png for the resolved variant, or null if
+   *  the preview asset failed to read (pack still selectable, just no image). */
+  previewDataUri: string | null
+}
+
+/** Everything the Settings picker needs in one round trip: the list of valid
+ *  packs (already filtered/validated) and which one is currently active. */
+export interface IconPackCatalogResult {
+  packs: IconPackSummary[]
+  selectedId: string
 }

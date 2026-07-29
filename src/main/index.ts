@@ -66,6 +66,7 @@ import {
   listTerminals
 } from './paneStore'
 import { getAppUiState, updateAppUiState } from './uiState'
+import { applyPersistedIconPack } from './iconPacks'
 import { onActivityBatch } from './activitySink'
 import {
   startNotifyServer,
@@ -154,6 +155,7 @@ import { registerFilesIpc } from './ipc/files'
 import { registerShellIpc } from './ipc/shell'
 import { registerSystemIpc } from './ipc/system'
 import { registerUpdatesIpc } from './ipc/updates'
+import { registerProdImportIpc } from './ipc/prodImport'
 import { registerRoutingProxyIpc } from './ipc/routingProxy'
 import { registerProvidersIpc } from './ipc/providers'
 import { registerAliasesIpc } from './ipc/aliases'
@@ -217,6 +219,7 @@ import { registerWorkspacesIpc } from './ipc/workspaces'
 import { registerActionsIpc } from './ipc/actions'
 import { registerOverlayIpc } from './ipc/overlay'
 import { registerMiscIpc } from './ipc/misc'
+import { registerIconPacksIpc } from './ipc/iconPacks'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
 import { WorkspaceControlAdapter } from './workspaceControlAdapter'
 import {
@@ -1126,6 +1129,8 @@ registerMiscIpc({
   getNativeWindowOcclusionVisible: () => nativeWindowOcclusionVisible
 })
 
+registerIconPacksIpc()
+
 // ---------------------------------------------------------------------------
 // Projects IPC
 // ---------------------------------------------------------------------------
@@ -1266,6 +1271,8 @@ registerHooksIpc({ reconcileHooks })
 registerSystemIpc({ getAppUiState })
 
 registerUpdatesIpc()
+
+registerProdImportIpc()
 
 registerRoutingProxyIpc()
 
@@ -2662,6 +2669,12 @@ if (!app.requestSingleInstanceLock()) {
       }
       startDiagnostics()
       syncDiagFlags()
+
+      // Apply the persisted icon pack to the live Dock icon on launch (Task 3
+      // — "survives relaunch"). Fire-and-forget: total/never-throws internally
+      // (see applyPersistedIconPack's doc comment), and must never block
+      // window creation on a slow/missing catalog.
+      void applyPersistedIconPack(getAppUiState().iconPackId)
 
       // Build the native app menu with the Privacy Mode checkbox item wired to
       // uiState — best-effort so a menu failure never blocks boot.

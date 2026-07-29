@@ -55,10 +55,14 @@ const sessionStateSource = readRepoFile('src/main/sessionState.ts')
   ]) {
     assert.ok(adapterSource.includes(envName), `missing server-owned env: ${envName}`)
   }
+  // The variant ladder lives in a module-level DATA_VARIANT constant (extracted
+  // so buildMountEnv stays under the cognitive-complexity cap); assert on the
+  // constant's definition plus the fact that the env still reads from it.
   assert.match(
     adapterSource,
-    /ORPHEUS_DATA_VARIANT:\s*isWorktreeBuild\s*\?\s*'wt'\s*:\s*isDev\s*\?\s*'dev'\s*:\s*'prod'/
+    /const DATA_VARIANT =\s*isWorktreeBuild\s*\?\s*'wt'\s*:\s*isNightly\s*\?\s*'nightly'\s*:\s*isDev\s*\?\s*'dev'\s*:\s*'prod'/
   )
+  assert.match(adapterSource, /ORPHEUS_DATA_VARIANT:\s*DATA_VARIANT/)
   assert.ok(adapterSource.includes('buildManagedMcpFlagsString(process.resourcesPath)'))
   assert.match(
     adapterSource,

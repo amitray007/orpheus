@@ -64,7 +64,11 @@ export const UI_STATE_DEFAULTS = {
   // GitHub username greeting (D4) — mirrors app_ui_state's github_username
   // SQL default (none/NULL) in schema.ts. Null until the first successful
   // `gh api user` refresh.
-  githubUsername: null
+  githubUsername: null,
+  // App icon pack (Settings > General) — mirrors app_ui_state's
+  // icon_pack_id SQL DEFAULT in schema.ts. 'legacy' keeps existing users on
+  // today's icon after upgrade.
+  iconPackId: 'legacy'
 } as const
 
 // Draggable tree-pane width clamp bounds (px), shared by FilesTab and GitTab.

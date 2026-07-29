@@ -73,6 +73,19 @@ export type WorkspaceOperationActor = {
 export type CreateWorkspaceInput = {
   mode: WorkspaceMode
   name?: string
+  /**
+   * Whether `name` (if provided) is a placeholder/derived name rather than a
+   * deliberate user rename. `nameIsAuto` semantically means "the user did NOT
+   * deliberately choose this name" — so an explicit `false` must be reserved
+   * for a genuine user-specified name (e.g. a caller-supplied name via the
+   * MCP/CLI control plane). Callers that generate a placeholder/derived name
+   * (e.g. the renderer's "Workspace N" default) must pass `true` here, never
+   * omit it and rely on `name` being non-null, since that would incorrectly
+   * mark the name as a manual rename. When omitted entirely, falls back to
+   * treating a supplied `name` as manual (see service.ts) for backward
+   * compatibility with callers that don't know about this field yet.
+   */
+  nameIsAuto?: boolean
   parentWorkspaceId?: string
   fork?: boolean
   branch?: string

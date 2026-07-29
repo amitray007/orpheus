@@ -110,7 +110,10 @@ import type {
   AutomationDefinitionDraft,
   AutomationCatalog,
   AutomationRunWithEligibility,
-  AutomationChangedEvent
+  AutomationChangedEvent,
+  ProdImportPreflight,
+  ProdImportResult,
+  IconPackCatalogResult
 } from '../shared/types'
 import type { RendererControlAck, RendererControlRequest } from '../shared/workbenchControl'
 
@@ -909,6 +912,12 @@ const api = {
   avatar: {
     get: (url: string): Promise<string | null> => invoke('avatar:get', { url })
   },
+  // Icon-pack catalog (Settings > General "App icon" picker). See
+  // src/main/iconPacks.ts.
+  iconPacks: {
+    list: (): Promise<IconPackCatalogResult> => invoke('iconPacks:list'),
+    select: (id: string): Promise<IconPackCatalogResult> => invoke('iconPacks:select', { id })
+  },
   updates: {
     check: (): Promise<UpdateCheckResult> => invoke('updates:check'),
     install: (): Promise<void> => invoke('updates:install'),
@@ -920,6 +929,10 @@ const api = {
       subscribe(PUSH_CHANNELS.updatesDone, cb),
     onCheckResult: (cb: (result: UpdateCheckResult) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.updatesCheckResult, cb)
+  },
+  prodImport: {
+    preflight: (): Promise<ProdImportPreflight> => invoke('prodImport:preflight'),
+    run: (): Promise<ProdImportResult> => invoke('prodImport:run')
   },
   routingProxy: {
     getState: (): Promise<RoutingProxySnapshot> => invoke('routingProxy:getState'),

@@ -28,7 +28,9 @@ import {
   Compass,
   ShareNetwork,
   EyeSlash,
-  Clock
+  Clock,
+  Database,
+  Image
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -75,6 +77,11 @@ const ClaudeAboutSection = lazy(() =>
 const OrpheusAppearanceSection = lazy(() =>
   import('./settings/OrpheusAppearanceSection').then((m) => ({
     default: m.OrpheusAppearanceSection
+  }))
+)
+const OrpheusIconPackSection = lazy(() =>
+  import('./settings/OrpheusIconPackSection').then((m) => ({
+    default: m.OrpheusIconPackSection
   }))
 )
 const OrpheusSidebarSection = lazy(() =>
@@ -124,6 +131,11 @@ const OrpheusPrivacySection = lazy(() =>
 )
 const OrpheusUpdatesSection = lazy(() =>
   import('./settings/OrpheusUpdatesSection').then((m) => ({ default: m.OrpheusUpdatesSection }))
+)
+const OrpheusProdImportSection = lazy(() =>
+  import('./settings/OrpheusProdImportSection').then((m) => ({
+    default: m.OrpheusProdImportSection
+  }))
 )
 const OrpheusModelRoutingSection = lazy(() =>
   import('./settings/OrpheusModelRoutingSection').then((m) => ({
@@ -180,6 +192,7 @@ export type SectionId =
   | 'claude-developer'
   | 'claude-about'
   | 'orpheus-appearance'
+  | 'orpheus-icon-pack'
   | 'orpheus-sidebar'
   | 'orpheus-navigation'
   | 'orpheus-terminal'
@@ -192,6 +205,7 @@ export type SectionId =
   | 'orpheus-keep-awake'
   | 'orpheus-privacy'
   | 'orpheus-updates'
+  | 'orpheus-prod-import'
   | 'orpheus-model-routing'
   | 'orpheus-status'
   | 'orpheus-footer'
@@ -224,6 +238,12 @@ const GROUPS: SectionGroup[] = [
         label: 'General',
         icon: Gear,
         Component: OrpheusAppearanceSection
+      },
+      {
+        id: 'orpheus-icon-pack',
+        label: 'App Icon',
+        icon: Image,
+        Component: OrpheusIconPackSection
       },
       {
         id: 'orpheus-sidebar',
@@ -292,6 +312,21 @@ const GROUPS: SectionGroup[] = [
         icon: ArrowsClockwise,
         Component: OrpheusUpdatesSection
       },
+      // Nightly-only: lets a nightly build pull a one-way, read-only copy of
+      // the user's real production data in for testing. Never shown in dev,
+      // worktree, or production builds — see OrpheusProdImportSection.tsx's
+      // header comment for why this mirrors OrpheusUpdatesSection's dev-only
+      // debug seam in the opposite direction.
+      ...(__ORPHEUS_MODE__ === 'nightly'
+        ? [
+            {
+              id: 'orpheus-prod-import' as const,
+              label: 'Import Production Data',
+              icon: Database,
+              Component: OrpheusProdImportSection
+            }
+          ]
+        : []),
       {
         id: 'orpheus-model-routing',
         label: 'Model Routing',

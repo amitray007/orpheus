@@ -130,7 +130,10 @@ import type {
   AutomationDefinitionDraft,
   AutomationCatalog,
   AutomationRunWithEligibility,
-  AutomationChangedEvent
+  AutomationChangedEvent,
+  ProdImportPreflight,
+  ProdImportResult,
+  IconPackCatalogResult
 } from './types'
 import type { RendererControlAck, RendererControlRequest } from './workbenchControl'
 
@@ -698,10 +701,22 @@ export interface InvokeChannelMap {
   // renderer falls back to the direct sized CDN url, then the initials
   // circle).
   'avatar:get': { req: [{ url: string }]; res: string | null }
+  // Icon-pack catalog (Settings > General "App icon" picker). See
+  // src/main/iconPacks.ts. list() returns every valid on-disk pack's
+  // CURRENT-build-variant preview as a data URI plus the fallback-resolved
+  // selected id; select() persists the chosen id and applies it to the live
+  // Dock icon immediately (macOS only — the Finder/.app icon needs a rebuild).
+  'iconPacks:list': { req: []; res: IconPackCatalogResult }
+  'iconPacks:select': { req: [{ id: string }]; res: IconPackCatalogResult }
   'updates:check': { req: []; res: UpdateCheckResult }
   'updates:install': { req: []; res: void }
   'updates:restart': { req: []; res: void }
   'updates:getState': { req: []; res: UpdateSnapshot }
+  // Nightly-only, strictly one-way production→nightly data import (see
+  // src/main/db/importProdData.ts). The handler re-gates on isNightly
+  // itself — never rely on the renderer not calling this in other variants.
+  'prodImport:preflight': { req: []; res: ProdImportPreflight }
+  'prodImport:run': { req: []; res: ProdImportResult }
   // Managed routing proxy (model-routing unit 04) — see src/main/routingProxy/.
   'routingProxy:getState': { req: []; res: RoutingProxySnapshot }
   'routingProxy:setEnabled': { req: [{ enabled: boolean }]; res: RoutingProxySnapshot }

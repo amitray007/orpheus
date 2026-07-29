@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="64"
+  height="64"
+  viewBox="0 0 64 64"
+  role="img"
+  aria-labelledby="wisp-nightly-menubar-title wisp-nightly-menubar-description"
+>
+  <title id="wisp-nightly-menubar-title">Nightly Wisp menu-bar icon</title>
+  <desc id="wisp-nightly-menubar-description">
+    A half-awake dark Wisp glyph with a restrained purple highlight.
+  </desc>
+  <defs>
+    <linearGradient id="wisp-nightly-menubar-body" x1=".2" y1=".08" x2=".8" y2=".92">
+      <stop offset="0" stop-color="#302936"/>
+      <stop offset=".5" stop-color="#17151b"/>
+      <stop offset="1" stop-color="#09090c"/>
+    </linearGradient>
+    <linearGradient id="wisp-nightly-menubar-eye" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fffef8"/>
+      <stop offset="1" stop-color="#f5e5d5"/>
+    </linearGradient>
+  </defs>
+  <path
+    d="M27 5C28 12 32 15 39 14C43 13 46 11 49 8C48 15 49 19 54 23C60 28 60 38 56 44C52 49 46 51 39 50C45 53 50 56 55 60C48 58 41 58 35 61C24 64 13 58 10 48C7 38 11 30 18 24C23 20 26 14 27 5Z"
+    fill="url(#wisp-nightly-menubar-body)"
+  />
+  <path
+    d="M27 5C28 12 32 15 39 14C43 13 46 11 49 8C48 14 49 18 53 22"
+    fill="none"
+    stroke="#8057ed"
+    stroke-width="1.8"
+    stroke-linecap="round"
+    opacity=".85"
+  />
+  <path
+    d="M21 34C23.7 29.5 29.7 29.5 32.4 34C29.3 32.4 24.1 32.4 21 34Z"
+    fill="url(#wisp-nightly-menubar-eye)"
+  />
+  <path
+    d="M34 34C36.7 29.5 42.7 29.5 45.4 34C42.3 32.4 37.1 32.4 34 34Z"
+    fill="url(#wisp-nightly-menubar-eye)"
+  />
+  <circle cx="28" cy="32.7" r="1.5" fill="#151318"/>
+  <circle cx="41" cy="32.7" r="1.5" fill="#151318"/>
+  <path
+    d="M31 43C32.2 44 33.5 44 34.7 43"
+    fill="none"
+    stroke="#fff8e8"
+    stroke-width="1.8"
+    stroke-linecap="round"
+  />
+</svg>

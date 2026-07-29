@@ -24,15 +24,16 @@
 // ---------------------------------------------------------------------------
 
 import { isClaude } from './models/registry'
-import { getRoutingProxyRuntime } from './routingProxy/runtime'
 
-/** Compatibility accessor for consumers that require an effective proxy URL. */
+/**
+ * Compatibility fallback for the pure/offline routing helpers. The packaged
+ * app supplies its persisted effective runtime URL at the DB-aware mount
+ * boundary; this value is only used by isolated consumers and tests.
+ */
+export const DEFAULT_ROUTING_PROXY_URL = 'http://127.0.0.1:18765'
+
 export function getRoutingProxyUrl(): string {
-  const runtime = getRoutingProxyRuntime()
-  if (runtime.url === null) {
-    throw new Error('Routing proxy automatic port has no effective port allocated')
-  }
-  return runtime.url
+  return process.env.ORPHEUS_ROUTING_PROXY_URL || DEFAULT_ROUTING_PROXY_URL
 }
 
 /**

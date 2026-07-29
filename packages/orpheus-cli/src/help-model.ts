@@ -166,7 +166,7 @@ export const ENV_VARS: DocEnvVar[] = [
   },
   {
     name: 'ORPHEUS_DATA_VARIANT',
-    desc: '"dev" or "prod" — selects which app data dir (and app name, for auto-launch) the CLI targets: "Orpheus Dev" vs "Orpheus". Defaults to the production variant if unset.'
+    desc: '"dev", "wt", "nightly", or "prod" — selects which app data dir (and app name, for auto-launch) the CLI targets: "Orpheus Dev", "Orpheus WT", "Orpheus Nightly", or "Orpheus". Defaults to the production variant if unset.'
   }
 ]
 

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Orpheus Nightly Dreamer app icon</title>
+  <desc id="desc">The shadow Dreamer mascot on a polished lilac-to-deep-violet field.</desc>
+  <defs>
+    <linearGradient id="field" x1="112" y1="80" x2="916" y2="956" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#DEC5FF"/>
+      <stop offset=".34" stop-color="#B986FF"/>
+      <stop offset=".71" stop-color="#754FEA"/>
+      <stop offset="1" stop-color="#3922A5"/>
+    </linearGradient>
+    <radialGradient id="light" cx="0" cy="0" r="1" gradientTransform="translate(244 174) rotate(42) scale(590 520)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F6ECFF" stop-opacity=".78"/>
+      <stop offset=".45" stop-color="#F6ECFF" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#F6ECFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="depth" cx="0" cy="0" r="1" gradientTransform="translate(862 880) rotate(-137) scale(610 560)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2E178E" stop-opacity=".58"/>
+      <stop offset=".58" stop-color="#4C25C5" stop-opacity=".14"/>
+      <stop offset="1" stop-color="#4C25C5" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="tile"><rect width="1024" height="1024" rx="238"/></clipPath>
+    <mask id="dreamer-mask" maskUnits="userSpaceOnUse" x="120" y="90" width="640" height="650">
+      <rect x="120" y="90" width="640" height="650" fill="#000"/>
+      <path fill="#fff" d="M257 591C224 514 237 426 293 365C330 325 375 306 428 305C501 303 563 337 596 396C633 461 626 548 584 610C548 662 493 689 423 690H349C307 687 276 653 257 591Z"/>
+      <path fill="#fff" d="M296 376C251 334 246 266 273 208C289 174 315 146 347 126C365 115 382 128 375 149C361 190 371 229 401 253C440 284 494 282 536 252C569 228 592 195 610 157C619 138 643 143 649 162C667 226 655 293 611 345C583 378 548 399 510 408C446 424 366 403 296 376Z"/>
+      <path fill="#000" d="M383 689C386 658 403 637 428 637C453 637 470 658 473 688C444 691 412 691 383 689Z"/>
+      <path fill="#000" d="M329 328C314 303 313 272 324 243C337 265 355 283 378 296C419 319 470 320 515 300C489 338 453 356 408 356C378 356 352 346 329 328Z"/>
+    </mask>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="1024" height="1024" fill="url(#field)"/>
+    <rect width="1024" height="1024" fill="url(#light)"/>
+    <rect width="1024" height="1024" fill="url(#depth)"/>
+  </g>
+  <svg x="61" y="61" width="902" height="902" viewBox="120 90 640 650" aria-hidden="true">
+    <rect x="120" y="90" width="640" height="650" fill="#121018" mask="url(#dreamer-mask)"/>
+    <g transform="translate(0 62)" fill="none" stroke="#fff" stroke-linecap="round">
+      <path d="M329 411C350 389 379 389 400 411" stroke-width="19"/>
+      <path d="M430 411C451 389 480 389 501 411" stroke-width="19"/>
+      <path d="M393 462C408 475 425 475 440 462" stroke-width="13"/>
+    </g>
+  </svg>
+</svg>

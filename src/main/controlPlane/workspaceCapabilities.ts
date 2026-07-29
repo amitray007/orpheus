@@ -310,10 +310,19 @@ export function createWorkspaceRejectionAuditor(
 function isCreateInput(value: unknown): value is CreateWorkspaceInput {
   if (
     !isRecord(value) ||
-    !onlyKeys(value, ['mode', 'name', 'parentWorkspaceId', 'fork', 'branch', 'presentation']) ||
+    !onlyKeys(value, [
+      'mode',
+      'name',
+      'nameIsAuto',
+      'parentWorkspaceId',
+      'fork',
+      'branch',
+      'presentation'
+    ]) ||
     (value['mode'] !== 'local' && value['mode'] !== 'worktree') ||
     !isOptionalId(value['parentWorkspaceId']) ||
     !isOptionalBoolean(value['fork']) ||
+    !isOptionalBoolean(value['nameIsAuto']) ||
     !isPresentation(value['presentation'])
   ) {
     return false

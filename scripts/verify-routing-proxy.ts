@@ -144,9 +144,11 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
   const production: RoutingProxyVariantContext = { mode: 'production' }
   const development: RoutingProxyVariantContext = { mode: 'development' }
   const worktree: RoutingProxyVariantContext = { mode: 'worktree' }
+  const nightly: RoutingProxyVariantContext = { mode: 'nightly' }
   assert.equal(getPreferredRoutingProxyPort(production), 18765)
   assert.equal(getPreferredRoutingProxyPort(development), 18766)
   assert.equal(getPreferredRoutingProxyPort(worktree), 18767)
+  assert.equal(getPreferredRoutingProxyPort(nightly), 18768)
   assert.equal(AUTOMATIC_PORT_MIN, 18765)
   assert.equal(AUTOMATIC_PORT_MAX, 18799)
   assert.deepEqual(automaticPortCandidates(18770, 18766).slice(0, 3), [18770, 18766, 18765])
@@ -258,6 +260,21 @@ const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-routing-pro
         routingProxyEffectivePort: 18770
       }),
     /Custom routing proxy port must be an integer between 1024 and 65535/
+  )
+
+  const runtimeSource = await fs.readFile(
+    path.resolve(import.meta.dirname, '../src/main/routingProxy/runtime.ts'),
+    'utf8'
+  )
+  assert.doesNotMatch(
+    runtimeSource,
+    /createRequire|require\(['"]\.\.\/uiState['"]\)/,
+    'routing-proxy runtime must not leave a relative uiState require for the packaged main bundle'
+  )
+  assert.match(
+    runtimeSource,
+    /getRoutingProxyRuntime\(\s*stateSource: RoutingProxyPortStateSource\s*\)/,
+    'routing-proxy runtime state must be supplied explicitly by DB-aware callers'
   )
   console.log('✓ routing-proxy port runtime resolves variants, candidates, and strict precedence')
 }

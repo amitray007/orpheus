@@ -145,7 +145,7 @@ export function getRoutingProxySnapshot(): RoutingProxySnapshot {
 
 function resolveRuntime(): RoutingProxyRuntime | null {
   try {
-    return getRoutingProxyRuntime()
+    return getRoutingProxyRuntime(getAppUiState)
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     setSnapshot({ status: 'error', error: `Invalid ORPHEUS_ROUTING_PROXY_URL: ${reason}` })
@@ -431,7 +431,9 @@ export async function install(deps: InstallDeps = defaultInstallDeps()): Promise
       deps
     )
     const resolvedAliases = resolveAliasModelsByProvider()
-    const endpoint = requiredRuntimeEndpoint(runtimeForConfig(getRoutingProxyRuntime()))
+    const endpoint = requiredRuntimeEndpoint(
+      runtimeForConfig(getRoutingProxyRuntime(getAppUiState))
+    )
     await writeRoutingProxyConfig(configPath(result.version), {
       host: endpoint.host,
       port: endpoint.port,
@@ -502,7 +504,7 @@ const supervisorDeps: RoutingProxySupervisorDeps = {
   checkHealth: async () => {
     const attempt = currentSpawnAttempt
     if (!attempt) return { healthy: false, reason: 'no owned routing proxy spawn attempt' }
-    const result = await checkRoutingProxyHealth(getRoutingProxyRuntime(), attempt)
+    const result = await checkRoutingProxyHealth(getRoutingProxyRuntime(getAppUiState), attempt)
     return result.healthy ? { healthy: true } : { healthy: false, reason: result.reason }
   },
   onGiveUp: (message) => {
@@ -1353,7 +1355,7 @@ export async function regenerateConfigNow(): Promise<void> {
   const version = snapshot.installedVersion
   if (!version) return
   const resolvedAliases = resolveAliasModelsByProvider()
-  const endpoint = requiredRuntimeEndpoint(runtimeForConfig(getRoutingProxyRuntime()))
+  const endpoint = requiredRuntimeEndpoint(runtimeForConfig(getRoutingProxyRuntime(getAppUiState)))
   await writeRoutingProxyConfig(configPath(version), {
     host: endpoint.host,
     port: endpoint.port,
@@ -1447,7 +1449,7 @@ export async function ensureHealthyForRouting(): Promise<void> {
   const attempt = currentSpawnAttempt
   if (!attempt)
     throw new Error('Routing proxy is not healthy (no owned routing proxy spawn attempt).')
-  await ensureHealthyForRoutingImpl(getRoutingProxyRuntime(), attempt)
+  await ensureHealthyForRoutingImpl(getRoutingProxyRuntime(getAppUiState), attempt)
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="64"
+  height="64"
+  viewBox="0 0 64 64"
+  role="img"
+  aria-labelledby="wisp-nightly-template-title wisp-nightly-template-description"
+>
+  <title id="wisp-nightly-template-title">Nightly Wisp macOS template icon</title>
+  <desc id="wisp-nightly-template-description">
+    A monochrome Wisp silhouette with half-awake eye and mouth cutouts.
+  </desc>
+  <defs>
+    <mask
+      id="wisp-nightly-template-cutouts"
+      x="0"
+      y="0"
+      width="64"
+      height="64"
+      maskUnits="userSpaceOnUse"
+    >
+      <rect width="64" height="64" fill="#fff"/>
+      <path d="M21 34C23.7 29.5 29.7 29.5 32.4 34C29.3 32.4 24.1 32.4 21 34Z" fill="#000"/>
+      <path d="M34 34C36.7 29.5 42.7 29.5 45.4 34C42.3 32.4 37.1 32.4 34 34Z" fill="#000"/>
+      <path
+        d="M31 43C32.2 44 33.5 44 34.7 43"
+        fill="none"
+        stroke="#000"
+        stroke-width="1.8"
+        stroke-linecap="round"
+      />
+    </mask>
+  </defs>
+  <path
+    d="M27 5C28 12 32 15 39 14C43 13 46 11 49 8C48 15 49 19 54 23C60 28 60 38 56 44C52 49 46 51 39 50C45 53 50 56 55 60C48 58 41 58 35 61C24 64 13 58 10 48C7 38 11 30 18 24C23 20 26 14 27 5Z"
+    fill="#000"
+    mask="url(#wisp-nightly-template-cutouts)"
+  />
+</svg>
