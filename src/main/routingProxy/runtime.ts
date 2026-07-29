@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module'
 import type { AppUiState, RoutingProxyPortMode, RoutingProxyRuntime } from '../../shared/types'
 import {
   AUTOMATIC_PORT_MAX,
@@ -14,8 +13,6 @@ export {
 
 declare const __ORPHEUS_MODE__: 'development' | 'production' | 'worktree'
 
-const require = createRequire(import.meta.url)
-
 export interface RoutingProxyVariantContext {
   mode: 'production' | 'development' | 'worktree'
 }
@@ -24,6 +21,8 @@ type RoutingProxyPortState = Pick<
   AppUiState,
   'routingProxyPortMode' | 'routingProxyCustomPort' | 'routingProxyEffectivePort'
 >
+
+type RoutingProxyPortStateSource = RoutingProxyPortState | (() => RoutingProxyPortState)
 
 function defaultVariantContext(): RoutingProxyVariantContext {
   // The Electron/Vite build replaces this constant. Keep the offline assertion
@@ -105,14 +104,15 @@ function runtimeForPort(source: RoutingProxyPortMode, port: number): RoutingProx
   }
 }
 
-export function getRoutingProxyRuntime(state?: RoutingProxyPortState): RoutingProxyRuntime {
+export function getRoutingProxyRuntime(
+  stateSource: RoutingProxyPortStateSource
+): RoutingProxyRuntime {
   const environmentUrl = process.env.ORPHEUS_ROUTING_PROXY_URL
   if (environmentUrl) return runtimeForEnvironment(environmentUrl)
 
-  const current: RoutingProxyPortState =
-    state ?? (require('../uiState') as { getAppUiState: () => AppUiState }).getAppUiState()
-  if (current.routingProxyPortMode === 'custom') {
-    const customPort = current.routingProxyCustomPort
+  const state = typeof stateSource === 'function' ? stateSource() : stateSource
+  if (state.routingProxyPortMode === 'custom') {
+    const customPort = state.routingProxyCustomPort
     if (
       typeof customPort !== 'number' ||
       !Number.isInteger(customPort) ||
@@ -123,9 +123,9 @@ export function getRoutingProxyRuntime(state?: RoutingProxyPortState): RoutingPr
     }
     return runtimeForPort('custom', customPort)
   }
-  if (current.routingProxyEffectivePort !== null) {
+  if (state.routingProxyEffectivePort !== null) {
     const effectivePort = assertValidAutomaticRoutingProxyEffectivePort(
-      current.routingProxyEffectivePort
+      state.routingProxyEffectivePort
     )
     return runtimeForPort('automatic', effectivePort)
   }

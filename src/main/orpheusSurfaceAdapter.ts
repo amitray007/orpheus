@@ -26,6 +26,7 @@ import { shimPath } from './orpheusNotify'
 import { getCachedShellPath } from './shellHelpers'
 import { writeGhosttyConfigFile } from './ghosttyConfig'
 import { getAppUiState } from './uiState'
+import { getRoutingProxyRuntime } from './routingProxy/runtime'
 import { isDev, isWorktreeBuild } from './appMode'
 import { buildManagedMcpFlagsString } from './controlPlane/managedMcpLaunch'
 import type { ClaudeRuntimeBinding } from './controlPlane/runtimeLeases'
@@ -200,7 +201,13 @@ export function buildMountEnv(
   // is also structurally exclusive with bedrock/vertex/foundry (see
   // ClaudeCloudProvider in src/shared/types.ts), so a routed model can never
   // collide with a CLAUDE_CODE_USE_* env var from those providers either.
-  Object.assign(env, computeRoutingEnv(launch.model))
+  if (isRoutedModel(launch.model)) {
+    const proxyUrl = getRoutingProxyRuntime(getAppUiState).url
+    if (proxyUrl === null) {
+      throw new Error('Routing proxy automatic port has no effective port allocated')
+    }
+    Object.assign(env, computeRoutingEnv(launch.model, { proxyUrl }))
+  }
 
   // Runtime identity is server-owned launch metadata. Merge it last so neither
   // custom Claude env nor provider-routing layers can spoof the trusted binding.
