@@ -27,6 +27,20 @@ const ICONSET_FRAMES = [
   ['icon_512x512@2x.png', 1024]
 ]
 
+// macOS app icons conventionally occupy ~82.8% of their canvas with transparent
+// margin around the artwork (measured against Claude.app / Brave Browser.app at
+// 512x512: art 424x424, padding L44 R44 T49 B39 — top-heavy by design). Our SVG
+// masters draw full-bleed, so the inset is applied here at raster time instead of
+// by editing the artwork. Expressed as ratios so every ICONSET_FRAMES size gets
+// proportionally correct padding.
+const APP_ICON_INSET_RATIO = {
+  artwork: 848 / 1024,
+  left: 88 / 1024,
+  top: 98 / 1024,
+  right: 88 / 1024,
+  bottom: 78 / 1024
+}
+
 function fail(message) {
   throw new Error(message)
 }
@@ -122,6 +136,42 @@ async function renderPng(sourceBuffer, outputPath, size) {
   await mkdir(path.dirname(outputPath), { recursive: true })
   await sharp(sourceBuffer, { density: 384 })
     .resize(size, size, { fit: 'fill' })
+    .png({ adaptiveFiltering: true, compressionLevel: 9 })
+    .toFile(outputPath)
+}
+
+// Renders app-icon rasters inset onto a transparent canvas per APP_ICON_INSET_RATIO,
+// matching the ~82.8%-coverage convention macOS app icons follow. Menu-bar/template
+// rasters keep using the full-bleed renderPng above — only app-icon call sites use this.
+async function renderInsetPng(sourceBuffer, outputPath, size) {
+  await mkdir(path.dirname(outputPath), { recursive: true })
+
+  const artSize = Math.round(size * APP_ICON_INSET_RATIO.artwork)
+  let left = Math.round(size * APP_ICON_INSET_RATIO.left)
+  let top = Math.round(size * APP_ICON_INSET_RATIO.top)
+
+  // Independent rounding of artSize/left/top can push the artwork past the canvas
+  // edge by a pixel at small sizes. Clamp the offset (never shrink artSize, which
+  // would change the coverage ratio) so the composite always lands fully in-canvas.
+  if (left + artSize > size) left = size - artSize
+  if (top + artSize > size) top = size - artSize
+  left = Math.max(left, 0)
+  top = Math.max(top, 0)
+
+  const resized = await sharp(sourceBuffer, { density: 384 })
+    .resize(artSize, artSize, { fit: 'fill' })
+    .png()
+    .toBuffer()
+
+  await sharp({
+    create: {
+      width: size,
+      height: size,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    }
+  })
+    .composite([{ input: resized, left, top }])
     .png({ adaptiveFiltering: true, compressionLevel: 9 })
     .toFile(outputPath)
 }
@@ -231,15 +281,15 @@ async function buildVariant(packRoot, manifest, variantName) {
   await mkdir(assets.iconsetDirectory, { recursive: true })
 
   const rasterJobs = [
-    renderPng(appSource, assets.runtimePng, 1024),
-    renderPng(appSource, assets.previewPng1x, 256),
-    renderPng(appSource, assets.previewPng2x, 512),
+    renderInsetPng(appSource, assets.runtimePng, 1024),
+    renderInsetPng(appSource, assets.previewPng1x, 256),
+    renderInsetPng(appSource, assets.previewPng2x, 512),
     renderPng(menuSource, assets.menuPng1x, 32),
     renderPng(menuSource, assets.menuPng2x, 64),
     renderPng(templateSource, assets.templatePng1x, 18),
     renderPng(templateSource, assets.templatePng2x, 36),
     ...ICONSET_FRAMES.map(([filename, size]) =>
-      renderPng(appSource, path.join(assets.iconsetDirectory, filename), size)
+      renderInsetPng(appSource, path.join(assets.iconsetDirectory, filename), size)
     )
   ]
   await Promise.all(rasterJobs)
