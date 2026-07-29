@@ -116,7 +116,8 @@ static std::atomic<uint64_t> g_inputTick{0};
 static std::atomic<uint64_t> g_liveTick{0};
 static bool g_livenessTSFNActive = false;
 static std::atomic<uint64_t> g_lastLivenessPushMs{0};
-static std::atomic<uint64_t> g_lastTitlePushMs{0};
+// NOTE: the title throttle is per-workspace (GhosttySurfaceEntry::lastTitlePushMs),
+// not a global stamp like liveness — see the SET_TITLE handler for why.
 // orpheusPushLiveness defined after @end (needs g_livenessTSFN which is post-class)
 static void orpheusPushLiveness(const std::string& workspaceId, bool occluded);
 
@@ -139,6 +140,7 @@ struct GhosttySurfaceEntry {
     OrpheusLoadingOverlayView* __strong loadingOverlay; // nil when no overlay is present
     uint64_t inputTick{0};   // per-workspace input counter (plain, not atomic — bumped on main thread only)
     uint64_t liveTick{0};    // per-workspace draw counter (plain, not atomic — bumped on main thread only)
+    uint64_t lastTitlePushMs{0}; // per-workspace title throttle stamp (plain, not atomic — read/written on main thread only)
     bool desiredVisible{false};  // true when this workspace should be shown+focused
     uint64_t generation{0}; // bumped on each create; deferred free compares against this
 };
@@ -2253,12 +2255,26 @@ static bool action_cb(ghostty_app_t /*app*/,
                     if (entry.surface == surf) { workspaceId = id; break; }
                 }
             }
-            if (!workspaceId.empty()) {
+            // Throttle PER WORKSPACE, not process-globally. A single shared
+            // stamp made every surface compete for one 200ms budget, so a busy
+            // workspace (claude's spinner emits a title per animation frame)
+            // could starve every other surface indefinitely — a quiet
+            // workspace's one meaningful title change would land inside the
+            // busy one's window and be dropped for good, since there is no
+            // trailing-edge flush or retry. Keyed by entry, each workspace
+            // gets its own budget and spinner churn only throttles itself.
+            //
+            // Titles that survive this gate are still deduped per-workspace on
+            // the JS side (src/main/index.ts) after the spinner glyph is
+            // stripped, so the collapsed "✱ Loading"/"✶ Loading" → "Loading"
+            // stream costs nothing downstream.
+            auto titleEntryIt = g_surfaces.find(workspaceId);
+            if (!workspaceId.empty() && titleEntryIt != g_surfaces.end()) {
                 std::string title = rawTitle ? rawTitle : "";
                 uint64_t titleNowMs = (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000.0);
-                uint64_t lastTitle = g_lastTitlePushMs.load(std::memory_order_relaxed);
+                uint64_t lastTitle = titleEntryIt->second.lastTitlePushMs;
                 if (titleNowMs - lastTitle >= 200) {
-                    g_lastTitlePushMs.store(titleNowMs, std::memory_order_relaxed);
+                    titleEntryIt->second.lastTitlePushMs = titleNowMs;
                     auto* titleData = new std::pair<std::string, std::string>(workspaceId, title);
                     napi_status titleSt = g_titleTSFN.NonBlockingCall(
                         titleData,
