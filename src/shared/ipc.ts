@@ -132,7 +132,8 @@ import type {
   AutomationRunWithEligibility,
   AutomationChangedEvent,
   ProdImportPreflight,
-  ProdImportResult
+  ProdImportResult,
+  IconPackCatalogResult
 } from './types'
 import type { RendererControlAck, RendererControlRequest } from './workbenchControl'
 
@@ -700,6 +701,13 @@ export interface InvokeChannelMap {
   // renderer falls back to the direct sized CDN url, then the initials
   // circle).
   'avatar:get': { req: [{ url: string }]; res: string | null }
+  // Icon-pack catalog (Settings > General "App icon" picker). See
+  // src/main/iconPacks.ts. list() returns every valid on-disk pack's
+  // CURRENT-build-variant preview as a data URI plus the fallback-resolved
+  // selected id; select() persists the chosen id and applies it to the live
+  // Dock icon immediately (macOS only — the Finder/.app icon needs a rebuild).
+  'iconPacks:list': { req: []; res: IconPackCatalogResult }
+  'iconPacks:select': { req: [{ id: string }]; res: IconPackCatalogResult }
   'updates:check': { req: []; res: UpdateCheckResult }
   'updates:install': { req: []; res: void }
   'updates:restart': { req: []; res: void }

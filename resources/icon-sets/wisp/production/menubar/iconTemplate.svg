@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="64"
+  height="64"
+  viewBox="0 0 64 64"
+  role="img"
+  aria-labelledby="wisp-production-template-title wisp-production-template-description"
+>
+  <title id="wisp-production-template-title">Production Wisp macOS template icon</title>
+  <desc id="wisp-production-template-description">
+    A monochrome Wisp silhouette with calm eye and mouth cutouts.
+  </desc>
+  <defs>
+    <mask
+      id="wisp-production-template-cutouts"
+      x="0"
+      y="0"
+      width="64"
+      height="64"
+      maskUnits="userSpaceOnUse"
+    >
+      <rect width="64" height="64" fill="#fff"/>
+      <ellipse cx="26.5" cy="33" rx="3.6" ry="5.4" fill="#000"/>
+      <ellipse cx="39" cy="33" rx="3.6" ry="5.4" fill="#000"/>
+      <path
+        d="M31 43C32.2 44 33.5 44 34.7 43"
+        fill="none"
+        stroke="#000"
+        stroke-width="1.8"
+        stroke-linecap="round"
+      />
+    </mask>
+  </defs>
+  <path
+    d="M27 5C28 12 32 15 39 14C43 13 46 11 49 8C48 15 49 19 54 23C60 28 60 38 56 44C52 49 46 51 39 50C45 53 50 56 55 60C48 58 41 58 35 61C24 64 13 58 10 48C7 38 11 30 18 24C23 20 26 14 27 5Z"
+    fill="#000"
+    mask="url(#wisp-production-template-cutouts)"
+  />
+</svg>

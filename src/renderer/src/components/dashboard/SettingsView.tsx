@@ -29,7 +29,8 @@ import {
   ShareNetwork,
   EyeSlash,
   Clock,
-  Database
+  Database,
+  Image
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -76,6 +77,11 @@ const ClaudeAboutSection = lazy(() =>
 const OrpheusAppearanceSection = lazy(() =>
   import('./settings/OrpheusAppearanceSection').then((m) => ({
     default: m.OrpheusAppearanceSection
+  }))
+)
+const OrpheusIconPackSection = lazy(() =>
+  import('./settings/OrpheusIconPackSection').then((m) => ({
+    default: m.OrpheusIconPackSection
   }))
 )
 const OrpheusSidebarSection = lazy(() =>
@@ -186,6 +192,7 @@ export type SectionId =
   | 'claude-developer'
   | 'claude-about'
   | 'orpheus-appearance'
+  | 'orpheus-icon-pack'
   | 'orpheus-sidebar'
   | 'orpheus-navigation'
   | 'orpheus-terminal'
@@ -231,6 +238,12 @@ const GROUPS: SectionGroup[] = [
         label: 'General',
         icon: Gear,
         Component: OrpheusAppearanceSection
+      },
+      {
+        id: 'orpheus-icon-pack',
+        label: 'App Icon',
+        icon: Image,
+        Component: OrpheusIconPackSection
       },
       {
         id: 'orpheus-sidebar',

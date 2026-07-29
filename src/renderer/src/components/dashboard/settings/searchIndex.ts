@@ -11,6 +11,7 @@ export type SectionId =
   | 'claude-developer'
   | 'claude-about'
   | 'orpheus-appearance'
+  | 'orpheus-icon-pack'
   | 'orpheus-sidebar'
   | 'orpheus-navigation'
   | 'orpheus-terminal'
@@ -1370,6 +1371,30 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     description: 'Scales all text in the Orpheus chrome (sidebar, settings, panels).',
     mapsTo: [],
     keywords: ['font size', 'text size', 'ui scale', 'typography', 'zoom', 'text scale']
+  },
+
+  // ---------------------------------------------------------------------------
+  // Orpheus › App Icon
+  // ---------------------------------------------------------------------------
+  {
+    sectionId: 'orpheus-icon-pack',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'App Icon',
+    settingId: 'icon-pack',
+    label: 'Icon pack',
+    description: 'Choose which icon pack Orpheus uses for its Dock icon.',
+    mapsTo: [],
+    keywords: [
+      'icon',
+      'icon pack',
+      'app icon',
+      'dock icon',
+      'dock',
+      'mascot',
+      'wisp',
+      'dreamer',
+      'legacy'
+    ]
   },
 
   // ---------------------------------------------------------------------------

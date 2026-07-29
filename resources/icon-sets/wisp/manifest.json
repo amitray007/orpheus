@@ -1,0 +1,73 @@
+{
+  "$schema": "../pack.schema.json",
+  "schemaVersion": 2,
+  "id": "wisp",
+  "name": "Wisp",
+  "description": "The flowing shadow mascot with build-specific color and expression.",
+  "version": "1.1.0",
+  "variants": {
+    "production": {
+      "app": {
+        "sourceSvg": "production/app/app.svg",
+        "runtimePng": "production/app/app.png",
+        "iconsetDirectory": "production/app/app.iconset",
+        "icns": "production/app/app.icns"
+      },
+      "menuBar": {
+        "sourceSvg": "production/menubar/icon.svg",
+        "png1x": "production/menubar/icon.png",
+        "png2x": "production/menubar/icon@2x.png",
+        "templateSourceSvg": "production/menubar/iconTemplate.svg",
+        "templatePng1x": "production/menubar/iconTemplate.png",
+        "templatePng2x": "production/menubar/iconTemplate@2x.png"
+      },
+      "previews": {
+        "png1x": "production/previews/preview.png",
+        "png2x": "production/previews/preview@2x.png"
+      }
+    },
+    "development": {
+      "app": {
+        "sourceSvg": "development/app/app.svg",
+        "runtimePng": "development/app/app.png",
+        "iconsetDirectory": "development/app/app.iconset",
+        "icns": "development/app/app.icns"
+      },
+      "menuBar": {
+        "sourceSvg": "development/menubar/icon.svg",
+        "png1x": "development/menubar/icon.png",
+        "png2x": "development/menubar/icon@2x.png",
+        "templateSourceSvg": "development/menubar/iconTemplate.svg",
+        "templatePng1x": "development/menubar/iconTemplate.png",
+        "templatePng2x": "development/menubar/iconTemplate@2x.png"
+      },
+      "previews": {
+        "png1x": "development/previews/preview.png",
+        "png2x": "development/previews/preview@2x.png"
+      }
+    },
+    "nightly": {
+      "app": {
+        "sourceSvg": "nightly/app/app.svg",
+        "runtimePng": "nightly/app/app.png",
+        "iconsetDirectory": "nightly/app/app.iconset",
+        "icns": "nightly/app/app.icns"
+      },
+      "menuBar": {
+        "sourceSvg": "nightly/menubar/icon.svg",
+        "png1x": "nightly/menubar/icon.png",
+        "png2x": "nightly/menubar/icon@2x.png",
+        "templateSourceSvg": "nightly/menubar/iconTemplate.svg",
+        "templatePng1x": "nightly/menubar/iconTemplate.png",
+        "templatePng2x": "nightly/menubar/iconTemplate@2x.png"
+      },
+      "previews": {
+        "png1x": "nightly/previews/preview.png",
+        "png2x": "nightly/previews/preview@2x.png"
+      }
+    }
+  },
+  "modeFallbacks": {
+    "worktree": "development"
+  }
+}

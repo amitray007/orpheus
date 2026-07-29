@@ -141,6 +141,8 @@ type AppUiStateRow = {
   model_aliases_enabled: number | null
   // Privacy mode (v66)
   privacy_mode: number | null
+  // App icon pack (Settings > General)
+  icon_pack_id: string | null
   updated_at: number
 }
 
@@ -276,6 +278,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     modelAliasesEnabled: (row.model_aliases_enabled ?? 0) === 1,
     // Privacy mode (v66) — default false
     privacyMode: (row.privacy_mode ?? 0) === 1,
+    // App icon pack — default 'legacy' when column absent (pre-migration reads)
+    iconPackId: row.icon_pack_id ?? 'legacy',
     updatedAt: row.updated_at
   }
 }
@@ -560,6 +564,15 @@ function validateFilesViewPatch(patch: AppUiStatePatch): void {
       throw new Error('uiState: privacyMode must be a boolean')
     }
   }
+  // iconPackId: validated as a non-empty string here only (syntactic check).
+  // Whether the id actually names a pack on disk is resolved at read time by
+  // src/main/iconPacks.ts's resolveSelectedPack (falls back to 'legacy' /
+  // first valid pack) — this module never touches the filesystem.
+  if ('iconPackId' in patch && patch.iconPackId !== undefined) {
+    if (typeof patch.iconPackId !== 'string' || patch.iconPackId.length === 0) {
+      throw new Error('uiState: iconPackId must be a non-empty string')
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -694,7 +707,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Model-name aliasing (model-routing unit 08)
     modelAliasesEnabled: 'model_aliases_enabled',
     // Privacy mode (v66)
-    privacyMode: 'privacy_mode'
+    privacyMode: 'privacy_mode',
+    // App icon pack (Settings > General)
+    iconPackId: 'icon_pack_id'
   }
 
   const setClauses: string[] = []

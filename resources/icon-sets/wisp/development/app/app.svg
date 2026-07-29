@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="1024"
+  height="1024"
+  viewBox="0 0 1024 1024"
+  role="img"
+  aria-labelledby="wisp-development-title wisp-development-description"
+>
+  <title id="wisp-development-title">Orpheus Development Wisp app icon</title>
+  <desc id="wisp-development-description">
+    An alert black wisp on an electric lime-to-teal gradient.
+  </desc>
+  <defs>
+    <linearGradient id="wisp-development-background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e6ff69"/>
+      <stop offset=".5" stop-color="#79e99a"/>
+      <stop offset="1" stop-color="#24b4b0"/>
+    </linearGradient>
+    <radialGradient id="wisp-development-light" cx=".16" cy=".08" r=".8">
+      <stop offset="0" stop-color="#fbffd2" stop-opacity=".7"/>
+      <stop offset=".55" stop-color="#fbffd2" stop-opacity=".09"/>
+      <stop offset="1" stop-color="#fbffd2" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="wisp-development-body" x1=".18" y1=".08" x2=".82" y2=".9">
+      <stop offset="0" stop-color="#302936"/>
+      <stop offset=".46" stop-color="#17151b"/>
+      <stop offset="1" stop-color="#09090c"/>
+    </linearGradient>
+    <linearGradient id="wisp-development-eye" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fffef8"/>
+      <stop offset="1" stop-color="#f5e5d5"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="238" fill="url(#wisp-development-background)"/>
+  <rect width="1024" height="1024" rx="238" fill="url(#wisp-development-light)"/>
+  <path
+    d="M432 135C449 226 487 277 553 294C614 310 672 291 728 237C711 329 732 388 792 436C864 493 867 610 814 690C769 757 691 782 594 766C679 803 750 845 812 894C715 870 625 871 542 903C396 944 241 870 202 730C164 592 221 472 326 388C393 334 425 254 432 135Z"
+    fill="url(#wisp-development-body)"
+  />
+  <path
+    d="M432 135C449 226 487 277 553 294C614 310 672 291 728 237C702 323 717 383 770 430"
+    fill="none"
+    stroke="#8d7a91"
+    stroke-width="18"
+    stroke-linecap="round"
+    opacity=".28"
+  />
+  <ellipse cx="396" cy="489" rx="81" ry="118" fill="url(#wisp-development-eye)"/>
+  <ellipse cx="592" cy="489" rx="81" ry="118" fill="url(#wisp-development-eye)"/>
+  <ellipse cx="419" cy="510" rx="31" ry="52" fill="#151318"/>
+  <ellipse cx="569" cy="510" rx="31" ry="52" fill="#151318"/>
+  <ellipse cx="428" cy="491" rx="10" ry="16" fill="#fffef8" opacity=".82"/>
+  <ellipse cx="578" cy="491" rx="10" ry="16" fill="#fffef8" opacity=".82"/>
+  <ellipse cx="496" cy="660" rx="47" ry="58" fill="url(#wisp-development-eye)"/>
+</svg>

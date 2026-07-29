@@ -31,6 +31,13 @@ extraResources:
     to: ghostty
     filter:
       - '**/*'
+  # Icon-pack catalog (Settings > General "App icon" picker) — see
+  # resources/icon-sets/README.md and src/main/iconPacks.ts, which resolves
+  # this dir via process.resourcesPath at runtime in packaged builds.
+  - from: resources/icon-sets
+    to: icon-sets
+    filter:
+      - '**/*'
   - from: resources/orpheus-claude.sh
     to: orpheus-claude.sh
   - from: resources/orpheus-pane.sh

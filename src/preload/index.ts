@@ -112,7 +112,8 @@ import type {
   AutomationRunWithEligibility,
   AutomationChangedEvent,
   ProdImportPreflight,
-  ProdImportResult
+  ProdImportResult,
+  IconPackCatalogResult
 } from '../shared/types'
 import type { RendererControlAck, RendererControlRequest } from '../shared/workbenchControl'
 
@@ -910,6 +911,12 @@ const api = {
   // renderer can fall back to the direct sized CDN url, then initials.
   avatar: {
     get: (url: string): Promise<string | null> => invoke('avatar:get', { url })
+  },
+  // Icon-pack catalog (Settings > General "App icon" picker). See
+  // src/main/iconPacks.ts.
+  iconPacks: {
+    list: (): Promise<IconPackCatalogResult> => invoke('iconPacks:list'),
+    select: (id: string): Promise<IconPackCatalogResult> => invoke('iconPacks:select', { id })
   },
   updates: {
     check: (): Promise<UpdateCheckResult> => invoke('updates:check'),

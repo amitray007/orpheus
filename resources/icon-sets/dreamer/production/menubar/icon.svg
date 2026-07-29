@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="120 90 640 650" role="img" aria-labelledby="title desc">
+  <title id="title">Production Dreamer colored menu-bar icon</title>
+  <desc id="desc">A compact Dreamer glyph colored aqua to cobalt.</desc>
+  <defs>
+    <linearGradient id="color" x1="275" y1="155" x2="610" y2="685" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7CE9EC"/><stop offset=".48" stop-color="#5EC4E4"/><stop offset="1" stop-color="#3F55D7"/>
+    </linearGradient>
+    <mask id="mass" maskUnits="userSpaceOnUse" x="120" y="90" width="640" height="650">
+      <rect x="120" y="90" width="640" height="650" fill="#000"/>
+      <path fill="#fff" d="M257 591C224 514 237 426 293 365C330 325 375 306 428 305C501 303 563 337 596 396C633 461 626 548 584 610C548 662 493 689 423 690H349C307 687 276 653 257 591Z"/>
+      <path fill="#fff" d="M296 376C251 334 246 266 273 208C289 174 315 146 347 126C365 115 382 128 375 149C361 190 371 229 401 253C440 284 494 282 536 252C569 228 592 195 610 157C619 138 643 143 649 162C667 226 655 293 611 345C583 378 548 399 510 408C446 424 366 403 296 376Z"/>
+      <path fill="#000" d="M383 689C386 658 403 637 428 637C453 637 470 658 473 688C444 691 412 691 383 689Z"/>
+      <path fill="#000" d="M329 328C314 303 313 272 324 243C337 265 355 283 378 296C419 319 470 320 515 300C489 338 453 356 408 356C378 356 352 346 329 328Z"/>
+    </mask>
+  </defs>
+  <rect x="120" y="90" width="640" height="650" fill="url(#color)" mask="url(#mass)"/>
+  <g transform="translate(0 62)" fill="none" stroke="#fff" stroke-linecap="round">
+    <path d="M329 411C350 389 379 389 400 411" stroke-width="24"/><path d="M430 411C451 389 480 389 501 411" stroke-width="24"/><path d="M393 462C408 475 425 475 440 462" stroke-width="17"/>
+  </g>
+</svg>

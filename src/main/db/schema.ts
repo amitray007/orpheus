@@ -696,6 +696,15 @@ export const schema: SchemaDef = {
       // Privacy mode toggle — when on, projects/workspaces flagged
       // classified/hidden get redacted/excluded treatment in the UI.
       privacy_mode: bool('privacy_mode', '0'),
+      // App icon pack (Settings > General "App icon" picker) — stores ONLY
+      // the pack `id` from the resources/icon-sets/ catalog, never a path or
+      // version (see that catalog's README.md). No CHECK enum: the valid set
+      // is the on-disk catalog, which can gain/lose packs across builds
+      // without a schema change; src/main/iconPacks.ts's resolveSelectedPack
+      // falls back to 'legacy' (then the first valid pack) at read time if
+      // the persisted id is unknown or its pack was removed. Default
+      // 'legacy' so existing users keep today's icon on upgrade.
+      icon_pack_id: { type: 'TEXT', notNull: true, default: "'legacy'" },
       updated_at: INTEGER_NOT_NULL
     },
     // workbench_enabled (Workbench feature flag) was removed once the

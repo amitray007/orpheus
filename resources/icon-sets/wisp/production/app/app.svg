@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="1024"
+  height="1024"
+  viewBox="0 0 1024 1024"
+  role="img"
+  aria-labelledby="wisp-production-title wisp-production-description"
+>
+  <title id="wisp-production-title">Orpheus Production Wisp app icon</title>
+  <desc id="wisp-production-description">
+    A calm black wisp on a warm coral-to-orange gradient.
+  </desc>
+  <defs>
+    <linearGradient id="wisp-production-background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffb45e"/>
+      <stop offset=".52" stop-color="#ff6267"/>
+      <stop offset="1" stop-color="#df2f68"/>
+    </linearGradient>
+    <radialGradient id="wisp-production-light" cx=".18" cy=".1" r=".78">
+      <stop offset="0" stop-color="#fff0bd" stop-opacity=".55"/>
+      <stop offset=".55" stop-color="#fff0bd" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#fff0bd" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="wisp-production-body" x1=".18" y1=".08" x2=".82" y2=".9">
+      <stop offset="0" stop-color="#302936"/>
+      <stop offset=".46" stop-color="#17151b"/>
+      <stop offset="1" stop-color="#09090c"/>
+    </linearGradient>
+    <linearGradient id="wisp-production-eye" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fffef8"/>
+      <stop offset="1" stop-color="#f5e5d5"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="238" fill="url(#wisp-production-background)"/>
+  <rect width="1024" height="1024" rx="238" fill="url(#wisp-production-light)"/>
+  <path
+    d="M432 135C449 226 487 277 553 294C614 310 672 291 728 237C711 329 732 388 792 436C864 493 867 610 814 690C769 757 691 782 594 766C679 803 750 845 812 894C715 870 625 871 542 903C396 944 241 870 202 730C164 592 221 472 326 388C393 334 425 254 432 135Z"
+    fill="url(#wisp-production-body)"
+  />
+  <path
+    d="M432 135C449 226 487 277 553 294C614 310 672 291 728 237C702 323 717 383 770 430"
+    fill="none"
+    stroke="#8d7a91"
+    stroke-width="18"
+    stroke-linecap="round"
+    opacity=".28"
+  />
+  <ellipse cx="407" cy="501" rx="70" ry="104" fill="url(#wisp-production-eye)"/>
+  <ellipse cx="578" cy="501" rx="70" ry="104" fill="url(#wisp-production-eye)"/>
+  <ellipse cx="424" cy="516" rx="25" ry="43" fill="#151318"/>
+  <ellipse cx="561" cy="516" rx="25" ry="43" fill="#151318"/>
+  <ellipse cx="431" cy="500" rx="8" ry="13" fill="#fffef8" opacity=".75"/>
+  <ellipse cx="568" cy="500" rx="8" ry="13" fill="#fffef8" opacity=".75"/>
+  <path
+    d="M466 653C483 667 501 667 518 653"
+    fill="none"
+    stroke="#fff8e8"
+    stroke-width="22"
+    stroke-linecap="round"
+  />
+</svg>

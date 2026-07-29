@@ -627,6 +627,11 @@ export type AppUiState = {
   // Privacy mode (v66) — when on, projects/workspaces flagged classified/
   // hidden get redacted/excluded treatment in the UI.
   privacyMode: boolean
+  // App icon pack — the selected pack `id` from the resources/icon-sets/
+  // catalog (see src/main/iconPacks.ts). Never a path or version. Default
+  // 'legacy'; falls back to 'legacy' then the first valid pack at read time
+  // if the persisted id's pack no longer exists on disk.
+  iconPackId: string
   updatedAt: number
 }
 
@@ -3160,3 +3165,30 @@ export type ProdImportResult =
         | 'swap_failed'
       message?: string
     }
+
+// ---------------------------------------------------------------------------
+// Icon packs — Settings > General "App icon" picker. See src/main/iconPacks.ts
+// for the discovery/validation service and resources/icon-sets/README.md for
+// the on-disk catalog contract.
+// ---------------------------------------------------------------------------
+
+/** One selectable icon pack, resolved for the CURRENT build variant only —
+ *  the renderer never sees the other variants' assets. `previewDataUri` is
+ *  the variant's previews/preview@2x.png, inlined as a data: URI (see
+ *  loadPreviewDataUri in iconPacks.ts) since the renderer sandbox cannot load
+ *  arbitrary main-process file paths directly. */
+export interface IconPackSummary {
+  id: string
+  name: string
+  description: string
+  /** Data URI of previews/preview@2x.png for the resolved variant, or null if
+   *  the preview asset failed to read (pack still selectable, just no image). */
+  previewDataUri: string | null
+}
+
+/** Everything the Settings picker needs in one round trip: the list of valid
+ *  packs (already filtered/validated) and which one is currently active. */
+export interface IconPackCatalogResult {
+  packs: IconPackSummary[]
+  selectedId: string
+}

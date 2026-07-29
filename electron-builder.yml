@@ -44,6 +44,13 @@ extraResources:
     to: ghostty
     filter:
       - '**/*'
+  # Icon-pack catalog (Settings > General "App icon" picker) — see
+  # resources/icon-sets/README.md and src/main/iconPacks.ts, which resolves
+  # this dir via process.resourcesPath at runtime in packaged builds.
+  - from: resources/icon-sets
+    to: icon-sets
+    filter:
+      - '**/*'
   # Wrapper script: runs claude in a login zsh, then exec's interactive zsh
   # after claude exits so the terminal stays alive for further use.
   - from: resources/orpheus-claude.sh
