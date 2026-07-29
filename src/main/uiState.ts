@@ -278,8 +278,11 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     modelAliasesEnabled: (row.model_aliases_enabled ?? 0) === 1,
     // Privacy mode (v66) — default false
     privacyMode: (row.privacy_mode ?? 0) === 1,
-    // App icon pack — default 'legacy' when column absent (pre-migration reads)
-    iconPackId: row.icon_pack_id ?? 'legacy',
+    // App icon pack — default 'wisp' when column absent (pre-migration reads).
+    // Mirrors iconPacks.ts's resolveSelectedPack/getIconPackCatalog fallback
+    // (both switched legacy → wisp when wisp became the default pack) so this
+    // row→record mapping can't disagree with the catalog's own default.
+    iconPackId: row.icon_pack_id ?? 'wisp',
     updatedAt: row.updated_at
   }
 }
