@@ -6,8 +6,9 @@
 // interactivity classes (modal, card, tooltip) plus a hide step, so a human
 // can eyeball focus/click/hover/hide behavior without wiring a real caller.
 //
-// Gated on __ORPHEUS_MODE__ !== 'production' (see env.d.ts) so production
-// builds never register the listener; init() is a no-op there. Ships inert
+// Gated on __ORPHEUS_MODE__ !== 'production' && !== 'nightly' (see env.d.ts)
+// so production and nightly builds never register the listener; init() is a
+// no-op there. Ships inert
 // alongside the `devTest` kind (registry.tsx) which is also dev-only in
 // intent, even though nothing currently prevents it from being imported in
 // prod (the kind itself is harmless dead code if never shown).
@@ -115,9 +116,9 @@ function onOverlayEvent(event: OverlayEvent): void {
 
 let initialized = false
 
-/** Registers the dev-only shortcut + overlay event listener. No-op in production (and if called twice). */
+/** Registers the dev-only shortcut + overlay event listener. No-op in production or nightly (and if called twice). */
 export function initOverlayDevTest(): void {
-  if (__ORPHEUS_MODE__ === 'production') return
+  if (__ORPHEUS_MODE__ === 'production' || __ORPHEUS_MODE__ === 'nightly') return
   if (initialized) return
   initialized = true
 

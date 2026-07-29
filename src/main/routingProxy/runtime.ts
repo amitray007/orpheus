@@ -11,10 +11,10 @@ export {
   assertValidAutomaticRoutingProxyEffectivePort
 } from './ports'
 
-declare const __ORPHEUS_MODE__: 'development' | 'production' | 'worktree'
+declare const __ORPHEUS_MODE__: 'development' | 'production' | 'worktree' | 'nightly'
 
 export interface RoutingProxyVariantContext {
-  mode: 'production' | 'development' | 'worktree'
+  mode: 'production' | 'development' | 'worktree' | 'nightly'
 }
 
 type RoutingProxyPortState = Pick<
@@ -32,6 +32,7 @@ function defaultVariantContext(): RoutingProxyVariantContext {
 
 export function getPreferredRoutingProxyPort(context: RoutingProxyVariantContext): number {
   if (context.mode === 'worktree') return 18767
+  if (context.mode === 'nightly') return 18768
   if (context.mode === 'development') return 18766
   return 18765
 }

@@ -3,15 +3,18 @@
  * Install the built Orpheus .app bundle to /Applications/.
  *
  * Usage:
- *   node scripts/install-mac.mjs --dev     # dev  (dist-dev/ -> /Applications/Orpheus Dev.app)
- *   node scripts/install-mac.mjs --wt      # wt   (dist-wt/  -> /Applications/Orpheus WT.app)
+ *   node scripts/install-mac.mjs --dev       # dev     (dist-dev/     -> /Applications/Orpheus Dev.app)
+ *   node scripts/install-mac.mjs --wt        # wt      (dist-wt/      -> /Applications/Orpheus WT.app)
+ *   node scripts/install-mac.mjs --nightly   # nightly (dist-nightly/ -> /Applications/Orpheus Nightly.app)
  *   ORPHEUS_ALLOW_PROD_INSTALL=1 node scripts/install-mac.mjs   # prod (dist/ -> /Applications/Orpheus.app)
  *
- * Local development installs the DEV or WT variant only. The production variant lives
+ * Local development installs the DEV, WT, or NIGHTLY variant only. The production variant lives
  * exclusively in /Applications/Orpheus.app and is owned by the Homebrew cask /
  * CI release pipeline — never by a local build. Installing prod locally would
  * clobber that managed copy, so it is locked behind ORPHEUS_ALLOW_PROD_INSTALL=1
  * and must be invoked deliberately. The agent/build loop never sets this flag.
+ * Nightly, like dev/wt, is an isolated app variant (own bundle id, own data
+ * dir) so it is allowed WITHOUT the prod guard.
  */
 import { execFileSync, execSync } from 'node:child_process'
 import { closeSync, existsSync, openSync, readdirSync, rmSync, statSync } from 'node:fs'
@@ -25,11 +28,12 @@ if (process.platform !== 'darwin') {
 
 const isDev = process.argv.includes('--dev')
 const isWt = process.argv.includes('--wt')
+const isNightly = process.argv.includes('--nightly')
 
 // Guard: prod local-install is opt-in only. Without the flag, refuse rather than
-// overwrite the Homebrew/CI-managed /Applications/Orpheus.app. Dev and WT installs are
-// always allowed — they target isolated app variants.
-if (!isDev && !isWt && process.env.ORPHEUS_ALLOW_PROD_INSTALL !== '1') {
+// overwrite the Homebrew/CI-managed /Applications/Orpheus.app. Dev, WT, and
+// Nightly installs are always allowed — they target isolated app variants.
+if (!isDev && !isWt && !isNightly && process.env.ORPHEUS_ALLOW_PROD_INSTALL !== '1') {
   console.error(
     '[install-mac] refusing to install the PRODUCTION bundle locally.\n' +
       '  Production Orpheus.app is managed by Homebrew / CI — a local build must not clobber it.\n' +
@@ -38,9 +42,18 @@ if (!isDev && !isWt && process.env.ORPHEUS_ALLOW_PROD_INSTALL !== '1') {
   )
   process.exit(1)
 }
-const tag = isWt ? '[install-mac-wt]' : isDev ? '[install-mac-dev]' : '[install-mac]'
+const tag = isWt
+  ? '[install-mac-wt]'
+  : isNightly
+    ? '[install-mac-nightly]'
+    : isDev
+      ? '[install-mac-dev]'
+      : '[install-mac]'
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const distDir = resolve(projectRoot, isWt ? 'dist-wt' : isDev ? 'dist-dev' : 'dist')
+const distDir = resolve(
+  projectRoot,
+  isWt ? 'dist-wt' : isNightly ? 'dist-nightly' : isDev ? 'dist-dev' : 'dist'
+)
 
 // Tell Spotlight to skip dist/ so the build-output .app doesn't appear
 // alongside the real one in /Applications when searching.

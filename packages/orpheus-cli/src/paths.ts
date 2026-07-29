@@ -4,13 +4,15 @@
  * APP_NAME DETECTION
  * ------------------
  * The Electron app uses a build-time define (__ORPHEUS_MODE__) to switch between
- * "Orpheus" (production) and "Orpheus Dev" (development). The CLI cannot read that
- * define, so we derive the variant from environment signals instead:
+ * "Orpheus" (production), "Orpheus Dev" (development), "Orpheus WT" (worktree),
+ * and "Orpheus Nightly" (nightly). The CLI cannot read that define, so we derive
+ * the variant from environment signals instead:
  *
  *   1. ORPHEUS_DATA_VARIANT env var (internal/testing override):
- *      - "dev"  → "Orpheus Dev"
- *      - "wt"   → "Orpheus WT"
- *      - "prod" → "Orpheus" (explicit prod override)
+ *      - "dev"     → "Orpheus Dev"
+ *      - "wt"      → "Orpheus WT"
+ *      - "nightly" → "Orpheus Nightly"
+ *      - "prod"    → "Orpheus" (explicit prod override)
  *      This allows test scripts to point at the dev data dir without any --mode flag.
  *      There is deliberately NO user-facing --mode flag; variant is context-only.
  *
@@ -30,6 +32,7 @@ export function resolveAppName(): string {
   const variant = process.env.ORPHEUS_DATA_VARIANT
   if (variant === 'dev') return 'Orpheus Dev'
   if (variant === 'wt') return 'Orpheus WT'
+  if (variant === 'nightly') return 'Orpheus Nightly'
   // "prod" or anything else → production name
   return 'Orpheus'
 }

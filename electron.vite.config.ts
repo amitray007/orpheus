@@ -7,6 +7,7 @@ const orpheusMode = (process.env.ORPHEUS_MODE ?? 'production') as
   | 'development'
   | 'production'
   | 'worktree'
+  | 'nightly'
 
 export default defineConfig({
   main: {

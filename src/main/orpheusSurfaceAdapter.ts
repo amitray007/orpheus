@@ -27,10 +27,17 @@ import { getCachedShellPath } from './shellHelpers'
 import { writeGhosttyConfigFile } from './ghosttyConfig'
 import { getAppUiState } from './uiState'
 import { getRoutingProxyRuntime } from './routingProxy/runtime'
-import { isDev, isWorktreeBuild } from './appMode'
+import { isDev, isWorktreeBuild, isNightly } from './appMode'
 import { buildManagedMcpFlagsString } from './controlPlane/managedMcpLaunch'
 import type { ClaudeRuntimeBinding } from './controlPlane/runtimeLeases'
 import { FLAG_DELIMITER } from '../shared/cliFlags'
+
+// Which data dir the bundled CLI should target, mirroring APP_NAME in
+// appMode.ts. Resolved once at module load — the build variant is a
+// compile-time constant, so there is nothing per-mount to recompute. Nightly
+// is checked before isDev because nightly is NOT a dev build (isDev is false
+// for it) yet still needs its own data dir rather than production's.
+const DATA_VARIANT = isWorktreeBuild ? 'wt' : isNightly ? 'nightly' : isDev ? 'dev' : 'prod'
 
 // ---------------------------------------------------------------------------
 // loadOrpheusSurface
@@ -165,8 +172,8 @@ export function buildMountEnv(
     // The orpheus-claude.sh wrapper already splices ORPHEUS_USER_PATH into PATH,
     // so we set ORPHEUS_BIN_DIR separately and let the wrapper prepend it.
     ORPHEUS_BIN_DIR: orpheusBinDir,
-    // Data variant — tells the CLI which data dir to target (dev or prod).
-    ORPHEUS_DATA_VARIANT: isWorktreeBuild ? 'wt' : isDev ? 'dev' : 'prod',
+    // Data variant — tells the CLI which data dir to target (dev, wt, nightly, or prod).
+    ORPHEUS_DATA_VARIANT: DATA_VARIANT,
     // Command server plumbing — injected when the server is running so the CLI
     // resolves sock/token zero-config from within a workspace terminal.
     // The CLI also falls back to reading cmd.token from disk, so this is a

@@ -1,0 +1,78 @@
+appId: dev.orpheus.nightly
+productName: Orpheus Nightly
+directories:
+  buildResources: build
+  output: dist-nightly
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+asarUnpack:
+  - resources/**
+  - '**/*.node'
+  # better-sqlite3 + its runtime deps must be fully unpacked so the CLI bundle
+  # (Resources/cli/cli.cjs, loaded via the shim's NODE_PATH) can resolve them —
+  # better-sqlite3 does a dynamic require('bindings'), which is otherwise left
+  # packed inside app.asar and unreachable.
+  - node_modules/better-sqlite3/**
+  - node_modules/bindings/**
+  - node_modules/file-uri-to-path/**
+extraResources:
+  - from: packages/ghostty-surface/build/Release/ghostty_native.node
+    to: packages/ghostty-surface/ghostty_native.node
+  - from: resources/ghostty/terminfo
+    to: terminfo
+    filter:
+      - '**/*'
+  - from: resources/ghostty/ghostty
+    to: ghostty
+    filter:
+      - '**/*'
+  - from: resources/orpheus-claude.sh
+    to: orpheus-claude.sh
+  - from: resources/orpheus-pane.sh
+    to: orpheus-pane.sh
+  - from: resources/bin/orpheus-notify
+    to: bin/orpheus-notify
+  # Orpheus CLI shim — runs the bundled CLI via Electron-as-Node.
+  # Lives at Contents/Resources/bin/orpheus; prepended to PATH in workspace terminals.
+  - from: resources/bin/orpheus
+    to: bin/orpheus
+  # Bundled Orpheus CLI — single CJS bundle with better-sqlite3 externalised.
+  # Lives at Contents/Resources/cli/cli.cjs; executed by the bin/orpheus shim.
+  - from: packages/orpheus-cli/dist/cli.cjs
+    to: cli/cli.cjs
+  - from: resources/bin/orpheus-mcp
+    to: bin/orpheus-mcp
+  - from: packages/orpheus-mcp/dist/mcp.cjs
+    to: mcp/mcp.cjs
+mac:
+  # No nightly-specific icon exists yet under build/ — reusing the dev icon
+  # until a dedicated nightly icon is designed.
+  icon: build/icon-dev.icns
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    - NSCameraUsageDescription: Application requests access to the device's camera.
+    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
+    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+  notarize: false
+  # Skip electron-builder's internal ad-hoc codesign for the NIGHTLY build. It races
+  # on this toolchain (intermittent "Application ... could not be found" at the
+  # sign step). scripts/install-mac.mjs re-signs the whole bundle ad-hoc
+  # (codesign --force --deep --sign -) right after install, so the in-builder
+  # sign is redundant here anyway.
+  identity: null
+dmg:
+  artifactName: ${name}-${version}.${ext}
+npmRebuild: false
+# Use the pre-extracted Electron dist from node_modules rather than downloading
+# and re-extracting the zip via app-builder (which fails intermittently on
+# macOS 27 / Xcode Beta due to permission handling in the Go extractor).
+electronDist: node_modules/electron/dist
+# Nightly builds: install to /Applications/Orpheus Nightly.app, own data at
+# ~/Library/Application Support/Orpheus Nightly/. Ships via Homebrew (unlike
+# dev/wt) — this config produces a real .dmg, not just --dir output.
