@@ -133,11 +133,33 @@ function runOutdated(
     stdio: ['ignore', 'pipe', 'pipe']
   })
   const killTimer = setTimeout(() => child.kill('SIGTERM'), 60_000)
+  let settled = false
   let stdout = ''
   let stderr = ''
   child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()))
   child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()))
+  // spawn() emits an async 'error' (e.g. ENOENT when BREW resolved to the bare
+  // 'brew' fallback and Homebrew isn't installed) AFTER this function has
+  // already returned, so it can't be caught by a surrounding try/catch. With
+  // no listener, Node treats it as an uncaught exception and index.ts's
+  // uncaughtException handler calls app.exit(1) — killing the whole app on
+  // every boot for a Homebrew-less user. Resolve with an actionable error
+  // instead of letting that happen.
+  child.on('error', (err) => {
+    if (settled) return
+    settled = true
+    clearTimeout(killTimer)
+    resolve({
+      current,
+      latest: null,
+      available: false,
+      checkedAt,
+      error: `Homebrew not found (${err.message}) — install Homebrew to enable update checks`
+    })
+  })
   child.on('exit', (code) => {
+    if (settled) return
+    settled = true
     clearTimeout(killTimer)
     // brew outdated exits 1 when casks are outdated — that's not an error.
     // Only treat non-zero as an error when stdout is empty (real failure).
@@ -276,6 +298,7 @@ export function installUpdate(): void {
       stdio: ['ignore', 'pipe', 'pipe']
     })
     const killTimer = setTimeout(() => child.kill('SIGTERM'), 180_000)
+    let settled = false
 
     function handleLine(raw: string): void {
       // Split on newlines — a single data event may carry multiple lines
@@ -296,7 +319,28 @@ export function installUpdate(): void {
 
     child.stdout.on('data', (chunk: Buffer) => handleLine(chunk.toString()))
     child.stderr.on('data', (chunk: Buffer) => handleLine(chunk.toString()))
+    // spawn() emits an async 'error' (e.g. ENOENT when BREW resolved to the
+    // bare 'brew' fallback and Homebrew isn't installed) AFTER this function
+    // has already returned, so it can't be caught by a surrounding try/catch.
+    // With no listener, Node treats it as an uncaught exception and
+    // index.ts's uncaughtException handler calls app.exit(1) — killing the
+    // whole app when the user clicked "Install Update". Report the failure
+    // through the same snapshot/broadcast path the exit handler uses instead.
+    child.on('error', (err) => {
+      if (settled) return
+      settled = true
+      clearTimeout(killTimer)
+      setSnapshot({
+        kind: 'error',
+        reason: `Homebrew not found (${err.message})`,
+        phase: null,
+        percent: null
+      })
+      broadcast(PUSH_CHANNELS.updatesDone, { success: false, code: null })
+    })
     child.on('exit', (code) => {
+      if (settled) return
+      settled = true
       clearTimeout(killTimer)
       if (code === 0) {
         setSnapshot({ kind: 'installed', phase: null, percent: null })

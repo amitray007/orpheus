@@ -888,6 +888,9 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
   )`)
   // app-ui-state-seed is also alwaysRun, so this sweep needs the table too.
   dsdb4.exec(renderCreateTable('app_ui_state', schema.app_ui_state))
+  // claude-global-settings-seed is also alwaysRun, so this sweep needs its
+  // table too — same reasoning as app_ui_state immediately above.
+  dsdb4.exec(renderCreateTable('claude_global_settings', schema.claude_global_settings))
   runDataSteps(dsdb4, { preRebuild: false })
   runDataSteps(dsdb4, { preRebuild: true })
 
@@ -945,6 +948,16 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
     0,
     'app_ui_state must start empty before the seed step runs'
   )
+  // claude-global-settings-seed (Orpheus Nightly fresh-install crash fix —
+  // getClaudeGlobalSettings() dereferencing an undefined row three frames
+  // deep in rowToRecord) needs its table to exist first too — render it from
+  // the real schema.ts TableDef, same rationale as app_ui_state above.
+  dsdb3.exec(renderCreateTable('claude_global_settings', schema.claude_global_settings))
+  assert.equal(
+    (dsdb3.prepare('SELECT COUNT(*) c FROM claude_global_settings').get() as { c: number }).c,
+    0,
+    'claude_global_settings must start empty before the seed step runs'
+  )
   runDataSteps(dsdb3, { preRebuild: false })
   runDataSteps(dsdb3, { preRebuild: true })
   const seededRow = dsdb3
@@ -997,6 +1010,54 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
     (dsdb3.prepare('SELECT COUNT(*) c FROM app_ui_state').get() as { c: number }).c,
     1,
     're-running data steps must not duplicate the app_ui_state singleton row'
+  )
+
+  // claude-global-settings-seed — the regression test for the confirmed
+  // Orpheus Nightly startup crash: on a fresh/empty DB, after the data steps
+  // run, claude_global_settings must have exactly one row at id = 1, and
+  // access shaped like getClaudeGlobalSettings() (SELECT * ... WHERE id = 1,
+  // then treat the result as present) must not throw.
+  assert.equal(
+    (dsdb3.prepare('SELECT COUNT(*) c FROM claude_global_settings').get() as { c: number }).c,
+    1,
+    'claude-global-settings-seed must insert exactly one claude_global_settings row on a fresh install'
+  )
+  assert.ok(
+    dsdb3.prepare('SELECT 1 FROM claude_global_settings WHERE id = 1').get(),
+    'the seeded claude_global_settings row must have id = 1'
+  )
+  assert.ok(
+    dsdb3
+      .prepare("SELECT 1 FROM applied_data_steps WHERE name='claude-global-settings-seed'")
+      .get(),
+    'claude-global-settings-seed must be recorded in the ledger after running'
+  )
+  {
+    // getClaudeGlobalSettings()-shaped access: `SELECT * FROM
+    // claude_global_settings WHERE id = 1`, then reading `.model` off the
+    // result — the exact call chain that crashed
+    // (`rowToRecord$2 → getClaudeGlobalSettings → createMainWorkspaceOrchestration`)
+    // when the singleton row was missing. Must not throw, and must read back
+    // the schema DEFAULT for `model`.
+    const globalSettingsRow = dsdb3
+      .prepare('SELECT * FROM claude_global_settings WHERE id = 1')
+      .get() as { model: string } | undefined
+    assert.ok(
+      globalSettingsRow,
+      'getClaudeGlobalSettings()-shaped SELECT must return a row, not undefined'
+    )
+    assert.equal(
+      globalSettingsRow!.model,
+      'sonnet',
+      "claude_global_settings.model must read back the schema DEFAULT ('sonnet') on a fresh seed"
+    )
+  }
+  // Idempotency: running the data steps again must not produce a second row.
+  runDataSteps(dsdb3, { preRebuild: false })
+  assert.equal(
+    (dsdb3.prepare('SELECT COUNT(*) c FROM claude_global_settings').get() as { c: number }).c,
+    1,
+    're-running data steps must not duplicate the claude_global_settings singleton row'
   )
 
   // Panes v2 (U4) — the General panel must be seeded exactly once, and a
