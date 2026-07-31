@@ -31,7 +31,8 @@ import {
   emptyCreationLastUsedState,
   recordCreationPick,
   lastUsedModelForProvider,
-  initialCreationProviderId
+  initialCreationProviderId,
+  compareRoutedModelIds
 } from '../src/renderer/src/lib/creationProviderMenu.ts'
 import type { SelectableModel } from '../src/shared/types.ts'
 import { CLAUDE_MODEL_OPTIONS } from '../src/shared/types.ts'
@@ -247,5 +248,126 @@ function routedModel(
   assert.notEqual(after, before, 'recordCreationPick must return a NEW state object')
   console.log(
     '✓ recordCreationPick never mutates its input — safe to use as an immutable reducer step'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 6. Routed (non-Claude) model ordering — groupModelsForCreation sorts every
+//    NON-Claude provider's models into the deterministic family-stem +
+//    version-descending order (compareRoutedModelIds), while the Claude
+//    group's hand-curated CLAUDE_MODEL_OPTIONS order is left completely
+//    untouched (regression guard against ever sorting Claude).
+// ---------------------------------------------------------------------------
+
+{
+  // Deliberately jumbled input, mirroring the arbitrary order the routing
+  // proxy actually returns for Grok.
+  const jumbledGrokIds = [
+    'grok-build-0.1',
+    'grok-4.5',
+    'grok-4.3',
+    'grok-4.20-0309-reasoning',
+    'grok-4.20-0309-non-reasoning',
+    'grok-4.20-multi-agent-0309',
+    'grok-3-mini',
+    'grok-3-mini-fast',
+    'grok-composer-2.5-fast',
+    'grok-imagine-image',
+    'grok-imagine-image-quality',
+    'grok-imagine-video',
+    'grok-imagine-video-1.5-preview'
+  ]
+  const models: SelectableModel[] = [
+    ...claudeModels(),
+    ...jumbledGrokIds.map((id) => routedModel('xai', id, 'Grok (xAI)'))
+  ]
+
+  const groups = groupModelsForCreation(models)
+  const xaiGroup = groups.find((g) => g.providerId === 'xai')!
+  const sortedIds = xaiGroup.models.map((m) => m.id)
+
+  // Expected order per compareRoutedModelIds' documented contract: family
+  // stem "grok-" clusters together (only stem present here), then version
+  // DESCENDING by component (major, then minor, ...) — 4.20 > 4.5 > 4.3 > 3.x
+  // > build-0.1 — with same-version dated builds broken by localeCompare.
+  assert.deepEqual(
+    sortedIds,
+    [
+      'grok-4.20-0309-non-reasoning',
+      'grok-4.20-0309-reasoning',
+      'grok-4.20-multi-agent-0309',
+      'grok-4.5',
+      'grok-4.3',
+      'grok-3-mini',
+      'grok-3-mini-fast',
+      'grok-build-0.1',
+      'grok-composer-2.5-fast',
+      'grok-imagine-image',
+      'grok-imagine-image-quality',
+      'grok-imagine-video',
+      'grok-imagine-video-1.5-preview'
+    ],
+    'a jumbled routed-provider model list must come out grouped by family stem and version-descending, matching compareRoutedModelIds exactly'
+  )
+
+  // The Claude group must be UNCHANGED — still exactly CLAUDE_MODEL_OPTIONS'
+  // hand-curated order, proving the sort never touches Claude.
+  const claudeGroup = groups.find((g) => g.providerId === 'claude')!
+  assert.deepEqual(
+    claudeGroup.models.map((m) => m.id),
+    CLAUDE_MODEL_OPTIONS.map((o) => o.value),
+    "Claude's group order must stay EXACTLY CLAUDE_MODEL_OPTIONS' order — never sorted"
+  )
+
+  // Determinism: running the grouping/sort again over the same input yields
+  // an identical order both times (no reliance on unstable native sort or
+  // incidental input order).
+  const groupsAgain = groupModelsForCreation(models)
+  const xaiAgain = groupsAgain.find((g) => g.providerId === 'xai')!.models.map((m) => m.id)
+  assert.deepEqual(
+    sortedIds,
+    xaiAgain,
+    'sorting the same input twice must produce identical output'
+  )
+
+  console.log(
+    '✓ non-Claude routed groups sort into deterministic family-stem + version-descending order; Claude group order is untouched; sort is stable/deterministic across repeated runs'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 7. compareRoutedModelIds direct contract checks — the comparator itself,
+//    independent of grouping, so its rules are pinned even if the grouping
+//    call site ever changes.
+// ---------------------------------------------------------------------------
+
+{
+  // Multi-component version compare: major desc first, then minor desc.
+  assert.ok(
+    compareRoutedModelIds('gpt-5', 'gpt-4') < 0,
+    'gpt-5 must sort before gpt-4 (major desc)'
+  )
+  assert.ok(
+    compareRoutedModelIds('grok-4.20', 'grok-4.5') < 0,
+    'within the same major (4), minor 20 must sort before minor 5 (numeric, not string, compare)'
+  )
+
+  // Different stems cluster by alphabetical stem, not interleaved by version.
+  assert.ok(
+    compareRoutedModelIds('grok-imagine-video', 'grok-4.5') > 0,
+    '"grok-imagine-" is a different (alphabetically later) stem than "grok-", so it sorts after the whole grok- family regardless of version'
+  )
+
+  // No parseable version at all -> pure localeCompare fallback, still total.
+  assert.ok(
+    typeof compareRoutedModelIds('gemini-3-pro', 'gemini-3-flash') === 'number',
+    'ids with equal version vectors fall back to localeCompare and still return a definite order'
+  )
+
+  // Reflexive/symmetric sanity: comparing an id to itself is always 0.
+  assert.equal(compareRoutedModelIds('grok-4.5', 'grok-4.5'), 0)
+
+  console.log(
+    '✓ compareRoutedModelIds: numeric multi-component version-descending within a stem, alphabetical stem clustering across families, total order via localeCompare fallback'
   )
 }
