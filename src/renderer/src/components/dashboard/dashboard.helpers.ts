@@ -112,19 +112,17 @@ export function nextWorkspaceName(existing: { name: string }[]): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Reorder an array of identifiable items according to `orderedIds`, dropping
- * any item whose id does not appear in the array. Used for optimistic project
- * reordering where the full list is replaced by the ordered subset.
- */
-export function reorderById<T extends { id: string }>(arr: T[], orderedIds: string[]): T[] {
-  const byId = new Map(arr.map((item) => [item.id, item]))
-  return orderedIds.map((id) => byId.get(id)).filter((item): item is T => item !== undefined)
-}
-
-/**
  * Reorder a list by `orderedIds` then append any items whose ids were not
- * present in `orderedIds` to the tail. Used for optimistic workspace reordering
- * where archived workspaces sit outside the visible drag group.
+ * present in `orderedIds` to the tail. Used for ALL optimistic reordering —
+ * workspaces (where archived ones sit outside the visible drag group) and
+ * projects (where a project added in the race window between the main-side
+ * listProjects() snapshot and the IPC resolving would otherwise be dropped).
+ *
+ * The tail-append is the whole point: an earlier `reorderById` helper built
+ * the result purely from `orderedIds` and silently discarded anything missing
+ * from it, which made freshly-added rows vanish from the sidebar until the
+ * next refetch. Never reintroduce that variant — if a caller genuinely wants
+ * to drop unlisted items, it should filter explicitly at the call site.
  */
 export function reorderWithTail<T extends { id: string }>(list: T[], orderedIds: string[]): T[] {
   const byId = new Map(list.map((item) => [item.id, item]))

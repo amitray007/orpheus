@@ -401,7 +401,17 @@ function SubmenuPanel({
       aria-label={`${activeGroup.label} models`}
       onMouseEnter={onPointerEnter}
       onMouseLeave={onPointerLeave}
-      className="w-64 flex-shrink-0 self-start rounded-md border border-border-default bg-surface-overlay shadow-lg py-1"
+      // max-h-80 overflow-y-auto: caps this panel's own height instead of
+      // letting a long model list (e.g. Grok's 13 models) grow unbounded.
+      // Load-bearing beyond the usual "long list" reason — this panel is an
+      // IN-FLOW flex sibling (see this file's header comment) inside
+      // OverlayRoot's `width/height: max-content` card, whose native window
+      // bounds are driven by a ResizeObserver on that card. An uncapped
+      // in-flow submenu grows the card past the screen bottom and the whole
+      // popover "shifts"/breaks out of the viewport (regression fix — this
+      // matches ChipGroupedDropdown.tsx's SubmenuPanel, the sibling flyout
+      // with the SAME architecture, which already caps at max-h-80).
+      className="w-64 flex-shrink-0 self-start rounded-md border border-border-default bg-surface-overlay shadow-lg py-1 max-h-80 overflow-y-auto"
     >
       <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-text-muted border-b border-border-default/60">
         <ProviderIcon providerId={activeGroup.providerId} size={12} />

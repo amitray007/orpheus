@@ -28,7 +28,6 @@ import {
   viewToSidebarActiveView,
   mainContainerClassName,
   nextWorkspaceName,
-  reorderById,
   reorderWithTail,
   viewToSidebarDestination,
   resolveLandingView
@@ -1722,8 +1721,12 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   )
 
   const handleReorderProjects = useCallback((orderedIds: string[]): void => {
-    // Optimistic reorder — update local state immediately using functional updater
-    setProjects((arr) => reorderById(arr, orderedIds))
+    // Optimistic reorder — update local state immediately using functional
+    // updater. reorderWithTail (not reorderById) so a project added in the
+    // race window between the main-side listProjects() snapshot and this IPC
+    // resolving isn't dropped from local state — it's appended to the tail
+    // instead of vanishing until the next refetch.
+    setProjects((arr) => reorderWithTail(arr, orderedIds))
     window.api.projects.reorder(orderedIds).catch((err) => {
       console.error('[dashboard] reorder failed; refetching', err)
       window.api.projects.list().then(setProjects).catch(console.error)
@@ -1734,7 +1737,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     window.api.projects
       .reorderByActivity()
       .then((orderedIds) => {
-        setProjects((arr) => reorderById(arr, orderedIds))
+        // See handleReorderProjects above — reorderWithTail avoids dropping a
+        // project added between the main-side snapshot and this IPC resolving.
+        setProjects((arr) => reorderWithTail(arr, orderedIds))
       })
       .catch((err) => {
         console.error('[dashboard] reorder by activity failed; refetching', err)
