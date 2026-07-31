@@ -2,7 +2,7 @@ import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } fr
 import type React from 'react'
 import { Overlay } from '@/components/ui/Overlay'
 import { X, Plus, CaretDown, Check, Trash } from '@phosphor-icons/react'
-import { CLAUDE_MODEL_OPTIONS, CLAUDE_MODEL_ALIAS_START_INDEX } from '@shared/types'
+import { CLAUDE_MODEL_OPTIONS, CLAUDE_MODEL_VERSIONED_START_INDEX } from '@shared/types'
 import { parseFlagEntry, mergeFlagScopes, isFlagParseError, flagName } from '@shared/cliFlags'
 import { isValidEnvVarKey } from '@shared/envVars'
 import { playSound } from '../../../lib/sound'
@@ -403,8 +403,8 @@ export function Select<T extends string>({
               // Separator — render as non-interactive section divider. Label
               // is the group heading (e.g. a provider name for the model
               // picker's Claude-vs-routed-provider grouping); empty-label
-              // separators (the original Claude versions/aliases split)
-              // fall back to "Always latest" for backward compatibility.
+              // separators fall back to "Always latest" for backward
+              // compatibility with any caller that omits an explicit label.
               if (opt.value.startsWith('__sep')) {
                 return (
                   <div
@@ -1241,18 +1241,21 @@ export function CustomEnvVarsEditor({
 
 // ---------------------------------------------------------------------------
 // ModelPicker — dropdown select for model with two grouped sections:
+//   • "Always latest" — family aliases that claude resolves at launch (first)
 //   • "Specific versions" — explicit versioned IDs (unambiguous pricing)
-//   • "Always latest" — family aliases that claude resolves at launch
 // A separator sentinel (__sep_*) renders the section label between groups.
 // A "Custom…" mode falls through to a free-form text input.
 // ---------------------------------------------------------------------------
 
 // Build the flat options list with a separator between the two groups.
 // The separator value starts with '__sep' so the updated Select renders it as a divider.
+// Label is set explicitly here (rather than relying on the Select's "Always
+// latest" default) because the block AFTER this divider is now the versioned
+// group, not the aliases.
 const MODEL_PICKER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  ...CLAUDE_MODEL_OPTIONS.slice(0, CLAUDE_MODEL_ALIAS_START_INDEX),
-  { value: '__sep_model', label: '' }, // divider — label unused; Select renders "Always latest"
-  ...CLAUDE_MODEL_OPTIONS.slice(CLAUDE_MODEL_ALIAS_START_INDEX),
+  ...CLAUDE_MODEL_OPTIONS.slice(0, CLAUDE_MODEL_VERSIONED_START_INDEX),
+  { value: '__sep_model', label: 'Specific versions' }, // divider — versioned group follows
+  ...CLAUDE_MODEL_OPTIONS.slice(CLAUDE_MODEL_VERSIONED_START_INDEX),
   { value: 'custom', label: 'Custom…' }
 ]
 

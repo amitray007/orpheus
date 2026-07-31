@@ -704,9 +704,9 @@ export type KeepAwakeState = {
 // Shared model picker options — keep this list in one place so the General
 // settings, ProjectView overrides, and WorkspaceDrawer all agree.
 //
-// Two groups:
-//   1. Explicit versioned IDs — unambiguous pricing + context lookup
-//   2. Always-latest aliases — claude resolves the exact version at launch
+// Two groups, always-latest first:
+//   1. Always-latest aliases — claude resolves the exact version at launch
+//   2. Explicit versioned IDs — unambiguous pricing + context lookup
 //
 // The `family` field here is display metadata only (picker grouping) — it
 // does NOT drive title-bar colour-coding (no such feature exists) and is
@@ -716,29 +716,30 @@ export type KeepAwakeState = {
 // this array's `family` string against arbitrary ids (see that module's
 // header comment for why family-substring matching was a landmine).
 export const CLAUDE_MODEL_OPTIONS = [
+  // Always-latest aliases — claude resolves at launch
+  { value: 'opus', label: 'Opus (latest)', family: 'opus' },
+  { value: 'sonnet', label: 'Sonnet (latest)', family: 'sonnet' },
+  { value: 'haiku', label: 'Haiku (latest)', family: 'haiku' },
+  { value: 'fable', label: 'Fable (latest)', family: 'fable' },
   // Explicit versions — unambiguous pricing + context lookup
   { value: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus' },
   { value: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus' },
   { value: 'claude-sonnet-5', label: 'Sonnet 5', family: 'sonnet' },
   { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet' },
   { value: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku' },
-  { value: 'claude-fable-5', label: 'Fable 5', family: 'fable' },
-  // Always-latest aliases — claude resolves at launch
-  { value: 'opus', label: 'Opus (latest)', family: 'opus' },
-  { value: 'sonnet', label: 'Sonnet (latest)', family: 'sonnet' },
-  { value: 'haiku', label: 'Haiku (latest)', family: 'haiku' },
-  { value: 'fable', label: 'Fable (latest)', family: 'fable' }
+  { value: 'claude-fable-5', label: 'Fable 5', family: 'fable' }
 ] as const
 
 export type ClaudeModelOption = (typeof CLAUDE_MODEL_OPTIONS)[number]['value']
 
-// Index into CLAUDE_MODEL_OPTIONS where the "always-latest" aliases begin.
-// Options before this index are explicit versioned IDs; from this index onward
-// they are family aliases that claude resolves to the latest release at launch.
-// Derived from the array shape so adding/removing versioned entries doesn't
-// silently break the picker grouping — aliases are entries where value === family.
-export const CLAUDE_MODEL_ALIAS_START_INDEX = CLAUDE_MODEL_OPTIONS.findIndex(
-  (o) => o.value === o.family
+// Index into CLAUDE_MODEL_OPTIONS where the explicit versioned IDs begin.
+// Options before this index are always-latest family aliases (claude resolves
+// to the latest release at launch); from this index onward they are explicit
+// versioned IDs. Derived from the array shape so adding/removing alias entries
+// doesn't silently break the picker grouping — versions are entries where
+// value !== family.
+export const CLAUDE_MODEL_VERSIONED_START_INDEX = CLAUDE_MODEL_OPTIONS.findIndex(
+  (o) => o.value !== o.family
 )
 
 // ---------------------------------------------------------------------------
