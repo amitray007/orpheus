@@ -49,7 +49,7 @@
 
 import * as http from 'node:http'
 import * as fs from 'node:fs'
-import { getCmdSockPath, getCmdTokenPath } from './paths.js'
+import { getCmdSockPath, getCmdTokenPath, ambientTokenOverrideIsTrusted } from './paths.js'
 
 // ---------------------------------------------------------------------------
 // Typed errors
@@ -140,8 +140,18 @@ function resolveSocketPath(): string {
  * Resolve the auth token, caching it for the lifetime of this CLI process.
  *
  * Resolution order:
- *   1. process.env.ORPHEUS_CMD_TOKEN (allows test scripts to inject a token)
- *   2. getCmdTokenPath() read from disk (written by startCommandServer)
+ *   1. process.env.ORPHEUS_CMD_TOKEN (allows test scripts to inject a token) —
+ *      but ONLY when ambientTokenOverrideIsTrusted() says the invoked and
+ *      ambient app variants agree (or ORPHEUS_FORCE_CROSS_VARIANT=1). A bare
+ *      token string has no embedded variant to cross-check the way
+ *      getCmdSockPath()'s path override does (see paths.ts's
+ *      "CROSS-VARIANT TALK GUARD" and ambientTokenOverrideIsTrusted()'s doc
+ *      comment) — ORPHEUS_CMD_SOCK/ORPHEUS_CMD_TOKEN are injected together
+ *      as a matched pair, so an untrusted socket override implies an
+ *      untrusted token override too, even though the token itself can't be
+ *      inspected directly.
+ *   2. getCmdTokenPath() read from disk (written by startCommandServer) —
+ *      also the fallback when step 1's token is present but distrusted.
  *
  * Throws AppNotRunningError if no token is available from either source.
  */
@@ -158,8 +168,21 @@ export function resolveToken(): string {
   // 1. Env-var override (primarily for tests and internal tooling)
   const envToken = process.env.ORPHEUS_CMD_TOKEN
   if (typeof envToken === 'string' && envToken.length > 0) {
-    _cachedToken = envToken
-    return _cachedToken
+    if (ambientTokenOverrideIsTrusted()) {
+      _cachedToken = envToken
+      return _cachedToken
+    }
+    // Untrusted: this token was very likely minted for a DIFFERENT app
+    // instance's command server (see the doc comment above). Refuse it and
+    // fall through to the invoked variant's own on-disk token. Warn
+    // independently of getCmdSockPath()'s own check — ORPHEUS_CMD_SOCK and
+    // ORPHEUS_CMD_TOKEN are injected together in practice, but nothing
+    // guarantees a caller sets both, so this must not rely on the other
+    // check having already fired.
+    process.stderr.write(
+      'orpheus: warning: ignoring inherited auth token — it was minted for a different ' +
+        'app variant than this CLI is targeting. Set ORPHEUS_FORCE_CROSS_VARIANT=1 to override.\n'
+    )
   }
 
   // 2. On-disk token file
@@ -372,6 +395,62 @@ export async function sendCommand(
 const DEFAULT_SUBSCRIBE_TIMEOUT_MS = 5 * 60 * 1000
 
 /**
+ * Extract the server's `{ ok: false, error: "..." }` message from a
+ * /subscribe error-response body, or undefined if the body isn't that shape
+ * (blank, not JSON, or missing a string `error` field — the server always
+ * sends this envelope for its own 4xx/429 responses, per commandServer.ts's
+ * writeJsonResponse()/parseSubscribeRequestBody(), but a malformed or absent
+ * body must not throw here; the caller falls back to a bare status message).
+ *
+ * Pure string parsing — exported so it's unit-testable without a live socket
+ * or HTTP server. This is what used to be silently discarded: the transport
+ * only ever surfaced `Orpheus subscription failed with HTTP ${statusCode}`,
+ * which is why the /subscribe protocol-vs-stale-server mismatch that this
+ * whole investigation started from took a Unix-socket proxy to diagnose
+ * instead of just reading the error the server had already sent.
+ */
+export function extractSubscriptionErrorDetail(rawBody: string): string | undefined {
+  const trimmed = rawBody.trim()
+  if (trimmed.length === 0) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return undefined
+  }
+  if (parsed == null || typeof parsed !== 'object') return undefined
+  const error = (parsed as { error?: unknown }).error
+  return typeof error === 'string' && error.length > 0 ? error : undefined
+}
+
+/**
+ * Build the SubscriptionError for a non-200 /subscribe response, folding in
+ * the server's own error message (see extractSubscriptionErrorDetail()) when
+ * the body carries one. Pure function of (statusCode, rawBody) — exported
+ * for unit testing; the 'auth'/'http' kind split and 401-specific copy match
+ * subscribe()'s pre-existing behavior exactly, only the message detail is new.
+ */
+export function buildSubscriptionHttpError(statusCode: number, rawBody: string): SubscriptionError {
+  const detail = extractSubscriptionErrorDetail(rawBody)
+  if (statusCode === 401) {
+    return new SubscriptionError(
+      'auth',
+      detail != null
+        ? `Orpheus subscription authentication was rejected: ${detail}`
+        : 'Orpheus subscription authentication was rejected',
+      statusCode
+    )
+  }
+  return new SubscriptionError(
+    'http',
+    detail != null
+      ? `Orpheus subscription failed with HTTP ${statusCode}: ${detail}`
+      : `Orpheus subscription failed with HTTP ${statusCode}`,
+    statusCode
+  )
+}
+
+/**
  * Open a long-lived streaming subscription to the Orpheus app.
  *
  * Transport: POST /subscribe — the server keeps the response open and emits
@@ -472,20 +551,25 @@ export function subscribe(
         if (statusCode === 401) {
           invalidateConnectionCache()
         }
-        res.resume()
-        teardown(
-          statusCode === 401
-            ? new SubscriptionError(
-                'auth',
-                'Orpheus subscription authentication was rejected',
-                statusCode
-              )
-            : new SubscriptionError(
-                'http',
-                `Orpheus subscription failed with HTTP ${statusCode}`,
-                statusCode
-              )
-        )
+        // Collect the error body (small JSON envelope, not the NDJSON event
+        // stream — that only starts once status 200 is confirmed above) so
+        // the server's actual { ok: false, error } message reaches the
+        // caller instead of being discarded. See
+        // extractSubscriptionErrorDetail()'s doc comment for why this
+        // mattered in practice. teardown() is idempotent (guarded by
+        // `closed`), so if the body read is interrupted mid-flight the
+        // fallback bare-status error below still wins the race safely.
+        const errorChunks: string[] = []
+        res.on('data', (chunk: string) => errorChunks.push(chunk))
+        res.on('end', () => {
+          teardown(buildSubscriptionHttpError(statusCode, errorChunks.join('')))
+        })
+        res.on('aborted', () => {
+          teardown(buildSubscriptionHttpError(statusCode, errorChunks.join('')))
+        })
+        res.on('error', () => {
+          teardown(buildSubscriptionHttpError(statusCode, errorChunks.join('')))
+        })
         return
       }
 

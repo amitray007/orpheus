@@ -42,6 +42,48 @@
 
 set -eu
 
+# ORPHEUS_INVOKED_VARIANT — which app variant THIS SHIM belongs to
+# ------------------------------------------------------------------
+# Resolved ONCE, early, from the same WT > Dev > Nightly > prod cascade the
+# Electron-as-Node path below already uses to pick ELECTRON_BIN — computed
+# here first so BOTH exec paths (the opentui branch below and the default
+# path further down) can export it before handing off to the CLI.
+#
+# WHY THIS EXISTS: packages/orpheus-cli/src/paths.ts resolves which app's
+# data dir / command socket / token to use from environment signals. Every
+# workspace-hosted terminal ALSO has ORPHEUS_DATA_VARIANT/ORPHEUS_CMD_SOCK/
+# ORPHEUS_CMD_TOKEN injected by whichever app instance owns that workspace
+# (src/main/orpheusSurfaceAdapter.ts) — correct for a terminal driven by that
+# app, but if a shell already carrying those vars invokes a DIFFERENT
+# variant's `orpheus` binary, the CLI would otherwise silently cross-talk
+# with the wrong app (this is exactly what caused a confusing HTTP 400 on
+# /subscribe during OpenTUI TUI development — see paths.ts's "CROSS-VARIANT
+# TALK GUARD" for the full story). ORPHEUS_INVOKED_VARIANT reflects the
+# PHYSICALLY-INVOKED binary — trustworthy in a way inherited env vars are
+# not — so paths.ts can prefer it and refuse to silently use a foreign
+# socket/token.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+RESOURCES_DIR="$(dirname "$SCRIPT_DIR")"
+MACOS_DIR="$(dirname "$RESOURCES_DIR")/MacOS"
+
+if [ -x "$MACOS_DIR/Orpheus WT" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus WT"
+  export ORPHEUS_INVOKED_VARIANT=wt
+elif [ -x "$MACOS_DIR/Orpheus Dev" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus Dev"
+  export ORPHEUS_INVOKED_VARIANT=dev
+elif [ -x "$MACOS_DIR/Orpheus Nightly" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus Nightly"
+  export ORPHEUS_INVOKED_VARIANT=nightly
+elif [ -x "$MACOS_DIR/Orpheus" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus"
+  export ORPHEUS_INVOKED_VARIANT=prod
+else
+  echo "orpheus: error: cannot find Electron binary in $MACOS_DIR" >&2
+  echo "  Expected 'Orpheus WT', 'Orpheus Dev', 'Orpheus Nightly', or 'Orpheus' — is the app bundle intact?" >&2
+  exit 1
+fi
+
 # ORPHEUS_TUI_ENGINE=opentui BRANCH
 # ------------------------------------
 # `orpheus tui` normally runs the Ink/React picker (tui/entry.ts, bundled to
@@ -71,8 +113,6 @@ set -eu
 # the entire migration.
 if [ "${1:-}" = "tui" ] && [ "${ORPHEUS_TUI_ENGINE:-}" = "opentui" ]; then
   shift # drop "tui" — tui-otui.mjs takes the remaining args (e.g. --project)
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-  RESOURCES_DIR="$(dirname "$SCRIPT_DIR")"
   BUN_BIN="$SCRIPT_DIR/bun"
   OTUI_BUNDLE="$RESOURCES_DIR/cli/tui-otui.mjs"
   OTUI_ASSET_ROOT_DIR="$RESOURCES_DIR/cli"
@@ -115,15 +155,11 @@ fi
 # We try that path first, then fall back to a sibling Resources/node_modules/
 # in case a future layout change moves things. NODE_PATH is additive — we
 # prepend so our path is searched first, with any existing NODE_PATH appended.
-
-# Resolve the directory containing this script, following symlinks.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-
-# The Resources dir is one level up from bin/.
-RESOURCES_DIR="$(dirname "$SCRIPT_DIR")"
-
-# The MacOS dir is a sibling of Resources/.
-MACOS_DIR="$(dirname "$RESOURCES_DIR")/MacOS"
+#
+# SCRIPT_DIR/RESOURCES_DIR/MACOS_DIR/ELECTRON_BIN were already resolved above
+# (see the ORPHEUS_INVOKED_VARIANT block) — reused here rather than
+# re-derived, so there is exactly one WT > Dev > Nightly > prod cascade in
+# this file.
 
 # The bundled CLI lives at Resources/cli/cli.cjs.
 CLI_BUNDLE="$RESOURCES_DIR/cli/cli.cjs"
@@ -145,21 +181,6 @@ fi
 # Prepend to existing NODE_PATH (may be unset — guard with :- default).
 if [ -n "$ORPHEUS_NODE_PATH" ]; then
   export NODE_PATH="$ORPHEUS_NODE_PATH${NODE_PATH:+:${NODE_PATH}}"
-fi
-
-# Find the Electron binary for worktree, nightly, development, or production builds.
-if [ -x "$MACOS_DIR/Orpheus WT" ]; then
-  ELECTRON_BIN="$MACOS_DIR/Orpheus WT"
-elif [ -x "$MACOS_DIR/Orpheus Dev" ]; then
-  ELECTRON_BIN="$MACOS_DIR/Orpheus Dev"
-elif [ -x "$MACOS_DIR/Orpheus Nightly" ]; then
-  ELECTRON_BIN="$MACOS_DIR/Orpheus Nightly"
-elif [ -x "$MACOS_DIR/Orpheus" ]; then
-  ELECTRON_BIN="$MACOS_DIR/Orpheus"
-else
-  echo "orpheus: error: cannot find Electron binary in $MACOS_DIR" >&2
-  echo "  Expected 'Orpheus WT', 'Orpheus Dev', 'Orpheus Nightly', or 'Orpheus' — is the app bundle intact?" >&2
-  exit 1
 fi
 
 if [ ! -f "$CLI_BUNDLE" ]; then

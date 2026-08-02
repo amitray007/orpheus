@@ -30,6 +30,13 @@
 //      exactly at all three breakpoints — including the tightest real case,
 //      a selected CHILD row (depth>0, "└ " indent) with a worktree marker
 //   9. tmuxSocketNameForAppName for all four app variants
+//   10. resolveEffectiveVariant / variantEmbeddedInPath — the cross-variant
+//       talk guard (packages/orpheus-cli/src/paths.ts): agreeing variants,
+//       disagreeing variants (invoked wins), env-vars-absent, malformed/
+//       unrecognized paths, and the ORPHEUS_FORCE_CROSS_VARIANT escape hatch
+//   11. extractSubscriptionErrorDetail / buildSubscriptionHttpError
+//       (packages/orpheus-cli/src/socket-client.ts) — surfacing the
+//       server's { ok: false, error } body on a non-200 /subscribe response
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert'
@@ -54,8 +61,16 @@ import type {
   TreeWorkspace,
   WorkspaceStatus
 } from '../packages/orpheus-cli/src/tui/types.ts'
-import { tmuxSocketNameForAppName } from '../packages/orpheus-cli/src/paths.ts'
+import {
+  tmuxSocketNameForAppName,
+  resolveEffectiveVariant,
+  variantEmbeddedInPath
+} from '../packages/orpheus-cli/src/paths.ts'
 import { gutterWidthFor } from '../packages/orpheus-cli/src/tui/theme.ts'
+import {
+  extractSubscriptionErrorDetail,
+  buildSubscriptionHttpError
+} from '../packages/orpheus-cli/src/socket-client.ts'
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -597,6 +612,143 @@ function workspaceRows(rows: DisplayRow[]): Array<Extract<DisplayRow, { kind: 'w
 
   console.log(
     '✓ tmuxSocketNameForAppName: all four app variants map to distinct sockets (dev/wt/nightly never collide with prod)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 10. resolveEffectiveVariant / variantEmbeddedInPath — cross-variant talk guard
+// ---------------------------------------------------------------------------
+
+{
+  // Agreeing variants: invoked and ambient match — behavior is just "that variant".
+  assert.equal(resolveEffectiveVariant({ invoked: 'dev', ambient: 'dev' }), 'dev')
+  assert.equal(resolveEffectiveVariant({ invoked: 'prod', ambient: 'prod' }), 'prod')
+
+  // Disagreeing variants: the invoked binary's own variant wins, NOT the
+  // ambient/inherited one — this is the fix for the cross-talk bug (a Dev
+  // binary invoked from a prod-hosted workspace shell must still target Dev).
+  assert.equal(resolveEffectiveVariant({ invoked: 'dev', ambient: 'prod' }), 'dev')
+  assert.equal(resolveEffectiveVariant({ invoked: 'prod', ambient: 'wt' }), 'prod')
+  assert.equal(resolveEffectiveVariant({ invoked: 'nightly', ambient: 'dev' }), 'nightly')
+
+  // Env-vars-absent cases: no shim-set signal at all.
+  assert.equal(
+    resolveEffectiveVariant({ ambient: 'dev' }),
+    'dev',
+    'no invoked signal falls back to ambient (bare SSH session inside a workspace terminal, pre-guard behavior)'
+  )
+  assert.equal(
+    resolveEffectiveVariant({}),
+    'prod',
+    'neither var set (bare SSH/Terminal.app session) defaults to prod, same as before this guard existed'
+  )
+
+  // Malformed values: an unrecognized string on either side is treated as absent.
+  assert.equal(resolveEffectiveVariant({ invoked: 'bogus', ambient: 'dev' }), 'dev')
+  assert.equal(resolveEffectiveVariant({ invoked: 'dev', ambient: 'bogus' }), 'dev')
+  assert.equal(resolveEffectiveVariant({ invoked: '', ambient: '' }), 'prod')
+
+  // ORPHEUS_FORCE_CROSS_VARIANT=1 is the deliberate escape hatch: only when
+  // BOTH a disagreement exists AND the flag is exactly "1" does ambient win.
+  assert.equal(
+    resolveEffectiveVariant({ invoked: 'dev', ambient: 'prod', forceCrossVariant: '1' }),
+    'prod',
+    'explicit force flag lets ambient win over invoked'
+  )
+  assert.equal(
+    resolveEffectiveVariant({ invoked: 'dev', ambient: 'prod', forceCrossVariant: 'true' }),
+    'dev',
+    'anything other than the literal string "1" is NOT the escape hatch — must not accidentally match'
+  )
+  assert.equal(
+    resolveEffectiveVariant({ invoked: 'dev', forceCrossVariant: '1' }),
+    'dev',
+    'force flag with no ambient value to fall back to still returns invoked'
+  )
+
+  // variantEmbeddedInPath — pure path parsing used to cross-check
+  // ORPHEUS_CMD_SOCK/ORPHEUS_CMD_TOKEN_FILE overrides.
+  assert.equal(
+    variantEmbeddedInPath('/Users/x/Library/Application Support/Orpheus Dev/cmd.sock'),
+    'dev'
+  )
+  assert.equal(
+    variantEmbeddedInPath('/Users/x/Library/Application Support/Orpheus WT/cmd.sock'),
+    'wt'
+  )
+  assert.equal(
+    variantEmbeddedInPath('/Users/x/Library/Application Support/Orpheus Nightly/cmd.token'),
+    'nightly'
+  )
+  assert.equal(
+    variantEmbeddedInPath('/Users/x/Library/Application Support/Orpheus/cmd.sock'),
+    'prod'
+  )
+  // No "Application Support" segment at all — e.g. a test harness path — is
+  // left alone (undefined), matching pre-guard behavior for such overrides.
+  assert.equal(variantEmbeddedInPath('/tmp/test-fixtures/custom.sock'), undefined)
+  // "Application Support" present but an unrecognized app name under it.
+  assert.equal(
+    variantEmbeddedInPath('/Users/x/Library/Application Support/SomeOtherApp/cmd.sock'),
+    undefined
+  )
+
+  console.log(
+    '✓ resolveEffectiveVariant/variantEmbeddedInPath: invoked wins on disagreement, force escape hatch, malformed/absent inputs'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 11. extractSubscriptionErrorDetail / buildSubscriptionHttpError
+// ---------------------------------------------------------------------------
+
+{
+  // The server's real shape: { ok: false, error: "..." } — commandServer.ts's
+  // writeJsonResponse()/parseSubscribeRequestBody() error path.
+  assert.equal(
+    extractSubscriptionErrorDetail(
+      '{"ok":false,"error":"workspaceIds must be a non-empty string[]"}'
+    ),
+    'workspaceIds must be a non-empty string[]'
+  )
+
+  // Malformed/absent bodies must not throw — caller falls back to a bare
+  // status-only message in that case.
+  assert.equal(extractSubscriptionErrorDetail(''), undefined)
+  assert.equal(extractSubscriptionErrorDetail('   '), undefined)
+  assert.equal(extractSubscriptionErrorDetail('not json'), undefined)
+  assert.equal(extractSubscriptionErrorDetail('null'), undefined)
+  assert.equal(extractSubscriptionErrorDetail('[]'), undefined)
+  assert.equal(extractSubscriptionErrorDetail('{"ok":false}'), undefined)
+  assert.equal(extractSubscriptionErrorDetail('{"error":123}'), undefined)
+  assert.equal(extractSubscriptionErrorDetail('{"error":""}'), undefined)
+
+  // buildSubscriptionHttpError: detail folded into the message when present,
+  // falls back to the pre-existing bare-status message when absent —
+  // preserves the exact prior copy so existing callers/tests matching on
+  // "Orpheus subscription failed with HTTP 400" (no detail) still match.
+  const withDetail = buildSubscriptionHttpError(400, '{"ok":false,"error":"bad request"}')
+  assert.equal(withDetail.kind, 'http')
+  assert.equal(withDetail.statusCode, 400)
+  assert.equal(withDetail.message, 'Orpheus subscription failed with HTTP 400: bad request')
+
+  const withoutDetail = buildSubscriptionHttpError(500, '')
+  assert.equal(withoutDetail.kind, 'http')
+  assert.equal(withoutDetail.message, 'Orpheus subscription failed with HTTP 500')
+
+  const authWithDetail = buildSubscriptionHttpError(401, '{"ok":false,"error":"unauthorized"}')
+  assert.equal(authWithDetail.kind, 'auth')
+  assert.equal(
+    authWithDetail.message,
+    'Orpheus subscription authentication was rejected: unauthorized'
+  )
+
+  const authWithoutDetail = buildSubscriptionHttpError(401, '')
+  assert.equal(authWithoutDetail.kind, 'auth')
+  assert.equal(authWithoutDetail.message, 'Orpheus subscription authentication was rejected')
+
+  console.log(
+    '✓ extractSubscriptionErrorDetail/buildSubscriptionHttpError: server error body surfaced, malformed bodies degrade to bare-status message'
   )
 }
 
