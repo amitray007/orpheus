@@ -41,6 +41,29 @@ export default defineConfig(
       ...eslintPluginReactRefresh.configs.vite.rules
     }
   },
+  // packages/orpheus-cli/src/tui-otui/** is Solid JSX (@opentui/solid), not
+  // React — its intrinsic elements (<box>, <text>, ...) use OpenTUI's own
+  // prop set (fg/bg/flexDirection/attributes/wrapMode/...), which
+  // eslint-plugin-react's react/no-unknown-property (registered globally
+  // above via eslintPluginReact.configs.flat.recommended, scoped to every
+  // **/*.tsx with no exclusion) flags as unknown DOM attributes — because it
+  // assumes React's DOM prop whitelist. Same reasoning as jsx-runtime being
+  // globally enabled: those React-specific checks don't apply to a
+  // different JSX pragma entirely. react-hooks/react-refresh rules are
+  // similarly React-specific and meaningless against Solid's reactivity
+  // model (no hooks-dependency-array concept, no HMR-component-export
+  // convention), so they're disabled here too rather than producing noise
+  // that can never be "fixed" short of not using Solid.
+  {
+    files: ['packages/orpheus-cli/src/tui-otui/**/*.{ts,tsx}'],
+    rules: {
+      'react/no-unknown-property': 'off',
+      'react/jsx-key': 'off',
+      'react-hooks/rules-of-hooks': 'off',
+      'react-hooks/exhaustive-deps': 'off',
+      'react-refresh/only-export-components': 'off'
+    }
+  },
   {
     // Plain JS/MJS build + utility scripts (e.g. scripts/*.mjs) can't carry TS
     // type annotations, so the typescript-eslint type-signature rules don't
@@ -49,6 +72,20 @@ export default defineConfig(
     rules: {
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/explicit-module-boundary-types': 'off'
+    }
+  },
+  {
+    // scripts/build-tui-otui.mjs is executed via `bun scripts/build-tui-otui.mjs`
+    // (see build:cli:tui-otui in package.json) and uses the global `Bun`
+    // object (Bun.build) — a Bun-runtime global with no entry in the
+    // `globals` package's known environments, unlike `process`/`console`
+    // which come from the shared Node env already applied globally. Declare
+    // it here rather than broadening any shared config.
+    files: ['scripts/build-tui-otui.mjs'],
+    languageOptions: {
+      globals: {
+        Bun: 'readonly'
+      }
     }
   },
   // Type-aware linting for the Node-side code (main/preload/shared). Scoped
