@@ -390,9 +390,27 @@ export type TerminalRect = { x: number; y: number; w: number; h: number }
 /**
  * Return type of `terminal:mount`.
  *
- * Success: `{ workspaceId, created, notice? }` — surface is mounted; if a
- * worktree was recreated with a new branch the optional `notice` carries a
- * one-time human-readable message the renderer should surface.
+ * Universal tmux hosting (docs/TUI_SPEC.md D1, rewritten from "two disjoint
+ * hosts, first-opener wins"): every NEW mount is tmux-hosted by default —
+ * the desktop's native surface attaches to the same tmux session the TUI
+ * would attach to, rather than running `claude` directly. This is a staged
+ * rollout, not a live migration: a workspace whose surface is ALREADY
+ * mounted natively (from before this change, or from an earlier
+ * tmux-missing fallback) is left running exactly as-is and converts on its
+ * NEXT natural mount from a cold surface (app relaunch, or the workspace
+ * being closed and reopened) — see willMountCreateSurface() in index.ts.
+ *
+ * Success: `{ workspaceId, created, notice?, tmuxFallback? }` — surface is
+ * mounted (tmux-hosted, OR natively if tmux is unavailable — see
+ * `tmuxFallback` below). `notice` carries a one-time human-readable message
+ * unrelated to hosting (e.g. a worktree was recreated with a new branch).
+ * `tmuxFallback` is present ONLY when this specific mount fell back to
+ * native hosting because tmux is missing or too old on this machine —
+ * `{ reason: 'not-installed' | 'version-too-old', detail: string }`, where
+ * `detail` is an actionable, human-readable explanation (mentions
+ * `brew install tmux` / `brew upgrade tmux` as appropriate). The renderer
+ * MUST surface this visibly (a notice banner, not a silent degrade) — see
+ * WorkspaceView.tsx's formatTmuxFallbackNotice.
  *
  * Aborted: `{ workspaceId, aborted: 'gone' }` — the workspace was archived
  * or removed while the mount was in flight (e.g. mid worktree-reconcile or
@@ -402,17 +420,14 @@ export type TerminalRect = { x: number; y: number; w: number; h: number }
  * Failure: `{ workspaceId, worktreeError }` — reconcile determined the mount
  * cannot proceed (bad state that needs user intervention). The surface is NOT
  * mounted; the renderer should show an error card instead.
- *
- * Tmux-hosted: `{ workspaceId, tmuxHosted }` — the workspace already has a
- * live tmux session (opened from the TUI — see docs/TUI_SPEC.md D1: "two
- * disjoint hosts, first-opener wins"). Main deliberately refuses to spawn a
- * second, competing `claude` process against the same `--session-id`/
- * `--resume` — the surface is NOT mounted. The renderer should show a
- * placeholder ("Hosted in tmux" + an "Attach here" action is the intended
- * follow-up UI; not built yet) rather than silently doing the wrong thing.
  */
 export type TerminalMountResult =
-  | { workspaceId: string; created: boolean; notice?: string }
+  | {
+      workspaceId: string
+      created: boolean
+      notice?: string
+      tmuxFallback?: { reason: 'not-installed' | 'version-too-old'; detail: string }
+    }
   | { workspaceId: string; aborted: 'gone' }
   | {
       workspaceId: string
@@ -420,13 +435,6 @@ export type TerminalMountResult =
         kind: 'checkedOutElsewhere' | 'corruptDir' | 'parentGone'
         message: string
         conflictPath?: string
-      }
-    }
-  | {
-      workspaceId: string
-      tmuxHosted: {
-        sessionName: string
-        socketName: string
       }
     }
 
@@ -452,12 +460,33 @@ export type PinnedItem = {
 // Keep the two in sync by hand if the wire shape changes.
 // ---------------------------------------------------------------------------
 
-/** Response shape of the `workspace.host` command-socket action. */
+/**
+ * Response shape of the `workspace.host` command-socket action.
+ *
+ * `refused` (added for universal tmux hosting — docs/TUI_SPEC.md D1) is the
+ * MIRROR of the desktop mount path's own pre-create guard
+ * (willMountCreateSurface() in index.ts, which prevents the desktop from
+ * spawning a tmux session onto a workspace whose native surface is already
+ * live). This field protects the SAME invariant from the opposite
+ * direction: the TUI/CLI calling `workspace.host` on a workspace that is
+ * CURRENTLY OPEN NATIVELY on the desktop (pre-conversion, or the
+ * tmux-missing-fallback case) must not create a tmux session running a
+ * SECOND `claude --resume <sessionId>` against the same transcript the
+ * live native process is already writing to. When present, no tmux session
+ * was created or touched — `sessionName`/`socketName` are still populated
+ * (what a session WOULD be named) for display purposes only,
+ * `created`/`alreadyRunning` are both false. The CLI's own copy of this
+ * type (packages/orpheus-cli/src/tui/types.ts, kept in sync by hand per
+ * that file's header) needs the same field added to render this state —
+ * flagged as a follow-up, not included in this change (packages/orpheus-cli
+ * is owned by a different concurrent work stream).
+ */
 export type WorkspaceHostResult = {
   sessionName: string
   socketName: string
   created: boolean
   alreadyRunning: boolean
+  refused?: { reason: 'open-on-desktop'; message: string }
 }
 
 /** Response shape of the `workspace.unhost` command-socket action. */

@@ -37,16 +37,16 @@ export interface WorktreeError {
   conflictPath?: string
 }
 
-// terminal:mount's `tmuxHosted` case (docs/TUI_SPEC.md D1) — a workspace
-// already running inside a tmux session opened from `orpheus tui`. Formats
-// an actionable notice (real socket/session names, an attach command the
-// user can copy) rather than the silent no-op this used to be: clicking a
-// tmux-hosted workspace must never look like nothing happened.
-function formatTmuxHostedNotice(tmuxHosted: { sessionName: string; socketName: string }): string {
-  return (
-    'This workspace is running in tmux (opened from `orpheus tui`). ' +
-    `Attach from a terminal with: tmux -L ${tmuxHosted.socketName} attach -t ${tmuxHosted.sessionName}`
-  )
+// terminal:mount's `tmuxFallback` case (docs/TUI_SPEC.md D1: universal tmux
+// hosting) — this specific mount fell back to running `claude` natively
+// because tmux is missing or too old on this machine. Must be a VISIBLE,
+// non-silent notice (not a quiet degrade) — the user loses tmux's benefits
+// (survives app restart, reachable from `orpheus tui`) without this.
+function formatTmuxFallbackNotice(tmuxFallback: {
+  reason: 'not-installed' | 'version-too-old'
+  detail: string
+}): string {
+  return tmuxFallback.detail
 }
 
 interface WorkspaceViewProps {
@@ -441,27 +441,24 @@ export function WorkspaceView({
           setWorktreeError(result.worktreeError)
           return
         }
-        if ('tmuxHosted' in result) {
-          // Workspace already has a live tmux session (opened from the TUI —
-          // see docs/TUI_SPEC.md D1: "two disjoint hosts, first-opener wins").
-          // Main deliberately refused to spawn a second, competing `claude`
-          // process, so no surface was mounted here. The full "Hosted in
-          // tmux" placeholder + "Attach here" action is a deferred follow-up
-          // (main-process guard lands first) — but a silent no-op here would
-          // be exactly the "success-shaped response for nothing" failure
-          // this file's other guards warn about: the user clicked a
-          // workspace and nothing happened, with zero explanation. Surface
-          // an actionable notice instead, via the same one-time notice
-          // banner the success path already uses below.
-          console.log('[WorkspaceView] workspace is tmux-hosted, not mounting:', result.tmuxHosted)
-          setNotice(formatTmuxHostedNotice(result.tmuxHosted))
-          return
-        }
         // Success path — clear any prior reconcile error.
         setWorktreeError(null)
         // Surface a one-time notice if the backend emitted one (e.g. "started fresh on branch X").
         if (result.notice) {
           setNotice(result.notice)
+        }
+        // tmux-missing/too-old fallback (docs/TUI_SPEC.md D1: universal tmux
+        // hosting) — this mount ran natively instead of tmux-hosted. This is
+        // a VISIBLE, non-silent notice by design (the owner's explicit
+        // requirement): a quiet degrade here would leave the user unaware
+        // they've lost tmux's benefits (survives app restart, reachable
+        // from `orpheus tui`) until they go looking for a session that was
+        // never created. Takes priority display-wise over a plain reconcile
+        // notice on the rare mount where both fire (setNotice only shows one
+        // at a time) since it's the more actionable of the two.
+        if (result.tmuxFallback) {
+          console.warn('[WorkspaceView] tmux fallback:', result.tmuxFallback)
+          setNotice(formatTmuxFallbackNotice(result.tmuxFallback))
         }
         surfaceCreatedRef.current = true
         // Guard: if the user navigated away while mount was resolving, hide
@@ -798,22 +795,17 @@ export function WorkspaceView({
               setWorktreeError(result.worktreeError)
               return
             }
-            if ('tmuxHosted' in result) {
-              // See the first-mount path above — surfaces an actionable
-              // notice rather than silently doing nothing; the full "Hosted
-              // in tmux" placeholder UI is still a deferred follow-up.
-              console.log(
-                '[WorkspaceView] workspace is tmux-hosted, not re-mounting:',
-                result.tmuxHosted
-              )
-              setNotice(formatTmuxHostedNotice(result.tmuxHosted))
-              return
-            }
             // Success path — clear any prior reconcile error.
             setWorktreeError(null)
             // Surface a one-time notice if the backend emitted one.
             if (result.notice) {
               setNotice(result.notice)
+            }
+            // See the first-mount path above — tmux-missing/too-old fallback
+            // must be a visible, non-silent notice.
+            if (result.tmuxFallback) {
+              console.warn('[WorkspaceView] tmux fallback (re-mount):', result.tmuxFallback)
+              setNotice(formatTmuxFallbackNotice(result.tmuxFallback))
             }
             surfaceCreatedRef.current = true
             // Guard: if the user navigated away while re-mount was resolving, hide

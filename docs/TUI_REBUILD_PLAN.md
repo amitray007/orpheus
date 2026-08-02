@@ -173,15 +173,84 @@ Keep the guard as a universal safety net (it prevents a double-launch on
 downgrade) but update the decision table — a spec contradicting the code is
 worse than no spec.
 
+## The two guards (both required — they protect opposite directions)
+
+Verified in code; neither is redundant, and a future cleanup that deletes one
+reintroduces transcript corruption.
+
+**Direction A — re-mount cannot kill a live session.** `Mount` in `addon.mm`
+finds an existing surface, re-attaches, and returns at line 147, *before* the
+create path at line 150, never reading `opts.command`. Enforced natively.
+Consequence: passing `tmux attach` as the command on a re-mount is a harmless
+no-op — no JS-side guard needed for this direction.
+
+**Direction B — tmux-side creation against a live native surface. WAS
+UNGUARDED.** Confirmed by grep: `hostWorkspace()` has no notion of a native
+surface; it only guards tmux-vs-tmux duplicates (`has-session`,
+`isDuplicateSessionError`), and `workspace.host` calls it directly.
+
+The failure: a workspace open natively on the desktop (mounted pre-update, via
+the tmux-missing fallback, or via opt-out) + phone user presses Enter in the
+TUI → `workspace.host` → no tmux session exists → creates one running
+`claude --resume <sessionId>` while the native claude is still writing that
+same transcript. **Two writers, one session id.**
+
+Fix: check native-surface liveness before creating — `getNativeSurfacePhase()`
+(`index.ts:1370`) plus `sessionState.ts`'s existing pid matching — and refuse
+with "open on desktop; restart it there to convert".
+
+`shouldBlockNativeMount` guards within one app run (in-memory `g_surfaces`);
+the new guard covers the reverse. Neither covers the other.
+
+## Pre-mount gate — two edge cases
+
+`getNativeSurfacePhase(workspaceId)` is the gate: `'none'` → fresh mount (tmux
+path), anything else → re-attach, and **do not call `hostWorkspace()`**.
+Gating on the mount *result*'s `created` field is too late — the orphan session
+already exists by then.
+
+1. **`'freeing'` is not `'none'`.** A surface mid-teardown reports it. Re-attach
+   is clearly wrong; treating it as `'none'` races the teardown. Prior art:
+   `issueRuntimeLeaseForMount` (~`index.ts:1462`) treats `'none' || 'freeing'`
+   as effectively-gone for lease revocation.
+2. **The swallowed error is a trap on this path.** `getNativeSurfacePhase`
+   catches and returns `'none'`, so a broken addon looks identical to "no
+   surface, safe to create" and spawns a spurious session off a failure.
+   Fine for its original telemetry use; not fine for gating session creation.
+
+## Resolved design questions (tech-lead review)
+
+- **`window-size latest`** — keep. tmux cannot size two clients differently;
+  `smallest` shrinks the desktop to phone size, `largest` clips the phone. It
+  self-heals when the desktop regains focus; issue `refresh-client` on focus to
+  make the heal instant rather than waiting for a keystroke.
+- **Scrollback** — smaller loss than it appears: claude is an alt-screen app
+  with its own history, so native scrollback was barely load-bearing for the
+  primary content. Managed conf needs `mouse on`, `history-limit ~50000`,
+  `set-clipboard on` (OSC52 → macOS clipboard), and an explicit
+  `default-terminal` (stock macOS ncurses may lack `tmux-256color` terminfo —
+  we already ship terminfo for ghostty).
+- **SPOF** — resilience goes *up*. Today every `claude` is a child of the
+  Electron app, so an app crash (far likelier than a tmux server crash) kills
+  every session. Under tmux they survive. Socket-per-workspace would wreck
+  `tmux ls` ergonomics for a rarer failure than it insures against.
+- **Split-brain during rollout** — bounded and acceptable. A full app relaunch
+  converts everything; the dirty chip is the explicit user-consented convert
+  affordance. No new mechanism needed — but hosting mode MUST be a compared
+  field in the launch snapshot or the chip never appears (see below).
+
 ## Open questions for the owner
 
-1. **Runtime**: Bun-in-bundle, the koffi fork, or wait? (blocks the TUI rebuild)
-2. **Rename semantics**: `rename-session` on rename, or key sessions by id only?
-3. **"Restart to apply"** now means kill+recreate the tmux session (ends any
-   attached phone client's session). Confirmation step, or silent?
-4. **`claude` exits inside a session** — shell fallback with a UI affordance, or
+1. **+78M install size** from the bundled Bun runtime (measured on a real build).
+2. **arm64-only** — no x64 mac artifacts found in the release config; unconfirmed
+   whether that is deliberate.
+3. **Live sessions convert on next restart**, not immediately — re-parenting a
+   running `claude` into tmux is impossible, so "right now" was read as
+   "converge without destroying work".
+4. **Opt-out setting** — "Host terminals in tmux", default on, layered global →
+   project. Recommended by the review as the support escape hatch, may land as a
+   follow-up.
+5. **`claude` exits inside a session** — shell fallback with a UI affordance, or
    auto-respawn? (auto-respawn can mask a crash loop)
-5. **tmux missing** — hard requirement (cask can `depends_on formula: "tmux"`)
-   or the graceful fallback above? A hard requirement changes install
-   requirements for every user, not just remote-access users.
-6. **Mouse mode inside tmux** — not configured today; needed for desktop parity?
+6. **tmux missing** — graceful fallback (current plan) or a hard install
+   requirement via `depends_on formula: "tmux"` in the cask?

@@ -25,6 +25,9 @@ import {
   unhostWorkspace,
   listHostedSessionsCached,
   buildTreeFrame,
+  tmuxSessionName,
+  resolveTmuxSocketName,
+  shouldBlockTmuxHost,
   type TreeSourceWorkspace
 } from './tmuxHost'
 import {
@@ -139,6 +142,15 @@ export type CommandServerDeps = {
     payload: { text?: string; submit?: boolean; key?: string },
     focus?: boolean
   ) => Promise<{ ok: boolean; error?: string }>
+  /**
+   * Native libghostty surface phase for a workspace ('none' when no live
+   * entry exists). Mirrors index.ts's getNativeSurfacePhase() — injected
+   * rather than imported directly so this module never needs to load the
+   * terminal addon itself. Used ONLY by workspace.host's pre-create guard
+   * (see that handler below) to detect "this workspace is already open
+   * natively on the desktop" before ever touching tmux.
+   */
+  getSurfacePhase: (workspaceId: string) => 'none' | 'hidden' | 'attached' | 'visible' | 'freeing'
 }
 
 // ---------------------------------------------------------------------------
@@ -734,6 +746,48 @@ function makeDispatchTable(
       if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
       const workspace = getWorkspace(args.id)
       if (workspace == null) throw new Error(`workspace not found: ${args.id}`)
+
+      // ── Cross-host double-launch guard (MIRROR of index.ts's
+      // willMountCreateSurface — protects the OPPOSITE direction) ─────────
+      // willMountCreateSurface (index.ts) stops the DESKTOP from creating a
+      // tmux session onto a workspace already tmux-hosted. This stops the
+      // TUI/CLI (this action) from creating a tmux session onto a workspace
+      // that is CURRENTLY OPEN NATIVELY on the desktop — pre-conversion, or
+      // via the tmux-missing-fallback path — whose `claude` is already
+      // live and writing the same transcript a fresh `--resume` here would
+      // race against. Two independent signals are checked (either one being
+      // "live" is enough to refuse — favor a false-positive refusal, which
+      // just means "open it on desktop instead", over a false-negative,
+      // which corrupts a transcript with two writers):
+      //   1. deps.getSurfacePhase — is there a live libghostty surface ENTRY
+      //      for this workspace in the CURRENT process's addon surface map.
+      //   2. getWorkspaceFileInfo — is `claude`'s OWN on-disk session
+      //      registry (~/.claude/sessions/<pid>.json, sessionState.ts)
+      //      reporting this workspace's session as alive right now
+      //      (independent of which host started it — this is the
+      //      authoritative "is claude actually running" signal used
+      //      everywhere else in the app per CLAUDE.md's "Workspace activity
+      //      status" section).
+      // Neither check involves tmux at all, so this runs before any tmux
+      // I/O — a refusal here never creates or touches a session.
+      const nativeSurfaceLive = deps.getSurfacePhase(workspace.id) !== 'none'
+      const claudeSessionLive = getWorkspaceFileInfo(workspace.id).availability === 'available'
+      if (shouldBlockTmuxHost(nativeSurfaceLive, claudeSessionLive)) {
+        const sessionName = tmuxSessionName(workspace.name, workspace.id)
+        return {
+          sessionName,
+          socketName: resolveTmuxSocketName(),
+          created: false,
+          alreadyRunning: false,
+          refused: {
+            reason: 'open-on-desktop',
+            message:
+              'This workspace is already open natively on the desktop. Close and reopen it there ' +
+              'to convert it to tmux hosting, then try again.'
+          }
+        }
+      }
+
       const result = await hostWorkspace(
         {
           workspaceId: workspace.id,

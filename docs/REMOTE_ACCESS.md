@@ -89,15 +89,26 @@ a filter.
 
 ## How hosting works
 
-A workspace's terminal is hosted **either** by the desktop app's native surface
-**or** by tmux — whichever opened it first. They are never both.
+Every workspace terminal — desktop **and** TUI — is hosted by the **same** tmux
+session. The desktop app's native surface attaches to it rather than running
+`claude` directly; opening the same workspace from `orpheus tui` attaches a
+**second client** to that same session, not a second `claude`. Detach
+(`Ctrl-b d`) or close either side and the other keeps going — the session
+belongs to tmux, not to whichever client is currently attached.
 
-- Open a workspace in the desktop app → it runs in the app's native terminal, as
-  it always has.
-- Open it from `orpheus tui` → it runs in a tmux session.
+This is a staged rollout, not a live migration: a workspace that was already
+open natively before you upgraded Orpheus keeps running exactly as it was —
+Orpheus never kills a live session to convert it. It converts to tmux hosting
+the next time you close and reopen it (or the next time the app restarts).
+Until it converts, that workspace is not reachable from `orpheus tui` — Enter
+on it there returns an explanation ("open on desktop — restart it there to
+convert") instead of starting a second `claude`.
 
-Opening a tmux-hosted workspace in the desktop app will not start a second
-`claude`; the app reports that it is hosted elsewhere instead.
+If tmux is missing, or older than tmux 3.1, the desktop falls back to running
+`claude` directly (as it always did before this feature) and shows a visible
+notice explaining why — never a silent degrade. That workspace won't be
+reachable from `orpheus tui` until tmux is installed/upgraded and it's
+reopened once.
 
 Live status works identically either way, because status comes from `claude`'s
 own session registry (`~/.claude/sessions/<pid>.json`) rather than from whoever
@@ -137,5 +148,8 @@ next open — only the running processes are gone.
 desktop has attached to the same tmux session. Sessions are created with
 `window-size latest`, so the most recently active client sets the size.
 
-**`tmux: command not found`.** Install it (`brew install tmux`). Only the tmux
-hosting path needs it; the desktop app does not.
+**`tmux: command not found`.** Install it (`brew install tmux`, 3.1 or newer).
+The desktop app does not *require* tmux — it falls back to native hosting with
+a visible notice when tmux is missing or too old — but without it, workspaces
+are not reachable from `orpheus tui` at all, and desktop workspaces never get
+the "survives app restart" benefit tmux hosting provides.

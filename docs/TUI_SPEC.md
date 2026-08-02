@@ -11,7 +11,7 @@ that survives the SSH link dropping.
 
 | # | Decision |
 | - | -------- |
-| D1 | **Two disjoint hosts, first-opener wins.** In-app workspaces keep their libghostty surface untouched. Workspaces opened from the TUI are hosted by tmux. The in-app UI shows a tmux-hosted workspace as a placeholder with live status + an "Attach here" action that mounts ghostty running `tmux attach`. Never re-host implicitly. |
+| D1 | **Universal tmux hosting, staged rollout** (revised from the original "two disjoint hosts, first-opener wins"). Every workspace terminal — desktop AND TUI — is hosted by the same tmux session. The desktop app's native libghostty surface no longer runs `claude` directly on a NEW mount; it runs `tmux attach-session` (`resources/orpheus-attach.sh`) against the same session the TUI attaches to. This is a **staged rollout, not a live migration**: a workspace already mounted natively (from before this change, or from a tmux-missing fallback) is left running exactly as-is — re-parenting a live `claude` into tmux would mean killing and `--resume`ing it, dropping in-flight turns/scrollback. It converts on its next mount from a cold surface (app relaunch, or the workspace closed+reopened), detected via the native addon's own surface-phase query (`getSurfacePhase`), not a special first-mount flag. If tmux is missing or older than tmux 3.1 (the `window-size latest`/`-e` floor), the mount falls back to the native path (`orpheus-claude.sh` directly, exactly as before this change) with a **visible, non-silent notice** — never a silent degrade. `shouldBlockNativeMount` (`src/main/tmuxHost.ts`) survives this rewrite with a **repurposed role**: it is no longer a host-selection gate that blocks a mount and returns a placeholder — it's now a double-launch safety net, feeding the create-vs-attach decision so a stale/downgraded build can never race a second `claude` against a session tmux already owns. Its mirror, `shouldBlockTmuxHost`, protects the opposite direction: it refuses `workspace.host` (below) when a workspace is already live *natively* on the desktop, so the TUI can never spawn a second `claude --resume` against a transcript the desktop is already writing. |
 | D2 | `a` archives **and** kills the tmux session (archive is terminal — an orphaned session is a leak). `x` kills the tmux session **only**, leaving the workspace resumable via `--resume`. Both confirm inline. |
 | D3 | TUI is `orpheus tui`. Bare `orpheus` keeps printing help (+ a hint line). The CLI is agent-facing and runs inside ptys, so an isatty heuristic would hang fan-out scripts. |
 | D4 | **Ink**, bundled as its own esbuild entry (`dist/tui.cjs`) and `require()`d only inside the `tui` handler, so one-shot commands pay no startup cost. |
@@ -44,7 +44,7 @@ slug strips them).
 
 ### `workspace.host`
 
-Request `{ id }` → `{ sessionName, socketName, created, alreadyRunning }`.
+Request `{ id }` → `{ sessionName, socketName, created, alreadyRunning, refused? }`.
 
 Main composes the launch via `composeClaudeLaunch(projectId, workspaceId)` and
 creates the session with `tmux -L <socket> new-session -d -s <name> -e KEY=VAL …`.
@@ -52,6 +52,23 @@ Every env var goes through `-e` — the tmux **server** is a long-lived daemon a
 sessions otherwise inherit the server's environment, not the client's, which
 would silently break `ORPHEUS_CLAUDE_FLAGS`, `ORPHEUS_WORKSPACE_ID` and auth env.
 The command is `resources/orpheus-claude.sh`, exactly as the ghostty path uses.
+`hostWorkspace()` is the **only** code path that ever runs `tmux new-session` —
+nothing else, including the desktop mount path, constructs that argv directly,
+so the secret-env scrub (`scrubSecretEnvironment`) and duplicate-session race
+recovery it owns can never be silently bypassed by a second call site.
+
+`refused: { reason: 'open-on-desktop', message }` is present (with
+`created`/`alreadyRunning` both `false`) when the workspace is currently live
+*natively* on the desktop — see `shouldBlockTmuxHost` under D1 above. No tmux
+session is created or touched in that case; the message tells the caller to
+close and reopen the workspace on the desktop to convert it.
+
+Before its first tmux operation each app run, main also runs a cached version
+check (`tmux -V`, parsed and compared against 3.1 minimum — `new-session -e`
+needs 2.1, but `set-option window-size latest` needs 3.1, which is the binding
+floor). Sessions main creates also get `mouse on`, `history-limit 50000`, and
+`set-titles on` applied via scoped `set-option -t <session>` calls — never
+written to the user's own `~/.tmux.conf`.
 
 ### `workspace.unhost`
 

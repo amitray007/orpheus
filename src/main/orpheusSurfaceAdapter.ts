@@ -250,6 +250,64 @@ export function buildMountEnv(
 }
 
 // ---------------------------------------------------------------------------
+// buildTmuxAttachEnv — universal tmux hosting (docs/TUI_SPEC.md D1)
+//
+// The desktop-surface-side counterpart to buildMountEnv above, but for the
+// ATTACH path instead of the create path: resolves resources/orpheus-attach.sh
+// (NOT orpheus-claude.sh) and builds its env from SCRATCH rather than calling
+// buildMountEnv — deliberately NOT composeClaudeLaunch/getClaudeAuthEnv/
+// runtime-lease/model-routing at all. Attaching a client to an already-running
+// tmux session needs none of that (no claude flags, no settings JSON, no auth
+// env, no MCP lease) — all of it was already consumed once, by hostWorkspace()
+// at session-CREATION time. Passing it again here would be dead weight at
+// best and a leak surface at worst (see scrubSecretEnvironment's doc comment
+// in tmuxHost.ts for why this repo treats "secret reaches tmux's env storage"
+// as a real risk, not a theoretical one) — this function's whole job is to
+// keep the attach env minimal by construction, not by discipline.
+//
+// Exactly THREE categories of env reach the attach wrapper:
+//   1. ORPHEUS_TMUX_SOCKET / ORPHEUS_TMUX_SESSION — the socket/session name
+//      to attach to, computed ONCE via resolveTmuxSocketName()/
+//      tmuxSessionName() (the same functions hostWorkspace() itself uses) and
+//      passed through as env rather than recomputed in the shell script or
+//      passed as literal argv strings — single source of truth in TypeScript.
+//   2. ORPHEUS_USER_PATH / ORPHEUS_BIN_DIR — PATH plumbing so `tmux` itself
+//      and (in the fallback-shell case) the user's own tools resolve; both
+//      are non-secret paths, already on the TMUX_ENV_RETAIN_ALLOWLIST in
+//      tmuxHost.ts for the same reason.
+//   3. Nothing else. No ORPHEUS_CLAUDE_FLAGS, no ORPHEUS_CLAUDE_SETTINGS_JSON,
+//      no auth env, no ORPHEUS_RUNTIME_* lease vars, no ORPHEUS_CMD_*.
+// ---------------------------------------------------------------------------
+
+export type TmuxAttachEnvResult = {
+  /** Full path to resources/orpheus-attach.sh. */
+  command: string
+  /** Minimal env — socket/session name + PATH plumbing only. See doc comment above. */
+  env: Record<string, string>
+}
+
+export function buildTmuxAttachEnv(socketName: string, sessionName: string): TmuxAttachEnvResult {
+  const cachedUserPath = getCachedShellPath()
+  const orpheusBinDir = join(process.resourcesPath, 'bin')
+
+  const env: Record<string, string> = {
+    ORPHEUS_TMUX_SOCKET: socketName,
+    ORPHEUS_TMUX_SESSION: sessionName,
+    ...(cachedUserPath ? { ORPHEUS_USER_PATH: cachedUserPath } : {}),
+    ORPHEUS_BIN_DIR: orpheusBinDir
+  }
+
+  // Packaged: Contents/Resources/orpheus-attach.sh
+  // Dev:      <repo>/resources/orpheus-attach.sh
+  // Mirrors buildMountEnv's own command resolution above exactly.
+  const command = app.isPackaged
+    ? join(process.resourcesPath, 'orpheus-attach.sh')
+    : join(__dirname, '../../resources/orpheus-attach.sh')
+
+  return { command, env }
+}
+
+// ---------------------------------------------------------------------------
 // composeLaunchForMount
 //
 // The terminal:mount hot path (index.ts) needs the composed ClaudeLaunch for

@@ -55,6 +55,12 @@ extraResources:
   # after claude exits so the terminal stays alive for further use.
   - from: resources/orpheus-claude.sh
     to: orpheus-claude.sh
+  # Universal tmux hosting: attaches the desktop native surface to the
+  # tmux session hostWorkspace() (src/main/tmuxHost.ts) already created —
+  # same stay-alive rationale as orpheus-claude.sh above, applied to the
+  # attach path instead of the create path.
+  - from: resources/orpheus-attach.sh
+    to: orpheus-attach.sh
   # Workbench Panes tab (U12) wrapper: runs a pane's declared command in a
   # login zsh, then exec's interactive zsh after it exits — same
   # stay-alive rationale as orpheus-claude.sh above.

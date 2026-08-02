@@ -1,11 +1,26 @@
 // ---------------------------------------------------------------------------
 // src/main/tmuxHost.ts
 //
-// Owns tmux session lifecycle for workspaces opened from the TUI (`orpheus
-// tui`, see docs/TUI_SPEC.md). A workspace hosted here runs `claude` inside a
-// detached tmux session that survives the SSH/Tailscale link dropping — a
-// second, DISJOINT host from the desktop app's libghostty surfaces (decision
-// D1: "two disjoint hosts, first-opener wins").
+// Owns tmux session lifecycle for EVERY workspace (desktop app AND the TUI —
+// see docs/TUI_SPEC.md D1, rewritten from "two disjoint hosts" to universal
+// tmux hosting). A workspace hosted here runs `claude` inside a detached
+// tmux session that survives the SSH/Tailscale link dropping, the desktop
+// app closing, or a phone attaching/detaching. The desktop app's native
+// libghostty surface no longer runs `claude` directly for a NEW mount — it
+// runs `tmux attach-session` (resources/orpheus-attach.sh) against the same
+// session the TUI would attach to. See resolveMountStrategy() below for the
+// create-vs-attach decision the terminal:mount handler (index.ts) drives off
+// of, and buildTmuxAttachEnv() for what the desktop surface actually execs.
+//
+// STAGED ROLLOUT, NOT A LIVE MIGRATION: an already-running native surface
+// (mounted before this change, or mounted this session and still alive) is
+// left completely alone — re-parenting a running `claude` into tmux would
+// mean killing and `--resume`ing it, dropping in-flight turns/scrollback.
+// Conversion to tmux-hosted happens naturally on that workspace's NEXT
+// mount from a cold surface (app relaunch, or workspace closed+reopened),
+// because the native addon's own re-attach path ignores `opts.command` for
+// an already-live entry (packages/ghostty-surface/addon.mm) — nothing here
+// needs to detect "is this the first mount since restart" itself.
 //
 // ELECTRON-IMPORT DISCIPLINE (load-bearing for testability)
 // -----------------------------------------------------------------------
@@ -59,6 +74,21 @@ export class TmuxNotAvailableError extends Error {
   constructor() {
     super('tmux is not installed (or not on PATH) — tmux hosting is unavailable')
     this.name = 'TmuxNotAvailableError'
+  }
+}
+
+/** Thrown when `tmux -V` parses but reports a version below MINIMUM_TMUX_VERSION.
+ *  Deliberately distinct from TmuxNotAvailableError so the fallback notice can
+ *  tell the user to upgrade rather than install (see resolveMountStrategy()). */
+export class TmuxVersionTooOldError extends Error {
+  readonly found: TmuxVersion
+  constructor(found: TmuxVersion) {
+    super(
+      `tmux ${MINIMUM_TMUX_VERSION.major}.${MINIMUM_TMUX_VERSION.minor}+ required ` +
+        `(found ${formatTmuxVersion(found)}) — upgrade with \`brew upgrade tmux\``
+    )
+    this.name = 'TmuxVersionTooOldError'
+    this.found = found
   }
 }
 
@@ -146,6 +176,149 @@ export function tmuxSessionName(workspaceName: string, workspaceId: string): str
 }
 
 // ---------------------------------------------------------------------------
+// tmux version gate
+//
+// `new-session -e` (per-flag env injection — hostWorkspace uses it below)
+// works from tmux >=2.1, but `set-option ... window-size latest` (also used
+// in hostWorkspace, for the "most-recently-active client sets the pane size"
+// behavior a desktop+phone attach needs) requires >=3.1 — that is the
+// binding constraint, so 3.1 is MINIMUM_TMUX_VERSION. Below it, `new-session`
+// itself doesn't fail (the -e flags are accepted), but the later
+// `set-option window-size latest` call does, surfacing as a cryptic argv
+// parse error deep inside hostWorkspace() rather than a clear upfront
+// message — this gate exists so the caller (resolveMountStrategy) can catch
+// it BEFORE attempting to host anything and fall back to native hosting with
+// an explicit "upgrade tmux" notice instead.
+// ---------------------------------------------------------------------------
+
+export const MINIMUM_TMUX_VERSION: TmuxVersion = Object.freeze({ major: 3, minor: 1, suffix: '' })
+
+export type TmuxVersion = { major: number; minor: number; suffix: string }
+
+function formatTmuxVersion(v: TmuxVersion): string {
+  return `${v.major}.${v.minor}${v.suffix}`
+}
+
+/**
+ * Parses `tmux -V` output (e.g. `"tmux 3.2a"`, `"tmux 3.1"`, `"tmux next-3.4"`).
+ * Pure — exported standalone for scripts/verify-tmux-host.ts. Returns null for
+ * anything that doesn't contain a `<major>.<minor>` pair (including the rare
+ * `tmux next-X.Y` development-snapshot format, which we deliberately do not
+ * special-case: treating an unparseable version as "insufficient" and falling
+ * back to native hosting is the safe default, never a crash).
+ */
+export function parseTmuxVersion(raw: string): TmuxVersion | null {
+  const match = /(\d+)\.(\d+)([a-z]*)/u.exec(raw)
+  if (match == null) return null
+  const major = Number.parseInt(match[1], 10)
+  const minor = Number.parseInt(match[2], 10)
+  if (Number.isNaN(major) || Number.isNaN(minor)) return null
+  return { major, minor, suffix: match[3] ?? '' }
+}
+
+/** Pure comparison — exported standalone for scripts/verify-tmux-host.ts.
+ *  A version letter suffix (e.g. `3.2a` vs `3.2`) never affects sufficiency;
+ *  only major/minor are compared. */
+export function isTmuxVersionSufficient(
+  found: TmuxVersion,
+  minimum: TmuxVersion = MINIMUM_TMUX_VERSION
+): boolean {
+  if (found.major !== minimum.major) return found.major > minimum.major
+  return found.minor >= minimum.minor
+}
+
+// One-shot-per-process cache: the tmux binary on PATH cannot change version
+// mid-run of the app, so there is no staleness concern (unlike the
+// short-TTL hosted-sessions cache below, which reflects genuinely mutable
+// state). Cleared only by resetTmuxVersionCacheForTests() below.
+let tmuxVersionCache: Promise<TmuxVersion> | null = null
+
+async function queryTmuxVersion(): Promise<TmuxVersion> {
+  return new Promise((resolve, reject) => {
+    execFile('tmux', ['-V'], (error, stdout) => {
+      if (error != null) {
+        const code = (error as NodeJS.ErrnoException).code
+        reject(code === 'ENOENT' ? new TmuxNotAvailableError() : error)
+        return
+      }
+      const parsed = parseTmuxVersion(stdout)
+      if (parsed == null) {
+        reject(new Error(`could not parse tmux -V output: ${stdout.trim()}`))
+        return
+      }
+      resolve(parsed)
+    })
+  })
+}
+
+/**
+ * Ensures the installed tmux is new enough BEFORE the first real tmux
+ * operation in a mount attempt. Throws TmuxNotAvailableError (binary
+ * missing) or TmuxVersionTooOldError (parses but too old) or a generic
+ * Error (unparseable -V output) — all three are caught identically by
+ * resolveMountStrategy() and route to the native-hosting fallback, so the
+ * only thing that varies is the notice text the user sees.
+ */
+export async function ensureTmuxVersion(): Promise<TmuxVersion> {
+  tmuxVersionCache ??= queryTmuxVersion().catch((err: unknown) => {
+    tmuxVersionCache = null // don't cache a rejection — a transient spawn failure shouldn't stick forever
+    throw err
+  })
+  let version: TmuxVersion
+  try {
+    version = await tmuxVersionCache
+  } catch (err) {
+    lastKnownTmuxAvailable = false
+    throw err
+  }
+  if (!isTmuxVersionSufficient(version)) {
+    lastKnownTmuxAvailable = false
+    throw new TmuxVersionTooOldError(version)
+  }
+  lastKnownTmuxAvailable = true
+  return version
+}
+
+/** Test-only: scripts/verify-tmux-host.ts calls this between cases that
+ *  simulate different tmux binaries via PATH manipulation. */
+export function resetTmuxVersionCacheForTests(): void {
+  tmuxVersionCache = null
+  lastKnownTmuxAvailable = null
+}
+
+// ---------------------------------------------------------------------------
+// Effective hosting-policy accessor (Gap 2 fix — staged rollout must
+// actually surface a "Restart to enable remote access" chip for existing
+// native workspaces, not just convert silently on the next app relaunch).
+//
+// recomputeDirty() (src/main/ipc/claudeSettings.ts) runs SYNCHRONOUSLY,
+// fired-and-forgotten after every settings-mutation IPC handler — making it
+// async would mean touching every one of its ~6 call sites across
+// claudeSettings.ts/claudeAuth.ts for a policy that (today) never actually
+// needs a fresh probe: tmux availability is resolved once per app run by
+// ensureTmuxVersion() (whichever mount/host call happens first) and cannot
+// change mid-run without a tmux (re)install, which this app has no live
+// signal for anyway. So the dirty-recompute path reads the LAST-KNOWN
+// result of that one-shot check synchronously here, rather than either (a)
+// going async itself or (b) re-shelling `tmux -V` on every settings change.
+// Before ANY mount/host call has run in this app session, this returns
+// 'unknown' — recomputeDirty() treats 'unknown' as "don't flag hosting-mode
+// drift yet" (see effectiveHostingModeFor below) rather than guessing, since
+// guessing wrong in either direction is worse than a brief window where the
+// chip doesn't fire for a workspace that hasn't even been mounted this run.
+// ---------------------------------------------------------------------------
+
+let lastKnownTmuxAvailable: boolean | null = null
+
+/** 'tmux' | 'native' | 'unknown' — see the section doc comment above for why
+ *  this is sync and what 'unknown' means. Exported for
+ *  scripts/verify-tmux-host.ts and for claudeSettings.ts's recomputeDirty(). */
+export function currentEffectiveHostingPolicy(): 'tmux' | 'native' | 'unknown' {
+  if (lastKnownTmuxAvailable === null) return 'unknown'
+  return lastKnownTmuxAvailable ? 'tmux' : 'native'
+}
+
+// ---------------------------------------------------------------------------
 // tmux process plumbing — argv arrays only, never a shell string (env values
 // carry arbitrary user text and secrets).
 // ---------------------------------------------------------------------------
@@ -190,6 +363,41 @@ async function hasSession(socketName: string, sessionName: string): Promise<bool
     if (err instanceof TmuxNotAvailableError) throw err
     return false
   }
+}
+
+/**
+ * BUG FIX (real-world race discovered during manual verification, not
+ * theoretical): `tmux new-session -d` can return success BEFORE the tmux
+ * SERVER has finished daemonizing on a brand-new socket — the very next
+ * `execFile('tmux', ['-L', socket, ...])` call (scrubSecretEnvironment or
+ * applyManagedSessionOptions, both of which run immediately after
+ * new-session in hostWorkspace()) can then fail with "no server running on
+ * <socket>", even though has-session would report the session as live a few
+ * milliseconds later. scrubSecretEnvironment's per-key calls already
+ * swallow this silently (best-effort by design — see its own doc comment),
+ * which is exactly why this race went unnoticed until
+ * applyManagedSessionOptions's non-swallowed errors surfaced it loudly in
+ * manual testing (mouse/history-limit/set-titles/window-size never got
+ * applied, and the whole terminal:mount call failed).
+ *
+ * Fix: poll has-session with a short bounded backoff RIGHT AFTER
+ * `new-session -d` returns, before anything else touches the session. Once
+ * has-session succeeds the server is provably up and every subsequent call
+ * is safe. Total budget is small (five attempts, exponential-ish delay
+ * capped at 100ms, ~250ms worst case) — this is a startup race, not a slow
+ * operation, so it either resolves almost instantly or something is
+ * actually wrong (in which case the caller's own error handling takes over
+ * on the next real tmux call).
+ */
+async function waitForSessionServerReady(socketName: string, sessionName: string): Promise<void> {
+  const delaysMs = [10, 20, 40, 80, 100]
+  for (const delayMs of delaysMs) {
+    if (await hasSession(socketName, sessionName)) return
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+  }
+  // Give it one last shot without swallowing — if the server genuinely never
+  // came up, the caller's next real tmux call will surface a proper error
+  // rather than this helper silently pretending everything is fine.
 }
 
 /** Flatten an env map into repeated `-e KEY=VALUE` argv pairs. The tmux
@@ -320,15 +528,99 @@ function invalidateHostedSessionsCache(): void {
   hostedSessionsCache = null
 }
 
-/** Pure predicate for the terminal:mount native-mount guard (D1: "two
- *  disjoint hosts, first-opener wins" — never spawn a second competing
- *  `claude` against a workspace tmux already owns). Exported standalone so
- *  the decision logic is unit-testable without tmux/Electron involved. */
+/**
+ * REPURPOSED (docs/TUI_SPEC.md D1 was rewritten from "two disjoint hosts,
+ * first-opener wins" to universal tmux hosting). This predicate's SHAPE is
+ * unchanged — "does a tmux session already exist under this workspace's
+ * session name" — but its ROLE at the call site is now different:
+ *
+ *   OLD: true → refuse to mount at all, return a placeholder to the renderer.
+ *   NEW: true → double-launch safety net / informational input only. The
+ *        mount path (resolveMountStrategy + terminal:mount in index.ts)
+ *        NEVER calls a raw `tmux new-session` itself — it always goes
+ *        through hostWorkspace(), which is already idempotent (has-session
+ *        check → reuse-or-create, with duplicate-session race recovery
+ *        baked in — see isDuplicateSessionError below). This predicate is
+ *        used only to decide (a) whether the routed-model health gate
+ *        should run (skip it on a known-attach — see terminal:mount) and
+ *        (b) whether a launch snapshot already tracked in-memory should be
+ *        trusted as-is vs re-seeded (see the snapshot-handling comment in
+ *        index.ts's terminal:mount). Still exported standalone so the
+ *        decision logic is unit-testable without tmux/Electron involved —
+ *        see scripts/verify-tmux-host.ts.
+ */
 export function shouldBlockNativeMount(
   hostedSessions: ReadonlySet<string>,
   sessionName: string
 ): boolean {
   return hostedSessions.has(sessionName)
+}
+
+/**
+ * MIRROR of shouldBlockNativeMount, protecting the OPPOSITE direction — used
+ * by the `workspace.host` command-socket action (commandServer.ts) to refuse
+ * creating a tmux session onto a workspace that is CURRENTLY OPEN NATIVELY
+ * on the desktop (pre-conversion, or the tmux-missing-fallback case). These
+ * two guards are NOT redundant with each other even though they sound
+ * similar:
+ *   - shouldBlockNativeMount: is there a tmux session ALREADY hosting this
+ *     workspace, checked from the DESKTOP before it would create one
+ *     natively. Queries tmux (list-sessions).
+ *   - shouldBlockTmuxHost (this function): is there a LIVE NATIVE surface
+ *     or a live `claude` process for this workspace, checked from the
+ *     TUI/CLI's `workspace.host` action before it would create a tmux
+ *     session. Queries the addon's in-process surface map + claude's own
+ *     on-disk session registry (~/.claude/sessions/<pid>.json) — NEVER
+ *     queries tmux, since the whole point is to catch the case where NO
+ *     tmux session exists yet but shouldn't be created.
+ * Pure over its two boolean inputs so the decision is unit-testable without
+ * Electron/tmux/claude's session registry involved — see
+ * scripts/verify-tmux-host.ts. The two liveness signals themselves
+ * (native surface phase, claude session-registry availability) are resolved
+ * by the caller (commandServer.ts) since both require live process/Electron
+ * state this file must stay free of at import time.
+ */
+export function shouldBlockTmuxHost(
+  nativeSurfaceLive: boolean,
+  claudeSessionLive: boolean
+): boolean {
+  return nativeSurfaceLive || claudeSessionLive
+}
+
+// ---------------------------------------------------------------------------
+// resolveMountStrategy — the tmux-hosted-vs-native-fallback decision for
+// terminal:mount (index.ts). Pure over its inputs (no I/O of its own) so
+// it's unit-testable without tmux/Electron — see scripts/verify-tmux-host.ts.
+//
+// Deliberately NOT an attach-vs-create decision: per the create-path
+// invariant above, hostWorkspace() ALWAYS owns that (it's idempotent —
+// has-session check, then reuse or create). This function only decides
+// tmux-at-all vs native-fallback; index.ts inspects hostWorkspace()'s own
+// `created` field afterward to know which one happened.
+// ---------------------------------------------------------------------------
+
+export type MountStrategy =
+  | { kind: 'tmux' }
+  | { kind: 'native-fallback'; reason: 'not-installed' | 'version-too-old'; detail: string }
+
+/**
+ * @param tmuxAvailability Pre-resolved outcome of ensureTmuxVersion() for
+ *   this mount — a discriminated result rather than a thrown error so this
+ *   function stays pure/sync and testable without async/await in the tests.
+ */
+export function resolveMountStrategy(
+  tmuxAvailability:
+    | { ok: true }
+    | { ok: false; reason: 'not-installed' | 'version-too-old'; detail: string }
+): MountStrategy {
+  if (!tmuxAvailability.ok) {
+    return {
+      kind: 'native-fallback',
+      reason: tmuxAvailability.reason,
+      detail: tmuxAvailability.detail
+    }
+  }
+  return { kind: 'tmux' }
 }
 
 // ---------------------------------------------------------------------------
@@ -351,17 +643,79 @@ function isDuplicateSessionError(err: unknown): boolean {
 }
 
 /**
+ * BUG FIX (found during manual verification, not theoretical — reproduced
+ * empirically): `tmux new-session ... -- <command>` does NOT execve a
+ * SINGLE trailing argv token directly. tmux re-parses a lone command string
+ * through a shell-like tokenizer before running it, splitting on
+ * whitespace. `command` here is an ABSOLUTE PATH to orpheus-claude.sh
+ * resolved from `process.resourcesPath`/`__dirname` (buildMountEnv /
+ * orpheusSurfaceAdapter.ts) — and every packaged Orpheus variant except
+ * production has a SPACE in its bundle name ("Orpheus Dev.app",
+ * "Orpheus WT.app", "Orpheus Nightly.app"), so the resolved path itself
+ * contains a space. Passed as a single token, tmux split it into two
+ * "words" ("/Applications/Orpheus" and "Dev.app/Contents/.../orpheus-claude.sh"),
+ * producing an immediate exit 127 ("command not found") — the tmux SERVER
+ * then exits too, since a freshly-created single-session server with no
+ * sessions left has nothing to keep it alive (`exit-empty` default `on`).
+ * This silently killed every tmux-hosted mount on any non-production build.
+ *
+ * Fix: wrap the command in a MULTI-token argv exactly the way the native
+ * libghostty addon already does for the identical reason (see
+ * packages/ghostty-surface/addon.mm's `bash -c "exec -l '<cmd>'"` — single-
+ * quoted so spaces in the bundle path survive intact through bash's own
+ * parsing) — `['bash', '-c', "exec -l '<cmd>'"]` is 3 distinct argv
+ * elements, so tmux execve's `bash` directly and never re-tokenizes the
+ * quoted path itself. The `exec -l` matches the addon's own invocation
+ * style (a login-shell exec, replacing bash's own process rather than
+ * forking a child) for consistency, though tmux's own process-group
+ * handling differs slightly from the native surface's — verified working
+ * empirically against a real Orpheus Dev.app path containing a space.
+ */
+export function tmuxSessionCommandArgv(command: string): string[] {
+  return ['bash', '-c', `exec -l '${command}'`]
+}
+
+/**
  * Create the tmux session for a workspace if one isn't already running.
  * Composes the launch EXACTLY the way the libghostty path does —
  * composeClaudeLaunch + buildMountEnv, see orpheusSurfaceAdapter.ts's own doc
  * comment — so the two hosts can never drift on flags/settings/auth env.
  * Both are dynamically imported (see the module doc comment above) so this
  * file stays importable outside Electron.
+ *
+ * HARD INVARIANT (do not add a second session-creation code path): this is
+ * the ONLY place in the app that runs `tmux new-session`. It already owns
+ * the has-session idempotency check, the secret-env scrub
+ * (scrubSecretEnvironment), and duplicate-session race recovery
+ * (isDuplicateSessionError) below — a second `new-session` call site
+ * anywhere else (e.g. inlined into terminal:mount for the "create" case)
+ * would silently regress the credential scrub, which is a real security
+ * regression, not just duplicated code. The desktop mount path
+ * (terminal:mount in index.ts) always calls this function to ensure a
+ * session exists, then separately mounts the native surface running the
+ * ATTACH wrapper (buildTmuxAttachEnv in orpheusSurfaceAdapter.ts) — it never
+ * constructs a `new-session` argv itself.
+ *
+ * WHAT THE SESSION RUNS, AND WHY IT SURVIVES `claude` EXITING: `command`
+ * (resolved by buildMountEnv, today always orpheus-claude.sh's path) is
+ * exec'd as the session's own command — completely unchanged by universal
+ * tmux hosting, which only adds a SEPARATE attach wrapper for the desktop
+ * surface to reach this session, never touches what the session itself
+ * runs. orpheus-claude.sh already ends with `exec zsh -i` after `claude`
+ * exits (see that script, bottom) — so the underlying tmux session's
+ * foreground process becomes an interactive zsh once claude exits/crashes,
+ * and the SESSION ITSELF (not just the pane) stays alive. This is load
+ * bearing for multi-client hosting: without it, `claude` exiting would kill
+ * the whole tmux session and drop every attached client (desktop AND a
+ * phone via the TUI) simultaneously, which is never desired — confirmed by
+ * reading orpheus-claude.sh directly, not assumed.
  */
 export async function hostWorkspace(
   params: HostWorkspaceParams,
   cmdServer?: { sockPath: string; token: string }
 ): Promise<WorkspaceHostResult> {
+  await ensureTmuxVersion() // throws TmuxNotAvailableError / TmuxVersionTooOldError — caller (resolveMountStrategy path) routes both to native fallback
+
   const socketName = resolveTmuxSocketName()
   const sessionName = tmuxSessionName(params.workspaceName, params.workspaceId)
 
@@ -382,6 +736,19 @@ export async function hostWorkspace(
   // threaded through when the caller has it (commandServer.ts knows its own
   // sockPath/token — see startCommandServer), so a tmux-hosted `orpheus`
   // invocation still gets zero-config ORPHEUS_CMD_SOCK/ORPHEUS_CMD_TOKEN.
+  //
+  // STATUS-PIPELINE INVARIANT: buildMountEnv resolves the SAME
+  // orpheus-claude.sh wrapper the native (non-tmux) path uses, unconditionally
+  // — including its `unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+  // CLAUDE_CODE_SESSION_ID ...` block (see that script) that prevents
+  // Orpheus's own Electron-launched-from-inside-a-Claude-session vars from
+  // leaking down and making the hosted `claude` register as a nested/child
+  // session. Since tmux's `new-session` below execs this SAME command
+  // unchanged, `claude` still registers itself in
+  // ~/.claude/sessions/<pid>.json exactly as it does under native hosting,
+  // so sessionState.ts's file-watch-driven activity status (CLAUDE.md's
+  // "Workspace activity status" section) keeps working for tmux-hosted
+  // workspaces with no changes needed on that side.
   const { command, env } = buildMountEnv(
     params.workspaceId,
     params.projectId,
@@ -408,7 +775,7 @@ export async function hostWorkspace(
       params.cwd,
       ...envArgs(env),
       '--',
-      command
+      ...tmuxSessionCommandArgv(command)
     ])
   } catch (err) {
     if (isDuplicateSessionError(err)) {
@@ -418,14 +785,86 @@ export async function hostWorkspace(
     throw err
   }
 
+  // See waitForSessionServerReady's own doc comment: `new-session -d` can
+  // return before the tmux server has fully daemonized on a brand-new
+  // socket, which made the very next tmux call race a "no server running"
+  // error (found during manual verification). This closes that race before
+  // anything else touches the session.
+  await waitForSessionServerReady(socketName, sessionName)
+
   // Secret scrub MUST run before anything else touches the new session so no
   // window exists where `tmux show-environment` can leak a credential longer
-  // than necessary; window-size follows since it's cosmetic, not security.
+  // than necessary; the cosmetic/behavioral options below are not security
+  // sensitive, so their exact ordering relative to each other doesn't matter.
   await scrubSecretEnvironment(socketName, sessionName, env)
-  await runTmux(socketName, ['set-option', '-t', sessionName, 'window-size', 'latest'])
+  await applyManagedSessionOptions(socketName, sessionName)
 
   invalidateHostedSessionsCache()
   return { sessionName, socketName, created: true, alreadyRunning: false }
+}
+
+// ---------------------------------------------------------------------------
+// Managed per-session tmux options — applied via `set-option -t <session>`,
+// scoped to the SESSION Orpheus just created, never written to the user's own
+// ~/.tmux.conf and never applied server-wide. This is deliberately the
+// "scoped set-option calls" approach rather than a managed conf file passed
+// via `-f`: every option needed here (window-size, mouse, history-limit,
+// set-titles) has a session-scoped `-t` form, so a conf file would add a
+// second place these live (a file on disk PLUS these calls) for zero benefit
+// — if a future option genuinely has no session-scoped form, that's the
+// trigger to introduce a managed conf file, not before.
+// ---------------------------------------------------------------------------
+
+/** Exported (not just internal to hostWorkspace) so scripts/verify-tmux-host.ts
+ *  can exercise the exact same set-option sequence against a throwaway
+ *  socket/session without needing Electron — this function has zero
+ *  Electron dependency of its own (plain tmux argv calls only). */
+export async function applyManagedSessionOptions(
+  socketName: string,
+  sessionName: string
+): Promise<void> {
+  // window-size latest: the most-recently-active ATTACHED client sets the
+  // pane size — needed for a session two clients (desktop + a phone via the
+  // TUI) can both attach to. KNOWN TRADE-OFF (flagged explicitly, not just in
+  // this comment — see the PR report): this means ANY client attaching,
+  // including a phone over Tailscale, resizes the shared session and will
+  // visibly resize the desktop user's terminal out from under them mid-use.
+  // This is inherent to tmux's shared-session model in its simple/default
+  // form; per-client independent sizing is a further exploration, not
+  // required for this change.
+  //
+  // mouse on: ghostty's own scrollback/selection no longer applies once a
+  // pane is tmux-hosted (scrollback becomes tmux's, not ghostty's — the one
+  // documented daily-UX regression for desktop users moving to tmux
+  // hosting); `mouse on` keeps scroll-to-scroll-back and click-drag
+  // selection working THROUGH tmux rather than forcing a modifier-key
+  // passthrough workflow.
+  //
+  // history-limit 50000: tmux's default (2000) is small next to what
+  // ghostty's own native scrollback typically offers; 50000 lines is a
+  // generous replacement, applied per-session (not server-wide) so it never
+  // touches a session this app didn't create.
+  //
+  // set-titles on: tmux's OWN title-forwarding mechanism (distinct from
+  // `allow-passthrough`, which tunnels arbitrary escape sequences like
+  // sixel/images and is unrelated to title propagation — NOT needed here).
+  // `set-titles on` makes tmux forward the active pane's reported title to
+  // the OUTER terminal (ghostty's surface, whose setTitleCallback drives the
+  // workspace title bar) via its own OSC title-set sequence. Available since
+  // tmux's earliest versions (well below MINIMUM_TMUX_VERSION), so no
+  // version conditional is needed. tmux's compiled-in default is already
+  // `on`, but this is set explicitly rather than relied upon implicitly —
+  // this session's title propagation must not depend on whatever the user's
+  // OWN ~/.tmux.conf (which Orpheus never reads or writes) might set.
+  const options: [string, string][] = [
+    ['window-size', 'latest'],
+    ['mouse', 'on'],
+    ['history-limit', '50000'],
+    ['set-titles', 'on']
+  ]
+  for (const [key, value] of options) {
+    await runTmux(socketName, ['set-option', '-t', sessionName, key, value])
+  }
 }
 
 export async function unhostWorkspace(

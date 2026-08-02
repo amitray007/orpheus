@@ -98,7 +98,8 @@ import {
   loadOrpheusSurface,
   buildMountEnv,
   isRoutedMount,
-  composeLaunchForMount
+  composeLaunchForMount,
+  buildTmuxAttachEnv
 } from './orpheusSurfaceAdapter'
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import { prepareTerminalLaunchEnv } from './terminalLaunchEnv'
@@ -124,11 +125,12 @@ import { startPowerAwake } from './powerAwake'
 import { startCommandServer } from './commandServer'
 import type { CommandServerDeps } from './commandServer'
 import {
-  tmuxSessionName,
-  resolveTmuxSocketName,
-  listHostedSessionsCached,
-  shouldBlockNativeMount,
-  unhostWorkspace
+  unhostWorkspace,
+  hostWorkspace,
+  resolveMountStrategy,
+  ensureTmuxVersion,
+  TmuxNotAvailableError,
+  TmuxVersionTooOldError
 } from './tmuxHost'
 import {
   initOverlayLayer,
@@ -142,6 +144,7 @@ import { PUSH_CHANNELS } from '../shared/ipc'
 import {
   configureWorkspaceResources,
   setLaunchSnapshot,
+  getLaunchSnapshot,
   deleteLaunchSnapshot,
   setDirty,
   getTitle,
@@ -177,6 +180,7 @@ import { registerMcpIpc } from './ipc/mcp'
 import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
 import { registerClaudeHooksIpc } from './ipc/claudeHooks'
 import { registerClaudeAuthIpc } from './ipc/claudeAuth'
+import { getClaudeAuthEnv } from './claudeAuth'
 import { registerClaudeUsageIpc } from './ipc/claudeUsage'
 import { registerClaudeActivityIpc } from './ipc/claudeActivity'
 import { registerFooterActionsIpc } from './ipc/footerActions'
@@ -215,7 +219,7 @@ import {
 import { registerPanesIpc } from './ipc/panes'
 import { registerKeepAwakeIpc } from './ipc/keepAwake'
 import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
-import { registerClaudeSettingsIpc } from './ipc/claudeSettings'
+import { registerClaudeSettingsIpc, recomputeHostingModeDirty } from './ipc/claudeSettings'
 import { registerWorktreesIpc } from './ipc/worktrees'
 import { registerHooksIpc } from './ipc/hooks'
 import { registerUiStateIpc, syncDiagFlags } from './ipc/uiState'
@@ -1631,6 +1635,81 @@ async function traceTerminalMount(
   })
 }
 
+/**
+ * Lean parallel to traceTerminalMount() for the TMUX-ATTACH mount path only.
+ * Deliberately does NOT go through buildMountEnv/composeClaudeLaunch,
+ * runtime-lease issuance, or model routing — none of that applies to an
+ * attach (see buildTmuxAttachEnv's doc comment in orpheusSurfaceAdapter.ts
+ * for the "no secrets/no lease on the attach path" rationale). A runtime
+ * lease specifically must NOT be (re-)issued here: whatever `claude` process
+ * is already running inside the tmux session got its lease context (if any)
+ * once, at SESSION-CREATION time via hostWorkspace()'s own buildMountEnv
+ * call — issuing a fresh one on every attach would hand out a token the
+ * already-running process never reads (it doesn't re-exec on attach) while
+ * needlessly rotating/leaking lease state for no behavioral benefit.
+ */
+async function traceTerminalMountForTmuxAttach(
+  workspaceId: string,
+  effectiveCwd: string | undefined,
+  nativeHandle: Buffer,
+  addon: GhosttySurfaceAddon,
+  rect: TerminalRect,
+  scaleFactor: number,
+  attach: { command: string; env: Record<string, string> }
+): Promise<{ workspaceId: string; created: boolean }> {
+  const _mountStart = Date.now()
+  return diag.trace('terminal.mount', { workspaceId, tmuxAttach: true }, (s) => {
+    console.log(
+      '[terminal] mount (tmux-attach) workspaceId=%s envKeys=%s',
+      workspaceId,
+      Object.keys(attach.env).sort().join(',')
+    )
+
+    let mountResult: { workspaceId: string; created: boolean }
+    try {
+      mountResult = addon.mount(nativeHandle, {
+        workspaceId,
+        rect,
+        scaleFactor,
+        cwd: effectiveCwd,
+        command: attach.command,
+        env: prepareTerminalLaunchEnv(attach.env)
+      })
+    } catch (err) {
+      logDiagMain({
+        category: 'error',
+        level: 'error',
+        event: DIAG_EVENTS.ERROR_NATIVE,
+        message: `addon.mount (tmux-attach) failed: ${err instanceof Error ? err.message : String(err)}`,
+        workspaceId,
+        data: { stack: err instanceof Error ? err.stack : null }
+      })
+      throw err
+    }
+
+    terminalObservationService?.recordWorkspaceLifecycle(
+      workspaceId,
+      getNativeSurfacePhase(workspaceId)
+    )
+    s.mark(mountResult.created ? 'surface-created' : 'surface-reattached')
+    logDiagMain({
+      category: 'lifecycle',
+      level: 'info',
+      event: DIAG_EVENTS.TERMINAL_MOUNT,
+      workspaceId,
+      data: { created: mountResult?.created ?? null, tmuxAttach: true }
+    })
+    logDiagMain({
+      category: 'perf',
+      level: 'info',
+      event: DIAG_EVENTS.PERF_TERMINAL_MOUNT,
+      workspaceId,
+      durationMs: Date.now() - _mountStart
+    })
+    return mountResult
+  })
+}
+
 /** Post-mount overlay handling: show the "Starting workspace" overlay only when a
  *  new surface was actually created (re-attach/resize of an already-running
  *  workspace has no boot to mask), and arm the 10s fallback dismissal timer.
@@ -1678,6 +1757,256 @@ function handlePostMountOverlay(workspaceId: string, created: boolean, routed: b
   }
 }
 
+/**
+ * Pre-mount "will this call actually CREATE a native surface entry, or just
+ * re-attach an already-live one" signal — the gate universal tmux hosting
+ * needs BEFORE deciding whether to touch tmux at all. This is deliberately
+ * NOT a reuse of the existing getNativeSurfacePhase() helper (see index.ts
+ * ~line 1370), even though the underlying addon.getSurfacePhase() call is
+ * identical, for two reasons specific to this call site:
+ *
+ *  1. getNativeSurfacePhase() collapses a thrown error from
+ *     loadTerminalAddon() to 'none', which is exactly right for its
+ *     original telemetry-only callers (a bad reading there just skews a log
+ *     line) but WRONG here: at this point in terminal:mount the addon was
+ *     ALREADY loaded successfully a few lines above (`const addon =
+ *     loadTerminalAddon()`), so a throw from `addon.getSurfacePhase(...)`
+ *     here is a genuine, unusual runtime error on an already-working addon
+ *     — not "no surface exists". Swallowing it to 'none' would make a
+ *     spurious tmux session get created off the back of an addon call
+ *     failure we don't understand, which is worse than just propagating the
+ *     error. So this function takes the already-loaded `addon` and does NOT
+ *     catch — a throw here aborts the mount, matching how every other
+ *     addon.* call in this handler already behaves (see traceTerminalMount).
+ *  2. 'freeing' is treated as "effectively gone, safe to create" — the SAME
+ *     treatment issueRuntimeLeaseForMount() already gives it at
+ *     ~line 1462 (`phase === 'none' || phase === 'freeing'` when deciding
+ *     whether to revoke a stale runtime lease). A surface mid-teardown from
+ *     an in-flight archive/destroy is, for the purposes of "should the NEXT
+ *     mount create a fresh entry", indistinguishable from no entry at all —
+ *     the native addon's own generation-guarded deferred-free machinery
+ *     (packages/ghostty-surface) is what actually protects the destroy-then-
+ *     recreate race at the native layer; this function does not need to
+ *     duplicate that protection, only pick the same side of the line the
+ *     rest of this codebase already picks for 'freeing'.
+ *
+ * MIRROR RELATIONSHIP: this function protects the DESKTOP-creating-onto-tmux
+ * direction (don't spawn a tmux session if a native surface already owns
+ * this workspace). shouldBlockTmuxHost (tmuxHost.ts), used by
+ * commandServer.ts's `workspace.host` action, protects the OPPOSITE
+ * direction (don't let the TUI/CLI spawn a tmux session onto a workspace
+ * that's already live natively on the desktop). Both are required — neither
+ * subsumes the other, since they run in response to different triggers
+ * (a desktop mount vs. a command-socket call) and check different local
+ * state (this process's addon surface map plus, for the mirror, claude's
+ * own on-disk session registry). Do not "simplify" by removing either
+ * thinking it's redundant with the other.
+ */
+function willMountCreateSurface(addon: GhosttySurfaceAddon, workspaceId: string): boolean {
+  const phase = addon.getSurfacePhase(workspaceId)
+  return phase === 'none' || phase === 'freeing'
+}
+
+/** Discriminated pre-decision for whether this mount should go through tmux
+ *  at all — resolved once, before either tmux or the routed-model gate is
+ *  touched, so downstream code branches on a plain value instead of
+ *  re-deriving availability. See resolveMountStrategy() (tmuxHost.ts) for
+ *  the pure decision this wraps with the actual ensureTmuxVersion() I/O. */
+async function resolveTmuxMountAvailability(): Promise<
+  ReturnType<typeof resolveMountStrategy> extends infer T ? T : never
+> {
+  try {
+    await ensureTmuxVersion()
+    return resolveMountStrategy({ ok: true })
+  } catch (err) {
+    if (err instanceof TmuxVersionTooOldError) {
+      return resolveMountStrategy({ ok: false, reason: 'version-too-old', detail: err.message })
+    }
+    if (err instanceof TmuxNotAvailableError) {
+      return resolveMountStrategy({ ok: false, reason: 'not-installed', detail: err.message })
+    }
+    // Unexpected error from `tmux -V` itself (e.g. unparseable output) —
+    // treat exactly like "not installed" for fallback purposes: tmux hosting
+    // cannot proceed, but the mount itself must not fail over it.
+    return resolveMountStrategy({
+      ok: false,
+      reason: 'not-installed',
+      detail: err instanceof Error ? err.message : String(err)
+    })
+  }
+}
+
+type TmuxFallbackInfo = { reason: 'not-installed' | 'version-too-old'; detail: string }
+type TmuxAttachPlan = { command: string; env: Record<string, string> }
+
+/**
+ * ── Universal tmux hosting decision (docs/TUI_SPEC.md D1) ─────────────────
+ * Only decide anything tmux-related when this mount is actually going to
+ * CREATE a native surface entry. A re-attach of an already-live entry
+ * (workspace nav back, resize, etc) ignores `opts.command` entirely at the
+ * native layer (packages/ghostty-surface's Mount short-circuits BEFORE
+ * reading opts.command for an existing entry — see addon.mm) — so calling
+ * hostWorkspace() here for that case would be worse than a no-op: it would
+ * spawn a BRAND NEW tmux session + a second `claude --resume <sessionId>`
+ * process for a workspace whose (possibly pre-conversion, native, non-tmux)
+ * `claude` is already running, live, under the SAME session id — the exact
+ * double-writer transcript corruption this whole design exists to avoid.
+ * willMountCreateSurface() is the pre-mount signal that prevents that.
+ *
+ * Returns `{ tmuxAttach }` when this mount should attach the native surface
+ * to a tmux session, `{ tmuxFallback }` when tmux is missing/too old and the
+ * native path (orpheus-claude.sh directly) should run instead, or `{}` when
+ * neither applies (a plain re-attach — willMountCreateSurface was false).
+ */
+async function resolveTmuxForMount(
+  addon: GhosttySurfaceAddon,
+  ws: WorkspaceRecord | null | undefined,
+  workspaceId: string,
+  projectId: string | undefined,
+  effectiveCwd: string | undefined
+): Promise<{ tmuxAttach?: TmuxAttachPlan; tmuxFallback?: TmuxFallbackInfo }> {
+  if (!ws || !willMountCreateSurface(addon, workspaceId)) return {}
+
+  const strategy = await resolveTmuxMountAvailability()
+  // Whatever the outcome, tmux availability is now KNOWN for this app run —
+  // recheck every tracked workspace's hosting-mode dirtiness once, right
+  // now, rather than waiting for an unrelated settings change to surface
+  // the "Restart to enable remote access" chip for pre-existing native
+  // workspaces (Gap 2 of the staged-rollout design — see
+  // currentEffectiveHostingPolicy()'s doc comment in tmuxHost.ts).
+  recomputeHostingModeDirty()
+
+  if (strategy.kind === 'native-fallback') {
+    // tmux missing or too old — fall back to the CURRENT native path
+    // (orpheus-claude.sh directly, unchanged) with a visible, non-silent
+    // notice rather than silently degrading or erroring.
+    const howToFix =
+      strategy.reason === 'not-installed'
+        ? 'Install it with `brew install tmux` to enable tmux hosting (survives app restarts, and lets you reconnect from `orpheus tui`).'
+        : 'Upgrade it with `brew upgrade tmux` to enable tmux hosting (survives app restarts, and lets you reconnect from `orpheus tui`).'
+    console.warn(
+      '[terminal:mount] tmux unavailable (%s), falling back to native hosting: %s',
+      strategy.reason,
+      strategy.detail
+    )
+    return { tmuxFallback: { reason: strategy.reason, detail: `${strategy.detail} ${howToFix}` } }
+  }
+
+  // tmux available. hostWorkspace() is the ONLY place that ever runs
+  // `tmux new-session` (see its own doc comment in tmuxHost.ts) — idempotent
+  // by construction (has-session check → reuse-or-create, with
+  // duplicate-session race recovery), so this call is safe to make
+  // unconditionally here: it either creates a fresh session for a truly new
+  // workspace, or (the "session vanished between an earlier check and now"
+  // race, or simply "tmux session outlived an app restart and this is the
+  // first mount since") transparently attaches to whatever's already there.
+  // No separate recreate-retry loop is needed — hostWorkspace()'s own
+  // has-session check IS that recreation, and orpheus-attach.sh's own
+  // "any exit -> exec zsh -i" tail covers the vanishingly rare remaining
+  // race where the session disappears again in the gap between this call
+  // and the attach wrapper actually running (see that script's own comments).
+  const hostResult = await hostWorkspace(
+    { workspaceId, projectId, workspaceName: ws.name, cwd: effectiveCwd ?? ws.cwd },
+    commandServer ? { sockPath: commandServer.sockPath, token: commandServer.token } : undefined
+  )
+  return { tmuxAttach: buildTmuxAttachEnv(hostResult.socketName, hostResult.sessionName) }
+}
+
+/**
+ * ── Tmux-attach mount path ─────────────────────────────────────────────
+ * Mounts the native surface running the attach wrapper, then handles
+ * post-mount bookkeeping specific to the attach case (no routed-model gate,
+ * conditional snapshot re-seed — see the inline comments for the exact
+ * subtle reasoning on each). Returns null if the workspace went away
+ * mid-flight (caller returns the standard 'gone' response in that case).
+ */
+async function finishTmuxAttachMount(
+  e: Electron.IpcMainInvokeEvent,
+  workspaceId: string,
+  projectId: string | undefined,
+  effectiveCwd: string | undefined,
+  nativeHandle: Buffer,
+  addon: GhosttySurfaceAddon,
+  rect: TerminalRect,
+  scaleFactor: number,
+  tmuxAttach: TmuxAttachPlan,
+  reconcileNotice: string | undefined,
+  tmuxFallback: TmuxFallbackInfo | undefined
+): Promise<TerminalMountResult | null> {
+  const runtimeWorkspace = getWorkspace(workspaceId)
+  if (runtimeWorkspace == null || runtimeWorkspace.archivedAt != null) return null
+
+  const result = await traceTerminalMountForTmuxAttach(
+    workspaceId,
+    effectiveCwd,
+    nativeHandle,
+    addon,
+    rect,
+    scaleFactor,
+    tmuxAttach
+  )
+
+  if (result.created) {
+    logDiagMain({
+      category: 'lifecycle',
+      level: 'info',
+      event: DIAG_EVENTS.TERMINAL_SURFACE_CREATED,
+      workspaceId
+    })
+  }
+
+  // Routed-model health gate deliberately NOT run here — see the
+  // isRoutedMount(precomposedLaunch) call in the native path below, which
+  // only runs on the native/create path. Re-attaching to an already-running
+  // tmux session must never re-probe proxy health: that gate exists to fail
+  // fast before spawning a NEW `claude` process against an unreachable
+  // routing proxy, and no new `claude` process is spawned here.
+  handlePostMountOverlay(workspaceId, result.created, false)
+
+  // Snapshot handling on the tmux-attach path — subtle, documented in full
+  // here since this is the exact decision point:
+  //   - If a snapshot ALREADY exists for this workspace (this app process
+  //     created the tmux session earlier in its own lifetime, OR attached
+  //     to it once already this run), leave it untouched. Re-snapshotting
+  //     with a freshly-recomposed launch here would silently "launder" any
+  //     REAL settings drift that happened after creation — the whole point
+  //     of the dirty chip.
+  //   - If NO snapshot exists yet (the gap case: the tmux session survived
+  //     an app restart — tmux is a separate process tree — but the
+  //     in-memory launchSnapshots Map, which lives only in THIS process,
+  //     did not), re-seed it by composing composeClaudeLaunch fresh right
+  //     now and treating it as "assumed accurate until we have a better
+  //     source of truth." KNOWN GAP, accepted deliberately: any settings
+  //     changed WHILE THE APP WAS CLOSED, strictly between the tmux
+  //     session's actual creation and this restart, will NOT show as dirty
+  //     until something else changes the effective launch afterward (at
+  //     which point recomputeDirty's normal comparison against this
+  //     re-seeded snapshot starts working correctly again). Doing better
+  //     than this would require persisting the snapshot itself to disk,
+  //     out of scope for this change.
+  if (getLaunchSnapshot(workspaceId) === undefined) {
+    const seeded = composeLaunchForMount(projectId, workspaceId)
+    setLaunchSnapshot(workspaceId, { ...seeded, authEnv: getClaudeAuthEnv(), hostingMode: 'tmux' })
+    setDirty(workspaceId, false)
+  }
+
+  {
+    const injectable = terminalActions.canInject(workspaceId)
+    e.sender.send(PUSH_CHANNELS.terminalCanInjectChanged, { workspaceId, canInject: injectable })
+  }
+
+  if (effectiveCwd) {
+    startGitWatch(workspaceId, effectiveCwd, e.sender)
+  }
+
+  const notice = [reconcileNotice].filter((n): n is string => n != null).join(' ')
+  return {
+    ...result,
+    ...(notice ? { notice } : {}),
+    ...(tmuxFallback ? { tmuxFallback } : {})
+  }
+}
+
 handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
   const addon = loadTerminalAddon()
   ensureLoadingOverlayWiring(addon)
@@ -1689,38 +2018,17 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
   const ws = getWorkspace(workspaceId)
   const projectId = ws?.projectId
 
-  // ── tmux-hosted native-mount guard (docs/TUI_SPEC.md D1: "two disjoint
-  // hosts, first-opener wins") ────────────────────────────────────────────
-  // A workspace opened from the TUI runs `claude` inside a tmux session
-  // (src/main/tmuxHost.ts) that is invisible to this process otherwise.
-  // Mounting the native surface here would spawn a SECOND, competing
-  // `claude` against the same --session-id/--resume — never do that
-  // implicitly. listHostedSessionsCached() is a short-TTL cache (see
-  // tmuxHost.ts) so this hot-path check costs a `tmux list-sessions`
-  // round-trip at most every ~1.5s, not on every single mount.
-  if (ws) {
-    const sessionName = tmuxSessionName(ws.name, ws.id)
-    let hostedSessions: Set<string>
-    try {
-      hostedSessions = await listHostedSessionsCached()
-    } catch {
-      // tmux missing/unavailable — nothing can be tmux-hosted; fall through
-      // to the normal native-mount path rather than blocking every mount.
-      hostedSessions = new Set()
-    }
-    if (shouldBlockNativeMount(hostedSessions, sessionName)) {
-      hideLoadingOverlay(workspaceId)
-      return {
-        workspaceId,
-        tmuxHosted: { sessionName, socketName: resolveTmuxSocketName() }
-      }
-    }
-  }
-
   // ── Worktree reconcile (heal-on-mount) ─────────────────────────────────
   // reconcileWorktreeForMount NEVER throws — it returns aborted:true on all
   // error paths. If reconcile fails, we return the error without mounting and
   // without touching the surface, leaving it retryable.
+  //
+  // MUST run BEFORE the tmux create-vs-attach decision below: the worktree
+  // must exist on disk (at its FINAL, possibly-healed/recreated path) before
+  // a NEW tmux session gets created with it as `-c <cwd>` — hostWorkspace()
+  // has no worktree awareness of its own, it just execs into whatever cwd
+  // it's given, so reconcile's resolved effectiveCwd is what a fresh tmux
+  // session must be created with.
   let reconcileNotice: string | undefined
   let effectiveCwd = cwd
   if (ws) {
@@ -1739,6 +2047,14 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     return { workspaceId, aborted: 'gone' as const }
   }
 
+  const { tmuxAttach, tmuxFallback } = await resolveTmuxForMount(
+    addon,
+    ws,
+    workspaceId,
+    projectId,
+    effectiveCwd
+  )
+
   // Close the cold-mount PATH race: if the boot-time shell-path spawn hasn't
   // settled yet, await it now so buildMountEnv can inject ORPHEUS_USER_PATH
   // instead of forcing the .zshrc fallback (+100–800 ms).
@@ -1753,6 +2069,31 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     hideLoadingOverlay(workspaceId)
     return { workspaceId, aborted: 'gone' as const }
   }
+
+  if (tmuxAttach) {
+    const attachResult = await finishTmuxAttachMount(
+      e,
+      workspaceId,
+      projectId,
+      effectiveCwd,
+      nativeHandle,
+      addon,
+      rect,
+      scaleFactor,
+      tmuxAttach,
+      reconcileNotice,
+      tmuxFallback
+    )
+    if (attachResult == null) {
+      hideLoadingOverlay(workspaceId)
+      return { workspaceId, aborted: 'gone' as const }
+    }
+    return attachResult
+  }
+
+  // ── Native mount path (unchanged — direct orpheus-claude.sh, either a
+  // re-attach of an already-live surface, or the tmux-missing/too-old
+  // fallback for a fresh create) ──────────────────────────────────────────
 
   // Compose claude settings -> ClaudeLaunch ONCE for this mount. Both the
   // routed-model health gate below and traceTerminalMount's env assembly
@@ -1769,7 +2110,12 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
   // for routed-model workspaces only — this is a strict no-op (zero extra
   // network calls, zero added latency, zero extra composition) for
   // Claude-model workspaces, mirroring computeRoutingEnv's own no-op
-  // guarantee for the Claude path.
+  // guarantee for the Claude path. Also correctly skipped for a plain
+  // re-attach of an already-live surface: hostWorkspace/tmuxAttach is never
+  // set in that case (willMountCreateSurface was false), so this whole
+  // native path only runs for either a genuine re-attach OR a fresh native
+  // (tmux-fallback) create — the gate itself is still keyed off whether
+  // addon.mount will actually create a new entry, exactly as before.
   if (isRoutedMount(precomposedLaunch)) {
     try {
       await ensureHealthyForRouting()
@@ -1815,7 +2161,13 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
 
   // Snapshot the composed launch (+ auth env layer) so we can detect settings
   // AND auth drift later — see LaunchSnapshot in workspaceResources.ts.
-  setLaunchSnapshot(workspaceId, { ...launch, authEnv })
+  // hostingMode is 'native' unconditionally here — this whole branch is
+  // reached only for a plain re-attach (hostingMode of the ALREADY-live
+  // surface is whatever it was, but a re-attach never had tmuxAttach set so
+  // result.created is false and this snapshot write is effectively a no-op
+  // refresh) or a genuine native-fallback CREATE (tmux missing/too old),
+  // which is unambiguously 'native'.
+  setLaunchSnapshot(workspaceId, { ...launch, authEnv, hostingMode: 'native' })
   setDirty(workspaceId, false)
 
   // Push the current canInject state so the renderer chip gets an immediate
@@ -1831,7 +2183,11 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     startGitWatch(workspaceId, effectiveCwd, e.sender)
   }
 
-  return reconcileNotice != null ? { ...result, notice: reconcileNotice } : result
+  return {
+    ...result,
+    ...(reconcileNotice != null ? { notice: reconcileNotice } : {}),
+    ...(tmuxFallback ? { tmuxFallback } : {})
+  }
 })
 
 handle('terminal:hide', (_e, { workspaceId }): void => {
@@ -3124,6 +3480,7 @@ if (!app.requestSingleInstanceLock()) {
               teardownWorkspaceResources,
               performClose: (workspaceId) => performClose(workspaceId),
               performArchive: (workspaceId) => performArchive(workspaceId, true),
+              getSurfacePhase: getNativeSurfacePhase,
               requestOpenWorkspace,
               openAndSeed: async (
                 workspaceId: string,

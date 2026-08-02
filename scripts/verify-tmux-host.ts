@@ -29,17 +29,25 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { rm } from 'node:fs/promises'
+import { rm, mkdtemp, writeFile } from 'node:fs/promises'
 import * as path from 'node:path'
+import * as os from 'node:os'
 import {
   tmuxSocketNameForAppName,
   tmuxSessionName,
   shouldBlockNativeMount,
+  shouldBlockTmuxHost,
   shouldRetainInTmuxEnvironment,
   buildTreeFrame,
   renameHostedSession,
   unhostWorkspace,
   TmuxNotAvailableError,
+  parseTmuxVersion,
+  isTmuxVersionSufficient,
+  resolveMountStrategy,
+  MINIMUM_TMUX_VERSION,
+  applyManagedSessionOptions,
+  tmuxSessionCommandArgv,
   type TreeSourceWorkspace
 } from '../src/main/tmuxHost'
 import type { ProjectRecord } from '../src/shared/types'
@@ -137,6 +145,135 @@ const execFileAsync = promisify(execFile)
   assert.equal(shouldBlockNativeMount(hosted, 'other-workspace-11112222'), false)
   assert.equal(shouldBlockNativeMount(new Set(), 'my-workspace-abcdef12'), false)
   console.log('✓ shouldBlockNativeMount only blocks a session tmux actually reports as hosted')
+}
+
+// ---------------------------------------------------------------------------
+// shouldBlockTmuxHost — the MIRROR guard (workspace.host's pre-create check,
+// refuses to tmux-host a workspace that's already live natively on desktop).
+// ---------------------------------------------------------------------------
+
+{
+  assert.equal(shouldBlockTmuxHost(false, false), false, 'neither signal live -> safe to host')
+  assert.equal(shouldBlockTmuxHost(true, false), true, 'native surface live -> refuse')
+  assert.equal(shouldBlockTmuxHost(false, true), true, 'claude session live -> refuse')
+  assert.equal(shouldBlockTmuxHost(true, true), true, 'both live -> refuse')
+  console.log(
+    '✓ shouldBlockTmuxHost refuses if EITHER the native surface or the claude session registry ' +
+      'reports this workspace as live — never requires both'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// parseTmuxVersion / isTmuxVersionSufficient — the version-gate parse/compare
+// logic. Tested at the pure layer per the brief (never by installing
+// different tmux binaries).
+// ---------------------------------------------------------------------------
+
+{
+  assert.deepEqual(parseTmuxVersion('tmux 3.1'), { major: 3, minor: 1, suffix: '' })
+  assert.deepEqual(parseTmuxVersion('tmux 3.2a'), { major: 3, minor: 2, suffix: 'a' })
+  assert.deepEqual(parseTmuxVersion('tmux 2.9'), { major: 2, minor: 9, suffix: '' })
+  assert.deepEqual(parseTmuxVersion('tmux next-3.4'), { major: 3, minor: 4, suffix: '' })
+  assert.equal(parseTmuxVersion('not a version string at all'), null)
+  assert.equal(parseTmuxVersion(''), null)
+  console.log(
+    '✓ parseTmuxVersion extracts major/minor/suffix from real tmux -V formats, including the ' +
+      '"next-X.Y" development-snapshot format, and returns null (never throws) on garbage'
+  )
+}
+
+{
+  // MINIMUM_TMUX_VERSION is 3.1 — the window-size latest floor.
+  assert.equal(
+    isTmuxVersionSufficient({ major: 3, minor: 1, suffix: '' }),
+    true,
+    'exactly at minimum'
+  )
+  assert.equal(
+    isTmuxVersionSufficient({ major: 3, minor: 2, suffix: 'a' }),
+    true,
+    'above minimum, suffix ignored'
+  )
+  assert.equal(
+    isTmuxVersionSufficient({ major: 4, minor: 0, suffix: '' }),
+    true,
+    'next major, always sufficient'
+  )
+  assert.equal(
+    isTmuxVersionSufficient({ major: 3, minor: 0, suffix: '' }),
+    false,
+    'below minimum minor'
+  )
+  assert.equal(
+    isTmuxVersionSufficient({ major: 2, minor: 9, suffix: '' }),
+    false,
+    'below minimum major'
+  )
+  assert.equal(
+    isTmuxVersionSufficient({ major: 3, minor: 1, suffix: '' }, MINIMUM_TMUX_VERSION),
+    true,
+    'explicit minimum param matches the default'
+  )
+  console.log(
+    '✓ isTmuxVersionSufficient compares major/minor only (suffix never affects sufficiency), ' +
+      'exactly-at-minimum passes, one below on either major or minor fails'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// resolveMountStrategy — the tmux-vs-native-fallback decision for
+// terminal:mount. Deliberately NOT an attach-vs-create decision (that's
+// hostWorkspace()'s own idempotent has-session check) — this only decides
+// tmux-at-all vs native-fallback.
+// ---------------------------------------------------------------------------
+
+{
+  assert.deepEqual(resolveMountStrategy({ ok: true }), { kind: 'tmux' })
+  assert.deepEqual(
+    resolveMountStrategy({ ok: false, reason: 'not-installed', detail: 'tmux: command not found' }),
+    { kind: 'native-fallback', reason: 'not-installed', detail: 'tmux: command not found' }
+  )
+  assert.deepEqual(
+    resolveMountStrategy({
+      ok: false,
+      reason: 'version-too-old',
+      detail: 'tmux 3.1+ required (found 2.0)'
+    }),
+    { kind: 'native-fallback', reason: 'version-too-old', detail: 'tmux 3.1+ required (found 2.0)' }
+  )
+  console.log(
+    '✓ resolveMountStrategy: available -> tmux, unavailable (either reason) -> native-fallback ' +
+      'carrying the reason/detail through verbatim'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// tmuxSessionCommandArgv — BUG FIX regression coverage. tmux new-session's
+// trailing single-token command gets re-tokenized by tmux itself (splitting
+// on whitespace), which silently broke every tmux-hosted mount on any
+// non-production build (their bundle paths all contain a space, e.g.
+// "Orpheus Dev.app"). This must always return a MULTI-element argv so tmux
+// never re-tokenizes the (possibly space-containing) command path.
+// ---------------------------------------------------------------------------
+
+{
+  const argv = tmuxSessionCommandArgv(
+    '/Applications/Orpheus Dev.app/Contents/Resources/orpheus-claude.sh'
+  )
+  assert.ok(argv.length > 1, 'must be multiple argv tokens, never a single re-tokenizable string')
+  assert.equal(argv[0], 'bash')
+  assert.equal(argv[1], '-c')
+  assert.equal(
+    argv[2],
+    "exec -l '/Applications/Orpheus Dev.app/Contents/Resources/orpheus-claude.sh'",
+    'the space-containing path must be single-quoted intact inside the bash -c string, exactly ' +
+      'mirroring packages/ghostty-surface/addon.mm\'s own "bash -c \\"exec -l \'<cmd>\'\\"" wrapping'
+  )
+  console.log(
+    '✓ tmuxSessionCommandArgv wraps the command in a multi-token argv (bash -c "exec -l \'<cmd>\'") ' +
+      'so tmux never re-tokenizes a space-containing bundle path — regression coverage for the ' +
+      'exit-127/dead-server bug found in manual verification'
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +640,107 @@ async function runRealTmuxChecks(): Promise<void> {
       assert.equal(exists, 1, 'no session must be created for a rename with nothing running')
       console.log(
         '✓ renameHostedSession() with no live session under the old name is a silent no-op'
+      )
+    }
+
+    // -------------------------------------------------------------------
+    // applyManagedSessionOptions() — the mouse/history-limit/set-titles/
+    // window-size defaults hostWorkspace() applies to every session it
+    // creates. Verified against a real session on the throwaway socket via
+    // `show-options`, not just "the call didn't throw".
+    // -------------------------------------------------------------------
+    {
+      const sessionName = 'managed-options-test'
+      await tmux(socket, ['new-session', '-d', '-s', sessionName, '--', 'sleep', '60'])
+
+      await applyManagedSessionOptions(socket, sessionName)
+
+      const showOption = async (key: string): Promise<string> => {
+        const { stdout } = await tmux(socket, ['show-options', '-t', sessionName, '-v', key])
+        return stdout.trim()
+      }
+
+      assert.equal(
+        await showOption('mouse'),
+        'on',
+        'mouse must be enabled on Orpheus-created sessions'
+      )
+      assert.equal(
+        await showOption('history-limit'),
+        '50000',
+        "history-limit must be raised well above tmux's small default"
+      )
+      assert.equal(
+        await showOption('set-titles'),
+        'on',
+        'set-titles must be on so ghostty gets the title'
+      )
+      assert.equal(
+        await showOption('window-size'),
+        'latest',
+        'window-size must be latest so the most-recently-active client sizes the shared session'
+      )
+
+      await tmux(socket, ['kill-session', '-t', sessionName])
+      console.log(
+        '✓ applyManagedSessionOptions() sets mouse=on, history-limit=50000, set-titles=on, ' +
+          'window-size=latest on the session it targets — verified via show-options, not just a ' +
+          'non-throwing call'
+      )
+    }
+
+    // -------------------------------------------------------------------
+    // tmuxSessionCommandArgv — END-TO-END regression test for the exit-127
+    // bug: a `new-session -- <single-token-path-with-a-space>` gets
+    // re-tokenized by tmux and silently kills the server. Proves the FIX
+    // (multi-token bash -c argv) actually keeps a space-containing command
+    // path alive as a real tmux session, not just that the pure function
+    // returns the right shape.
+    // -------------------------------------------------------------------
+    {
+      const dirWithSpace = await mkdtemp(path.join(os.tmpdir(), 'orpheus verify space '))
+      const scriptPath = path.join(dirWithSpace, 'stay-alive.sh')
+      await writeFile(scriptPath, '#!/bin/sh\nsleep 30\n', { mode: 0o755 })
+
+      const sessionName = 'space-path-regression-test'
+      // The BUGGY invocation this fix replaces — passing the command as a
+      // single trailing token. Asserts the bug actually reproduces (so this
+      // test would have caught the regression before the fix landed).
+      await tmux(socket, ['new-session', '-d', '-s', sessionName, '--', scriptPath])
+      // Give tmux a moment to finish tearing the (buggy) session down.
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const buggyExitCode = await tmuxExitCode(socket, ['has-session', '-t', sessionName])
+      assert.equal(
+        buggyExitCode,
+        1,
+        'sanity check: the single-token invocation must actually reproduce the bug (session gone) ' +
+          '— if this starts failing, tmux itself may have changed behavior and this test needs review'
+      )
+
+      // The FIXED invocation — tmuxSessionCommandArgv's multi-token argv.
+      const fixedSessionName = 'space-path-regression-test-fixed'
+      await tmux(socket, [
+        'new-session',
+        '-d',
+        '-s',
+        fixedSessionName,
+        '--',
+        ...tmuxSessionCommandArgv(scriptPath)
+      ])
+      const fixedExitCode = await tmuxExitCode(socket, ['has-session', '-t', fixedSessionName])
+      assert.equal(
+        fixedExitCode,
+        0,
+        'tmuxSessionCommandArgv-wrapped invocation must keep a space-containing command path alive ' +
+          'as a real tmux session'
+      )
+
+      await tmux(socket, ['kill-session', '-t', fixedSessionName]).catch(() => {})
+      await rm(dirWithSpace, { recursive: true, force: true })
+      console.log(
+        '✓ tmuxSessionCommandArgv fixes the real exit-127/dead-server bug for a space-containing ' +
+          'command path — reproduced the bug with the single-token invocation AND proved the fix ' +
+          'keeps the session alive, against a real tmux server'
       )
     }
 

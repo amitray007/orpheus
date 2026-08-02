@@ -40,6 +40,8 @@ extraResources:
       - '**/*'
   - from: resources/orpheus-claude.sh
     to: orpheus-claude.sh
+  - from: resources/orpheus-attach.sh
+    to: orpheus-attach.sh
   - from: resources/orpheus-pane.sh
     to: orpheus-pane.sh
   - from: resources/bin/orpheus-notify
