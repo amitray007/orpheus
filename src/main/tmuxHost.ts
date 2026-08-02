@@ -635,8 +635,15 @@ export type HostWorkspaceParams = {
 }
 
 /** True when a `new-session` failure is just a race against another opener
- *  that won between our has-session check and this call. */
-function isDuplicateSessionError(err: unknown): boolean {
+ *  that won between our has-session check and this call. Exported (not just
+ *  internal to hostWorkspace) so scripts/verify-tmux-host.ts's concurrent-
+ *  double-launch test can assert a losing caller's rejection is THIS specific,
+ *  handled race and not some other unexpected tmux failure — see that test's
+ *  own doc comment for why it drives the identical has-session/new-session
+ *  sequence directly (real Electron/DB dependencies inside hostWorkspace()'s
+ *  own composeClaudeLaunch/buildMountEnv call chain make hostWorkspace()
+ *  itself uninvokable from a plain `bun run` harness). */
+export function isDuplicateSessionError(err: unknown): boolean {
   const stderr =
     err != null && typeof err === 'object' ? (err as { stderr?: unknown }).stderr : null
   return typeof stderr === 'string' && stderr.includes('duplicate session')
@@ -860,11 +867,25 @@ export async function applyManagedSessionOptions(
   // `on`, but this is set explicitly rather than relied upon implicitly —
   // this session's title propagation must not depend on whatever the user's
   // OWN ~/.tmux.conf (which Orpheus never reads or writes) might set.
+  //
+  // set-titles-string "#{pane_title}": what set-titles ABOVE actually
+  // forwards. tmux's compiled-in default format is
+  // `"#S:#I:#W - \"#T\" #{session_alerts}"` — session name, window index,
+  // window name, then the pane title in quotes, then any alert flags. Left
+  // at that default, the forwarded OSC title is noisy session/window
+  // bookkeeping wrapped around the actual title (e.g.
+  // `wsname-abc123:0:sleep - "✳ Claude Code"` instead of the clean
+  // `✳ Claude Code` claude itself sets via its own OSC sequence) — verified
+  // empirically against a real tmux server. `#{pane_title}` alone forwards
+  // exactly what the foreground process (claude) last set, matching what the
+  // native (non-tmux) path already shows, so a workspace's title bar reads
+  // identically whether it's tmux-hosted or not.
   const options: [string, string][] = [
     ['window-size', 'latest'],
     ['mouse', 'on'],
     ['history-limit', '50000'],
-    ['set-titles', 'on']
+    ['set-titles', 'on'],
+    ['set-titles-string', '#{pane_title}']
   ]
   for (const [key, value] of options) {
     await runTmux(socketName, ['set-option', '-t', sessionName, key, value])

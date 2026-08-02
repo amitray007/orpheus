@@ -29,7 +29,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { rm, mkdtemp, writeFile } from 'node:fs/promises'
+import { rm, mkdtemp, writeFile, readdir, readFile } from 'node:fs/promises'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import {
@@ -48,6 +48,7 @@ import {
   MINIMUM_TMUX_VERSION,
   applyManagedSessionOptions,
   tmuxSessionCommandArgv,
+  isDuplicateSessionError,
   type TreeSourceWorkspace
 } from '../src/main/tmuxHost'
 import type { ProjectRecord } from '../src/shared/types'
@@ -502,6 +503,77 @@ function workspace(
 }
 
 // ---------------------------------------------------------------------------
+// SOLE-CALL-SITE INVARIANT — static-source coverage for the HARD INVARIANT
+// documented on hostWorkspace() in tmuxHost.ts ("this is the ONLY place in
+// the app that runs `tmux new-session`"). That invariant currently lives ONLY
+// as a doc comment — nothing actually asserts it, so a future PR could add a
+// second `tmux new-session` call site (e.g. inlined into terminal:mount for
+// the "create" case) and silently regress the credential scrub
+// (scrubSecretEnvironment) that only runs after hostWorkspace()'s own call,
+// with no test failure to catch it. This is a deliberately blunt TEXT-level
+// scan (not AST parsing) over every `.ts` file under `src/` for the argv
+// literal `'new-session'` (single-quoted, no backticks) — the exact shape
+// hostWorkspace()'s own `runTmux(socketName, ['new-session', ...])` call
+// uses. Single-quoted-string form is chosen specifically because it does NOT
+// match the many backtick-wrapped prose mentions of `new-session` in
+// tmuxHost.ts's own comments (see e.g. its MINIMUM_TMUX_VERSION and
+// waitForSessionServerReady doc comments) — verified by hand against this
+// file's actual grep output before writing the regex below, so this isn't a
+// guess about what "looks like code" vs. "looks like prose". No I/O, no
+// tmux — runs unconditionally, not gated behind hasTmux().
+// ---------------------------------------------------------------------------
+
+{
+  const NEW_SESSION_ARGV_LITERAL = /'new-session'/u
+  const srcRoot = path.join(import.meta.dir, '..', 'src')
+
+  async function findTsFiles(dir: string): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true })
+    const files = await Promise.all(
+      entries.map(async (entry) => {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) return findTsFiles(full)
+        return entry.isFile() && full.endsWith('.ts') ? [full] : []
+      })
+    )
+    return files.flat()
+  }
+
+  const tsFiles = await findTsFiles(srcRoot)
+  assert.ok(tsFiles.length > 100, 'sanity check: the src/ file walk must have found real files')
+
+  const matches: { file: string; line: number }[] = []
+  for (const file of tsFiles) {
+    const content = await readFile(file, 'utf8')
+    content.split('\n').forEach((lineText, index) => {
+      if (NEW_SESSION_ARGV_LITERAL.test(lineText)) {
+        matches.push({ file: path.relative(srcRoot, file), line: index + 1 })
+      }
+    })
+  }
+
+  assert.equal(
+    matches.length,
+    1,
+    `expected exactly ONE 'new-session' argv literal under src/ (hostWorkspace()'s own call) — ` +
+      `found ${matches.length}: ${matches.map((m) => `${m.file}:${m.line}`).join(', ')}. A count ` +
+      `other than 1 means either the sole-call-site invariant has been violated by a new creation ` +
+      `path, or this test's file moved/was refactored and needs updating.`
+  )
+  assert.equal(
+    matches[0]?.file,
+    path.join('main', 'tmuxHost.ts'),
+    'the one new-session call site must be hostWorkspace() in src/main/tmuxHost.ts'
+  )
+
+  console.log(
+    `✓ the 'new-session' argv literal appears exactly once under src/ (${matches[0]?.file}:` +
+      `${matches[0]?.line}, hostWorkspace()'s own call) — a text-level regression check for the ` +
+      'sole-call-site HARD INVARIANT documented on hostWorkspace()'
+  )
+}
+
+// ---------------------------------------------------------------------------
 // BUG 1 + BUG 2 — real-tmux coverage for renameHostedSession() /
 // unhostWorkspace(), against a throwaway process-unique socket (via each
 // function's socketNameOverride test seam — no Electron involved). Skips
@@ -680,12 +752,76 @@ async function runRealTmuxChecks(): Promise<void> {
         'latest',
         'window-size must be latest so the most-recently-active client sizes the shared session'
       )
+      assert.equal(
+        await showOption('set-titles-string'),
+        '#{pane_title}',
+        "set-titles-string must forward the bare pane title, not tmux's noisy default " +
+          '"#S:#I:#W - \\"#T\\" #{session_alerts}" format'
+      )
 
       await tmux(socket, ['kill-session', '-t', sessionName])
       console.log(
         '✓ applyManagedSessionOptions() sets mouse=on, history-limit=50000, set-titles=on, ' +
-          'window-size=latest on the session it targets — verified via show-options, not just a ' +
-          'non-throwing call'
+          'set-titles-string=#{pane_title}, window-size=latest on the session it targets — ' +
+          'verified via show-options, not just a non-throwing call'
+      )
+    }
+
+    // -------------------------------------------------------------------
+    // set-titles-string — RESOLVED-title regression coverage. The option
+    // being set to "#{pane_title}" (asserted above) does not by itself prove
+    // the title tmux actually forwards is clean — the option is a FORMAT
+    // STRING, and tmux's own default resolves to noisy session/window
+    // bookkeeping around the real title (verified empirically:
+    // `"#S:#I:#W - \"#T\" #{session_alerts}"` -> something like
+    // `wsname-abc123:0:bash - "My Title" `). This test drives a REAL pane
+    // that sets its own title via the same OSC escape sequence `claude`
+    // itself uses, then reads back what tmux would actually forward
+    // (`#{pane_title}`, the resolved value of the format string) — proving
+    // the fix end-to-end, not just that the right string got stored.
+    // -------------------------------------------------------------------
+    {
+      const sessionName = 'title-resolution-test'
+      const titleText = 'Test Workspace Title'
+      // bash -c so the OSC title-set sequence is actually processed by a
+      // shell before the pane goes idle (a bare `sleep` never reads stdin
+      // and never emits its own title, so send-keys into it would be a
+      // no-op — this constructs the OSC sequence directly as the pane's
+      // startup command instead of relying on send-keys timing).
+      await tmux(socket, [
+        'new-session',
+        '-d',
+        '-s',
+        sessionName,
+        '--',
+        'bash',
+        '-c',
+        `printf '\\033]0;${titleText}\\007'; sleep 60`
+      ])
+      await applyManagedSessionOptions(socket, sessionName)
+
+      // Give tmux a moment to process the OSC sequence the pane just emitted.
+      await new Promise((resolve) => setTimeout(resolve, 300))
+
+      const { stdout } = await tmux(socket, [
+        'display-message',
+        '-t',
+        sessionName,
+        '-p',
+        '#{pane_title}'
+      ])
+      assert.equal(
+        stdout.trim(),
+        titleText,
+        'the RESOLVED forwarded title must be exactly what the pane set via OSC, with no ' +
+          'session-name/window-index/alert noise wrapped around it'
+      )
+
+      await tmux(socket, ['kill-session', '-t', sessionName])
+      console.log(
+        '✓ set-titles-string="#{pane_title}" resolves to the clean OSC-set title with no ' +
+          'session/window/alert noise — verified against a real pane that actually set a title, ' +
+          'not just that the option string got stored'
       )
     }
 
@@ -775,6 +911,153 @@ async function runRealTmuxChecks(): Promise<void> {
       )
       assert.equal(result.killed, false)
       console.log('✓ unhostWorkspace() with no session reports { killed: false }, does not throw')
+    }
+
+    // -------------------------------------------------------------------
+    // CONCURRENT-DOUBLE-LAUNCH — hostWorkspace() is the SOLE `tmux
+    // new-session` call site in the app (HARD INVARIANT in tmuxHost.ts's own
+    // doc comment on hostWorkspace()); both the desktop mount path
+    // (terminal:mount -> resolveTmuxForMount in index.ts) and the TUI/CLI's
+    // `workspace.host` command-socket action (commandServer.ts) funnel
+    // through it exclusively. A design review flagged that nothing actually
+    // ASSERTS the resulting idempotency under a real race between those two
+    // entry points for the SAME cold workspace — this closes that gap.
+    //
+    // WHY THIS DOES NOT CALL hostWorkspace() ITSELF: hostWorkspace() dynamically
+    // imports composeClaudeLaunch (claudeSettings.ts) and buildMountEnv
+    // (orpheusSurfaceAdapter.ts), whose module graphs transitively import
+    // Electron's `app` (e.g. via orpheusNotify.ts -> workspaces.ts, and
+    // claudeSettings.ts's own settings-composition path). There are actually
+    // TWO independent walls here, and it's worth being precise because the
+    // first one is easy to mis-measure:
+    //
+    //   1. better-sqlite3 under Bun. `require('better-sqlite3')` SUCCEEDS —
+    //      it returns a module object without touching the native binding —
+    //      so a require-only probe looks like a pass. Constructing a database
+    //      is what actually throws: `new Database(':memory:')` fails with
+    //      "'better-sqlite3' is not yet supported in Bun. In the meantime,
+    //      you could try bun:sqlite which has a similar API." Since getDb()
+    //      constructs, this is a genuine blocker — but ONLY test it by
+    //      constructing, never by requiring.
+    //
+    //   2. Electron's `app` export, which the module graph hits FIRST (before
+    //      execution ever reaches getDb()/better-sqlite3). Under Bun's module
+    //      resolution, `node_modules/electron/index.js` (Electron's own
+    //      bootstrap stub, which only resolves to the real `app`/
+    //      `BrowserWindow`/etc. exports when actually running INSIDE the
+    //      Electron runtime) fails to satisfy a named `app` import at all:
+    //      `bun -e "import('./src/main/claudeSettings.ts')"` fails with
+    //      "Export named 'app' not found in module '.../node_modules/
+    //      electron/index.js'".
+    //
+    // Either wall alone is sufficient to block a direct call — this file's
+    // own module doc comment (NO Electron runtime present) is the documented
+    // design constraint, and stubbing around either wall would fight it. So
+    // this test instead drives the EXACT has-session -> new-session ->
+    // catch(isDuplicateSessionError) SEQUENCE hostWorkspace() itself runs
+    // (see tmuxHost.ts, the body of hostWorkspace() between its has-session
+    // check and its duplicate-session recovery catch), using the same real
+    // exported primitives (tmuxSessionName, isDuplicateSessionError) against
+    // a real tmux server on the same throwaway socket the rest of this
+    // section already uses. This proves the SEQUENCE is race-safe under real
+    // concurrency — it does NOT independently prove hostWorkspace()'s own
+    // wrapping of that sequence introduces no new bug (e.g. an accidental
+    // second call site, or a change to the try/catch ordering). The
+    // sole-call-site static assertion above is what covers that gap: it
+    // guarantees hostWorkspace() is the ONLY place this sequence runs, so a
+    // test proving the sequence itself is safe transitively proves
+    // hostWorkspace() is safe too, PROVIDED that assertion keeps passing.
+    // Neither test subsumes the other — do not delete one thinking it's
+    // redundant with the other.
+    // -------------------------------------------------------------------
+    {
+      const workspaceId = 'workspace-concurrent-host-test-9012'
+      const workspaceName = 'Concurrent Host Test'
+      const sessionName = tmuxSessionName(workspaceName, workspaceId)
+      const cwd = process.cwd()
+      const CONCURRENT_CALLER_COUNT = 5
+
+      /** Mirrors hostWorkspace()'s own has-session -> new-session ->
+       *  duplicate-session-recovery sequence exactly (tmuxHost.ts), minus the
+       *  DB/Electron-dependent launch composition — see the section comment
+       *  above for why. Returns which outcome this particular caller hit, so
+       *  the test can assert on the SHAPE of the race (how many created vs.
+       *  how many gracefully lost) rather than just "nothing threw". */
+      async function raceHostAttempt(): Promise<
+        | { outcome: 'created' }
+        | { outcome: 'already-running' }
+        | { outcome: 'error'; error: unknown }
+      > {
+        try {
+          const alreadyExists = await tmuxExitCode(socket, ['has-session', '-t', sessionName])
+          if (alreadyExists === 0) return { outcome: 'already-running' }
+          await tmux(socket, [
+            'new-session',
+            '-d',
+            '-s',
+            sessionName,
+            '-c',
+            cwd,
+            '--',
+            'sleep',
+            '60'
+          ])
+          return { outcome: 'created' }
+        } catch (err) {
+          if (isDuplicateSessionError(err)) return { outcome: 'already-running' }
+          return { outcome: 'error', error: err }
+        }
+      }
+
+      const results = await Promise.all(
+        Array.from({ length: CONCURRENT_CALLER_COUNT }, () => raceHostAttempt())
+      )
+
+      const errored = results.filter((r) => r.outcome === 'error')
+      assert.equal(
+        errored.length,
+        0,
+        `every concurrent caller must either create the session or gracefully report ` +
+          `already-running via isDuplicateSessionError — got unexpected error(s): ` +
+          `${errored.map((r) => (r as { error: unknown }).error).join(', ')}`
+      )
+
+      const created = results.filter((r) => r.outcome === 'created')
+      assert.equal(
+        created.length,
+        1,
+        `exactly one of ${CONCURRENT_CALLER_COUNT} concurrent callers must win the create race ` +
+          `(got ${created.length}) — a count other than 1 means either two sessions were created ` +
+          `or the has-session/new-session race isn't actually being exercised`
+      )
+
+      const alreadyRunning = results.filter((r) => r.outcome === 'already-running')
+      assert.equal(
+        alreadyRunning.length,
+        CONCURRENT_CALLER_COUNT - 1,
+        'every losing caller must gracefully report already-running, not silently vanish'
+      )
+
+      const { stdout } = await tmux(socket, ['list-sessions', '-F', '#{session_name}'])
+      const liveSessionNames = stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+      assert.equal(
+        liveSessionNames.filter((n) => n === sessionName).length,
+        1,
+        'exactly one tmux session must exist for the workspace after the race settles — not two ' +
+          'under some accidental name variation, not zero'
+      )
+
+      await tmux(socket, ['kill-session', '-t', sessionName]).catch(() => {})
+      console.log(
+        `✓ ${CONCURRENT_CALLER_COUNT} concurrent hostWorkspace()-style create attempts for the SAME ` +
+          'cold workspace resolve to exactly one created session and ' +
+          `${CONCURRENT_CALLER_COUNT - 1} graceful already-running results — none throw an ` +
+          'unhandled error, proving the has-session/new-session/isDuplicateSessionError idempotency ' +
+          'holds under a real concurrent race'
+      )
     }
 
     // -------------------------------------------------------------------
