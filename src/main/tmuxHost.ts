@@ -712,11 +712,15 @@ export function tmuxSessionCommandArgv(command: string): string[] {
  */
 export async function hostWorkspace(
   params: HostWorkspaceParams,
-  cmdServer?: { sockPath: string; token: string }
+  cmdServer?: { sockPath: string; token: string },
+  /** Test-only injection seam: overrides resolveTmuxSocketName() so
+   *  scripts/verify-tmux-host.ts can drive this against a throwaway socket
+   *  without an Electron runtime. Real callers never pass this. */
+  socketNameOverride?: string
 ): Promise<WorkspaceHostResult> {
   await ensureTmuxVersion() // throws TmuxNotAvailableError / TmuxVersionTooOldError — caller (resolveMountStrategy path) routes both to native fallback
 
-  const socketName = resolveTmuxSocketName()
+  const socketName = socketNameOverride ?? resolveTmuxSocketName()
   const sessionName = tmuxSessionName(params.workspaceName, params.workspaceId)
 
   if (await hasSession(socketName, sessionName)) {
