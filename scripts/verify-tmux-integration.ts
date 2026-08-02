@@ -9,12 +9,16 @@
 //
 // SAFETY: only ever touches its own throwaway socket, never
 // orpheus/orpheus-dev/orpheus-wt/orpheus-nightly, and always kill-servers it
-// in a `finally` so a failed assertion never leaks a background tmux server.
+// (AND unlinks the socket file — kill-server alone leaves that behind, see
+// tmuxSocketPath()) in a `finally` so a failed assertion never leaks a
+// background tmux server or a stale socket file in $TMUX_TMPDIR.
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { rm } from 'node:fs/promises'
+import * as path from 'node:path'
 import { tmuxSessionName, shouldRetainInTmuxEnvironment } from '../src/main/tmuxHost'
 
 const execFileAsync = promisify(execFile)
@@ -53,6 +57,33 @@ async function hasTmux(): Promise<boolean> {
   }
 }
 
+/**
+ * Path of the socket FILE tmux creates for `-L <name>` (as opposed to the
+ * server process, which `kill-server` tears down separately). MUST be called
+ * while the server is still alive — it asks tmux itself, via
+ * `display-message -p '#{socket_path}'`, rather than recomputing tmux's
+ * resolution rule (a previous version of this helper reimplemented that rule
+ * with `$TMUX_TMPDIR` else `os.tmpdir()` and got it wrong: on macOS
+ * `os.tmpdir()` returns the per-user `$TMPDIR` — e.g.
+ * `/var/folders/.../T` — but tmux hardcodes `/tmp` (not `$TMPDIR`) for its
+ * `$TMUX_TMPDIR`-unset fallback, so the recomputed path never matched the
+ * real socket and `rm({ force: true })` silently no-op'd on every run).
+ * Falls back to the literal `/tmp/tmux-<uid>/<socket>` (note: `/tmp`, not
+ * `os.tmpdir()`) only if the query itself fails, e.g. the server was already
+ * dead (never started, or died between two cleanup attempts).
+ */
+async function tmuxSocketPath(socket: string): Promise<string> {
+  try {
+    const { stdout } = await tmux(socket, ['display-message', '-p', '#{socket_path}'])
+    const queried = stdout.trim()
+    if (queried !== '') return queried
+  } catch {
+    // Server already gone — fall through to the literal fallback below.
+  }
+  const tmpDir = process.env.TMUX_TMPDIR ?? `/tmp/tmux-${process.getuid?.() ?? 0}`
+  return path.join(tmpDir, socket)
+}
+
 async function main(): Promise<void> {
   if (!(await hasTmux())) {
     console.log('tmux not found on PATH — skipping integration checks (this is not a failure).')
@@ -66,11 +97,21 @@ async function main(): Promise<void> {
 
   const cleanup = async (): Promise<void> => {
     for (const socket of [socketA, socketB]) {
+      // Capture the real socket path WHILE the server may still be alive —
+      // tmuxSocketPath() queries tmux itself for it, which only works before
+      // kill-server tears the server down.
+      const socketPath = await tmuxSocketPath(socket)
       try {
         await tmux(socket, ['kill-server'])
       } catch {
         // Already gone / never started — fine.
       }
+      // kill-server tears down the server process but does not reliably
+      // unlink the socket FILE (Bug 3) — remove it explicitly so a run
+      // leaves no trace in $TMUX_TMPDIR. force+ignore: the file may already
+      // be gone (kill-server sometimes does clean it up) or never existed
+      // (e.g. the server was never started, checks 1's socketA case).
+      await rm(socketPath, { force: true }).catch(() => {})
     }
   }
 
@@ -120,21 +161,30 @@ async function main(): Promise<void> {
       '60'
     ])
     {
-      // `tmux show-environment` renders control bytes as backslash-octal
-      // escapes for display (0x1F -> `\037`) — that's a presentation detail
-      // of the CLI, not evidence the stored value differs. Confirm the byte
-      // survived by checking for the escape sequence rather than the raw
-      // control character (which show-environment never prints literally).
+      // `tmux show-environment` rendering of a control byte is version-
+      // dependent: some tmux builds print a backslash-octal escape for
+      // display (0x1F -> `\037`), but tmux 3.6a (confirmed via a direct
+      // `-e "PROBE=$(printf 'a\037b')"` + hexdump probe) prints the raw
+      // 0x1F byte unescaped. Both are valid renderings of the SAME stored
+      // value — accept either rather than assuming one specific tmux
+      // version's presentation, so the real property under test (the byte
+      // survives `-e` delivery intact) holds across tmux versions.
       const { stdout } = await tmux(socketA, [
         'show-environment',
         '-t',
         envSessionName,
         'ORPHEUS_CLAUDE_FLAGS'
       ])
+      const expectedRaw = `ORPHEUS_CLAUDE_FLAGS=${flagsValue}`
       const expectedEscaped = `ORPHEUS_CLAUDE_FLAGS=${flagsValue.replaceAll('\x1f', '\\037')}`
-      assert.equal(stdout.trim(), expectedEscaped)
+      const actual = stdout.trim()
+      assert.ok(
+        actual === expectedRaw || actual === expectedEscaped,
+        `show-environment must render the 0x1F byte as either the raw byte or its \\037 octal ` +
+          `escape, got: ${JSON.stringify(actual)}`
+      )
       console.log(
-        "✓ -e env delivery preserves a 0x1F-containing value (verified via show-environment's octal escape)"
+        '✓ -e env delivery preserves a 0x1F-containing value (raw byte or octal escape, both accepted)'
       )
     }
 
@@ -240,5 +290,10 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   console.error(err)
-  process.exitCode = 1
+  // Use process.exit() rather than process.exitCode alone — a lingering
+  // handle (e.g. a child-process reference from execFile) could otherwise
+  // keep the event loop alive long enough for something else to override
+  // the exit code before the process naturally exits. An assertion failure
+  // in this harness must be an unambiguous non-zero exit every time.
+  process.exit(1)
 })
