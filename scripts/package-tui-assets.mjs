@@ -6,10 +6,10 @@
  * (see chunk-bun-t2myhmwd.js's resolveAssetRootPath — the asset key is
  * `${packageName}/${fileName}`, i.e. "@opentui/core-darwin-arm64/libopentui.dylib").
  *
- * Run as part of "build:cli:tui:otui-smoke" so a plain `bun run
- * build:cli:tui:otui-smoke` leaves a runnable local setup:
+ * Run as part of "build:cli:tui-otui" so a plain `bun run
+ * build:cli:tui-otui` leaves a runnable local setup:
  *   OTUI_ASSET_ROOT=packages/orpheus-cli/dist \
- *     vendor/bun/bun packages/orpheus-cli/dist/tui-otui-smoke.mjs
+ *     vendor/bun/bun packages/orpheus-cli/dist/tui-otui.mjs
  *
  * electron-builder's `cli/` extraResources glob (electron-builder*.yml) is
  * updated separately to pick up this nested directory — its default filter

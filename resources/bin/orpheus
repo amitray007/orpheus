@@ -18,8 +18,8 @@
 #         orpheus           ← this script
 #         bun               ← bundled Bun runtime (darwin-arm64; see scripts/fetch-bun.sh)
 #       cli/
-#         cli.cjs            ← bundled CLI
-#         tui-otui-smoke.mjs ← OpenTUI packaging smoke test (see below)
+#         cli.cjs           ← bundled CLI
+#         tui-otui.mjs      ← OpenTUI `orpheus tui` runtime (see below)
 #         @opentui/
 #           core-darwin-arm64/
 #             libopentui.dylib
@@ -36,34 +36,45 @@
 #         orpheus           ← this script
 #         bun               ← bundled Bun runtime
 #       cli/
-#         cli.cjs            ← bundled CLI
-#         tui-otui-smoke.mjs
+#         cli.cjs           ← bundled CLI
+#         tui-otui.mjs
 #         @opentui/core-darwin-arm64/libopentui.dylib
 
 set -eu
 
-# BUN/OPENTUI BRANCH (`__otui-smoke`)
+# ORPHEUS_TUI_ENGINE=opentui BRANCH
 # ------------------------------------
-# `@opentui/core`'s native rendering backend loads via `node:ffi`, which does
-# not exist on Node 22 / Electron 39 — it only works under Bun. So anything
-# OpenTUI-based cannot run through the Electron-as-Node path below and needs
-# its own bundled Bun runtime, with OTUI_ASSET_ROOT pointed at the relocated
-# native dylib so OpenTUI's asset resolver doesn't fall back to a bare
+# `orpheus tui` normally runs the Ink/React picker (tui/entry.ts, bundled to
+# Resources/cli/tui.mjs) under Electron-as-Node — see cli.cjs's dynamic
+# import() and commands/tui.ts's file header. That is the default and
+# UNCHANGED path below: this branch only fires when the FIRST argument is
+# exactly "tui" AND ORPHEUS_TUI_ENGINE is exactly "opentui". Any other value
+# (unset, empty, a typo) falls straight through to the Ink/Electron-as-Node
+# path with zero behavioral difference from before this branch existed.
+#
+# When the gate IS set, `orpheus tui` runs the OpenTUI-based implementation
+# instead (tui-otui/entry.ts, bundled to Resources/cli/tui-otui.mjs) via the
+# app's bundled Bun binary — @opentui/core's native rendering backend loads
+# via `node:ffi`, which does not exist on Node 22 / Electron 39, only under
+# Bun. OTUI_ASSET_ROOT is pointed at the relocated native dylib so OpenTUI's
+# asset resolver doesn't fall back to a bare
 # `import("@opentui/core-darwin-arm64")` specifier — which Bun would try to
-# auto-install from the npm registry, failing hard offline (see
-# packages/orpheus-cli/src/tui/otui-smoke.ts's file header for the full
-# story). `__otui-smoke` is an internal, undocumented entry point for
-# packaging verification only — it is NOT `orpheus tui` and does not affect
-# it. The real `orpheus tui` command (Ink, below) is untouched: the OpenTUI
-# rebuild of that picker hasn't landed yet, so there is nothing to gain and
-# a real behavioral regression to risk by repointing the live command at Bun
-# before that rebuild exists.
-if [ "${1:-}" = "__otui-smoke" ]; then
-  shift
+# auto-install from the npm registry, failing hard offline (verified: fresh
+# $HOME + unreachable registry + OTUI_ASSET_ROOT unset -> "Cannot find
+# module '@opentui/core-darwin-arm64'"). See tui-otui/entry.ts's file header
+# for the full story.
+#
+# This is deliberately the SAME command name/shim code path that will carry
+# production traffic once OpenTUI fully replaces Ink — not a side entry
+# point that gets swapped in later. When that rebuild is ready, removing the
+# gate (this whole `if`, keeping only its body's dispatch as the default) is
+# the entire migration.
+if [ "${1:-}" = "tui" ] && [ "${ORPHEUS_TUI_ENGINE:-}" = "opentui" ]; then
+  shift # drop "tui" — tui-otui.mjs takes the remaining args (e.g. --project)
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
   RESOURCES_DIR="$(dirname "$SCRIPT_DIR")"
   BUN_BIN="$SCRIPT_DIR/bun"
-  OTUI_SMOKE_BUNDLE="$RESOURCES_DIR/cli/tui-otui-smoke.mjs"
+  OTUI_BUNDLE="$RESOURCES_DIR/cli/tui-otui.mjs"
   OTUI_ASSET_ROOT_DIR="$RESOURCES_DIR/cli"
   OTUI_DYLIB="$OTUI_ASSET_ROOT_DIR/@opentui/core-darwin-arm64/libopentui.dylib"
 
@@ -73,21 +84,21 @@ if [ "${1:-}" = "__otui-smoke" ]; then
     echo "  its vendored Bun binary. Run 'bun run fetch:bun' and rebuild the app." >&2
     exit 1
   fi
-  if [ ! -f "$OTUI_SMOKE_BUNDLE" ]; then
-    echo "orpheus: error: OpenTUI smoke bundle not found at $OTUI_SMOKE_BUNDLE" >&2
-    echo "  This is a packaging problem — run 'bun run build:cli:tui:otui-smoke' and rebuild the app." >&2
+  if [ ! -f "$OTUI_BUNDLE" ]; then
+    echo "orpheus: error: OpenTUI bundle not found at $OTUI_BUNDLE" >&2
+    echo "  This is a packaging problem — run 'bun run build:cli:tui-otui' and rebuild the app." >&2
     exit 1
   fi
   if [ ! -f "$OTUI_DYLIB" ]; then
     echo "orpheus: error: OpenTUI native library not found at $OTUI_DYLIB" >&2
     echo "  This is a packaging problem — the libopentui.dylib asset was not staged" >&2
-    echo "  alongside the CLI bundle. Run 'bun run build:cli:tui:otui-smoke' (which" >&2
+    echo "  alongside the CLI bundle. Run 'bun run build:cli:tui-otui' (which" >&2
     echo "  runs scripts/package-tui-assets.mjs) and rebuild the app." >&2
     exit 1
   fi
 
   export OTUI_ASSET_ROOT="$OTUI_ASSET_ROOT_DIR"
-  exec "$BUN_BIN" run "$OTUI_SMOKE_BUNDLE" "$@"
+  exec "$BUN_BIN" run "$OTUI_BUNDLE" "$@"
 fi
 
 # NODE_PATH for better-sqlite3
