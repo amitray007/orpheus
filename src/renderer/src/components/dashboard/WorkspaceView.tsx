@@ -37,6 +37,18 @@ export interface WorktreeError {
   conflictPath?: string
 }
 
+// terminal:mount's `tmuxHosted` case (docs/TUI_SPEC.md D1) — a workspace
+// already running inside a tmux session opened from `orpheus tui`. Formats
+// an actionable notice (real socket/session names, an attach command the
+// user can copy) rather than the silent no-op this used to be: clicking a
+// tmux-hosted workspace must never look like nothing happened.
+function formatTmuxHostedNotice(tmuxHosted: { sessionName: string; socketName: string }): string {
+  return (
+    'This workspace is running in tmux (opened from `orpheus tui`). ' +
+    `Attach from a terminal with: tmux -L ${tmuxHosted.socketName} attach -t ${tmuxHosted.sessionName}`
+  )
+}
+
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
   /** Whether this workspace is currently the active (visible) one.
@@ -429,6 +441,22 @@ export function WorkspaceView({
           setWorktreeError(result.worktreeError)
           return
         }
+        if ('tmuxHosted' in result) {
+          // Workspace already has a live tmux session (opened from the TUI —
+          // see docs/TUI_SPEC.md D1: "two disjoint hosts, first-opener wins").
+          // Main deliberately refused to spawn a second, competing `claude`
+          // process, so no surface was mounted here. The full "Hosted in
+          // tmux" placeholder + "Attach here" action is a deferred follow-up
+          // (main-process guard lands first) — but a silent no-op here would
+          // be exactly the "success-shaped response for nothing" failure
+          // this file's other guards warn about: the user clicked a
+          // workspace and nothing happened, with zero explanation. Surface
+          // an actionable notice instead, via the same one-time notice
+          // banner the success path already uses below.
+          console.log('[WorkspaceView] workspace is tmux-hosted, not mounting:', result.tmuxHosted)
+          setNotice(formatTmuxHostedNotice(result.tmuxHosted))
+          return
+        }
         // Success path — clear any prior reconcile error.
         setWorktreeError(null)
         // Surface a one-time notice if the backend emitted one (e.g. "started fresh on branch X").
@@ -768,6 +796,17 @@ export function WorkspaceView({
                 result.worktreeError
               )
               setWorktreeError(result.worktreeError)
+              return
+            }
+            if ('tmuxHosted' in result) {
+              // See the first-mount path above — surfaces an actionable
+              // notice rather than silently doing nothing; the full "Hosted
+              // in tmux" placeholder UI is still a deferred follow-up.
+              console.log(
+                '[WorkspaceView] workspace is tmux-hosted, not re-mounting:',
+                result.tmuxHosted
+              )
+              setNotice(formatTmuxHostedNotice(result.tmuxHosted))
               return
             }
             // Success path — clear any prior reconcile error.

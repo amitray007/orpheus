@@ -124,6 +124,12 @@ import { startPowerAwake } from './powerAwake'
 import { startCommandServer } from './commandServer'
 import type { CommandServerDeps } from './commandServer'
 import {
+  tmuxSessionName,
+  resolveTmuxSocketName,
+  listHostedSessionsCached,
+  shouldBlockNativeMount
+} from './tmuxHost'
+import {
   initOverlayLayer,
   registerOverlayRendererIpc,
   isInteractiveOverlayVisible,
@@ -1660,6 +1666,34 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
   // Look up the workspace's projectId for per-project override resolution
   const ws = getWorkspace(workspaceId)
   const projectId = ws?.projectId
+
+  // ── tmux-hosted native-mount guard (docs/TUI_SPEC.md D1: "two disjoint
+  // hosts, first-opener wins") ────────────────────────────────────────────
+  // A workspace opened from the TUI runs `claude` inside a tmux session
+  // (src/main/tmuxHost.ts) that is invisible to this process otherwise.
+  // Mounting the native surface here would spawn a SECOND, competing
+  // `claude` against the same --session-id/--resume — never do that
+  // implicitly. listHostedSessionsCached() is a short-TTL cache (see
+  // tmuxHost.ts) so this hot-path check costs a `tmux list-sessions`
+  // round-trip at most every ~1.5s, not on every single mount.
+  if (ws) {
+    const sessionName = tmuxSessionName(ws.name, ws.id)
+    let hostedSessions: Set<string>
+    try {
+      hostedSessions = await listHostedSessionsCached()
+    } catch {
+      // tmux missing/unavailable — nothing can be tmux-hosted; fall through
+      // to the normal native-mount path rather than blocking every mount.
+      hostedSessions = new Set()
+    }
+    if (shouldBlockNativeMount(hostedSessions, sessionName)) {
+      hideLoadingOverlay(workspaceId)
+      return {
+        workspaceId,
+        tmuxHosted: { sessionName, socketName: resolveTmuxSocketName() }
+      }
+    }
+  }
 
   // ── Worktree reconcile (heal-on-mount) ─────────────────────────────────
   // reconcileWorktreeForMount NEVER throws — it returns aborted:true on all

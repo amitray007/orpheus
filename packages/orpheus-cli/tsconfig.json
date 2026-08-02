@@ -5,6 +5,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "outDir": "dist",
+    "jsx": "react-jsx",
     "strict": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,

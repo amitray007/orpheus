@@ -48,6 +48,33 @@ export function getSqlitePath(): string {
   return path.join(getUserDataDir(), 'orpheus.sqlite')
 }
 
+/**
+ * Pure app-name → tmux socket-name mapping (`tmux -L <name>`). Mirrors
+ * resolveAppName()'s variant list 1:1 — kept as a standalone pure function
+ * (rather than inlined into resolveTmuxSocketName()) so it's testable without
+ * touching ORPHEUS_DATA_VARIANT/env state (see scripts/verify-tui-layout.ts).
+ *
+ * LOAD-BEARING (see docs/TUI_SPEC.md "Environment separation"): dev/prod/wt/
+ * nightly builds must never see each other's tmux sessions. Main derives the
+ * same name independently from `app.getPath('userData')`'s basename, so both
+ * sides agree without a shared import across the process boundary.
+ */
+export function tmuxSocketNameForAppName(appName: string): string {
+  if (appName === 'Orpheus Dev') return 'orpheus-dev'
+  if (appName === 'Orpheus WT') return 'orpheus-wt'
+  if (appName === 'Orpheus Nightly') return 'orpheus-nightly'
+  // "Orpheus" (production) or anything unrecognized → production socket name
+  return 'orpheus'
+}
+
+/**
+ * Resolve the tmux socket name (`tmux -L <name>`) for the CURRENT process's
+ * app variant, derived from resolveAppName() exactly like getUserDataDir().
+ */
+export function resolveTmuxSocketName(): string {
+  return tmuxSocketNameForAppName(resolveAppName())
+}
+
 /** Path to the Unix-domain command socket (used by the CLI control protocol). */
 export function getCmdSockPath(): string {
   const injectedPath = process.env.ORPHEUS_CMD_SOCK

@@ -402,6 +402,14 @@ export type TerminalRect = { x: number; y: number; w: number; h: number }
  * Failure: `{ workspaceId, worktreeError }` — reconcile determined the mount
  * cannot proceed (bad state that needs user intervention). The surface is NOT
  * mounted; the renderer should show an error card instead.
+ *
+ * Tmux-hosted: `{ workspaceId, tmuxHosted }` — the workspace already has a
+ * live tmux session (opened from the TUI — see docs/TUI_SPEC.md D1: "two
+ * disjoint hosts, first-opener wins"). Main deliberately refuses to spawn a
+ * second, competing `claude` process against the same `--session-id`/
+ * `--resume` — the surface is NOT mounted. The renderer should show a
+ * placeholder ("Hosted in tmux" + an "Attach here" action is the intended
+ * follow-up UI; not built yet) rather than silently doing the wrong thing.
  */
 export type TerminalMountResult =
   | { workspaceId: string; created: boolean; notice?: string }
@@ -414,11 +422,80 @@ export type TerminalMountResult =
         conflictPath?: string
       }
     }
+  | {
+      workspaceId: string
+      tmuxHosted: {
+        sessionName: string
+        socketName: string
+      }
+    }
 
 // For Pinned section: a pinned workspace with its project for context
 export type PinnedItem = {
   workspace: WorkspaceRecord
   project: ProjectRecord
+}
+
+// ---------------------------------------------------------------------------
+// tmux hosting (TUI + Tailscale streaming — see docs/TUI_SPEC.md)
+//
+// `workspace.host`/`workspace.unhost` are command-socket actions (`/cmd`,
+// see src/main/commandServer.ts) implemented by src/main/tmuxHost.ts. The
+// `tree` frame is a NEW frame type streamed alongside the existing
+// status-resolution frames over `/subscribe` (docs/TUI_SPEC.md D5) — a
+// full snapshot with a monotonic `revision`, debounced ~50ms, so a dropped
+// frame on a flaky link self-heals and reconnect is free.
+//
+// NOTE: packages/orpheus-cli/src/tui/types.ts keeps its OWN local copy of
+// these shapes deliberately (see that file's header) rather than importing
+// this module, so the CLI package stays decoupled from src/shared/types.ts.
+// Keep the two in sync by hand if the wire shape changes.
+// ---------------------------------------------------------------------------
+
+/** Response shape of the `workspace.host` command-socket action. */
+export type WorkspaceHostResult = {
+  sessionName: string
+  socketName: string
+  created: boolean
+  alreadyRunning: boolean
+}
+
+/** Response shape of the `workspace.unhost` command-socket action. */
+export type WorkspaceUnhostResult = {
+  killed: boolean
+}
+
+/** A single workspace row inside a `tree` frame's per-project `workspaces`
+ *  array. Siblings are carried FLAT (parent/child nesting is reconstructed
+ *  client-side from `parentWorkspaceId`), matching how the TUI's own
+ *  flattenTree() already expects the wire shape. */
+export type TreeWorkspaceFrame = {
+  id: string
+  name: string
+  status: WorkspaceStatus
+  waitingFor?: string
+  parentWorkspaceId: string | null
+  worktreeBranch: string | null
+  sortOrder: number | null
+  tmuxHosted: boolean
+  lastActivityAt: number | null
+}
+
+/** A single project group inside a `tree` frame. */
+export type TreeProjectFrame = {
+  id: string
+  name: string
+  cwd: string
+  sortOrder: number | null
+  workspaces: TreeWorkspaceFrame[]
+}
+
+/** The full-snapshot `tree` frame streamed over `/subscribe` (see
+ *  docs/TUI_SPEC.md D5 for the exact ordering/debounce contract). */
+export type TreeFrame = {
+  type: 'tree'
+  revision: number
+  projects: TreeProjectFrame[]
 }
 
 // ---------------------------------------------------------------------------

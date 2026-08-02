@@ -150,6 +150,10 @@ import './commands/project.js'
 // only for readability (documentation commands after the "real" commands).
 import './commands/help.js'
 import './commands/ai.js'
+// 'tui' — see src/commands/tui.ts. Registration only: the handler itself
+// lazy-loads the Ink app (dist/tui.cjs), so importing this module here costs
+// one-shot commands nothing (no react/ink pulled into dist/cli.cjs).
+import './commands/tui.js'
 
 // ---------------------------------------------------------------------------
 // Arg parser
@@ -625,12 +629,15 @@ Commands:
   reviews unresolve   Mark a local review comment as unresolved
   project ls          List projects
   project show        Show project details
+  tui                 Launch the interactive terminal UI (mobile/SSH picker)
   help                Show full CLI reference (text/md/json)
   ai skill            Agent playbook for orchestrating via this CLI
   ai schema           Machine-readable CLI schema (JSON)
 
 Run 'orpheus <command> --help' for rich help on a specific command, or
 'orpheus help --format md' for the full agent-facing reference.
+Driving Orpheus from a phone over SSH? See 'orpheus tui --help' and
+docs/REMOTE_ACCESS.md.
 
 Exit codes:
   0   success
