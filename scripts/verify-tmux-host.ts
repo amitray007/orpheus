@@ -2,29 +2,49 @@
 // scripts/verify-tmux-host.ts
 //
 // Pure-function harness for src/main/tmuxHost.ts. Runs on plain Linux via
-// `bun run` with NO Electron and NO tmux binary required — it only exercises
-// the PURE exports (tmuxSocketNameForAppName, tmuxSessionName,
-// shouldBlockNativeMount, shouldRetainInTmuxEnvironment, buildTreeFrame). See
-// tmuxHost.ts's own module doc comment for why importing it here is safe
-// (Electron access is deferred behind resolveTmuxSocketName()/
-// hostWorkspace(), never touched at import time or by anything this script
-// calls).
+// `bun run` with NO Electron required — the PURE exports
+// (tmuxSocketNameForAppName, tmuxSessionName, shouldBlockNativeMount,
+// shouldRetainInTmuxEnvironment, buildTreeFrame) need neither Electron nor
+// tmux. See tmuxHost.ts's own module doc comment for why importing it here
+// is safe (Electron access is deferred behind resolveTmuxSocketName()/
+// hostWorkspace(), never touched at import time or by anything the pure
+// section below calls).
 //
-// scripts/verify-tmux-integration.ts is the companion END-TO-END harness
-// against a real (throwaway) tmux socket, for the behavior this file can't
-// exercise without tmux actually installed.
+// The RENAME/ARCHIVE-TEARDOWN section further down additionally exercises
+// renameHostedSession()/unhostWorkspace() against a REAL, throwaway tmux
+// socket (via each function's test-only `socketNameOverride` param — see
+// their own doc comments in tmuxHost.ts) — still with NO Electron involved,
+// since the override bypasses resolveTmuxSocketName() entirely. That
+// section is skipped (not failed) when tmux isn't on PATH, mirroring
+// scripts/verify-tmux-integration.ts's own hasTmux() gate; ALL sockets it
+// creates are process-unique (`orpheus-verify-host-<pid>-*`) and torn down
+// in a `finally`, unlinking the socket file too (kill-server alone leaves it
+// behind — see verify-tmux-integration.ts's tmuxSocketPath() comment for why).
+//
+// scripts/verify-tmux-integration.ts remains the companion END-TO-END harness
+// for the lower-level tmux plumbing (env delivery, secret scrub, socket
+// isolation) this file doesn't re-test.
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { rm } from 'node:fs/promises'
+import * as path from 'node:path'
 import {
   tmuxSocketNameForAppName,
   tmuxSessionName,
   shouldBlockNativeMount,
   shouldRetainInTmuxEnvironment,
   buildTreeFrame,
+  renameHostedSession,
+  unhostWorkspace,
+  TmuxNotAvailableError,
   type TreeSourceWorkspace
 } from '../src/main/tmuxHost'
 import type { ProjectRecord } from '../src/shared/types'
+
+const execFileAsync = promisify(execFile)
 
 // ---------------------------------------------------------------------------
 // tmuxSocketNameForAppName — the four known variants + an unknown fallback
@@ -344,4 +364,227 @@ function workspace(
   console.log('✓ tree-frame workspace rows carry the exact documented shape (docs/TUI_SPEC.md)')
 }
 
-console.log('\nAll tmux-host verifications passed.')
+// ---------------------------------------------------------------------------
+// BUG 1 + BUG 2 — real-tmux coverage for renameHostedSession() /
+// unhostWorkspace(), against a throwaway process-unique socket (via each
+// function's socketNameOverride test seam — no Electron involved). Skips
+// (not fails) when tmux isn't on PATH, exactly like
+// scripts/verify-tmux-integration.ts.
+// ---------------------------------------------------------------------------
+
+const RESERVED_SOCKET_NAMES = ['orpheus', 'orpheus-dev', 'orpheus-wt', 'orpheus-nightly']
+
+function assertSafeSocketName(name: string): void {
+  assert.ok(
+    !RESERVED_SOCKET_NAMES.includes(name),
+    `refusing to touch a real Orpheus tmux socket in a test: ${name}`
+  )
+}
+
+async function tmux(socket: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+  assertSafeSocketName(socket)
+  return execFileAsync('tmux', ['-L', socket, ...args])
+}
+
+async function tmuxExitCode(socket: string, args: string[]): Promise<number> {
+  assertSafeSocketName(socket)
+  try {
+    await execFileAsync('tmux', ['-L', socket, ...args])
+    return 0
+  } catch (err) {
+    const code = (err as { code?: number }).code
+    return typeof code === 'number' ? code : 1
+  }
+}
+
+async function hasTmux(): Promise<boolean> {
+  try {
+    await execFileAsync('tmux', ['-V'])
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Mirrors verify-tmux-integration.ts's tmuxSocketPath() exactly (see that
+ *  file's doc comment for why this asks tmux itself rather than
+ *  recomputing tmux's own resolution rule). */
+async function tmuxSocketPath(socket: string): Promise<string> {
+  try {
+    const { stdout } = await tmux(socket, ['display-message', '-p', '#{socket_path}'])
+    const queried = stdout.trim()
+    if (queried !== '') return queried
+  } catch {
+    // Server already gone — fall through to the literal fallback below.
+  }
+  const tmpDir = process.env.TMUX_TMPDIR ?? `/tmp/tmux-${process.getuid?.() ?? 0}`
+  return path.join(tmpDir, socket)
+}
+
+async function runRealTmuxChecks(): Promise<void> {
+  if (!(await hasTmux())) {
+    console.log(
+      'tmux not found on PATH — skipping renameHostedSession/unhostWorkspace real-tmux checks ' +
+        '(this is not a failure).'
+    )
+    return
+  }
+
+  const socket = `orpheus-verify-host-${process.pid}`
+  assertSafeSocketName(socket)
+
+  const cleanup = async (): Promise<void> => {
+    const socketPath = await tmuxSocketPath(socket)
+    try {
+      await tmux(socket, ['kill-server'])
+    } catch {
+      // Already gone / never started — fine.
+    }
+    await rm(socketPath, { force: true }).catch(() => {})
+  }
+
+  try {
+    // -------------------------------------------------------------------
+    // BUG 1 — rename produces a session name that still resolves to the
+    // same workspace, and does NOT leave a duplicate/orphaned session
+    // under the old name.
+    // -------------------------------------------------------------------
+    {
+      const workspaceId = 'workspace-rename-test-1234'
+      const oldName = 'My Feature'
+      const newName = 'My Renamed Feature'
+      const oldSessionName = tmuxSessionName(oldName, workspaceId)
+      const newSessionName = tmuxSessionName(newName, workspaceId)
+      assert.notEqual(oldSessionName, newSessionName, 'test fixture must actually rename the slug')
+
+      await tmux(socket, ['new-session', '-d', '-s', oldSessionName, '--', 'sleep', '60'])
+
+      await renameHostedSession(
+        { workspaceId, oldWorkspaceName: oldName, newWorkspaceName: newName },
+        socket
+      )
+
+      const newExists = await tmuxExitCode(socket, ['has-session', '-t', newSessionName])
+      assert.equal(newExists, 0, 'the session must be reachable under the NEW computed name')
+
+      const oldExists = await tmuxExitCode(socket, ['has-session', '-t', oldSessionName])
+      assert.equal(oldExists, 1, 'the OLD name must no longer resolve to a session')
+
+      const { stdout } = await tmux(socket, ['list-sessions', '-F', '#{session_name}'])
+      const sessionCount = stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean).length
+      assert.equal(sessionCount, 1, 'rename must not leave a duplicate/orphaned second session')
+
+      await tmux(socket, ['kill-session', '-t', newSessionName])
+      console.log(
+        '✓ renameHostedSession() renames the live session in place — new name resolves, old ' +
+          'name is gone, no duplicate is left behind'
+      )
+    }
+
+    // -------------------------------------------------------------------
+    // BUG 1 — rename with no live session under the old name is a clean
+    // no-op: does not throw, does not create a session.
+    // -------------------------------------------------------------------
+    {
+      const workspaceId = 'workspace-rename-test-no-session'
+      await renameHostedSession(
+        {
+          workspaceId,
+          oldWorkspaceName: 'Never Hosted',
+          newWorkspaceName: 'Still Never Hosted'
+        },
+        socket
+      )
+      const sessionName = tmuxSessionName('Still Never Hosted', workspaceId)
+      const exists = await tmuxExitCode(socket, ['has-session', '-t', sessionName])
+      assert.equal(exists, 1, 'no session must be created for a rename with nothing running')
+      console.log(
+        '✓ renameHostedSession() with no live session under the old name is a silent no-op'
+      )
+    }
+
+    // -------------------------------------------------------------------
+    // BUG 2 — unhostWorkspace() (the archive-teardown primitive) actually
+    // kills a live session.
+    // -------------------------------------------------------------------
+    {
+      const workspaceId = 'workspace-archive-test-5678'
+      const workspaceName = 'Archive Me'
+      const sessionName = tmuxSessionName(workspaceName, workspaceId)
+      await tmux(socket, ['new-session', '-d', '-s', sessionName, '--', 'sleep', '60'])
+
+      const result = await unhostWorkspace({ workspaceId, workspaceName }, socket)
+      assert.equal(result.killed, true)
+
+      const exists = await tmuxExitCode(socket, ['has-session', '-t', sessionName])
+      assert.equal(exists, 1, 'the session must actually be gone after unhostWorkspace()')
+      console.log('✓ unhostWorkspace() (archive teardown) kills a live tmux session')
+    }
+
+    // -------------------------------------------------------------------
+    // BUG 2 — unhostWorkspace() with no session is a no-op: reports
+    // { killed: false } rather than throwing, so archiving a workspace
+    // that was never tmux-hosted (the overwhelmingly common case) can
+    // never fail the archive.
+    // -------------------------------------------------------------------
+    {
+      const result = await unhostWorkspace(
+        { workspaceId: 'workspace-never-hosted', workspaceName: 'Never Hosted' },
+        socket
+      )
+      assert.equal(result.killed, false)
+      console.log('✓ unhostWorkspace() with no session reports { killed: false }, does not throw')
+    }
+
+    // -------------------------------------------------------------------
+    // BUG 2 — a tmux failure (simulated: tmux binary unreachable via an
+    // emptied PATH) must not propagate out of the archive-teardown call in
+    // an unrecoverable shape — unhostWorkspace() surfaces it as a typed
+    // TmuxNotAvailableError specifically so callers (performArchive in
+    // index.ts, mainAdapter.ts's store.remove port) can catch that ONE
+    // type and swallow it, exactly as both of those call sites do. This
+    // proves the contract they rely on: the thrown value is always
+    // TmuxNotAvailableError, never an opaque/unrecognizable error that a
+    // narrow catch could miss.
+    // -------------------------------------------------------------------
+    {
+      const originalPath = process.env.PATH
+      process.env.PATH = ''
+      try {
+        await assert.rejects(
+          () =>
+            unhostWorkspace(
+              { workspaceId: 'workspace-no-tmux-binary', workspaceName: 'No Tmux' },
+              socket
+            ),
+          (err: unknown) => err instanceof TmuxNotAvailableError,
+          'unhostWorkspace() must reject with TmuxNotAvailableError when the tmux binary is unreachable'
+        )
+      } finally {
+        process.env.PATH = originalPath
+      }
+      console.log(
+        '✓ unhostWorkspace() surfaces a missing tmux binary as a typed TmuxNotAvailableError ' +
+          '(the exact type performArchive/store.remove catch and swallow)'
+      )
+    }
+  } finally {
+    await cleanup()
+  }
+}
+
+runRealTmuxChecks()
+  .then(() => {
+    console.log('\nAll tmux-host verifications passed.')
+  })
+  .catch((err: unknown) => {
+    console.error(err)
+    // process.exit(), not just process.exitCode — see
+    // verify-tmux-integration.ts's identical comment: a lingering handle
+    // could otherwise let the event loop live long enough for something
+    // else to override the exit code.
+    process.exit(1)
+  })

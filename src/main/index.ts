@@ -127,7 +127,8 @@ import {
   tmuxSessionName,
   resolveTmuxSocketName,
   listHostedSessionsCached,
-  shouldBlockNativeMount
+  shouldBlockNativeMount,
+  unhostWorkspace
 } from './tmuxHost'
 import {
   initOverlayLayer,
@@ -627,6 +628,27 @@ async function performArchive(
   }
   // Archive succeeded: destroy all runtime resources now that the DB row is gone.
   destroyWorkspaceRuntime(id, ws?.cwd ?? null)
+  // BUG FIX: archive is terminal (docs/TUI_SPEC.md D2 — "an orphaned session
+  // is a leak"), but this path (performArchive/performForcedArchive — the
+  // force:true leg re-invoked after a dirty-worktree confirmation, plus any
+  // other internal caller of performArchive such as projects:remove) had no
+  // tmux awareness at all, so archiving a tmux-hosted workspace from here
+  // leaked its session forever. destroyWorkspaceRuntime only tears down the
+  // libghostty surface, which is a no-op for a workspace that was hosted via
+  // tmux instead (the desktop never mounted a native surface for it — see
+  // D1: "two disjoint hosts"). unhostWorkspace() is idempotent/best-effort by
+  // construction (tolerates no session, no tmux binary, tmux already gone —
+  // see its own doc comment) and never throws, so it cannot turn a
+  // successful archive into a failure; a warning is logged on an unexpected
+  // failure rather than swallowing it silently. Uses `ws` (captured BEFORE
+  // archiveWorkspace() deleted the row) for the name tmuxSessionName() needs.
+  if (ws != null) {
+    try {
+      await unhostWorkspace({ workspaceId: id, workspaceName: ws.name })
+    } catch (err) {
+      console.warn('[performArchive] tmux teardown failed for workspaceId=%s:', id, err)
+    }
+  }
   return result
 }
 

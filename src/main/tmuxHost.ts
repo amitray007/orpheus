@@ -428,11 +428,17 @@ export async function hostWorkspace(
   return { sessionName, socketName, created: true, alreadyRunning: false }
 }
 
-export async function unhostWorkspace(params: {
-  workspaceId: string
-  workspaceName: string
-}): Promise<WorkspaceUnhostResult> {
-  const socketName = resolveTmuxSocketName()
+export async function unhostWorkspace(
+  params: {
+    workspaceId: string
+    workspaceName: string
+  },
+  /** Test-only injection seam: overrides resolveTmuxSocketName() so
+   *  scripts/verify-tmux-host.ts can drive this against a throwaway socket
+   *  without an Electron runtime. Real callers never pass this. */
+  socketNameOverride?: string
+): Promise<WorkspaceUnhostResult> {
+  const socketName = socketNameOverride ?? resolveTmuxSocketName()
   const sessionName = tmuxSessionName(params.workspaceName, params.workspaceId)
   try {
     await runTmux(socketName, ['kill-session', '-t', sessionName])
@@ -441,6 +447,77 @@ export async function unhostWorkspace(params: {
   } catch (err) {
     if (err instanceof TmuxNotAvailableError) throw err
     return { killed: false } // session already gone — tolerate, mirrors D2
+  }
+}
+
+/**
+ * BUG FIX (workspace rename orphaning its tmux session): tmuxSessionName()
+ * is derived from `<workspace-slug>-<id suffix>`, so renaming a workspace
+ * changes the session name a future hasSession()/hostWorkspace() lookup
+ * computes — while the ALREADY-RUNNING tmux session keeps its OLD name. The
+ * next hostWorkspace() call for this workspace would then find no session
+ * under the new name and spawn a SECOND `claude` process, orphaning the
+ * first one forever (a permanent leak, since nothing ever looks for a
+ * session under the old name again).
+ *
+ * Fix chosen: (a) `tmux rename-session` the running session in place,
+ * keyed by the OLD name the caller must supply (mainAdapter.ts's rename
+ * port reads the workspace's name before calling the DB rename, so the old
+ * name is available there). This preserves the documented "readable in a
+ * bare `tmux ls`" design intent (docs/TUI_SPEC.md's "Session naming"
+ * section) and needs no migration/dual-lookup for sessions created under
+ * the old scheme, unlike keying purely by workspace id.
+ *
+ * MUST be resilient: a workspace rename is a DB operation that must succeed
+ * regardless of tmux state. This function is called AFTER the DB rename has
+ * already committed, so any failure here — tmux not installed, no session
+ * currently running for this workspace (the common case: most workspaces
+ * are never tmux-hosted), a race, whatever — must never throw back into the
+ * rename path. Failures are swallowed after a warning log; the caller (the
+ * DB rename) has already succeeded and must stay succeeded. Only genuine
+ * tmux-not-installed is distinguished from "no session to rename" in the
+ * log line, so a real misconfiguration is still visible without spamming a
+ * warning for the overwhelmingly common non-hosted case.
+ */
+export async function renameHostedSession(
+  params: {
+    workspaceId: string
+    oldWorkspaceName: string
+    newWorkspaceName: string
+  },
+  /** Test-only injection seam: overrides resolveTmuxSocketName() so
+   *  scripts/verify-tmux-host.ts can drive this against a throwaway socket
+   *  without an Electron runtime. Real callers never pass this. */
+  socketNameOverride?: string
+): Promise<void> {
+  const oldSessionName = tmuxSessionName(params.oldWorkspaceName, params.workspaceId)
+  const newSessionName = tmuxSessionName(params.newWorkspaceName, params.workspaceId)
+  if (oldSessionName === newSessionName) return // no-op: slug unchanged (e.g. only casing/punctuation differs)
+
+  let socketName: string
+  try {
+    socketName = socketNameOverride ?? resolveTmuxSocketName()
+  } catch {
+    return // Electron app handle unavailable — nothing to rename against
+  }
+
+  try {
+    if (!(await hasSession(socketName, oldSessionName))) {
+      return // no live session under the old name — the common case, not an error
+    }
+    await runTmux(socketName, ['rename-session', '-t', oldSessionName, newSessionName])
+    invalidateHostedSessionsCache()
+  } catch (err) {
+    if (err instanceof TmuxNotAvailableError) {
+      return // tmux not installed — tolerate exactly like every other tmux-optional path
+    }
+    console.warn(
+      '[tmuxHost] rename-session failed workspaceId=%s old=%s new=%s: %s',
+      params.workspaceId,
+      oldSessionName,
+      newSessionName,
+      err instanceof Error ? err.message : String(err)
+    )
   }
 }
 
