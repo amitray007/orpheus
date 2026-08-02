@@ -37,6 +37,16 @@ extraResources:
     to: bin/orpheus
   - from: packages/orpheus-cli/dist/cli.cjs
     to: cli/cli.cjs
+  # TUI bundle (`orpheus tui`) — separate ESM bundle, lazy dynamic-import()'d
+  # by cli.cjs at runtime (see commands/tui.ts's file header). Ships alongside
+  # cli.cjs at Contents/Resources/cli/tui.mjs since it's resolved via
+  # __dirname relative to cli.cjs. `--splitting` emits content-hashed sibling
+  # chunks (chunk-*.mjs, devtools-*.mjs) whose names change between builds, so
+  # this globs the whole dist dir for *.mjs rather than naming files.
+  - from: packages/orpheus-cli/dist
+    to: cli
+    filter:
+      - '*.mjs'
   - from: resources/bin/orpheus-mcp
     to: bin/orpheus-mcp
   - from: packages/orpheus-mcp/dist/mcp.cjs
