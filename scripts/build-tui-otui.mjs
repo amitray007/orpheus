@@ -49,15 +49,22 @@
  * than a one-off hack.
  *
  * PACKAGING CONSEQUENCE: tui-otui.mjs is therefore NOT fully
- * self-contained — @opentui/core (and its transitive deps: yoga-layout,
- * web-tree-sitter, etc.) must be resolvable from node_modules alongside the
- * shipped bundle (e.g. via NODE_PATH, mirroring how cli.cjs's shim already
- * points NODE_PATH at app.asar.unpacked/node_modules for better-sqlite3).
- * Wiring that into resources/bin/orpheus / electron-builder*.yml is
- * EXPLICITLY OUT OF SCOPE for this landing (the task brief prohibits
- * touching resources/bin/orpheus beyond confirming --project passthrough,
- * and prohibits any production/package build) — flagged clearly in the
- * final report as follow-up packaging work, not silently glossed over.
+ * self-contained — @opentui/core (and the two bare specifiers left in the
+ * built bundle, "@opentui/core" and "@opentui/core/testing") must be
+ * resolvable from node_modules alongside the shipped bundle. This is now
+ * wired end-to-end:
+ *   - scripts/package-tui-assets.mjs stages a trimmed node_modules tree
+ *     (@opentui/core, bun-target files only, plus its 5 flat runtime
+ *     dependencies) into packages/orpheus-cli/dist/node_modules/.
+ *   - resources/bin/orpheus's opentui branch points NODE_PATH at the
+ *     packaged Resources/cli/node_modules/ directory before exec'ing
+ *     tui-otui.mjs, mirroring the same NODE_PATH pattern already used for
+ *     better-sqlite3 further down in that file.
+ *   - electron-builder.yml / electron-builder-dev.yml /
+ *     electron-builder-nightly.yml / electron-builder-wt.yml each ship that
+ *     staged directory via an explicit extraResources entry (the default
+ *     filter only copies top-level *.mjs files, so the nested tree needs
+ *     its own entry, same as the existing cli/@opentui dylib entry).
  */
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'

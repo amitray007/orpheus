@@ -73,6 +73,19 @@ extraResources:
     to: cli/@opentui
     filter:
       - '**/*'
+  # Trimmed node_modules tree for @opentui/core + its flat runtime deps,
+  # staged by scripts/package-tui-assets.mjs. tui-otui.mjs externalizes
+  # "@opentui/core" (see scripts/build-tui-otui.mjs's header for why it can't
+  # be bundled), so the two bare specifiers it leaves behind
+  # ("@opentui/core" / "@opentui/core/testing") must resolve from
+  # node_modules at runtime — resources/bin/orpheus points NODE_PATH here.
+  # electron-builder's default filter only matches top-level files by
+  # extension, so this nested directory needs its own explicit entry (same
+  # reasoning as the cli/@opentui entry above).
+  - from: packages/orpheus-cli/dist/node_modules
+    to: cli/node_modules
+    filter:
+      - '**/*'
   # Bundled Bun runtime (darwin-arm64) — fetched by scripts/fetch-bun.sh into
   # vendor/bun/ (gitignored, never committed; see that script's header for
   # why it's vendored separately from node_modules/bun). Execed by

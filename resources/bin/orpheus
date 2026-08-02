@@ -23,6 +23,9 @@
 #         @opentui/
 #           core-darwin-arm64/
 #             libopentui.dylib
+#         node_modules/     ← trimmed @opentui/core + flat deps, staged by
+#                              scripts/package-tui-assets.mjs, resolved via
+#                              NODE_PATH (see the opentui branch below)
 #
 # Layout (dev, after bun run build:dev installs Orpheus Dev.app):
 #   Contents/
@@ -39,6 +42,7 @@
 #         cli.cjs           ← bundled CLI
 #         tui-otui.mjs
 #         @opentui/core-darwin-arm64/libopentui.dylib
+#         node_modules/     ← trimmed @opentui/core + flat deps
 
 set -eu
 
@@ -106,6 +110,16 @@ fi
 # module '@opentui/core-darwin-arm64'"). See tui-otui/entry.ts's file header
 # for the full story.
 #
+# tui-otui.mjs also externalizes "@opentui/core" itself (see
+# scripts/build-tui-otui.mjs's file header for why it can't be bundled) — two
+# bare specifiers ("@opentui/core" and "@opentui/core/testing") must resolve
+# from node_modules at runtime. On a dev machine this silently resolves from
+# the repo's node_modules/; inside the packaged .app there is no such
+# directory. NODE_PATH is pointed at a trimmed node_modules tree staged by
+# scripts/package-tui-assets.mjs (Resources/cli/node_modules/), following the
+# exact same NODE_PATH pattern already used for better-sqlite3 further down
+# in this file.
+#
 # This is deliberately the SAME command name/shim code path that will carry
 # production traffic once OpenTUI fully replaces Ink — not a side entry
 # point that gets swapped in later. When that rebuild is ready, removing the
@@ -117,6 +131,7 @@ if [ "${1:-}" = "tui" ] && [ "${ORPHEUS_TUI_ENGINE:-}" = "opentui" ]; then
   OTUI_BUNDLE="$RESOURCES_DIR/cli/tui-otui.mjs"
   OTUI_ASSET_ROOT_DIR="$RESOURCES_DIR/cli"
   OTUI_DYLIB="$OTUI_ASSET_ROOT_DIR/@opentui/core-darwin-arm64/libopentui.dylib"
+  OTUI_NODE_MODULES="$RESOURCES_DIR/cli/node_modules"
 
   if [ ! -x "$BUN_BIN" ]; then
     echo "orpheus: error: bundled Bun runtime not found at $BUN_BIN" >&2
@@ -136,8 +151,15 @@ if [ "${1:-}" = "tui" ] && [ "${ORPHEUS_TUI_ENGINE:-}" = "opentui" ]; then
     echo "  runs scripts/package-tui-assets.mjs) and rebuild the app." >&2
     exit 1
   fi
+  if [ ! -d "$OTUI_NODE_MODULES/@opentui/core" ]; then
+    echo "orpheus: error: OpenTUI runtime dependencies not found at $OTUI_NODE_MODULES" >&2
+    echo "  This is a packaging problem — run 'bun run build:cli:tui-otui' (which" >&2
+    echo "  runs scripts/package-tui-assets.mjs) and rebuild the app." >&2
+    exit 1
+  fi
 
   export OTUI_ASSET_ROOT="$OTUI_ASSET_ROOT_DIR"
+  export NODE_PATH="$OTUI_NODE_MODULES${NODE_PATH:+:${NODE_PATH}}"
   exec "$BUN_BIN" run "$OTUI_BUNDLE" "$@"
 fi
 
