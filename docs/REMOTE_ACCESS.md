@@ -72,10 +72,10 @@ tmux session for ten minutes before investing further.
 | Key | Action |
 | --- | ------ |
 | `↵` | Open the workspace's terminal |
-| `n` | New session |
-| `x` | Kill the tmux session (workspace stays, resumable) |
-| `a` | Archive the workspace (also kills its tmux session) |
-| `r` | Rename |
+| `n` | New session — not yet implemented |
+| `x` | Kill the tmux session (workspace stays, resumable) — not yet implemented |
+| `a` | Archive the workspace (also kills its tmux session) — not yet implemented |
+| `r` | Rename — not yet implemented |
 | `f` | Cycle filter — `active` → `all` |
 | `?` | Key help |
 | `q` | Quit |

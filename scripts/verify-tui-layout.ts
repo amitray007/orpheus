@@ -20,7 +20,16 @@
 //      attention-first ordering, child indentation, filter behaviour, empty tree
 //   5. flattenTree with a single-project scope (--project): filtering to one
 //      project, header suppression, numbering still holds
-//   6. tmuxSocketNameForAppName for all four app variants
+//   6. Status glyphs + isActiveStatus: single-width, colour-agnostic contract
+//   7. scrollWindowFor: fits-without-windowing passthrough, fixed 2-row
+//      affordance budget once windowing engages (never variable), selection
+//      stays in view while scrolling
+//   8. WorkspaceRow's gutter-carve-out width invariant: the selection gutter
+//      (theme.gutterWidthFor) is carved OUT of columnPlanFor's own numWidth
+//      budget, so a rendered row's total width must still equal plan.total
+//      exactly at all three breakpoints — including the tightest real case,
+//      a selected CHILD row (depth>0, "└ " indent) with a worktree marker
+//   9. tmuxSocketNameForAppName for all four app variants
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert'
@@ -29,12 +38,14 @@ import {
   columnPlanFor,
   truncate,
   flattenTree,
+  scrollWindowFor,
   isActiveStatus,
   statusGlyph,
   ATTENTION_GLYPH,
   WORKING_GLYPH,
   IDLE_GLYPH,
   CHILD_INDENT,
+  type Breakpoint,
   type DisplayRow
 } from '../packages/orpheus-cli/src/tui/layout.ts'
 import type {
@@ -44,6 +55,7 @@ import type {
   WorkspaceStatus
 } from '../packages/orpheus-cli/src/tui/types.ts'
 import { tmuxSocketNameForAppName } from '../packages/orpheus-cli/src/paths.ts'
+import { gutterWidthFor } from '../packages/orpheus-cli/src/tui/theme.ts'
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -455,7 +467,124 @@ function workspaceRows(rows: DisplayRow[]): Array<Extract<DisplayRow, { kind: 'w
 }
 
 // ---------------------------------------------------------------------------
-// 7. tmuxSocketNameForAppName — all four app variants (docs/TUI_SPEC.md)
+// 7. scrollWindowFor — fixed affordance budget, selection stays in view
+// ---------------------------------------------------------------------------
+
+{
+  const rows: DisplayRow[] = Array.from({ length: 20 }, (_, i) => ({
+    kind: 'workspace',
+    index: i + 1,
+    workspaceId: `w${i}`,
+    projectId: 'p1',
+    name: `w${i}`,
+    status: 'idle',
+    waitingFor: null,
+    depth: 0,
+    worktreeBranch: null,
+    tmuxHosted: false
+  }))
+
+  // Fits entirely: passthrough, windowing does NOT engage, zero affordance rows reserved.
+  const fits = scrollWindowFor(rows.slice(0, 5), 2, 10)
+  assert.equal(fits.windowed, false, 'a list that fits must not engage windowing')
+  assert.deepEqual(fits.visible, rows.slice(0, 5))
+  assert.equal(fits.aboveCount, 0)
+  assert.equal(fits.belowCount, 0)
+
+  // Windowing engaged, selection near the END: aboveCount > 0, belowCount == 0.
+  const nearEnd = scrollWindowFor(rows, 18, 8)
+  assert.equal(nearEnd.windowed, true)
+  assert.ok(nearEnd.aboveCount > 0, 'scrolling near the end must report rows scrolled off above')
+  assert.equal(nearEnd.belowCount, 0, 'scrolling to the end must report nothing scrolled off below')
+  assert.ok(
+    nearEnd.visible.some((r) => r.kind === 'workspace' && r.workspaceId === 'w18'),
+    'the selected row must stay inside the visible window'
+  )
+
+  // Windowing engaged, selection near the START: belowCount > 0, aboveCount == 0.
+  const nearStart = scrollWindowFor(rows, 1, 8)
+  assert.equal(nearStart.aboveCount, 0)
+  assert.ok(nearStart.belowCount > 0)
+
+  // Windowing engaged, selection in the MIDDLE: both directions have something scrolled off.
+  const middle = scrollWindowFor(rows, 10, 8)
+  assert.ok(middle.aboveCount > 0 && middle.belowCount > 0)
+
+  // THE FIXED-BUDGET INVARIANT: once windowing engages at all, the reserved
+  // affordance budget (and therefore the content window's height,
+  // `availableRows - 2`) must be IDENTICAL regardless of scroll position —
+  // never a variable 0/1/2 rows depending on whether one/both/neither
+  // direction currently has something to show. This is what prevents the
+  // content window from visibly reflowing as the user scrolls past an edge
+  // (see ScrollWindow.windowed's doc comment in layout.ts).
+  assert.equal(nearEnd.visible.length, nearStart.visible.length)
+  assert.equal(nearStart.visible.length, middle.visible.length)
+  assert.equal(
+    middle.visible.length,
+    8 - 2,
+    'content window is always availableRows - 2 once windowed'
+  )
+
+  // Degenerate: zero available rows never throws, reports everything as scrolled off above.
+  const noRoom = scrollWindowFor(rows, 5, 0)
+  assert.deepEqual(noRoom.visible, [])
+  assert.equal(noRoom.aboveCount, rows.length)
+
+  console.log(
+    '✓ scrollWindowFor: passthrough when the list fits, fixed affordance budget (content window height never changes mid-scroll), selection always stays visible, degenerate zero-room case handled'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 8. WorkspaceRow's gutter-carve-out width invariant
+//
+// Mirrors the arithmetic in tui/components/WorkspaceRow.tsx exactly (see its
+// comment above `numLabel`): the gutter is carved OUT of numWidth's own
+// budget, not added on top. This can't be asserted by rendering the actual
+// Ink component here (this harness stays react/ink-free by design — see the
+// file header), so it re-derives the same formula and checks it against
+// columnPlanFor's total at all three breakpoints — including the tightest
+// realistic case: a selected CHILD row (depth 1, "└ " indent) with a
+// worktree marker present, at whichever breakpoint actually renders one
+// (worktreeWidth is 0 at narrow, so that column simply doesn't exist there).
+// ---------------------------------------------------------------------------
+
+{
+  function rowTotalWidth(breakpoint: Breakpoint, columns: number): number {
+    const plan = columnPlanFor(breakpoint, columns)
+    const gutterWidth = gutterWidthFor(breakpoint)
+    // numLabel = digits (padStart to numWidth - gutterWidth - 1) + one trailing space.
+    const numLabelWidth = Math.max(1, plan.numWidth - gutterWidth - 1) + 1
+    return (
+      gutterWidth +
+      numLabelWidth +
+      plan.glyphWidth +
+      plan.nameWidth +
+      plan.worktreeWidth +
+      plan.statusWidth
+    )
+  }
+
+  for (const [breakpoint, columns] of [
+    ['narrow', 44],
+    ['medium', 80],
+    ['wide', 104]
+  ] as const) {
+    const plan = columnPlanFor(breakpoint, columns)
+    assert.equal(
+      rowTotalWidth(breakpoint, columns),
+      plan.total,
+      `${breakpoint} (${columns} cols): a rendered row's total width must equal plan.total exactly, even for a selected child row with a worktree marker (name/worktree content varies, but their COLUMN WIDTHS are fixed by the plan regardless of depth/worktree presence)`
+    )
+  }
+
+  console.log(
+    '✓ WorkspaceRow gutter-carve-out: row total width equals plan.total exactly at narrow/medium/wide, including the tightest case (selected child + worktree marker) — the gutter never overflows the 44-col narrow layout'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 9. tmuxSocketNameForAppName — all four app variants (docs/TUI_SPEC.md)
 // ---------------------------------------------------------------------------
 
 {

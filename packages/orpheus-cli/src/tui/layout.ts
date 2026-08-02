@@ -297,3 +297,87 @@ export function flattenTree(frame: TreeFrame, filter: Filter, scope?: ProjectSco
     totalCount: counters.total
   }
 }
+
+// ---------------------------------------------------------------------------
+// Viewport windowing — render only the rows that fit in the terminal's
+// current row count, keeping the selected row in view with a scroll-off
+// margin. Pure function: no Ink, no process.stdout reads — App.tsx supplies
+// `availableRows` (derived from process.stdout.rows) and the currently
+// highlighted row index.
+// ---------------------------------------------------------------------------
+
+export interface ScrollWindow {
+  /** Slice of `rows` that should actually be rendered this frame. */
+  visible: DisplayRow[]
+  /** Count of rows scrolled off above the visible slice (0 if none). */
+  aboveCount: number
+  /** Count of rows scrolled off below the visible slice (0 if none). */
+  belowCount: number
+  /**
+   * True once windowing is engaged at all (rows.length > availableRows).
+   * Callers should render BOTH scroll affordance rows whenever this is
+   * true — always mounted, colored bright/dim by whether aboveCount/
+   * belowCount is > 0 — rather than conditionally mounting only the
+   * direction that currently has something scrolled off. Conditionally
+   * MOUNTING causes a real layout jump: reserving a variable 0/1/2
+   * affordance rows depending on scroll position means the content
+   * window's own height changes the instant you scroll past the top/
+   * bottom edge, visibly reflowing every row on screen. Reserving a FIXED
+   * 2-row affordance budget for the whole scrolling session (recoloring,
+   * never remounting) keeps the content window's height constant.
+   */
+  windowed: boolean
+}
+
+/** Rows spent on the "more above/below" affordances once scrolling is
+ * engaged at all — always both, so the content window's height never
+ * changes mid-scroll (see ScrollWindow.windowed's doc comment). */
+const AFFORDANCE_ROWS_WHEN_WINDOWED = 2
+
+/**
+ * Keep `selectedIndex` (an index into `rows`, not the display `index`
+ * field — this operates on already-flattened DisplayRow position) within a
+ * window of `availableRows` lines, biasing toward keeping a few rows of
+ * context around the selection rather than pinning it to an edge.
+ *
+ * `availableRows` is the full budget INCLUDING space for the affordance
+ * lines — this function decides internally whether affordance rows are
+ * reserved at all (only when windowing engages) and shrinks the content
+ * slice accordingly, so callers never have to pre-compute that themselves.
+ */
+export function scrollWindowFor(
+  rows: DisplayRow[],
+  selectedIndex: number,
+  availableRows: number
+): ScrollWindow {
+  if (availableRows <= 0 || rows.length === 0) {
+    return { visible: [], aboveCount: rows.length, belowCount: 0, windowed: rows.length > 0 }
+  }
+  if (rows.length <= availableRows) {
+    return { visible: rows, aboveCount: 0, belowCount: 0, windowed: false }
+  }
+
+  // Windowing is engaged: reserve the FULL fixed affordance budget up
+  // front (never recomputed from the current scroll position), so the
+  // content window's height is constant for the whole scrolling session.
+  const capacity = Math.max(1, availableRows - AFFORDANCE_ROWS_WHEN_WINDOWED)
+  const start = clampWindowStart(selectedIndex, rows.length, capacity)
+  const end = Math.min(rows.length, start + capacity)
+
+  return {
+    visible: rows.slice(start, end),
+    aboveCount: start,
+    belowCount: rows.length - end,
+    windowed: true
+  }
+}
+
+/** Scroll-off margin: how many rows of context to keep around the selection
+ * when it's not near either edge of the full list. */
+const SCROLL_OFF = 1
+
+function clampWindowStart(selectedIndex: number, totalRows: number, capacity: number): number {
+  const maxStart = Math.max(0, totalRows - capacity)
+  const desired = selectedIndex - Math.min(SCROLL_OFF, Math.floor((capacity - 1) / 2))
+  return Math.min(maxStart, Math.max(0, desired))
+}

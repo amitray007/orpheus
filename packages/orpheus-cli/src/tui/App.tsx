@@ -1,38 +1,47 @@
 /**
  * tui/App.tsx — the Ink root component for `orpheus tui`.
  *
- * All layout/ordering/filtering math is delegated to tui/layout.ts (pure,
- * covered by scripts/verify-tui-layout.ts). This component owns only
+ * All layout/ordering/filtering/windowing math is delegated to tui/layout.ts
+ * (pure, covered by scripts/verify-tui-layout.ts). This component owns only
  * interactive/presentational state: the current filter, the highlighted
  * row, the help-overlay visibility, and a transient "not yet wired" notice.
  *
- * The `frame` prop is pushed in from OUTSIDE React (tui/entry.ts's
- * /subscribe callback re-renders via Instance.rerender on every new `tree`
- * frame) — this component never subscribes/connects itself, keeping the
- * transport concern out of the render tree.
+ * The live `tree` frame is read from tui/frameStore.ts via
+ * `useSyncExternalStore`, NOT passed as a prop — frames arrive from OUTSIDE
+ * React (tui/entry.ts's /subscribe callback pushes into the store) and this
+ * is what lets Ink diff normally instead of reconciling a fresh element tree
+ * on every frame (see entry.ts's file header).
+ *
+ * Terminal dimensions come from Ink 7's NATIVE `useWindowSize()` (columns
+ * AND rows, auto-resubscribing on resize) rather than a hand-rolled
+ * `process.stdout.columns`/`.rows` + manual resize-listener pair — fewer
+ * moving parts, and it's the same hook Ink itself uses internally.
  */
 
 import * as React from 'react'
-import { useEffect, useMemo, useState } from 'react'
-import { Box, Text, useInput } from 'ink'
+import { useMemo, useState, useSyncExternalStore } from 'react'
+import { Box, Text, useInput, useWindowSize } from 'ink'
 import {
   columnPlanFor,
   flattenTree,
   resolveBreakpoint,
+  scrollWindowFor,
   truncate,
+  type Breakpoint,
   type DisplayRow,
   type Filter,
   type ProjectScope
 } from './layout.js'
-import type { TreeFrame } from './types.js'
+import { frameStore } from './frameStore.js'
 import { Header } from './components/Header.js'
 import { Footer } from './components/Footer.js'
 import { HelpOverlay } from './components/HelpOverlay.js'
 import { WorkspaceRow } from './components/WorkspaceRow.js'
+import { ProjectHeaderRow } from './components/ProjectHeaderRow.js'
+import { ScrollAffordance } from './components/ScrollAffordance.js'
+import { activePalette } from './theme.js'
 
 export interface AppProps {
-  /** Latest applied `tree` frame, or null before the first one arrives. */
-  frame: TreeFrame | null
   /** Set when `--project` narrows the picker to a single project. */
   scope?: ProjectScope
   onOpen: (workspaceId: string) => void
@@ -42,16 +51,19 @@ export interface AppProps {
 /** Keys explicitly documented but not implemented in this landing (see docs/TUI_SPEC.md D6). */
 const NOT_WIRED_KEYS = new Set(['n', 'x', 'a', 'r'])
 
-function useColumns(): number {
-  const [columns, setColumns] = useState(process.stdout.columns || 80)
-  useEffect(() => {
-    const onResize = (): void => setColumns(process.stdout.columns || 80)
-    process.stdout.on('resize', onResize)
-    return () => {
-      process.stdout.off('resize', onResize)
-    }
-  }, [])
-  return columns
+/**
+ * Rows reserved outside the scrollable workspace list: the header's title +
+ * status lines, plus its bottom rule (medium/wide only — see Header.tsx's
+ * border discipline), plus the one-line footer. Help overlay replaces the
+ * footer 1:1, so it's not counted separately. Scroll-affordance rows are
+ * NOT included here — they're only reserved once scrollWindowFor actually
+ * engages windowing (see its `windowed` field), inside its own budget.
+ */
+function chromeRowsFor(breakpoint: Breakpoint): number {
+  const HEADER_LINES = 2
+  const FOOTER_LINES = 1
+  const RULE_LINES = breakpoint === 'narrow' ? 0 : 1
+  return HEADER_LINES + FOOTER_LINES + RULE_LINES
 }
 
 type WorkspaceDisplayRow = Extract<DisplayRow, { kind: 'workspace' }>
@@ -80,12 +92,19 @@ function handleActionKey(
   }
 }
 
-export function App({ frame, scope, onOpen, onQuit }: AppProps): React.JSX.Element {
-  const columns = useColumns()
+export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
+  const frame = useSyncExternalStore(
+    frameStore.subscribe,
+    frameStore.getSnapshot,
+    frameStore.getSnapshot
+  )
+  const { columns, rows } = useWindowSize()
   const [filter, setFilter] = useState<Filter>('active')
   const [selected, setSelected] = useState(0)
   const [helpVisible, setHelpVisible] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+
+  const palette = activePalette
 
   const result = useMemo(
     () => (frame != null ? flattenTree(frame, filter, scope) : null),
@@ -129,8 +148,27 @@ export function App({ frame, scope, onOpen, onQuit }: AppProps): React.JSX.Eleme
     handleActionKey(input, setFilter, setNotice)
   })
 
-  const plan = columnPlanFor(resolveBreakpoint(columns), columns)
+  const breakpoint = resolveBreakpoint(columns)
+  const plan = columnPlanFor(breakpoint, columns)
   const selectedWorkspaceId = workspaceRows[effectiveSelected]?.workspaceId
+
+  // Windowing: the selected row's position within `result.rows` (not
+  // `workspaceRows`, since project-header rows also consume vertical space
+  // and must scroll together with their workspaces) drives the window.
+  const selectedRowPosition = useMemo(() => {
+    if (result == null || selectedWorkspaceId == null) return 0
+    return Math.max(
+      0,
+      result.rows.findIndex((r) => r.kind === 'workspace' && r.workspaceId === selectedWorkspaceId)
+    )
+  }, [result, selectedWorkspaceId])
+
+  const availableRows = Math.max(1, rows - chromeRowsFor(breakpoint))
+  const scrollWindow = useMemo(
+    () =>
+      result != null ? scrollWindowFor(result.rows, selectedRowPosition, availableRows) : null,
+    [result, selectedRowPosition, availableRows]
+  )
 
   return (
     <Box flexDirection="column">
@@ -140,30 +178,59 @@ export function App({ frame, scope, onOpen, onQuit }: AppProps): React.JSX.Eleme
         filter={filter}
         hiddenCount={result?.hiddenCount ?? 0}
         totalCount={result?.totalCount ?? 0}
+        breakpoint={breakpoint}
+        palette={palette}
       />
       <Box flexDirection="column">
-        {result == null ? (
-          <Text dimColor>Connecting to Orpheus…</Text>
+        {result == null || scrollWindow == null ? (
+          <Text color={palette.secondary}>Connecting to Orpheus…</Text>
         ) : result.rows.length === 0 ? (
-          <Text dimColor>(no workspaces{filter === 'active' ? ' — press f to show all' : ''})</Text>
+          <Text color={palette.secondary}>
+            (no workspaces{filter === 'active' ? ' — press f to show all' : ''})
+          </Text>
         ) : (
-          result.rows.map((row) =>
-            row.kind === 'project-header' ? (
-              <Text key={`project-${row.projectId}`} bold>
-                {truncate(row.projectName, plan.nameWidth)}
-              </Text>
-            ) : (
-              <WorkspaceRow
-                key={row.workspaceId}
-                row={row}
-                plan={plan}
-                selected={row.workspaceId === selectedWorkspaceId}
+          <>
+            {/* Both affordance rows are reserved ONLY once windowing actually
+                engages (scrollWindow.windowed) — a list that fits entirely
+                costs zero extra rows. Once engaged, BOTH stay mounted for the
+                whole scrolling session (see ScrollAffordance.tsx's header). */}
+            {scrollWindow.windowed ? (
+              <ScrollAffordance count={scrollWindow.aboveCount} direction="up" palette={palette} />
+            ) : null}
+            {scrollWindow.visible.map((row) =>
+              row.kind === 'project-header' ? (
+                <ProjectHeaderRow
+                  key={`project-${row.projectId}`}
+                  name={truncate(row.projectName, plan.nameWidth)}
+                  palette={palette}
+                  breakpoint={breakpoint}
+                />
+              ) : (
+                <WorkspaceRow
+                  key={row.workspaceId}
+                  row={row}
+                  plan={plan}
+                  selected={row.workspaceId === selectedWorkspaceId}
+                  palette={palette}
+                  breakpoint={breakpoint}
+                />
+              )
+            )}
+            {scrollWindow.windowed ? (
+              <ScrollAffordance
+                count={scrollWindow.belowCount}
+                direction="down"
+                palette={palette}
               />
-            )
-          )
+            ) : null}
+          </>
         )}
       </Box>
-      {helpVisible ? <HelpOverlay /> : <Footer notice={notice} />}
+      {helpVisible ? (
+        <HelpOverlay breakpoint={breakpoint} palette={palette} />
+      ) : (
+        <Footer notice={notice} palette={palette} breakpoint={breakpoint} />
+      )}
     </Box>
   )
 }

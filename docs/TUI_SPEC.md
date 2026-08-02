@@ -97,4 +97,6 @@ and 104. Full visual reference: the published layout artifact.
 
 ## Keymap
 
-`↵` open · `n` new · `x` kill tmux · `a` archive · `r` rename · `f` filter · `?` keys · `q` quit
+`↵` open · `n` new (not yet implemented) · `x` kill tmux (not yet implemented) ·
+`a` archive (not yet implemented) · `r` rename (not yet implemented) · `f` filter ·
+`?` keys · `q` quit

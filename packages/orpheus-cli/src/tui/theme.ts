@@ -1,0 +1,264 @@
+/**
+ * tui/theme.ts — the single source of truth for every color, glyph, and
+ * chrome character the TUI renders.
+ *
+ * No component references a raw hex/ANSI color or a decorative glyph
+ * directly — everything is named here so a palette change is a one-file
+ * edit, and so `sonarjs/no-duplicate-string` (threshold 5, see CLAUDE.md)
+ * never trips on a literal like '#7c8cff' scattered across components.
+ *
+ * PALETTE VALUES ARE ARBITRARY HEX — chalk (which Ink's `color`/
+ * `backgroundColor` route through) downsamples truecolor to 256/16/none
+ * automatically per-terminal. Its real 256-color downsampler matches
+ * against BOTH the 6x6x6 cube AND the 24-step grayscale ramp (xterm
+ * indices 232-255) and picks whichever is closer — `paletteDriftReport()`
+ * below reproduces that full algorithm (not a cube-only approximation) so
+ * a future palette edit can check its actual downsample drift before
+ * shipping. An earlier revision of this file constrained every value to
+ * cube-exact steps based on a cube-only drift measurement that looked bad
+ * (e.g. reported `selectedBg` #2a2e45 as "collapsing to near-black");
+ * re-measuring with the grayscale ramp included showed the original
+ * values survive downsampling fine (#2a2e45 -> ramp index 236 =
+ * rgb(48,48,48), essentially preserved) — so there was no real problem,
+ * and the cube constraint was reverted. Pick colors for how they look and
+ * how distinct they are from each other; verify drift with
+ * `paletteDriftReport()` if you're unsure, don't pre-constrain to a cube.
+ *
+ * ONE PALETTE, NOT A HAND-MAINTAINED PER-LEVEL SET
+ * -----------------------------------------------------------------------
+ * chalk's own downsampling is sufficient from truecolor all the way down
+ * to 256-color — there's no need to hand-maintain a separate ANSI16
+ * palette. `colorLevel()` still exists but currently has no palette-
+ * selection or gating role at all; it's kept in place because *something*
+ * in this file will eventually need to know the terminal's actual color
+ * depth, and re-deriving it is more error-prone than keeping the one
+ * already-correct implementation around.
+ *
+ * SELECTION MUST BE UNMISSABLE (see WorkspaceRow.tsx)
+ * -----------------------------------------------------------------------
+ * A real user reported that pressing up/down did not visibly highlight
+ * the selected row. Root cause: the selection background tint
+ * (`selectedBg`) was gated to medium/wide only, reasoning that a 44-col
+ * narrow terminal had no "spare width" for it — but a `backgroundColor`
+ * colors EXISTING characters, it doesn't consume extra columns, so that
+ * reasoning was simply wrong (there never was a space constraint). At
+ * narrow, that left only a 1-character gutter glyph and a text-color
+ * change as signals — and for an `attention`-status row specifically
+ * (already rendered bold regardless of selection), the text-color change
+ * was the ONLY thing that changed, which is genuinely easy to miss at a
+ * glance. Fix: the tint now applies at every breakpoint whenever a row is
+ * selected — see WorkspaceRow.tsx's `rowBackground`.
+ */
+
+import * as tty from 'node:tty'
+import type { Breakpoint } from './layout.js'
+
+// ---------------------------------------------------------------------------
+// Color level detection
+// ---------------------------------------------------------------------------
+
+export type ColorLevel = 0 | 1 | 2 | 3
+
+/**
+ * 0 = no color, 1 = 16-color, 2 = 256-color, 3 = truecolor. Uses Node's
+ * built-in `WriteStream#getColorDepth`, which already honors NO_COLOR /
+ * FORCE_COLOR / --color and the terminal's actual capabilities — no need
+ * for a `chalk`/`supports-color` dependency just to re-derive this.
+ *
+ * `getColorDepth` only exists on `tty.WriteStream.prototype` — in
+ * production `process.stdout` is always one (runTui() hard-requires
+ * `isTTY === true` before ever mounting, see entry.ts), but a piped/
+ * redirected stream (headless test harnesses, `orpheus tui | cat`) lacks
+ * the method entirely. Its implementation only reads `env`/`process.
+ * platform`, never `this`, so calling it unbound still correctly honors
+ * NO_COLOR/FORCE_COLOR/CI env vars even off a non-TTY stream — falling
+ * back to a bare `1` there would silently ignore an explicit
+ * FORCE_COLOR=3 in exactly the no-color verification this function exists
+ * to support.
+ */
+export function colorLevel(stream: NodeJS.WriteStream = process.stdout): ColorLevel {
+  if (process.env.NO_COLOR != null && process.env.NO_COLOR !== '') return 0
+  const getColorDepth =
+    stream.getColorDepth?.bind(stream) ?? tty.WriteStream.prototype.getColorDepth
+  const depth = getColorDepth()
+  if (depth >= 24) return 3
+  if (depth >= 8) return 2
+  if (depth >= 4) return 1
+  return 0
+}
+
+// ---------------------------------------------------------------------------
+// Semantic palette
+// ---------------------------------------------------------------------------
+
+export interface Palette {
+  /** Needs the user's attention right now — sorts first, reddest signal. */
+  attention: string
+  /** Actively running (in_progress) — calm but energetic. */
+  working: string
+  /** Waiting on the model / awaiting_input — cool, "in flight". */
+  awaiting: string
+  /** idle / muted metadata. */
+  idle: string
+  /**
+   * Brand/selection accent — the left gutter bar/dot, active project
+   * headers, selected-row text. MUST stay visually distinct from every
+   * status colour above: selection is a *cursor*, not a *state* — reusing
+   * a status hue here would make a selected row of that status and an
+   * unselected row of the same status harder to tell apart.
+   */
+  accent: string
+  /** Border/rule color at medium+ breakpoints. */
+  border: string
+  /** Secondary text — dimmer than primary but still readable at any level. */
+  secondary: string
+  /** Background tint for the selected row — ALL breakpoints (see WorkspaceRow.tsx). */
+  selectedBg: string
+}
+
+/**
+ * Dark-background palette (this app's only wired palette today — a light
+ * variant is a straightforward follow-up, not implemented since nothing
+ * currently detects the terminal's background). Values are chosen for
+ * legibility and for being mutually distinct, not constrained to a color
+ * cube (see the file header) — run `paletteDriftReport()` after editing
+ * any of these to confirm the 256-color downsample still lands close.
+ */
+const DARK: Palette = {
+  attention: '#ff5d62',
+  working: '#7fd88f',
+  awaiting: '#7aa2f7',
+  idle: '#6b7089',
+  // Purple — distinct from every status hue above (red/green/blue), so it
+  // reads unambiguously as "cursor", never as a 5th status color.
+  accent: '#bb9af7',
+  border: '#3b3f58',
+  secondary: '#8b90a8',
+  selectedBg: '#2a2e45'
+}
+
+/**
+ * The active palette. There is only one (see the file header's "ONE
+ * PALETTE" note) — colorLevel() isn't used to pick different hex values
+ * at all. A future light-background palette would turn this into a real
+ * function of terminal-background detection; nothing currently detects
+ * that, so there's no parameter to thread through yet.
+ */
+export const activePalette: Palette = DARK
+
+// ---------------------------------------------------------------------------
+// 256-color downsample drift verification — not used at runtime, only by
+// the render proof / manual palette audits (see the file header). Kept
+// here rather than in a throwaway script so the NEXT palette edit has the
+// check on hand. Reproduces xterm's REAL 256-color quantization: for each
+// channel, checks distance against both the 6x6x6 color cube (216 colors,
+// steps 00/5F/87/AF/D7/FF) AND the 24-step grayscale ramp (xterm indices
+// 232-255, values 8,18,28...238) and reports whichever is closer overall —
+// a cube-only check (an earlier version of this function) systematically
+// over-reports drift for anything near-gray, which is exactly what
+// `selectedBg` is.
+// ---------------------------------------------------------------------------
+
+const CUBE_STEPS = [0x00, 0x5f, 0x87, 0xaf, 0xd7, 0xff]
+/** xterm-256 grayscale ramp: 24 steps, indices 232-255, value = 8 + 10*i. */
+const GRAYSCALE_STEPS = Array.from({ length: 24 }, (_, i) => 8 + i * 10)
+
+function nearestStep(channel: number, steps: number[]): number {
+  return steps.reduce((closest, step) =>
+    Math.abs(step - channel) < Math.abs(closest - channel) ? step : closest
+  )
+}
+
+function channelDrift(
+  channels: [number, number, number],
+  snapped: [number, number, number]
+): number {
+  return channels.reduce((sum, c, i) => sum + Math.abs(c - snapped[i]!), 0)
+}
+
+function toHex(channels: [number, number, number]): string {
+  return '#' + channels.map((c) => c.toString(16).padStart(2, '0')).join('')
+}
+
+export interface DriftEntry {
+  name: string
+  hex: string
+  /** The nearest real 256-color match — either a cube color or a grayscale-ramp gray, whichever is closer. */
+  snappedHex: string
+  /** Which xterm-256 region the nearest match came from. */
+  matchedFrom: 'cube' | 'grayscale'
+  /** Sum of the absolute per-channel (R,G,B) distance to the nearest 256-color match. 0 = exact match. */
+  drift: number
+}
+
+/** For each palette entry: its hex, the nearest ACTUAL 256-color match (cube or grayscale ramp), and the drift. */
+export function paletteDriftReport(palette: Palette = DARK): DriftEntry[] {
+  return Object.entries(palette).map(([name, hex]) => {
+    const n = Number.parseInt(hex.slice(1), 16)
+    const channels: [number, number, number] = [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
+
+    const cubeSnapped = channels.map((c) => nearestStep(c, CUBE_STEPS)) as [number, number, number]
+    const cubeDrift = channelDrift(channels, cubeSnapped)
+
+    const grayValue = nearestStep(
+      Math.round((channels[0] + channels[1] + channels[2]) / 3),
+      GRAYSCALE_STEPS
+    )
+    const graySnapped: [number, number, number] = [grayValue, grayValue, grayValue]
+    const grayDrift = channelDrift(channels, graySnapped)
+
+    const useGray = grayDrift < cubeDrift
+    const snapped = useGray ? graySnapped : cubeSnapped
+    const drift = useGray ? grayDrift : cubeDrift
+
+    return {
+      name,
+      hex,
+      snappedHex: toHex(snapped),
+      matchedFrom: useGray ? 'grayscale' : 'cube',
+      drift
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Glyphs — single-width only (see docs/TUI_SPEC.md: no emoji, meaning is
+// carried by colour+glyph together, never colour alone).
+// ---------------------------------------------------------------------------
+
+/** Left gutter accent bar for the selected row — narrow breakpoint. */
+export const SELECTION_BAR = '▌'
+/** Left gutter accent dot for the selected row — medium/wide breakpoint. */
+export const SELECTION_DOT = '●'
+/** Gutter placeholder for unselected rows — keeps columns from shifting. */
+export const SELECTION_GUTTER_EMPTY = ' '
+/** Rounded-border corners — modal surfaces ONLY (help overlay). Never a row, never the main list. */
+export const BORDER_STYLE = 'round'
+/** "N more" scroll affordance glyphs — always mounted, conditionally colored (see ScrollAffordance.tsx). */
+export const SCROLL_UP_GLYPH = '▲'
+export const SCROLL_DOWN_GLYPH = '▼'
+/** Frames for the working-state spinner, driven by Ink's native `useAnimation` (see Spinner.tsx). */
+export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+/** Tick interval for the spinner passed to `useAnimation({interval})` — see Spinner.tsx for why
+ * this is deliberately slower than a typical 80-100ms spinner (SSH/phone link). */
+export const SPINNER_INTERVAL_MS = 250
+/** Separator between footer keymap hints, Lipgloss-style. */
+export const KEYMAP_SEPARATOR = ' · '
+
+// ---------------------------------------------------------------------------
+// Selection gutter — shared sizing between WorkspaceRow and ProjectHeaderRow
+// so project names visually align with the workspace rows beneath them.
+// ---------------------------------------------------------------------------
+
+/** Gutter width in characters: 1 (bar) at narrow, 2 (dot + trailing space) at medium/wide. */
+export function gutterWidthFor(breakpoint: Breakpoint): number {
+  return breakpoint === 'narrow' ? 1 : 2
+}
+
+/** The gutter's rendered content for a row — bar/dot when selected, matching blank space otherwise. */
+export function gutterContentFor(breakpoint: Breakpoint, selected: boolean): string {
+  const width = gutterWidthFor(breakpoint)
+  if (!selected) return SELECTION_GUTTER_EMPTY.repeat(width)
+  const glyph = breakpoint === 'narrow' ? SELECTION_BAR : SELECTION_DOT
+  return (glyph + SELECTION_GUTTER_EMPTY.repeat(width - 1)).slice(0, width)
+}

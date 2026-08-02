@@ -23,6 +23,17 @@
  * the user detaches (or the tmux process exits for any reason), control
  * returns to the picker rather than dropping to a shell — this loop-back is
  * the core UX this feature exists to deliver.
+ *
+ * FRAME DELIVERY: STORE, NOT rerender() (see tui/frameStore.ts)
+ * -------------------------------------------------------------
+ * <App> is mounted exactly ONCE via `render()`. Incoming `tree` frames are
+ * pushed into frameStore (a tiny external store) rather than triggering
+ * `instance.rerender(<App .../>)` with a fresh element tree — the previous
+ * approach forced a full reconciliation from a new root on every frame
+ * (~20x/sec at the 50ms server-side debounce), which both wasted work and
+ * defeated memoization (the closures passed as props were recreated every
+ * call). App.tsx reads the store via `useSyncExternalStore`, so Ink diffs
+ * normally against the previous render.
  */
 
 import { spawn } from 'node:child_process'
@@ -30,7 +41,8 @@ import * as React from 'react'
 import { render, type Instance } from 'ink'
 import { subscribe, sendCommand } from '../socket-client.js'
 import { App } from './App.js'
-import { isTreeFrame, type TreeFrame, type WorkspaceHostResult } from './types.js'
+import { applyFrame, resetFrame } from './frameStore.js'
+import { isTreeFrame, type WorkspaceHostResult } from './types.js'
 import type { ProjectScope } from './layout.js'
 
 export interface RunTuiOptions {
@@ -45,53 +57,51 @@ function errorMessage(err: unknown): string {
 }
 
 /**
- * Mount the picker and resolve once the user opens a workspace or quits.
- * `tree` frames are pushed into the already-mounted Ink instance via
- * `rerender` (not React state) since they arrive from OUTSIDE React, in the
- * /subscribe event callback.
+ * Mount the picker ONCE and resolve once the user opens a workspace or
+ * quits. `tree` frames arrive from OUTSIDE React (the /subscribe event
+ * callback) and are pushed into frameStore, which App.tsx reads via
+ * `useSyncExternalStore` — see the file header for why this replaced a
+ * per-frame `instance.rerender()`.
  */
 function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
-  let instance: Instance | null = null
-  let lastRevision = -1
+  let settleOnce: (outcome: PickerOutcome) => void = () => {}
 
-  const draw = (frame: TreeFrame | null): void => {
-    const node = React.createElement(App, {
-      frame,
-      scope: options.scope,
-      onOpen: (workspaceId: string) => {
-        subscription.close()
-        settleOnce({ type: 'open', workspaceId })
-      },
-      onQuit: () => {
-        subscription.close()
-        settleOnce({ type: 'quit' })
-      }
-    })
-    if (instance == null) {
-      instance = render(node)
-    } else {
-      instance.rerender(node)
+  const node = React.createElement(App, {
+    scope: options.scope,
+    onOpen: (workspaceId: string) => {
+      subscription.close()
+      settleOnce({ type: 'open', workspaceId })
+    },
+    onQuit: () => {
+      subscription.close()
+      settleOnce({ type: 'quit' })
     }
-  }
+  })
 
   const onEvent = (evt: unknown): void => {
     if (!isTreeFrame(evt)) return
-    // Snapshots are applied wholesale by revision (D5) — a stale/older frame
-    // (e.g. reordered on a flaky link) is simply ignored.
-    if (evt.revision <= lastRevision) return
-    lastRevision = evt.revision
-    draw(evt)
+    applyFrame(evt)
   }
+
+  // Start clean: a previous loop iteration (returning here after a tmux
+  // detach) must not flash the last-known frame from before this
+  // subscription existed.
+  resetFrame()
 
   // No client-side timeout — the picker stays open indefinitely until the
   // user acts. May throw AppNotRunningError synchronously; see the file
   // header for why that's intentionally left uncaught here.
   const subscription = subscribe({ tree: true }, onEvent, { timeoutMs: 0 })
 
-  // Render the "connecting…" state immediately, before the first frame lands.
-  draw(null)
-
-  let settleOnce: (outcome: PickerOutcome) => void = () => {}
+  // Mount immediately, before the first frame lands — App.tsx renders its
+  // own "connecting…" state for a null store snapshot.
+  //
+  // alternateScreen: true keeps the picker's redraws off the user's normal
+  // terminal scrollback (same buffer-swap behavior `tmux attach` itself
+  // uses) and cuts redraw traffic over SSH. UNVERIFIED specifically on
+  // Termius (iOS) — if it misbehaves on-device (garbled restore, blank
+  // screen on detach), this is the one line to flip back to `false`.
+  const instance: Instance = render(node, { alternateScreen: true })
 
   return new Promise<PickerOutcome>((resolve) => {
     let settled = false
@@ -100,14 +110,34 @@ function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
       settled = true
       resolve(outcome)
     }
-    // If the connection drops on its own (server closed, app quit
-    // mid-session) treat it as "return to the caller" rather than hanging.
-    subscription.done.catch(() => {}).then(() => settleOnce({ type: 'quit' }))
+    // subscription.done never rejects for OUR OWN subscription.close() call
+    // (see onOpen/onQuit above) — teardown() there passes no error, and by
+    // the time `done` settles, settleOnce has ALREADY run synchronously, so
+    // this handler becomes a no-op for that case (guarded by `settled`).
+    // The two cases where this handler actually does something are both
+    // the connection ending WITHOUT us asking for it:
+    //   - done RESOLVES: the server's response stream ended on its own
+    //     (res.on('end') in socket-client.ts — e.g. Orpheus quit cleanly).
+    //     Not an error, but the user didn't ask to leave the picker either,
+    //     so a neutral note (not an alarming one) explains why they're
+    //     suddenly back at a shell prompt instead of silently dropping them
+    //     there with zero explanation.
+    //   - done REJECTS with a SubscriptionError: a genuine transport
+    //     failure (aborted/errored response — see socket-client.ts). Print
+    //     its message; this is worth a real "something went wrong" line.
+    subscription.done
+      .then(() => {
+        if (!settled) {
+          process.stderr.write('orpheus: connection to Orpheus closed; returning to shell\n')
+        }
+      })
+      .catch((err: unknown) => {
+        process.stderr.write(`orpheus: lost connection to Orpheus: ${errorMessage(err)}\n`)
+      })
+      .finally(() => settleOnce({ type: 'quit' }))
   }).finally(async () => {
-    if (instance != null) {
-      instance.unmount()
-      await instance.waitUntilExit()
-    }
+    instance.unmount()
+    await instance.waitUntilExit()
   })
 }
 
