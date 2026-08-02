@@ -80,16 +80,18 @@ if [ -n "$ORPHEUS_NODE_PATH" ]; then
   export NODE_PATH="$ORPHEUS_NODE_PATH${NODE_PATH:+:${NODE_PATH}}"
 fi
 
-# Find the Electron binary for worktree, development, or production builds.
+# Find the Electron binary for worktree, nightly, development, or production builds.
 if [ -x "$MACOS_DIR/Orpheus WT" ]; then
   ELECTRON_BIN="$MACOS_DIR/Orpheus WT"
 elif [ -x "$MACOS_DIR/Orpheus Dev" ]; then
   ELECTRON_BIN="$MACOS_DIR/Orpheus Dev"
+elif [ -x "$MACOS_DIR/Orpheus Nightly" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus Nightly"
 elif [ -x "$MACOS_DIR/Orpheus" ]; then
   ELECTRON_BIN="$MACOS_DIR/Orpheus"
 else
   echo "orpheus: error: cannot find Electron binary in $MACOS_DIR" >&2
-  echo "  Expected 'Orpheus WT', 'Orpheus Dev', or 'Orpheus' — is the app bundle intact?" >&2
+  echo "  Expected 'Orpheus WT', 'Orpheus Dev', 'Orpheus Nightly', or 'Orpheus' — is the app bundle intact?" >&2
   exit 1
 fi
 
