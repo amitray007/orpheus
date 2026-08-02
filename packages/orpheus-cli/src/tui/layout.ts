@@ -151,6 +151,17 @@ export type DisplayRow =
       depth: number
       worktreeBranch: string | null
       tmuxHosted: boolean
+      /**
+       * Optional passthrough of the wire frame's `lastActivityAt` — ADDITIVE
+       * field for the tui-otui redesign's right-aligned age column
+       * (docs/TUI_UI_REDESIGN.md ghui device #5) and wide-tier detail pane.
+       * Optional and unread by the Ink build (tui/App.tsx,
+       * tui/components/WorkspaceRow.tsx) — flattenForest() below populates
+       * it whenever the source TreeWorkspace carries it, but no Ink-side
+       * consumer reads this field, so its presence is a pure addition, not a
+       * shape change existing Ink call sites need to handle.
+       */
+      lastActivityAt?: number | null
     }
 
 export interface FlattenResult {
@@ -247,7 +258,8 @@ function flattenForest(
         waitingFor: node.ws.waitingFor ?? null,
         depth,
         worktreeBranch: node.ws.worktreeBranch ?? null,
-        tmuxHosted: node.ws.tmuxHosted === true
+        tmuxHosted: node.ws.tmuxHosted === true,
+        lastActivityAt: node.ws.lastActivityAt ?? null
       })
     } else {
       counters.hidden++

@@ -54,6 +54,21 @@ export default defineConfig(
   // model (no hooks-dependency-array concept, no HMR-component-export
   // convention), so they're disabled here too rather than producing noise
   // that can never be "fixed" short of not using Solid.
+  //
+  // react-hooks/purity and react-hooks/immutability (added to
+  // eslint-plugin-react-hooks's v5+ "React Compiler" ruleset) are the same
+  // category of false positive, discovered while wiring TextTable into the
+  // OpenTUI visual redesign: `const now = Date.now()` inside a `createMemo`
+  // body ("Cannot call impure function during render") and mutating a plain
+  // `let` local from a `ref` callback ("Cannot reassign variable after
+  // render completes") are BOTH idiomatic, correct Solid — Solid components
+  // are plain functions that run ONCE to build the reactive graph (not
+  // React's re-run-on-every-render model these rules assume), and grabbing
+  // an imperative handle via `ref={(el) => (localVar = el)}` is Solid's
+  // documented pattern for driving an OpenTUI renderable's own imperative
+  // API (e.g. TextTableRenderable.content — see WorkspaceTable.tsx's file
+  // header for why that specific case needs an imperative ref, not a
+  // declarative prop). Disabled here for the same reason as the rules above.
   {
     files: ['packages/orpheus-cli/src/tui-otui/**/*.{ts,tsx}'],
     rules: {
@@ -61,6 +76,8 @@ export default defineConfig(
       'react/jsx-key': 'off',
       'react-hooks/rules-of-hooks': 'off',
       'react-hooks/exhaustive-deps': 'off',
+      'react-hooks/purity': 'off',
+      'react-hooks/immutability': 'off',
       'react-refresh/only-export-components': 'off'
     }
   },

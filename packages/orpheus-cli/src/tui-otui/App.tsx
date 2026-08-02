@@ -9,6 +9,34 @@
  * otherwise refuse to shrink below content size and the layout overflows).
  * Ported directly from OpenCode's app.tsx:1089-1124.
  *
+ * THREE GENUINELY DIFFERENT LAYOUTS, NOT ONE LAYOUT SCALED (visual redesign
+ * pass, docs/TUI_UI_REDESIGN.md)
+ * -----------------------------------------------------------------------
+ * The first OpenTUI pass rendered the same shape at every width — a wide
+ * terminal just got wider padding, not more information. This pass branches
+ * on tui-otui/breakpoints.ts's resolveOtuiBreakpoint (a tui-otui-LOCAL
+ * threshold set, ~60/120 — see that file's header for why it's not the
+ * same resolveBreakpoint the Ink build uses):
+ *   - narrow (<60): single column, stacked WorkspaceRow/ProjectHeaderRow —
+ *     today's shape, composed through the new TitleBar/Rule/Footer devices.
+ *   - medium (60-119): single column, but the list is now a REAL TextTable
+ *     (WorkspaceTable.tsx) with status/name/branch/age columns, replacing
+ *     the hand-computed padEnd row rendering.
+ *   - wide (>=120): master/detail split — the SAME WorkspaceTable on the
+ *     left, a DetailPane on the right showing the selected workspace's full
+ *     detail. This is what fills the wide-terminal dead space with
+ *     information instead of whitespace (docs/TUI_UI_REDESIGN.md problem
+ *     #1) — the single vertical rule between panes is the ONLY vertical
+ *     rule in the whole layout and only exists at this breakpoint (ghui
+ *     device #2).
+ *
+ * SELECTION/SCROLLING STAYS UNIFIED ACROSS ALL THREE TIERS — one
+ * `selectedRowIndex` signal, one `scrollWindowFor` call feeding whichever
+ * tier is currently mounted. Only the RENDERING of a row differs by tier;
+ * the keyboard/selection/scroll model is identical everywhere, so switching
+ * tiers mid-session (a live resize crossing a breakpoint) never loses or
+ * reshuffles the user's selection.
+ *
  * FRAME DELIVERY: PLAIN SIGNAL, NOT frameStore.ts's COALESCING STORE
  * -----------------------------------------------------------------------
  * tui/frameStore.ts exists to work around React's useSyncExternalStore
@@ -27,7 +55,7 @@
  * -----------------------------------------------------------------------
  * connecting: no frame has arrived yet (frame() is null, disconnected() is
  *   false). Shown as a body-level "connecting…" message, distinct from the
- *   Header's own connecting/connected glyph.
+ *   TitleBar's own connecting/connected glyph.
  * connected: frame() is non-null. Normal picker UI.
  * disconnected mid-session: the /subscribe `done` promise settled (resolved
  *   OR rejected) without OUR code closing the subscription. THIS WAS AN
@@ -56,23 +84,26 @@ import { createEffect, createMemo, createSignal, For, onCleanup, Show } from 'so
 import { useKeyboard, useTerminalDimensions } from '@opentui/solid'
 import { TextAttributes } from '@opentui/core'
 import {
-  columnPlanFor,
   flattenTree,
-  resolveBreakpoint,
   scrollWindowFor,
   type DisplayRow,
   type Filter,
   type ProjectScope
 } from '../tui/layout.js'
+import { resolveOtuiBreakpoint } from './breakpoints.js'
 import type { TreeFrame } from './types.js'
 import { PALETTE } from './theme.js'
 import { useSpinnerVote } from './spinner.js'
-import { Header } from './components/Header.js'
+import { TitleBar } from './components/TitleBar.js'
 import { Footer } from './components/Footer.js'
 import { HelpOverlay } from './components/HelpOverlay.js'
 import { ProjectHeaderRow } from './components/ProjectHeaderRow.js'
 import { WorkspaceRow } from './components/WorkspaceRow.js'
 import { ScrollAffordance } from './components/ScrollAffordance.js'
+import { WorkspaceTable, tableColumnPlanFor } from './components/WorkspaceTable.js'
+import { DetailPane } from './components/DetailPane.js'
+import { VRule } from './components/VRule.js'
+import { columnPlanFor } from '../tui/layout.js'
 
 export interface AppProps {
   scope?: ProjectScope
@@ -84,9 +115,9 @@ export interface AppProps {
   onQuit: () => void
 }
 
-const HEADER_ROWS_NARROW = 2
-const HEADER_ROWS_WIDE = 3 // title + status + rule
 const FOOTER_ROWS = 1
+const DETAIL_PANE_WIDTH = 42
+const VRULE_WIDTH = 1
 
 export function App(props: AppProps): JSX.Element {
   const dimensions = useTerminalDimensions()
@@ -95,8 +126,10 @@ export function App(props: AppProps): JSX.Element {
   const [selectedRowIndex, setSelectedRowIndex] = createSignal(0)
   const [helpOpen, setHelpOpen] = createSignal(false)
 
-  const breakpoint = createMemo(() => resolveBreakpoint(dimensions().width))
-  const plan = createMemo(() => columnPlanFor(breakpoint(), dimensions().width))
+  const breakpoint = createMemo(() => resolveOtuiBreakpoint(dimensions().width))
+  // Narrow tier still uses the shared tui/layout.ts columnPlanFor (its own
+  // row shape, WorkspaceRow.tsx, is unchanged from the pre-redesign build).
+  const narrowPlan = createMemo(() => columnPlanFor('narrow', dimensions().width))
 
   const flattened = createMemo(() => {
     const f = props.frame()
@@ -125,18 +158,16 @@ export function App(props: AppProps): JSX.Element {
     setSelectedRowIndex((i) => Math.min(Math.max(0, i), count - 1))
   })
 
-  const headerReserved = createMemo(() =>
-    breakpoint() === 'narrow' ? HEADER_ROWS_NARROW : HEADER_ROWS_WIDE
-  )
+  // Reserved rows above the scrolling body: TitleBar is 1 row at narrow (no
+  // rule), 2 rows at medium/wide (title row + Rule). Footer is always 1 row.
+  const headerReserved = createMemo(() => (breakpoint() === 'narrow' ? 1 : 2))
   const availableRows = createMemo(() =>
     Math.max(0, dimensions().height - headerReserved() - FOOTER_ROWS)
   )
 
   // scrollWindowFor operates on the FULL row list (headers + workspace
   // rows), with selectedRowIndex expressed as an index into workspaceRows()
-  // translated to its position in the full `rows` array — this mirrors
-  // tui/App.tsx's own translation (kept local here since it's a small,
-  // App-specific computation, not pure layout logic worth hoisting).
+  // translated to its position in the full `rows` array.
   const selectedRowPositionInFullList = createMemo(() => {
     const wsRows = workspaceRows()
     const target = wsRows[selectedRowIndex()]
@@ -153,6 +184,29 @@ export function App(props: AppProps): JSX.Element {
     const row = workspaceRows()[selectedRowIndex()]
     return row?.kind === 'workspace' ? row.workspaceId : null
   })
+
+  const selectedRow = createMemo((): Extract<DisplayRow, { kind: 'workspace' }> | null => {
+    const row = workspaceRows()[selectedRowIndex()]
+    return row?.kind === 'workspace' ? row : null
+  })
+
+  const selectedProjectName = createMemo(() => {
+    const row = selectedRow()
+    if (row == null) return null
+    const frame = props.frame()
+    if (frame == null) return null
+    return frame.projects.find((p) => p.id === row.projectId)?.name ?? null
+  })
+
+  // Table column plan: at wide, the table's own pane width is narrowed by
+  // the detail pane + vertical rule budget so the table doesn't compute a
+  // name column wider than the space it's actually given.
+  const tableWidth = createMemo(() =>
+    breakpoint() === 'wide'
+      ? Math.max(20, dimensions().width - DETAIL_PANE_WIDTH - VRULE_WIDTH)
+      : dimensions().width
+  )
+  const tablePlan = createMemo(() => tableColumnPlanFor(breakpoint(), tableWidth()))
 
   function moveSelection(delta: number): void {
     const count = workspaceRows().length
@@ -214,6 +268,8 @@ export function App(props: AppProps): JSX.Element {
     () => props.frame() != null && flattened().totalCount > 0 && flattened().visibleCount === 0
   )
 
+  const showTable = createMemo(() => breakpoint() !== 'narrow')
+
   return (
     <box
       width={dimensions().width}
@@ -221,18 +277,17 @@ export function App(props: AppProps): JSX.Element {
       flexDirection="column"
       backgroundColor={PALETTE.background}
     >
-      <box flexShrink={0}>
-        <Header
-          scope={props.scope}
-          connected={props.frame() != null && props.disconnected() == null}
-          disconnected={props.disconnected() != null}
-          filter={filter()}
-          hiddenCount={flattened().hiddenCount}
-          totalCount={flattened().totalCount}
-          breakpoint={breakpoint()}
-          palette={PALETTE}
-        />
-      </box>
+      <TitleBar
+        scope={props.scope}
+        connected={props.frame() != null && props.disconnected() == null}
+        disconnected={props.disconnected() != null}
+        filter={filter()}
+        hiddenCount={flattened().hiddenCount}
+        totalCount={flattened().totalCount}
+        breakpoint={breakpoint()}
+        palette={PALETTE}
+        width={dimensions().width}
+      />
       <box flexGrow={1} minHeight={0} flexDirection="column">
         <Show
           when={!helpOpen()}
@@ -268,42 +323,67 @@ export function App(props: AppProps): JSX.Element {
                   </box>
                 }
               >
-                <box flexDirection="column" flexGrow={1} minHeight={0}>
-                  <Show when={scrollWindow().windowed}>
-                    <ScrollAffordance
-                      count={scrollWindow().aboveCount}
-                      direction="up"
-                      palette={PALETTE}
-                    />
-                  </Show>
+                <box flexDirection="row" flexGrow={1} minHeight={0}>
                   <box flexDirection="column" flexGrow={1} minHeight={0}>
-                    <For each={scrollWindow().visible}>
-                      {(row) =>
-                        row.kind === 'project-header' ? (
-                          <ProjectHeaderRow
-                            name={row.projectName}
+                    <Show when={scrollWindow().windowed}>
+                      <ScrollAffordance
+                        count={scrollWindow().aboveCount}
+                        direction="up"
+                        palette={PALETTE}
+                      />
+                    </Show>
+                    <box flexDirection="column" flexGrow={1} minHeight={0}>
+                      <Show
+                        when={!showTable()}
+                        fallback={
+                          <WorkspaceTable
+                            rows={() => scrollWindow().visible}
+                            selectedWorkspaceId={selectedWorkspaceId}
+                            plan={tablePlan}
                             palette={PALETTE}
-                            breakpoint={breakpoint()}
                           />
-                        ) : (
-                          <WorkspaceRow
-                            row={row}
-                            plan={plan()}
-                            selected={row.workspaceId === selectedWorkspaceId()}
-                            open={row.tmuxHosted}
-                            palette={PALETTE}
-                            breakpoint={breakpoint()}
-                          />
-                        )
-                      }
-                    </For>
+                        }
+                      >
+                        <For each={scrollWindow().visible}>
+                          {(row) =>
+                            row.kind === 'project-header' ? (
+                              <ProjectHeaderRow
+                                name={row.projectName}
+                                palette={PALETTE}
+                                breakpoint={breakpoint()}
+                                plan={narrowPlan()}
+                              />
+                            ) : (
+                              <WorkspaceRow
+                                row={row}
+                                plan={narrowPlan()}
+                                selected={row.workspaceId === selectedWorkspaceId()}
+                                open={row.tmuxHosted}
+                                palette={PALETTE}
+                                breakpoint={breakpoint()}
+                              />
+                            )
+                          }
+                        </For>
+                      </Show>
+                    </box>
+                    <Show when={scrollWindow().windowed}>
+                      <ScrollAffordance
+                        count={scrollWindow().belowCount}
+                        direction="down"
+                        palette={PALETTE}
+                      />
+                    </Show>
                   </box>
-                  <Show when={scrollWindow().windowed}>
-                    <ScrollAffordance
-                      count={scrollWindow().belowCount}
-                      direction="down"
-                      palette={PALETTE}
-                    />
+                  <Show when={breakpoint() === 'wide'}>
+                    <VRule palette={PALETTE} rows={availableRows()} />
+                    <box width={DETAIL_PANE_WIDTH} flexShrink={0}>
+                      <DetailPane
+                        row={selectedRow()}
+                        projectName={selectedProjectName()}
+                        palette={PALETTE}
+                      />
+                    </box>
                   </Show>
                 </box>
               </Show>
@@ -311,9 +391,7 @@ export function App(props: AppProps): JSX.Element {
           </Show>
         </Show>
       </box>
-      <box flexShrink={0}>
-        <Footer notice={null} palette={PALETTE} breakpoint={breakpoint()} />
-      </box>
+      <Footer notice={null} palette={PALETTE} breakpoint={breakpoint()} />
     </box>
   )
 }

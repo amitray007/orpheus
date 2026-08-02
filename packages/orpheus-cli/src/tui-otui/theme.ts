@@ -100,6 +100,29 @@ export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', 
 export const SPINNER_INTERVAL_MS = 250
 export const KEYMAP_SEPARATOR = ' · '
 
+// ---------------------------------------------------------------------------
+// ghui-inspired devices (docs/TUI_UI_REDESIGN.md) — full-width rules instead
+// of boxes, and a two-tier glyph hierarchy distinguishing project-group
+// headers from individual workspace rows.
+// ---------------------------------------------------------------------------
+
+/** Full-width horizontal rule character — section divider, replacing nested
+ * bordered boxes (ghui device #2: "Horizontal rules as section dividers,
+ * not boxes"). Rendered by repeating this to the terminal's current width. */
+export const RULE_CHAR = '─'
+
+/** Vertical rule character for the wide master/detail split — the only
+ * vertical rule in the whole layout, and it disappears entirely below the
+ * wide breakpoint (ghui device #2: "the only vertical rule is the
+ * master/detail split, and it disappears at narrow"). */
+export const VRULE_CHAR = '│'
+
+/** Project-group header glyph — ghui's `◆` marks group headers (repos in
+ * ghui's case, projects here), sharpening the two-tier hierarchy: a project
+ * header now reads as visually distinct from a workspace row at a glance,
+ * not just via indentation (ghui device #3). */
+export const PROJECT_GLYPH = '◆'
+
 /** Gutter width in characters: 1 (bar) at narrow, 2 (dot + trailing space) at medium/wide. */
 export function gutterWidthFor(breakpoint: 'narrow' | 'medium' | 'wide'): number {
   return breakpoint === 'narrow' ? 1 : 2

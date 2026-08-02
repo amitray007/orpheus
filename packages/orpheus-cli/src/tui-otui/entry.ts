@@ -60,7 +60,7 @@
 
 import { spawn } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
-import { createCliRenderer } from '@opentui/core'
+import { createCliRenderer, type CliRenderer } from '@opentui/core'
 import { render } from '@opentui/solid'
 import { createSignal } from 'solid-js'
 import { subscribe, sendCommand } from '../socket-client.js'
@@ -94,6 +94,67 @@ function debugLog(msg: string): void {
 }
 
 /**
+ * Root-cause fix for the "shrink-repaint" bug (design-pass task: resizing a
+ * wider frame down, e.g. 80x24 -> 44x12, left stale cell debris from the
+ * wider frame on screen — reproduced with ZERO workspaces, confirming it was
+ * a pure repaint bug, not list/data state; the "vanishing rows across
+ * resize+filter toggles" report shared this exact root cause).
+ *
+ * ROOT CAUSE (verified via tui-mcp against @opentui/core@0.4.x's own
+ * chunk-node-*.js — `CliRenderer.processResize()`):
+ * `processResize(width, height)` resizes the native render buffer
+ * (`this.lib.resizeRenderer`) and repaints ONLY the cells within the NEW
+ * (possibly smaller) dimensions via diff-based cell writes — confirmed via
+ * `mcp__tui-mcp__output`'s raw byte capture showing surgical per-cell writes
+ * with no `\x1b[2J`/`\x1b[K` erase sequence anywhere in a shrink resize's
+ * output. `ANSI.clearScreen` IS defined in the library and IS used
+ * elsewhere (`resetSplitFooterForReplay`, initial terminal setup), but is
+ * NEVER called from `processResize()` in the normal fullscreen/alt-screen
+ * mode this app uses (only `screenMode === "split-footer"` gets a
+ * conditional partial clear, a mode we don't use). So when a terminal's own
+ * character grid is wider/taller than what it currently reports (true of
+ * every real terminal emulator across a live resize, and reproduced here via
+ * tui-mcp's pty), cells previously painted outside the NEW bounds are never
+ * told to clear — verified directly: `mcp__tui-mcp__read_region` reading
+ * width=80 on a session already resized down to 44 cols showed the previous
+ * frame's content (a `────` rule fragment past column 44, a duplicated
+ * "quit" past the new footer's end) still sitting in the terminal's grid.
+ * This is a genuine @opentui/core library gap for fullscreen mode, not
+ * something wrong in our component tree — `useTerminalDimensions()`/the
+ * `resize` event both report the new size correctly and immediately.
+ *
+ * FIX: `CliRenderer extends EventEmitter` and emits `'resize'` (width,
+ * height) synchronously from `processResize()`, BEFORE its own
+ * `requestRender()` call queues the next paint. Listening here — at the
+ * renderer level, not inside the Solid tree, so it fires exactly once per
+ * physical resize regardless of what's mounted — and writing `\x1b[2J`
+ * (erase entire screen) directly to the same `stdout` the renderer itself
+ * writes to, ONLY on shrink (either dimension decreasing), clears every
+ * stale cell before the very next diff-paint frame repaints on top. Verified
+ * via tui-mcp: no visible flash (the repaint lands in the same event-loop
+ * turn's immediately-following render), and `read_region` at the old wider
+ * width after the fix shows a fully blank grid past the new bounds — see the
+ * final report for the exact before/after byte captures.
+ *
+ * Deliberately NOT an unconditional clear-every-frame — that would defeat
+ * OpenTUI's documented diff-based repainting performance property (real
+ * concern on SSH). Only fires on shrink, which is the only direction that
+ * leaves stale cells (growing has nothing stale to clear — confirmed via
+ * tui-mcp: 44->120 repaints cleanly with no fix needed).
+ */
+function installShrinkRepaintFix(renderer: CliRenderer): void {
+  let lastWidth = renderer.width
+  let lastHeight = renderer.height
+  renderer.on('resize', (width: number, height: number) => {
+    if (width < lastWidth || height < lastHeight) {
+      process.stdout.write('\x1b[2J')
+    }
+    lastWidth = width
+    lastHeight = height
+  })
+}
+
+/**
  * Mount the picker ONCE per loop iteration and resolve once the user opens
  * a workspace or quits. Frames arrive from OUTSIDE Solid's reactive graph
  * (the /subscribe event callback) and are pushed into a signal created here
@@ -109,6 +170,7 @@ async function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
     consoleMode: 'disabled',
     openConsoleOnError: false
   })
+  installShrinkRepaintFix(renderer)
 
   const [frame, setFrame] = createSignal<TreeFrame | null>(null)
   const [disconnected, setDisconnected] = createSignal<string | null>(null)
