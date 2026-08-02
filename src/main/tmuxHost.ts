@@ -558,9 +558,8 @@ export function shouldBlockNativeMount(
 
 /**
  * MIRROR of shouldBlockNativeMount, protecting the OPPOSITE direction — used
- * by the `workspace.host` command-socket action (commandServer.ts) to refuse
- * creating a tmux session onto a workspace that is CURRENTLY OPEN NATIVELY
- * on the desktop (pre-conversion, or the tmux-missing-fallback case). These
+ * by the `workspace.host` command-socket action (commandServer.ts) to decide
+ * whether creating/attaching a tmux session for this workspace is safe. These
  * two guards are NOT redundant with each other even though they sound
  * similar:
  *   - shouldBlockNativeMount: is there a tmux session ALREADY hosting this
@@ -568,22 +567,46 @@ export function shouldBlockNativeMount(
  *     natively. Queries tmux (list-sessions).
  *   - shouldBlockTmuxHost (this function): is there a LIVE NATIVE surface
  *     or a live `claude` process for this workspace, checked from the
- *     TUI/CLI's `workspace.host` action before it would create a tmux
- *     session. Queries the addon's in-process surface map + claude's own
- *     on-disk session registry (~/.claude/sessions/<pid>.json) — NEVER
- *     queries tmux, since the whole point is to catch the case where NO
- *     tmux session exists yet but shouldn't be created.
- * Pure over its two boolean inputs so the decision is unit-testable without
+ *     TUI/CLI's `workspace.host` action before it would create OR attach to
+ *     a tmux session. Queries the addon's in-process surface map + claude's
+ *     own on-disk session registry (~/.claude/sessions/<pid>.json), PLUS
+ *     (as of the universal-tmux-hosting cutover, docs/TUI_SPEC.md D1) a
+ *     tmux `has-session` query the caller resolves via
+ *     listHostedSessionsCached(), passed in as `tmuxSessionExists`.
+ *
+ * REPURPOSED (docs/TUI_SPEC.md D1 was rewritten from "two disjoint hosts,
+ * first-opener wins" to universal tmux hosting). Under the OLD model, EITHER
+ * signal being live was sufficient to refuse: there was no tmux session to
+ * attach to, so any live native/claude process meant a fresh `--resume` here
+ * would race a second writer against the same transcript. Under the NEW
+ * model that reasoning only holds when NO tmux session exists yet — if the
+ * workspace is already tmux-hosted (the desktop mounted it through the
+ * universal-tmux path), attaching here is just a second tmux CLIENT on an
+ * EXISTING session, which is exactly what tmux is for: one `claude` process,
+ * multiple attached clients, no double-writer risk at all.
+ *
+ * So the real double-launch danger is narrower than "native or claude is
+ * live" — it's "native or claude is live AND there is no tmux session to
+ * attach to instead", i.e. the desktop is running claude natively with NO
+ * tmux session backing it (pre-conversion, or the tmux-missing-fallback
+ * case). A live tmux session always wins and allows the attach, regardless
+ * of what the native-surface/claude-session signals say.
+ *
+ * Pure over its three inputs so the decision is unit-testable without
  * Electron/tmux/claude's session registry involved — see
- * scripts/verify-tmux-host.ts. The two liveness signals themselves
- * (native surface phase, claude session-registry availability) are resolved
- * by the caller (commandServer.ts) since both require live process/Electron
- * state this file must stay free of at import time.
+ * scripts/verify-tmux-host.ts. All three signals are resolved by the caller
+ * (commandServer.ts) since they require live process/Electron/tmux state
+ * this file must stay free of at import time. The caller MUST fail safe
+ * (treat `tmuxSessionExists` as false) when the tmux query itself fails —
+ * a wrong "allow" here risks transcript corruption, a wrong "refuse" is
+ * just a confusing message the user can retry.
  */
 export function shouldBlockTmuxHost(
   nativeSurfaceLive: boolean,
-  claudeSessionLive: boolean
+  claudeSessionLive: boolean,
+  tmuxSessionExists: boolean
 ): boolean {
+  if (tmuxSessionExists) return false
   return nativeSurfaceLive || claudeSessionLive
 }
 

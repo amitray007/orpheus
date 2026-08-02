@@ -30,9 +30,20 @@
  * macOS-only, arm64-only: matches fetch-bun.sh / the rest of the Orpheus
  * build (Apple Silicon only, no Intel/Linux variant).
  */
-import { cpSync, copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import {
+  cpSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { stripTrailingSourceMappingComment } from './lib/sourceMapStrip.mjs'
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const REPO_NODE_MODULES = resolve(projectRoot, 'node_modules')
@@ -138,6 +149,53 @@ function stagePackage(pkgName, extraExclude) {
   })
 }
 
+// ---------------------------------------------------------------------------
+// Step 3: strip dangling `//# sourceMappingURL=...` comments left behind by
+// the .map exclusion in stagePackage() above.
+//
+// Every vendored package emits its `.js` files with a trailing
+// `//# sourceMappingURL=<basename>.js.map` comment (verified: exactly one
+// occurrence per file, always the final line). Since Step 2 never stages the
+// referenced `.map` file, Bun's runtime source-map loader still tries to
+// resolve it on first load of that module and — finding nothing — logs
+// `warn: Could not decode sourcemap in '<path>': UnsupportedFormat` straight
+// over the TUI's rendered output. Shipping the maps instead would be ~5.4MB
+// for zero user-facing benefit (devtools-only), so the comment itself is
+// stripped post-copy rather than kept pointing at a file that doesn't exist.
+//
+// The actual string transform (stripTrailingSourceMappingComment) lives in
+// ./lib/sourceMapStrip.mjs — pulled out into its own zero-side-effect module
+// so scripts/verify-tmux-host.ts can unit-test it directly without importing
+// (and re-running) this whole script's top-level staging pipeline.
+// ---------------------------------------------------------------------------
+
+/**
+ * Walks a directory tree and strips the trailing sourceMappingURL comment
+ * from every `.js` file found. Returns the count of files actually modified,
+ * so the caller can log/verify something real happened.
+ * @param {string} rootDir
+ * @returns {number}
+ */
+function stripSourceMapCommentsRecursive(rootDir) {
+  let modifiedCount = 0
+  for (const entry of readdirSync(rootDir)) {
+    const full = join(rootDir, entry)
+    const stat = statSync(full)
+    if (stat.isDirectory()) {
+      modifiedCount += stripSourceMapCommentsRecursive(full)
+      continue
+    }
+    if (!entry.endsWith('.js')) continue
+    const original = readFileSync(full, 'utf8')
+    const stripped = stripTrailingSourceMappingComment(original)
+    if (stripped !== original) {
+      writeFileSync(full, stripped)
+      modifiedCount++
+    }
+  }
+  return modifiedCount
+}
+
 // Fresh start so stale files from a previous build never linger.
 rmSync(NM_DEST, { recursive: true, force: true })
 
@@ -153,3 +211,8 @@ stagePackage('string-width')
 stagePackage('strip-ansi')
 
 console.log(`[package-tui-assets] staged trimmed node_modules -> ${NM_DEST}`)
+
+const strippedCount = stripSourceMapCommentsRecursive(NM_DEST)
+console.log(
+  `[package-tui-assets] stripped dangling sourceMappingURL comments from ${strippedCount} file(s)`
+)

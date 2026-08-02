@@ -752,13 +752,12 @@ function makeDispatchTable(
       // willMountCreateSurface (index.ts) stops the DESKTOP from creating a
       // tmux session onto a workspace already tmux-hosted. This stops the
       // TUI/CLI (this action) from creating a tmux session onto a workspace
-      // that is CURRENTLY OPEN NATIVELY on the desktop — pre-conversion, or
-      // via the tmux-missing-fallback path — whose `claude` is already
-      // live and writing the same transcript a fresh `--resume` here would
-      // race against. Two independent signals are checked (either one being
-      // "live" is enough to refuse — favor a false-positive refusal, which
-      // just means "open it on desktop instead", over a false-negative,
-      // which corrupts a transcript with two writers):
+      // that is CURRENTLY OPEN NATIVELY on the desktop with NO tmux session
+      // backing it (pre-conversion, or via the tmux-missing-fallback path)
+      // — whose `claude` is already live and writing the same transcript a
+      // fresh `--resume` here would race against. Three signals feed
+      // shouldBlockTmuxHost (see its doc comment in tmuxHost.ts for the full
+      // truth table):
       //   1. deps.getSurfacePhase — is there a live libghostty surface ENTRY
       //      for this workspace in the CURRENT process's addon surface map.
       //   2. getWorkspaceFileInfo — is `claude`'s OWN on-disk session
@@ -768,12 +767,30 @@ function makeDispatchTable(
       //      authoritative "is claude actually running" signal used
       //      everywhere else in the app per CLAUDE.md's "Workspace activity
       //      status" section).
-      // Neither check involves tmux at all, so this runs before any tmux
-      // I/O — a refusal here never creates or touches a session.
+      //   3. listHostedSessionsCached — is there ALREADY a tmux session for
+      //      this workspace. If so, attaching is always safe (a second tmux
+      //      CLIENT on an existing session, not a second `claude` writer),
+      //      so this signal short-circuits (1) and (2) to an allow — see
+      //      hostWorkspace()'s own has-session→reuse-or-create idempotency,
+      //      which is what actually attaches here. FAIL SAFE: if the tmux
+      //      query itself throws (TmuxNotAvailableError or otherwise),
+      //      treat it as "no session exists" rather than let an unknown
+      //      tmux state turn into a spurious allow — the cost of a wrong
+      //      allow is transcript corruption, the cost of a wrong refuse is
+      //      just a confusing message the user can retry.
       const nativeSurfaceLive = deps.getSurfacePhase(workspace.id) !== 'none'
       const claudeSessionLive = getWorkspaceFileInfo(workspace.id).availability === 'available'
-      if (shouldBlockTmuxHost(nativeSurfaceLive, claudeSessionLive)) {
-        const sessionName = tmuxSessionName(workspace.name, workspace.id)
+      const sessionName = tmuxSessionName(workspace.name, workspace.id)
+      let tmuxSessionExists = false
+      try {
+        const hostedSessions = await listHostedSessionsCached()
+        tmuxSessionExists = hostedSessions.has(sessionName)
+      } catch {
+        // Fail safe: unknown tmux state must never look like "already
+        // hosted" — leave tmuxSessionExists false so the existing
+        // native/claude-liveness guard still applies below.
+      }
+      if (shouldBlockTmuxHost(nativeSurfaceLive, claudeSessionLive, tmuxSessionExists)) {
         return {
           sessionName,
           socketName: resolveTmuxSocketName(),
@@ -782,8 +799,8 @@ function makeDispatchTable(
           refused: {
             reason: 'open-on-desktop',
             message:
-              'This workspace is already open natively on the desktop. Close and reopen it there ' +
-              'to convert it to tmux hosting, then try again.'
+              'This workspace is already open natively on the desktop with no tmux session yet. ' +
+              'Close it there (or wait for it to finish converting to tmux hosting) and try again.'
           }
         }
       }
