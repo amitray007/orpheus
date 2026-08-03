@@ -123,9 +123,9 @@ const ELLIPSIS = '...'
 /**
  * Hard-truncate `name` to at most `width` TERMINAL COLUMNS, appending an
  * ellipsis when cut. Uses `string-width` (already an installed dependency of
- * `@opentui/core`, transitively reachable from this package without a
- * package.json edit — see the caller's investigation notes) for measurement
- * because JS string `.length` counts UTF-16 code units, not display columns:
+ * `ink`, transitively reachable from this package without a package.json
+ * edit) for measurement because JS string `.length` counts UTF-16 code
+ * units, not display columns:
  * wide CJK/fullwidth characters are 1 `.length` unit but 2 terminal columns,
  * which would silently corrupt column alignment for real Claude-set OSC
  * titles (arbitrary text, not guaranteed ASCII). For pure-ASCII input

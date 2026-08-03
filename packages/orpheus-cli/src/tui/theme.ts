@@ -128,20 +128,35 @@ export interface Palette {
  * legibility and for being mutually distinct, not constrained to a color
  * cube (see the file header) — run `paletteDriftReport()` after editing
  * any of these to confirm the 256-color downsample still lands close.
+ *
+ * CARD REDESIGN — VALUES UPDATED TO MATCH tui-otui/theme.ts's PALETTE
+ * -----------------------------------------------------------------------
+ * These are the exact hex values the card-redesign brief specifies (also
+ * ported into tui-otui/theme.ts's PALETTE — see that file's own header for
+ * the full per-value rationale):
+ *   attention: #ff6b6b (was #ff5d62 — tuned off pure red, which vibrates
+ *     against a near-black ground)
+ *   working (displayed as "in progress"): #7aa2f7 (was #7fd88f — this hex
+ *     was previously `awaiting`'s value; working/in-progress now takes it)
+ *   awaiting: #ffcc66 (was #7aa2f7 — now has its own distinct yellow)
+ *   idle: #8a90a6 (was #6b7089 — same neighborhood, nudged to the brief's
+ *     exact suggested hex)
+ * accent/border/secondary/text/modelText/selectedBg are unchanged from the
+ * pre-redesign values.
  */
 const DARK: Palette = {
-  attention: '#ff5d62',
-  working: '#7fd88f',
-  awaiting: '#7aa2f7',
-  idle: '#6b7089',
+  attention: '#ff6b6b',
+  working: '#7aa2f7',
+  awaiting: '#ffcc66',
+  idle: '#8a90a6',
   // Purple — distinct from every status hue above (red/green/blue), so it
   // reads unambiguously as "cursor", never as a 5th status color.
   accent: '#bb9af7',
   border: '#3b3f58',
   secondary: '#8b90a8',
   text: '#e3e5f0',
-  // Neutral teal-grey — distinct from attention (red), working (green),
-  // awaiting (blue) and idle (grey-blue), so line 1's model token never
+  // Neutral teal-grey — distinct from attention (red), working (blue),
+  // awaiting (yellow) and idle (grey-blue), so line 1's model token never
   // reads as a status colour.
   modelText: '#5fb3a3',
   selectedBg: '#2a2e45'
@@ -252,8 +267,38 @@ export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', 
 /** Tick interval for the spinner passed to `useAnimation({interval})` — see Spinner.tsx for why
  * this is deliberately slower than a typical 80-100ms spinner (SSH/phone link). */
 export const SPINNER_INTERVAL_MS = 250
-/** Separator between footer keymap hints, Lipgloss-style. */
-export const KEYMAP_SEPARATOR = ' · '
+/** Separator between footer keymap hints, Lipgloss-style.
+ *
+ * CARD REDESIGN: was `' · '` (U+00B7 MIDDLE DOT) — confirmed
+ * East_Asian_Width=Ambiguous per Unicode's EastAsianWidth.txt despite
+ * looking like it should be narrow (see tui-otui/theme.ts's file header for
+ * the verification method). A plain-ASCII `' - '` was tried first and
+ * verified glyph-safe, but read as visual noise next to already-bold/
+ * accent-colored key labels when reviewed live via tui-mcp. Settled on
+ * three plain spaces — trivially Na (space is Na), zero extra glyphs, and
+ * the live render reads cleaner. */
+export const KEYMAP_SEPARATOR = '   '
+
+/** Worktree-branch marker, prefixed to line 3 of a WorkspaceCard
+ *  (`⎇ branch`) — U+2387, confirmed Narrow (N) in EastAsianWidth.txt. NOT
+ *  the same export as layout.ts's own `WORKTREE_GLYPH` (`»`, used by the
+ *  older WorkspaceRow.tsx one-line-row renderer) — that's a different
+ *  glyph for a different (soon-to-be-dead) component; this one is what
+ *  WorkspaceCard.tsx actually imports and renders. */
+export const WORKTREE_GLYPH = '⎇'
+
+/** Horizontal rule character (Rule.tsx). Was `─` (U+2500 BOX DRAWINGS LIGHT
+ *  HORIZONTAL, confirmed Ambiguous); replaced with `-` (U+002D
+ *  HYPHEN-MINUS, confirmed Narrow). Not used by TitleBar.tsx (its own rule
+ *  was dropped for a blank line — see TitleBar.tsx's file header); kept for
+ *  other callers (e.g. DetailPane's internal layout). */
+export const RULE_CHAR = '-'
+
+/** Vertical rule character (VRule.tsx) — the wide-tier master/detail
+ *  split's only vertical rule. Was `│` (U+2502 BOX DRAWINGS LIGHT VERTICAL,
+ *  confirmed Ambiguous); replaced with `|` (U+007C VERTICAL LINE, confirmed
+ *  Narrow). */
+export const VRULE_CHAR = '|'
 
 // ---------------------------------------------------------------------------
 // Selection gutter — shared sizing between WorkspaceRow and ProjectHeaderRow

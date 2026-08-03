@@ -21,12 +21,29 @@ export interface TreeWorkspace {
   waitingFor?: string | null
   parentWorkspaceId?: string | null
   worktreeBranch?: string | null
+  /** The workspace cwd's actual current git branch, resolved independently
+   *  server-side on every tree frame — see src/shared/types.ts's own
+   *  `gitBranch` field doc comment for the full rationale. Optional so an
+   *  older server that hasn't shipped this field yet still renders (card
+   *  falls back to a blank branch line). DISPLAY PRECEDENCE (card's branch
+   *  line): `worktreeBranch ?? gitBranch` — `worktreeBranch` wins when
+   *  non-null, `gitBranch` is the fallback that actually populates the line
+   *  for ordinary (non-worktree) workspaces. */
+  gitBranch?: string | null
   sortOrder?: number | null
   tmuxHosted?: boolean
   lastActivityAt?: number | null
   /** Live OSC terminal title Claude Code sets while working; falls back to
    *  `name` when null/empty/absent. */
   lastTitle?: string | null
+  /** Effective (layered) Claude model for this workspace — see
+   *  src/main/claudeSettings.ts's resolveEffectiveModelAndEffort and
+   *  src/shared/types.ts's TreeWorkspaceFrame. Optional so an older server
+   *  that hasn't shipped this field yet still renders (card omits the
+   *  model/effort line's content, not the whole card). */
+  model?: string | null
+  /** Effective effort for this workspace, same resolution ladder as `model`. */
+  effort?: string | null
 }
 
 /** A single project group inside a `tree` frame. */

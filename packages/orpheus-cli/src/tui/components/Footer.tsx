@@ -1,17 +1,16 @@
 /**
- * tui/components/Footer.tsx — keymap hint line, or a transient notice
- * (e.g. "'n' is not yet wired in this build") in its place.
+ * tui/components/Footer.tsx — keymap hint line, or a transient notice in its
+ * place.
  *
- * Lipgloss-style key hints: a dim key glyph followed by its label, joined
- * with a middle-dot separator — replaces the previous single flat dimColor
- * line where key and label had no visual distinction from each other.
+ * KEYMAP IS INTENTIONALLY SMALL: only enter/j-k/v/?/q are implemented —
+ * n/x/a/r require server actions beyond workspace.host/unhost, out of scope
+ * (see docs behind the card redesign). No "not yet wired" placeholders for
+ * keys that don't exist in this keymap at all.
  *
- * NARROW WIDTH: the full 8-key hint line (~78 chars) never fit in 44 cols —
- * even the ORIGINAL flat-string footer silently overflowed to a second
- * line there, which is exactly the "footer costs more than 1 row" bug the
- * windowing math must not repeat. At narrow, show only the highest-value
- * keys (open/filter/help/quit) so the whole line fits in one row; at
- * medium/wide there's room for the full keymap.
+ * RENAME: `f` (filter) -> `v` (view) — card redesign. NO ARROW GLYPHS: `↵`/
+ * `↑`/`↓` are dropped in favor of the plain-ASCII word `enter` and `j/k`
+ * alone for move, avoiding every East_Asian_Width=Ambiguous glyph risk
+ * entirely (see theme.ts's file header).
  */
 
 import * as React from 'react'
@@ -21,20 +20,17 @@ import { KEYMAP_SEPARATOR } from '../theme.js'
 import type { Palette } from '../theme.js'
 
 const ALL_KEYS: Array<[string, string]> = [
-  ['↵', 'open'],
-  ['n', 'new'],
-  ['x', 'kill'],
-  ['a', 'archive'],
-  ['r', 'rename'],
-  ['f', 'filter'],
+  ['enter', 'open'],
+  ['j/k', 'move'],
+  ['v', 'view'],
   ['?', 'keys'],
   ['q', 'quit']
 ]
 
 /** Highest-value subset that still fits comfortably inside 44 columns. */
 const NARROW_KEYS: Array<[string, string]> = [
-  ['↵', 'open'],
-  ['f', 'filter'],
+  ['enter', 'open'],
+  ['v', 'view'],
   ['?', 'keys'],
   ['q', 'quit']
 ]

@@ -249,7 +249,22 @@ function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
   // uses) and cuts redraw traffic over SSH. UNVERIFIED specifically on
   // Termius (iOS) — if it misbehaves on-device (garbled restore, blank
   // screen on detach), this is the one line to flip back to `false`.
-  const instance: Instance = render(node, { alternateScreen: true })
+  //
+  // exitOnCtrlC: false — Ink's default (true) calls process.exit() on Ctrl-C
+  // internally, bypassing this function's own onQuit-driven cleanup
+  // (currentSubscription?.close(), the `settleOnce`/`.finally()` unmount +
+  // waitUntilExit() sequence below). The OpenTUI reference build
+  // (tui-otui/entry.ts) made the same choice for the same reason: quit is
+  // handled entirely by the app's own q/escape keys (see App.tsx's
+  // useInput), which already call onQuit -> settleOnce, so Ctrl-C hitting a
+  // hard process.exit() instead would skip subscription teardown and the
+  // unmount/waitUntilExit ordering this file relies on to leave the
+  // terminal in a clean state. Ctrl-C fed through App.tsx's own useInput as
+  // a plain keypress is a no-op there today (no explicit handler for it),
+  // which matches Ink's own non-raw-mode terminal behavior of doing nothing
+  // for keys it doesn't recognize — not a regression, since q/escape remain
+  // the documented quit keys (see Footer.tsx/HelpOverlay.tsx).
+  const instance: Instance = render(node, { alternateScreen: true, exitOnCtrlC: false })
 
   return new Promise<PickerOutcome>((resolve) => {
     settleOnce = (outcome) => {

@@ -119,7 +119,7 @@ export function WorkspaceCard({
 
   return (
     <Box flexDirection="column" flexShrink={0}>
-      <Box flexDirection="row">
+      <Box flexDirection="row" height={1} flexShrink={0}>
         <Text color={palette.accent} backgroundColor={bg}>
           {gutter}
         </Text>
@@ -130,7 +130,7 @@ export function WorkspaceCard({
           {right}
         </Text>
       </Box>
-      <Box flexDirection="row">
+      <Box flexDirection="row" height={1} flexShrink={0}>
         <Text color={palette.accent} backgroundColor={bg}>
           {gutter}
         </Text>
@@ -143,7 +143,7 @@ export function WorkspaceCard({
           {titleText}
         </Text>
       </Box>
-      <Box flexDirection="row">
+      <Box flexDirection="row" height={1} flexShrink={0}>
         <Text color={palette.accent} backgroundColor={bg}>
           {gutter}
         </Text>

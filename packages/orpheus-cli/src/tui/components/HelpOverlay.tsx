@@ -1,14 +1,16 @@
 /**
  * tui/components/HelpOverlay.tsx — full keymap reference, shown on `?`.
  *
- * `n`/`x`/`a`/`r` are explicitly labelled "not yet wired" here (rather than
- * omitted) so pressing them gets an honest inline message instead of a silent
- * no-op — see docs/TUI_SPEC.md D6 / the tui.ts task brief.
+ * ONLY LISTS IMPLEMENTED KEYS — n/x/a/r are omitted entirely (not listed as
+ * "not yet wired"), matching the card redesign's smaller keymap: those
+ * require server actions beyond workspace.host/unhost that aren't wired in
+ * this build.
+ *
+ * RENAME: `f` (filter) -> `v` (view) — card redesign.
  *
  * This is the ONE place a border is used regardless of breakpoint — it's a
  * transient overlay replacing the footer, not permanent chrome competing for
- * the narrow layout's scarce 12 rows, so the "no borders at narrow" rule
- * (see Header.tsx) doesn't apply here.
+ * the narrow layout's scarce rows.
  */
 
 import * as React from 'react'
@@ -18,13 +20,9 @@ import type { Breakpoint } from '../layout.js'
 import type { Palette } from '../theme.js'
 
 const ROWS: Array<[string, string]> = [
-  ['↵', 'open the highlighted workspace (hosts it in tmux, attaches)'],
-  ['↑/↓, j/k', 'move the highlighted row'],
-  ['n', 'new workspace — not yet wired in this build'],
-  ['x', 'kill the tmux session, keep workspace resumable — not yet wired'],
-  ['a', 'archive + kill the tmux session — not yet wired'],
-  ['r', 'rename the workspace — not yet wired'],
-  ['f', 'cycle filter: active -> all'],
+  ['enter', 'open the highlighted workspace (hosts it in tmux, attaches)'],
+  ['j/k', 'move the highlighted row'],
+  ['v', 'cycle view: active -> all'],
   ['?', 'toggle this help'],
   ['q', 'quit']
 ]
