@@ -30,6 +30,7 @@
     "check": "bun run typecheck && bun run lint && bun run check:dup && bun run check:arch",
     "test:db": "node --experimental-strip-types scripts/verify-migration-engine.ts",
     "test:flags": "node --experimental-strip-types scripts/verify-cli-flags.ts",
+    "tui:dev": "./scripts/tui-dev.sh",
     "test:tui": "bun run scripts/verify-tui-layout.ts",
     "test:tui-blocks": "bun run scripts/verify-tui-blocks.ts",
     "test:workbench": "bun run scripts/verify-workbench-reducer.ts",
