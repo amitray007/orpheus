@@ -15,6 +15,7 @@
 import * as React from 'react'
 import { Box, Text } from 'ink'
 import type { Palette } from '../theme.js'
+import { CARD_GUTTER_WIDTH, CARD_PAD_GUTTER } from '../theme.js'
 
 export interface ProjectGroupHeaderProps {
   name: string
@@ -32,9 +33,14 @@ function ProjectGroupHeaderImpl({
   return (
     <Box flexDirection="column" flexShrink={0}>
       {withLeadingBlank ? <Box height={1} flexShrink={0} /> : null}
-      <Text bold color={palette.accent} wrap="truncate-end">
-        {name}
-      </Text>
+      {/* Indented by the card's rail + spacer so the project name starts in
+          the same column as the card text beneath it, rather than hanging one
+          rail-width to the left of every workspace it groups. */}
+      <Box paddingLeft={CARD_GUTTER_WIDTH + CARD_PAD_GUTTER} flexShrink={0}>
+        <Text bold color={palette.accent} wrap="truncate-end">
+          {name}
+        </Text>
+      </Box>
     </Box>
   )
 }

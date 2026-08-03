@@ -10,7 +10,8 @@
  * (ProjectGroupHeader) — one layout that breathes (spacing grows with
  * width) rather than reflowing into a different shape. The only
  * breakpoint-conditional structure is the wide-tier (>=120 cols)
- * master/detail split: cards on the left, DetailPane + VRule on the right.
+ * master/detail split: cards on the left, DetailPane (whose own left border
+ * draws the divider) on the right.
  *
  * BREAKPOINT RESOLUTION — cardBreakpoints.ts, NOT layout.ts's
  * resolveBreakpoint. The two disagree on where "narrow" ends (59 vs 51) —
@@ -74,8 +75,7 @@ import { ProjectGroupHeader } from './components/ProjectGroupHeader.js'
 import { WorkspaceCard } from './components/WorkspaceCard.js'
 import { ScrollAffordance } from './components/ScrollAffordance.js'
 import { DetailPane } from './components/DetailPane.js'
-import { VRule } from './components/VRule.js'
-import { activePalette } from './theme.js'
+import { activePalette, VRULE_PAD_X } from './theme.js'
 import type { Palette } from './theme.js'
 import type { TreeWorkspace } from './types.js'
 
@@ -88,7 +88,11 @@ export interface AppProps {
 
 const FOOTER_ROWS = 1
 const DETAIL_PANE_WIDTH = 42
-const VRULE_WIDTH = 1
+const VRULE_WIDTH = 1 + VRULE_PAD_X
+/** Blank columns held inside each terminal edge. Applied once on the root
+ *  frame so the title bar, cards, detail pane and footer all clear the
+ *  border by the same amount — no element renders flush against it. */
+const FRAME_PAD_X = 1
 /** Every workspace card is exactly this many terminal rows — see
  *  blocks.ts's file header for why this is a caller-supplied parameter
  *  rather than a constant baked into that module. */
@@ -190,19 +194,19 @@ function PickerBody({
         ) : null}
       </Box>
       {isWide ? (
-        <>
-          <VRule palette={palette} rows={availableRows} />
-          <Box width={DETAIL_PANE_WIDTH} flexShrink={0}>
-            <DetailPane
-              row={selectedRow}
-              projectName={selectedProjectName}
-              gitBranch={workspaceById.get(selectedRow?.workspaceId ?? '')?.gitBranch ?? null}
-              palette={palette}
-              width={Math.max(0, DETAIL_PANE_WIDTH - 2)}
-              rows={availableRows}
-            />
-          </Box>
-        </>
+        // No VRule sibling — the divider is DetailPane's own left border (see
+        // that file's header for why a separate rule column could not stay
+        // row-aligned with the pane).
+        <Box width={DETAIL_PANE_WIDTH} flexShrink={0} marginLeft={VRULE_PAD_X}>
+          <DetailPane
+            row={selectedRow}
+            projectName={selectedProjectName}
+            gitBranch={workspaceById.get(selectedRow?.workspaceId ?? '')?.gitBranch ?? null}
+            palette={palette}
+            width={Math.max(0, DETAIL_PANE_WIDTH - 3)}
+            rows={availableRows}
+          />
+        </Box>
       ) : null}
     </Box>
   )
@@ -327,7 +331,15 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
 
   // Card width == full available terminal width at every breakpoint —
   // narrowed by the detail pane + vertical rule budget only at wide.
-  const cardAreaWidth = isWide ? Math.max(20, columns - DETAIL_PANE_WIDTH - VRULE_WIDTH) : columns
+  // One blank column inside each terminal edge, applied ONCE on the root
+  // frame below (paddingX) rather than per component — so nothing renders
+  // flush against the border and no child can accidentally opt out. Every
+  // width computed below is against contentWidth, never the raw terminal
+  // width, so a padded child can never overrun the frame it sits in.
+  const contentWidth = Math.max(1, columns - FRAME_PAD_X * 2)
+  const cardAreaWidth = isWide
+    ? Math.max(20, contentWidth - DETAIL_PANE_WIDTH - VRULE_WIDTH)
+    : contentWidth
 
   const blocks = useMemo((): Block[] => buildBlocks(flattened.rows, CARD_HEIGHT), [flattened])
 
@@ -356,7 +368,7 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
     // to its content, and Ink centres that short block vertically — the whole
     // UI floats in the middle of an otherwise empty terminal with the footer
     // riding directly under the last card instead of sitting at the bottom.
-    <Box flexDirection="column" height={rows}>
+    <Box flexDirection="column" height={rows} paddingX={FRAME_PAD_X}>
       <TitleBar
         scope={scope}
         connected={frame != null && connectionNotice == null}
@@ -366,7 +378,7 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
         totalCount={flattened.totalCount}
         breakpoint={breakpoint}
         palette={palette}
-        width={columns}
+        width={contentWidth}
       />
       {/* flexGrow={1} takes every row the title bar and footer don't, so the
           footer is pushed to the last line at any terminal height. */}

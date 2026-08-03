@@ -294,11 +294,12 @@ export const WORKTREE_GLYPH = '⎇'
  *  other callers (e.g. DetailPane's internal layout). */
 export const RULE_CHAR = '-'
 
-/** Vertical rule character (VRule.tsx) — the wide-tier master/detail
- *  split's only vertical rule. Was `│` (U+2502 BOX DRAWINGS LIGHT VERTICAL,
- *  confirmed Ambiguous); replaced with `|` (U+007C VERTICAL LINE, confirmed
- *  Narrow). */
-export const VRULE_CHAR = '|'
+/** Blank columns between the card list and the wide-tier detail pane. The
+ *  divider itself is no longer a glyph constant: DetailPane draws it as its
+ *  own left border (Ink's `borderStyle="single"`), because a separate rule
+ *  column could not be kept row-aligned with the pane beside it — see
+ *  DetailPane.tsx's header for the holes that produced. */
+export const VRULE_PAD_X = 1
 
 // ---------------------------------------------------------------------------
 // Selection gutter — shared sizing between WorkspaceRow and ProjectHeaderRow
@@ -324,9 +325,29 @@ export function gutterWidthFor(breakpoint: Breakpoint): number {
  * The slot is always occupied — a space when unselected — so selecting a
  * card swaps a rune in place and can never shift layout by a cell.
  */
-export const CARD_GUTTER_SELECTED = '|'
+/**
+ * The selection rail — U+258C LEFT HALF BLOCK. Repeated on each of the card's
+ * three lines it joins vertically into ONE unbroken bar, which is the point:
+ * an ASCII '|' repeated per row reads as three stacked pipes with visible
+ * gaps at the row boundaries, not as a single marker for one object.
+ *
+ * This glyph is East_Asian_Width=**A (Ambiguous)** — 2 columns in a
+ * CJK-configured terminal — and that is normally disqualifying here (see
+ * ROW_WORKTREE_GLYPH's note in layout.ts). It is safe ONLY because the rail
+ * lives in its own fixed-width <Box width={CARD_GUTTER_WIDTH}> sibling, never
+ * inside a padded content string: a 2-column render clips at the box edge
+ * instead of pushing the card's text one column right. Do NOT move this glyph
+ * into a padEnd()'d line — every joining rail candidate (│ ┃ ▏ ▎) is
+ * Ambiguous, so there is no ASCII escape hatch if that invariant breaks.
+ */
+export const CARD_GUTTER_SELECTED = '▌'
 export const CARD_GUTTER_EMPTY = ' '
 export const CARD_GUTTER_WIDTH = 1
+
+/** Blank columns between the terminal edge and the rail, and again between
+ *  the rail and the card text — so nothing sits flush against the border. */
+export const CARD_PAD_LEFT = 1
+export const CARD_PAD_GUTTER = 1
 
 /** Card gutter content — see CARD_GUTTER_SELECTED. */
 export function cardGutterFor(selected: boolean): string {

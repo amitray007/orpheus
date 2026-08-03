@@ -100,7 +100,24 @@ export function DetailPane({
   const branch = row.worktreeBranch ?? gitBranch
 
   return (
-    <Box flexDirection="column" paddingLeft={2} height={Math.max(1, rows)} overflowY="hidden">
+    // The master/detail divider is this pane's own LEFT BORDER, not a separate
+    // VRule column. Two independent columns could not be kept row-aligned:
+    // Ink laid the rule and the pane out separately, and every row where their
+    // heights disagreed rendered the rule blank, punching visible holes in it
+    // (worse when built as N sibling <Text> rows — the holes alternated).
+    // A border belongs to one element, so it cannot fall out of sync with the
+    // content it borders. paddingLeft keeps the labels off the border itself.
+    <Box
+      flexDirection="column"
+      borderStyle="single"
+      borderTop={false}
+      borderRight={false}
+      borderBottom={false}
+      borderColor={palette.border}
+      paddingLeft={2}
+      height={Math.max(1, rows)}
+      overflowY="hidden"
+    >
       <Text bold color={palette.accent} wrap="truncate-end">
         {displayTitleFor(row)}
       </Text>

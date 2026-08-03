@@ -45,7 +45,7 @@
 
 import React from 'react'
 import { Box, Text } from 'ink'
-import { WORKTREE_GLYPH, cardGutterFor } from '../theme.js'
+import { WORKTREE_GLYPH, cardGutterFor, CARD_GUTTER_WIDTH, CARD_PAD_GUTTER } from '../theme.js'
 import type { Palette } from '../theme.js'
 import { displayTitleFor, truncate, type DisplayRow } from '../layout.js'
 import { formatAge, formatModelEffort, line1Parts } from '../format.js'
@@ -92,7 +92,9 @@ export function WorkspaceCard({
   palette
 }: WorkspaceCardProps): React.JSX.Element {
   const gutter = cardGutterFor(selected)
-  const innerWidth = Math.max(1, width - 1)
+  // The rail column PLUS the blank column separating it from the text, so
+  // neither the rail nor the tint sits flush against the card's own copy.
+  const innerWidth = Math.max(1, width - CARD_GUTTER_WIDTH - CARD_PAD_GUTTER)
   const bg = selected ? palette.selectedBg : undefined
 
   // ---- Line 1: model/effort (left) + status/elapsed (right) ----
@@ -117,12 +119,27 @@ export function WorkspaceCard({
       ? ''.padEnd(innerWidth)
       : truncate(`${WORKTREE_GLYPH} ${branch}`, innerWidth).padEnd(innerWidth)
 
-  return (
-    <Box flexDirection="column" flexShrink={0}>
-      <Box flexDirection="row" height={1} flexShrink={0}>
+  /** Rail + the blank column after it. The rail sits in a FIXED-WIDTH Box so
+   *  an Ambiguous-width glyph (see theme.ts's CARD_GUTTER_SELECTED) clips at
+   *  the box edge in a CJK terminal instead of shoving the card's text right;
+   *  the spacer keeps the text and the tint off the rail itself. */
+  const rail = (
+    <>
+      <Box width={CARD_GUTTER_WIDTH} flexShrink={0}>
         <Text color={palette.accent} backgroundColor={bg}>
           {gutter}
         </Text>
+      </Box>
+      <Box width={CARD_PAD_GUTTER} flexShrink={0}>
+        <Text backgroundColor={bg}> </Text>
+      </Box>
+    </>
+  )
+
+  return (
+    <Box flexDirection="column" flexShrink={0}>
+      <Box flexDirection="row" height={1} flexShrink={0}>
+        {rail}
         <Text backgroundColor={bg} color={palette.modelText} wrap="truncate">
           {left}
         </Text>
@@ -131,9 +148,7 @@ export function WorkspaceCard({
         </Text>
       </Box>
       <Box flexDirection="row" height={1} flexShrink={0}>
-        <Text color={palette.accent} backgroundColor={bg}>
-          {gutter}
-        </Text>
+        {rail}
         <Text
           backgroundColor={bg}
           color={selected ? palette.accent : palette.text}
@@ -144,9 +159,7 @@ export function WorkspaceCard({
         </Text>
       </Box>
       <Box flexDirection="row" height={1} flexShrink={0}>
-        <Text color={palette.accent} backgroundColor={bg}>
-          {gutter}
-        </Text>
+        {rail}
         <Text backgroundColor={bg} color={palette.secondary} wrap="truncate">
           {branchText}
         </Text>
