@@ -483,6 +483,14 @@ export type PinnedItem = {
  */
 export type WorkspaceHostResult = {
   sessionName: string
+  /** The TUI's own grouped session (tmuxHost.ts's tmuxTuiSessionName). The
+   *  TUI attaches HERE, not to `sessionName`: grouped sessions share the
+   *  window and pane but keep independent session options, which is the only
+   *  way to give the TUI a status-bar footer while the desktop client — same
+   *  terminal, same pane — gets no status row at all. The server computes it
+   *  so the CLI never re-derives a session name and can never drift from the
+   *  naming rules in tmuxHost.ts. */
+  tuiSessionName: string
   socketName: string
   created: boolean
   alreadyRunning: boolean

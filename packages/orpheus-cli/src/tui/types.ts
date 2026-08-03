@@ -86,6 +86,13 @@ export function isTreeFrame(evt: unknown): evt is TreeFrame {
 /** Response shape of the `workspace.host` action (see docs/TUI_SPEC.md). */
 export interface WorkspaceHostResult {
   sessionName: string
+  /** The TUI's grouped session — mirrors src/shared/types.ts's field of the
+   *  same name. The TUI attaches HERE rather than to `sessionName`: same
+   *  window and pane, but its own session options, which is what lets the TUI
+   *  show a footer while the desktop client gets no status row. Optional so
+   *  an older server that predates the field still attaches (entry.ts falls
+   *  back to `sessionName`). */
+  tuiSessionName?: string
   socketName: string
   created: boolean
   alreadyRunning: boolean

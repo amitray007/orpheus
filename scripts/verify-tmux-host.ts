@@ -35,6 +35,7 @@ import * as os from 'node:os'
 import {
   tmuxSocketNameForAppName,
   tmuxSessionName,
+  tmuxTuiSessionName,
   shouldBlockNativeMount,
   shouldBlockTmuxHost,
   shouldRetainInTmuxEnvironment,
@@ -646,24 +647,32 @@ function workspace(
     })
   }
 
+  // TWO call sites, both in tmuxHost.ts and each with a distinct job:
+  // hostWorkspace() CREATES a workspace's session, and ensureTuiSession()
+  // GROUPS a second session onto that already-existing one (`-t <primary>`,
+  // which errors if the target is missing — it can never create a workspace).
+  // The invariant this guards is unchanged: no OTHER file may spawn a
+  // workspace session behind hostWorkspace()'s back.
   assert.equal(
     matches.length,
-    1,
-    `expected exactly ONE 'new-session' argv literal under src/ (hostWorkspace()'s own call) — ` +
-      `found ${matches.length}: ${matches.map((m) => `${m.file}:${m.line}`).join(', ')}. A count ` +
-      `other than 1 means either the sole-call-site invariant has been violated by a new creation ` +
-      `path, or this test's file moved/was refactored and needs updating.`
+    2,
+    `expected exactly TWO 'new-session' argv literals under src/ (hostWorkspace()'s creation and ` +
+      `ensureTuiSession()'s grouping) — found ${matches.length}: ` +
+      `${matches.map((m) => `${m.file}:${m.line}`).join(', ')}. A count other than 2 means ` +
+      `either a new creation path was added, or this test's file moved and needs updating.`
   )
-  assert.equal(
-    matches[0]?.file,
-    path.join('main', 'tmuxHost.ts'),
-    'the one new-session call site must be hostWorkspace() in src/main/tmuxHost.ts'
-  )
+  for (const match of matches) {
+    assert.equal(
+      match.file,
+      path.join('main', 'tmuxHost.ts'),
+      `every new-session call site must live in src/main/tmuxHost.ts — found one in ${match.file}`
+    )
+  }
 
   console.log(
-    `✓ the 'new-session' argv literal appears exactly once under src/ (${matches[0]?.file}:` +
-      `${matches[0]?.line}, hostWorkspace()'s own call) — a text-level regression check for the ` +
-      'sole-call-site HARD INVARIANT documented on hostWorkspace()'
+    `✓ both 'new-session' argv literals under src/ live in tmuxHost.ts (${matches
+      .map((m) => `${m.file}:${m.line}`)
+      .join(', ')}) — the sole-owner HARD INVARIANT documented on hostWorkspace()`
   )
 }
 
@@ -990,6 +999,63 @@ async function runRealTmuxChecks(): Promise<void> {
       const exists = await tmuxExitCode(socket, ['has-session', '-t', sessionName])
       assert.equal(exists, 1, 'the session must actually be gone after unhostWorkspace()')
       console.log('✓ unhostWorkspace() (archive teardown) kills a live tmux session')
+    }
+
+    // -------------------------------------------------------------------
+    // The TUI's GROUPED session must die with the primary.
+    //
+    // A grouped session holds the shared window open BY ITSELF: killing only
+    // the primary leaves the sibling alive with the pane's `claude` process
+    // still running (verified against a real server — the pane pid survived).
+    // Archiving a workspace would then strand real work in a session nothing
+    // ever computes the name of again. This asserts the pane process is gone,
+    // not merely that the session names are absent, because the process is
+    // what actually leaks.
+    // -------------------------------------------------------------------
+    {
+      const workspaceId = 'workspace-grouped-teardown-9012'
+      const workspaceName = 'Grouped Teardown'
+      const sessionName = tmuxSessionName(workspaceName, workspaceId)
+      const tuiSessionName = tmuxTuiSessionName(workspaceName, workspaceId)
+
+      await tmux(socket, ['new-session', '-d', '-s', sessionName, '--', 'sleep', '120'])
+      await tmux(socket, ['new-session', '-d', '-A', '-s', tuiSessionName, '-t', sessionName])
+
+      const { stdout: panePid } = await tmux(socket, [
+        'list-panes',
+        '-t',
+        sessionName,
+        '-F',
+        '#{pane_pid}'
+      ])
+      const pid = Number.parseInt(panePid.trim(), 10)
+      assert.ok(Number.isFinite(pid) && pid > 0, 'sanity: the fixture pane must have a real pid')
+
+      await unhostWorkspace({ workspaceId, workspaceName }, socket)
+
+      assert.equal(
+        await tmuxExitCode(socket, ['has-session', '-t', tuiSessionName]),
+        1,
+        'the grouped TUI session must be killed alongside the primary'
+      )
+      assert.equal(
+        await tmuxExitCode(socket, ['has-session', '-t', sessionName]),
+        1,
+        'the primary session must still be killed'
+      )
+
+      // The actual leak: is the pane's process gone?
+      await new Promise((r) => setTimeout(r, 300))
+      let alive = true
+      try {
+        process.kill(pid, 0)
+      } catch {
+        alive = false
+      }
+      assert.equal(alive, false, `the pane process (${pid}) must not survive unhostWorkspace()`)
+      console.log(
+        '✓ unhostWorkspace() kills the TUI grouped session too — the pane process does not leak'
+      )
     }
 
     // -------------------------------------------------------------------

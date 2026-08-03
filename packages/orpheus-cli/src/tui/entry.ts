@@ -337,7 +337,18 @@ async function hostAndAttach(workspaceId: string): Promise<void> {
     await new Promise<void>((resolve) => {
       const child = spawn(
         'tmux',
-        ['-L', hostResult.socketName, 'attach', '-t', hostResult.sessionName],
+        // Attach to the TUI's GROUPED session, not the primary: same window
+        // and pane, but its own session options — which is what gives the TUI
+        // the `^\ Back` footer while the desktop client attached to the
+        // primary gets no status row at all. Falls back to the primary if an
+        // older server did not send a tuiSessionName.
+        [
+          '-L',
+          hostResult.socketName,
+          'attach',
+          '-t',
+          hostResult.tuiSessionName ?? hostResult.sessionName
+        ],
         { stdio: 'inherit' }
       )
       child.once('exit', () => resolve())

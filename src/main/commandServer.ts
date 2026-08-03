@@ -28,6 +28,7 @@ import {
   listHostedSessionsCached,
   buildTreeFrame,
   tmuxSessionName,
+  tmuxTuiSessionName,
   resolveTmuxSocketName,
   shouldBlockTmuxHost,
   type TreeSourceWorkspace
@@ -904,6 +905,7 @@ function makeDispatchTable(
       if (shouldBlockTmuxHost(nativeSurfaceLive, claudeSessionLive, tmuxSessionExists)) {
         return {
           sessionName,
+          tuiSessionName: tmuxTuiSessionName(workspace.name, workspace.id),
           socketName: resolveTmuxSocketName(),
           created: false,
           alreadyRunning: false,

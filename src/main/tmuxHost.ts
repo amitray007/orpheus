@@ -176,6 +176,27 @@ export function tmuxSessionName(workspaceName: string, workspaceId: string): str
   return `${safeSlug}-${idSuffix}`
 }
 
+/**
+ * The TUI's grouped-session name for a workspace.
+ *
+ * WHY A SECOND SESSION EXISTS AT ALL: the desktop and the TUI attach to the
+ * same terminal, but only the TUI needs the `^\ Back` footer — on the
+ * desktop that status row is a stolen line, since the app's own UI already
+ * provides navigation. tmux has NO per-client options (`set-option -c` does
+ * not exist) and `status` accepts only on/off, never a format, so the row
+ * height cannot be varied per client on one session. Session GROUPS can:
+ * grouped sessions share windows and panes but keep independent session
+ * options, so the primary runs `status off` and this one runs `status on`
+ * over the identical pane. Verified live with both clients attached — same
+ * window id, same pane id, different status.
+ *
+ * The `-tui` suffix cannot collide with a real workspace session: those are
+ * always `<slug>-<8 hex chars>` (see tmuxSessionName above).
+ */
+export function tmuxTuiSessionName(workspaceName: string, workspaceId: string): string {
+  return `${tmuxSessionName(workspaceName, workspaceId)}-tui`
+}
+
 // ---------------------------------------------------------------------------
 // tmux version gate
 //
@@ -753,9 +774,19 @@ export async function hostWorkspace(
 
   const socketName = socketNameOverride ?? resolveTmuxSocketName()
   const sessionName = tmuxSessionName(params.workspaceName, params.workspaceId)
+  const tuiSessionName = tmuxTuiSessionName(params.workspaceName, params.workspaceId)
 
   if (await hasSession(socketName, sessionName)) {
-    return { sessionName, socketName, created: false, alreadyRunning: true }
+    // Re-apply on the ALREADY-RUNNING path too, not just at creation: a
+    // session created by an older build carries that build's options, and
+    // nothing else ever revisits them. Without this, `status off` (and any
+    // future managed option) would only reach sessions created after the
+    // upgrade — an existing workspace would keep the desktop's status row
+    // until it was torn down and rehosted. set-option is idempotent, so
+    // re-running it on every host is free.
+    await applyManagedSessionOptions(socketName, sessionName)
+    await ensureTuiSession(socketName, sessionName, tuiSessionName)
+    return { sessionName, tuiSessionName, socketName, created: false, alreadyRunning: true }
   }
 
   const [{ composeClaudeLaunch }, { buildMountEnv }] = await Promise.all([
@@ -796,6 +827,7 @@ export async function hostWorkspace(
     '[tmuxHost] new-session workspaceId=%s session=%s socket=%s envKeys=%s',
     params.workspaceId,
     sessionName,
+    tuiSessionName,
     socketName,
     Object.keys(env).sort().join(',')
   )
@@ -815,7 +847,8 @@ export async function hostWorkspace(
   } catch (err) {
     if (isDuplicateSessionError(err)) {
       invalidateHostedSessionsCache()
-      return { sessionName, socketName, created: false, alreadyRunning: true }
+      await ensureTuiSession(socketName, sessionName, tuiSessionName)
+      return { sessionName, tuiSessionName, socketName, created: false, alreadyRunning: true }
     }
     throw err
   }
@@ -833,9 +866,10 @@ export async function hostWorkspace(
   // sensitive, so their exact ordering relative to each other doesn't matter.
   await scrubSecretEnvironment(socketName, sessionName, env)
   await applyManagedSessionOptions(socketName, sessionName)
+  await ensureTuiSession(socketName, sessionName, tuiSessionName)
 
   invalidateHostedSessionsCache()
-  return { sessionName, socketName, created: true, alreadyRunning: false }
+  return { sessionName, tuiSessionName, socketName, created: true, alreadyRunning: false }
 }
 
 // ---------------------------------------------------------------------------
@@ -923,44 +957,12 @@ export async function applyManagedSessionOptions(
     ['history-limit', '50000'],
     ['set-titles', 'on'],
     ['set-titles-string', '#{pane_title}'],
-    // Status stays ON but is entirely re-drawn: the stock green bar with its
-    // window list is replaced by title-left / exit-hint-right.
-    ['status', 'on'],
-    ['status-style', 'bg=default,fg=colour245'],
-    // Deliberately NO live/refreshing content — nothing here goes stale, so
-    // status-interval can be 0 (never auto-refresh) instead of running a
-    // shell subprocess on a timer for every attached client. That matters on
-    // a phone over Tailscale.
-    ['status-interval', '0'],
-    // ONE format for the whole bar, not status-left/right — status-format[0]
-    // is what lets the footer be HIDDEN PER CLIENT. tmux has no per-client
-    // `set-option -c`, but formats DO resolve against the client rendering
-    // them (verified live: the same format returned different values for
-    // different clients), so the conditional below is evaluated separately
-    // for every attached client.
-    //
-    // The desktop attaches through ghostty (`xterm-ghostty`) and has the
-    // app's own UI, where this footer is just a stolen row. The TUI attaches
-    // from whatever terminal the user is in, and is the only client that
-    // needs to be told how to get back. So: blank for ghostty, footer for
-    // everyone else.
-    //
-    // #{=-N:...} truncates the title from the LEFT, keeping its tail — a long
-    // title's distinguishing words are usually at the end, and the fixed
-    // `^\\ Back` on the right must never be pushed off screen. The width is
-    // computed from the client's own width so it adapts as the client
-    // resizes.
-    [
-      'status-format[0]',
-      '#{?#{==:#{client_termname},xterm-ghostty},,' +
-        ' #[fg=colour44]\u258c#[fg=colour252] ' +
-        '#{=-#{e|-|:#{client_width},18}:#{pane_title}}' +
-        '#[align=right]#[fg=colour108]^\\#[fg=colour245] Back }'
-    ],
-    // tmux pads the middle with the window list by default; blank it so the
-    // bar is only the two things above.
-    ['window-status-format', ''],
-    ['window-status-current-format', '']
+    // Status bar OFF on the PRIMARY session — this is the one the desktop
+    // attaches to, where the app's own UI already provides navigation and a
+    // status row is a stolen line. The TUI attaches to a GROUPED sibling
+    // session (tmuxTuiSessionName) which turns it back on; see
+    // applyManagedTuiSessionOptions below.
+    ['status', 'off']
   ]
   for (const [key, value] of options) {
     await runTmux(socketName, ['set-option', '-t', sessionName, key, value])
@@ -970,6 +972,80 @@ export async function applyManagedSessionOptions(
   // in the ROOT table (no prefix), which is the whole point — an escape that
   // depends on a prefix the inner app might eat is not an escape.
   await runTmux(socketName, ['bind-key', '-n', 'C-\\', 'detach-client'])
+}
+
+/**
+ * Options for the TUI's GROUPED session — the footer, and only the footer.
+ *
+ * Session options do NOT propagate across a session group (verified: one
+ * group ran `status off` and `status on` simultaneously), which is exactly
+ * why the group exists. Anything session-scoped that both clients need must
+ * be set on both; `window-size`/`history-limit` are window- or server-scoped
+ * and are already covered by the primary's pass.
+ */
+/**
+ * Create (or adopt) the TUI's grouped session and apply its footer options.
+ *
+ * `new-session -d -A -s <tui> -t <primary>` is attach-or-create: it adopts an
+ * existing session of that name rather than erroring, so repeated hosts and
+ * repeated TUI attaches are both safe. The primary MUST already exist —
+ * grouping against a missing target errors — which is why every caller runs
+ * this after the primary is up.
+ *
+ * Failure here is deliberately non-fatal: the TUI can still attach to the
+ * primary and work, just without the footer. Hosting a workspace must not
+ * fail because a cosmetic status bar could not be set up.
+ */
+async function ensureTuiSession(
+  socketName: string,
+  sessionName: string,
+  tuiSessionName: string
+): Promise<void> {
+  try {
+    await runTmux(socketName, ['new-session', '-d', '-A', '-s', tuiSessionName, '-t', sessionName])
+    await applyManagedTuiSessionOptions(socketName, tuiSessionName)
+  } catch (err) {
+    if (err instanceof TmuxNotAvailableError) throw err
+    console.warn(
+      '[tmuxHost] could not set up TUI session %s (footer unavailable, attach still works): %s',
+      tuiSessionName,
+      err instanceof Error ? err.message : String(err)
+    )
+  }
+}
+
+export async function applyManagedTuiSessionOptions(
+  socketName: string,
+  tuiSessionName: string
+): Promise<void> {
+  const options: [string, string][] = [
+    ['status', 'on'],
+    ['status-style', 'bg=default,fg=colour245'],
+    // Nothing on this bar refreshes, so never poll: `status-interval 0`
+    // avoids a shell subprocess on a timer for every attached client, which
+    // matters on a phone over Tailscale.
+    ['status-interval', '0'],
+    // #{=-N:...} truncates from the LEFT, keeping the title's tail — the
+    // distinguishing words are usually at the end, and the fixed exit hint
+    // must never be pushed off screen. The budget follows the client's own
+    // width, so it adapts as the client resizes.
+    [
+      'status-format[0]',
+      ' #[fg=colour44]\u258c#[fg=colour252] ' +
+        '#{=-#{e|-|:#{client_width},18}:#{pane_title}}' +
+        '#[align=right]#[fg=colour108]^\\#[fg=colour245] Back '
+    ],
+    // Session options, NOT inherited from the primary — set here too.
+    ['mouse', 'on'],
+    ['set-titles', 'on'],
+    ['set-titles-string', '#{pane_title}'],
+    // Blank tmux's own window list; the bar is only the two things above.
+    ['window-status-format', ''],
+    ['window-status-current-format', '']
+  ]
+  for (const [key, value] of options) {
+    await runTmux(socketName, ['set-option', '-t', tuiSessionName, key, value])
+  }
 }
 
 export async function unhostWorkspace(
@@ -984,13 +1060,34 @@ export async function unhostWorkspace(
 ): Promise<WorkspaceUnhostResult> {
   const socketName = socketNameOverride ?? resolveTmuxSocketName()
   const sessionName = tmuxSessionName(params.workspaceName, params.workspaceId)
+  const tuiSessionName = tmuxTuiSessionName(params.workspaceName, params.workspaceId)
+
+  // Kill the TUI's grouped session FIRST, and tolerate its absence — it only
+  // exists once a TUI has attached at least once.
+  //
+  // This is not optional tidying. A grouped session holds the shared window
+  // open on its own: killing ONLY the primary leaves the sibling alive with
+  // the pane's `claude` process still running (verified — the pane pid
+  // survived the primary's kill). Archiving a workspace would then strand
+  // real work in a session nothing ever looks for again.
+  try {
+    await runTmux(socketName, ['kill-session', '-t', tuiSessionName])
+  } catch (err) {
+    if (err instanceof TmuxNotAvailableError) throw err
+    // No TUI session for this workspace — expected, not an error.
+  }
+
   try {
     await runTmux(socketName, ['kill-session', '-t', sessionName])
     invalidateHostedSessionsCache()
     return { killed: true }
   } catch (err) {
     if (err instanceof TmuxNotAvailableError) throw err
-    return { killed: false } // session already gone — tolerate, mirrors D2
+    // Primary already gone. If the TUI kill above DID land we still changed
+    // state, but `killed` reports on the primary, matching this function's
+    // existing contract.
+    invalidateHostedSessionsCache()
+    return { killed: false }
   }
 }
 
@@ -1046,6 +1143,18 @@ export async function renameHostedSession(
   }
 
   try {
+    // Rename the TUI's grouped session too, and INDEPENDENTLY of the primary
+    // — the two can exist separately, and the TUI derives its name from the
+    // workspace name exactly as the primary does. Left behind under the old
+    // name it would be orphaned: nothing computes that name again, so it
+    // would hold the shared window open forever with no way back to it.
+    const oldTui = tmuxTuiSessionName(params.oldWorkspaceName, params.workspaceId)
+    const newTui = tmuxTuiSessionName(params.newWorkspaceName, params.workspaceId)
+    if (await hasSession(socketName, oldTui)) {
+      await runTmux(socketName, ['rename-session', '-t', oldTui, newTui])
+      invalidateHostedSessionsCache()
+    }
+
     if (!(await hasSession(socketName, oldSessionName))) {
       return // no live session under the old name — the common case, not an error
     }
