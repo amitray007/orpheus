@@ -191,6 +191,7 @@ function PickerBody({
                 row={block.row}
                 model={workspace?.model ?? null}
                 effort={workspace?.effort ?? null}
+                providerId={workspace?.providerId ?? null}
                 gitBranch={workspace?.gitBranch ?? null}
                 selected={block.row.workspaceId === selectedWorkspaceId}
                 width={cardAreaWidth}

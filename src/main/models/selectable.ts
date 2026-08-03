@@ -38,9 +38,10 @@
 
 import { CLAUDE_MODEL_OPTIONS, CLAUDE_BUILTIN_EFFORT_LEVELS } from '../../shared/types'
 import type { SelectableModel } from '../../shared/types'
-import { bareClaudeIdFor } from './sources/builtin'
+import { bareClaudeIdFor, isClaudeModelId } from './sources/builtin'
+import { listCliProxyModelCacheEntries } from './sources/cliproxy'
 
-const CLAUDE_PROVIDER_ID = 'claude'
+export const CLAUDE_PROVIDER_ID = 'claude'
 const CLAUDE_PROVIDER_LABEL = 'Claude'
 
 /** Minimal shape of a routing-proxy snapshot this module needs — a subset of
@@ -111,6 +112,35 @@ export function resolveEffortLevelsForModelId(
     )
   }
   return cliProxyModels.find((m) => m.modelId === modelId)?.effortLevels ?? null
+}
+
+/**
+ * Cheaply, synchronously resolve which provider owns `modelId` — used by
+ * claudeSettings.ts's resolveEffectiveModelAndEffort (itself called on every
+ * workspace, every ~1s tree-frame tick by commandServer.ts) to attribute a
+ * workspace's effective model to a provider for the TUI card's agent label.
+ * Safe to call at that frequency for the same reason
+ * resolveEffortLevelsForModelId is: no I/O, no subprocess — Claude ids are a
+ * pure in-memory table lookup, and routed ids are a lookup against
+ * listCliProxyModelCacheEntries()'s already-populated, synchronous,
+ * module-level cache (populated out-of-band by refreshCliProxyModelCache,
+ * never fetched here).
+ *
+ * Returns `undefined` (never a fabricated placeholder like 'unknown') when
+ * the model id is neither a recognized Claude id/alias nor present in the
+ * cliproxy cache yet — e.g. a routed model the cache hasn't reported a
+ * provider for. Callers must treat an undefined providerId as "no
+ * attribution", not render a placeholder.
+ */
+export function resolveProviderIdForModel(modelId: string): string | undefined {
+  if (
+    CLAUDE_MODEL_OPTIONS.some((o) => o.value === modelId) ||
+    isClaudeModelId(modelId) ||
+    bareClaudeIdFor(modelId) != null
+  ) {
+    return CLAUDE_PROVIDER_ID
+  }
+  return listCliProxyModelCacheEntries().find((m) => m.modelId === modelId)?.providerId
 }
 
 export interface BuildSelectableModelsInput {

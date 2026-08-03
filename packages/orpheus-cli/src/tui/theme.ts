@@ -136,6 +136,19 @@ export interface Palette {
   modelText: string
   /** Background tint for the selected row — ALL breakpoints (see WorkspaceRow.tsx). */
   selectedBg: string
+  /**
+   * Per-provider colour for the card's line-1 model/effort token
+   * (WorkspaceCard.tsx) — keyed by the raw providerId from
+   * src/main/routingProxy/providers/registry.ts ('claude', 'codex', 'xai',
+   * 'antigravity'). No provider word is ever rendered on the card; this
+   * colour is the ONLY way the provider shows up — `opus` renders in
+   * `agentColors.claude`, `gpt-5.6-sol` in `agentColors.codex`, etc.
+   * Checked distinct from every status/accent/text colour via the
+   * paletteDriftReport() discipline below. A providerId absent from this
+   * map (unresolved/unknown provider) must fall back to `modelText` above,
+   * never a fabricated hue — see WorkspaceCard.tsx.
+   */
+  agentColors: Record<string, string>
 }
 
 /**
@@ -196,7 +209,30 @@ const DARK: Palette = {
   modelText: '#5fb3a3',
   // Cool near-neutral tint. Was #2a2e45, a visibly indigo block behind every
   // selected card; this reads as "lit" rather than "coloured".
-  selectedBg: '#21262d'
+  selectedBg: '#21262d',
+  // Per-provider model-token colours (user-specified hues) — no provider
+  // word is ever rendered, this IS the provider signal. Verified via
+  // paletteDriftReport()-equivalent snapping against every other value in
+  // this palette before picking these exact hex codes — see the per-key
+  // notes below for what each one had to stay clear of:
+  agentColors: {
+    // Orange — nearest neighbours are `attention` (red, #ff6b6b -> snaps
+    // #ff5f5f) and `awaiting` (yellow, #ffcc66 -> snaps #ffd75f); this
+    // snaps to #ffaf5f, a distinct cube step from both.
+    claude: '#ffa657',
+    // Pure white — snaps to itself (#ffffff, drift 0), distinct from
+    // `text` (#e6edf3 -> snaps #eeeeee) and `brand` (#c9d1d9 -> snaps
+    // #d0d0d0).
+    codex: '#ffffff',
+    // Grey — deliberately NOT `idle`/`groupLabel`/`secondary`'s hue
+    // (#7d8590/#8b949e, both snapping near #878787-#949494); this snaps to
+    // #767676, a full grayscale-ramp step away from all three.
+    xai: '#6e7681',
+    // Green — distinct from `keyHint` (#7ee787 -> snaps #87d787, already
+    // a green used for key glyphs); this snaps to #5faf5f, a different
+    // cube cell.
+    antigravity: '#3fb950'
+  }
 }
 
 /**

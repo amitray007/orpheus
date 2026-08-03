@@ -1037,6 +1037,17 @@ export type TreeSourceWorkspace = WorkspaceRecord & {
    *  compiling; toTreeWorkspaceFrame falls back to safe defaults when absent. */
   model?: string
   effort?: ClaudeEffort
+  /** The resolved model's owning provider id (`'claude'`, `'codex'`, `'xai'`,
+   *  `'antigravity'`), resolved by the caller (commandServer.ts's
+   *  withLiveTreeOverlay, via claudeSettings.ts's
+   *  resolveEffectiveModelAndEffort) BEFORE calling buildTreeFrame — same
+   *  reason as model/effort above: resolution consults the cliproxy model
+   *  cache and tmuxHost.ts must stay Electron/DB-free (see this file's own
+   *  "ELECTRON-IMPORT DISCIPLINE" header) so scripts/verify-tmux-host.ts
+   *  keeps running as a pure harness. Unlike model/effort, undefined has no
+   *  safe non-placeholder default — toTreeWorkspaceFrame passes it through
+   *  as-is (never fabricates a provider). */
+  providerId?: string
   /** Current git branch of `cwd`, resolved by the caller (commandServer.ts's
    *  withLiveTreeOverlay, via its synchronous getCachedCurrentBranch cache
    *  over src/main/git.ts's getCurrentBranch) BEFORE calling buildTreeFrame —
@@ -1093,6 +1104,7 @@ function toTreeWorkspaceFrame(
     gitBranch: ws.gitBranch ?? null,
     model: ws.model ?? '',
     effort: ws.effort ?? DEFAULT_EFFORT,
+    providerId: ws.providerId,
     sortOrder: ws.sortOrder,
     tmuxHosted: shouldBlockNativeMount(hostedSessions, sessionName),
     lastActivityAt: ws.lastActivityAt ?? ws.lastOpenedAt ?? null,

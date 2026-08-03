@@ -44,6 +44,14 @@ export interface TreeWorkspace {
   model?: string | null
   /** Effective effort for this workspace, same resolution ladder as `model`. */
   effort?: string | null
+  /** The effective model's owning provider id (`'claude'`, `'codex'`,
+   *  `'xai'`, `'antigravity'`) — see src/shared/types.ts's
+   *  `TreeWorkspaceFrame.providerId` doc comment for the full resolution
+   *  story. Optional/absent both because an older server may not ship this
+   *  field yet AND because the provider genuinely couldn't be resolved
+   *  server-side — either way the card must render nothing for the agent
+   *  label, never a placeholder. */
+  providerId?: string | null
 }
 
 /** A single project group inside a `tree` frame. */

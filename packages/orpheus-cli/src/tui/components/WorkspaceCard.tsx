@@ -36,11 +36,18 @@
  *      bold would leave that line distinguished by colour alone, which is
  *      exactly what degrades first on a client that quantizes truecolour.
  *
- * AGENT NAME SEAM (intentionally not plumbed)
+ * AGENT/PROVIDER ATTRIBUTION — COLOUR ONLY, NO NEW TOKEN
  * -----------------------------------------------------------------------
- * No per-workspace agent-identity field exists on the wire yet (this app only
- * launches the `claude` CLI today). The seam is marked below at the exact
- * spot an agent token would be prepended to line 1.
+ * Line 1's TEXT is unchanged from before providers were plumbed through:
+ * still exactly `model effort` on the left, `status elapsed` on the right,
+ * same `formatModelEffort`/`line1Parts` calls, same width budget. Which
+ * provider owns the resolved model (`row`'s workspace's `providerId`) is
+ * surfaced ONLY as the colour of that existing model/effort token — orange
+ * for claude, white for codex, grey for xai/grok, green for antigravity
+ * (palette.agentColors, keyed by the raw providerId) — falling back to the
+ * neutral `palette.modelText` when the provider is unknown/absent. No
+ * separate word/prefix is rendered and no truncation-budget change was
+ * needed, since nothing was added to the string.
  */
 
 import React from 'react'
@@ -79,6 +86,12 @@ export interface WorkspaceCardProps {
   /** Effective model/effort, looked up by App from the raw TreeFrame. */
   model: string | null
   effort: string | null
+  /** The effective model's owning provider id, looked up by App from the raw
+   *  TreeFrame — see src/shared/types.ts's TreeWorkspaceFrame.providerId.
+   *  Drives line 1's model/effort token COLOUR only (palette.agentColors) —
+   *  see this file's own "AGENT/PROVIDER ATTRIBUTION" header for why there's
+   *  no separate text token. */
+  providerId?: string | null
   /** Current git branch of the workspace cwd. Line 3 renders
    *  `row.worktreeBranch ?? gitBranch` — see src/shared/types.ts's
    *  `gitBranch` field for the full precedence rationale. */
@@ -93,6 +106,7 @@ export function WorkspaceCard({
   row,
   model,
   effort,
+  providerId,
   gitBranch,
   selected,
   width,
@@ -105,13 +119,22 @@ export function WorkspaceCard({
   const bg = selected ? palette.selectedBg : undefined
 
   // ---- Line 1: model/effort (left) + status/elapsed (right) ----
-  // AGENT NAME SEAM: prepend the agent token here when the field exists.
+  // NO agent/provider WORD is rendered — the provider is carried by the model
+  // token's COLOUR alone (orange claude / white codex / grey grok / green
+  // antigravity), so line 1's text and width are identical to what they were
+  // before providers were plumbed through. An earlier revision prepended a
+  // `codex `/`grok ` token here; that was dropped deliberately, so don't
+  // reintroduce it without checking — `formatAgentName` no longer has a
+  // caller.
   const { left, right } = line1Parts(
     formatModelEffort(model, effort),
     `${STATUS_LABEL[row.status]} ${formatAge(row.lastActivityAt)}`,
     innerWidth,
     truncate
   )
+  // Provider colour for the model token, falling back to the neutral
+  // modelText when the provider is unknown or absent — never a placeholder.
+  const modelColor = palette.agentColors[providerId ?? ''] ?? palette.modelText
   // Attention stays bold regardless of selection — it is a standing alert,
   // not a selection cue.
   const statusBold = row.status === 'attention'
@@ -157,7 +180,7 @@ export function WorkspaceCard({
     <Box flexDirection="column" flexShrink={0}>
       <Box flexDirection="row" height={1} flexShrink={0}>
         {rail}
-        <Text backgroundColor={bg} color={palette.modelText} wrap="truncate">
+        <Text backgroundColor={bg} color={modelColor} wrap="truncate">
           {left}
         </Text>
         <Text backgroundColor={bg} color={statusColor(row.status, palette)} bold={statusBold}>

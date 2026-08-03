@@ -551,6 +551,16 @@ export type TreeWorkspaceFrame = {
   model: string
   /** Effective effort for this workspace, same resolution ladder as `model`. */
   effort: ClaudeEffort
+  /** The effective model's owning provider id (`'claude'`, `'codex'`,
+   *  `'xai'`, `'antigravity'`), resolved server-side alongside `model`/
+   *  `effort` via claudeSettings.ts's resolveEffectiveModelAndEffort (see
+   *  src/main/models/selectable.ts's resolveProviderIdForModel). Used by the
+   *  TUI card to show a short agent/provider label next to `model effort`.
+   *  Optional/absent when the model's provider couldn't be resolved (e.g. an
+   *  unknown routed model id not yet reported by the cliproxy cache) — the
+   *  card must render nothing for the agent label in that case, never a
+   *  placeholder like "unknown". */
+  providerId?: string
 }
 
 /** A single project group inside a `tree` frame. */
