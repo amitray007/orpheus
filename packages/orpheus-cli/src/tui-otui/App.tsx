@@ -486,6 +486,9 @@ export function App(props: AppProps): JSX.Element {
                         <DetailPane
                           row={selectedRow()}
                           projectName={selectedProjectName()}
+                          gitBranch={
+                            workspaceById().get(selectedRow()?.workspaceId ?? '')?.gitBranch ?? null
+                          }
                           palette={PALETTE}
                         />
                       </box>

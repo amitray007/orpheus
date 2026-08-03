@@ -79,6 +79,11 @@ function statusColor(status: WorkspaceStatus, palette: Palette): string {
 export interface DetailPaneProps {
   row: Extract<DisplayRow, { kind: 'workspace' }> | null
   projectName: string | null
+  /** Current git branch of the selected workspace's cwd, looked up by App.tsx
+   *  from the raw TreeFrame — same source and same
+   *  `worktreeBranch ?? gitBranch` precedence WorkspaceCard uses for its
+   *  line 3, so the pane and the card beside it can never disagree. */
+  gitBranch: string | null
   palette: Palette
 }
 
@@ -145,9 +150,17 @@ export function DetailPane(props: DetailPaneProps): JSX.Element {
                 <span fg={props.palette.text}>{props.projectName ?? '—'}</span>
               </Field>
               <Field label="branch" palette={props.palette}>
-                <span fg={props.palette.text}>{row.worktreeBranch ?? '—'}</span>
+                {/* Same `worktreeBranch ?? gitBranch` precedence the card's
+                    line 3 uses (WorkspaceCard.tsx) — the pane sits beside the
+                    card at wide widths, so anything else puts two different
+                    branch answers for one workspace on screen at once. */}
+                <span fg={props.palette.text}>{row.worktreeBranch ?? props.gitBranch ?? '—'}</span>
               </Field>
-              <Field label="session id" palette={props.palette}>
+              {/* Labelled "workspace id", not "session id": this IS
+                  `row.workspaceId`. The claude session id is server-internal
+                  and never reaches the CLI wire (see this file's header), so
+                  calling it "session id" named it as something it is not. */}
+              <Field label="workspace id" palette={props.palette}>
                 <span fg={props.palette.text}>{row.workspaceId}</span>
               </Field>
               <Field label="last activity" palette={props.palette}>
