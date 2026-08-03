@@ -3,13 +3,33 @@
  * right-aligned status, replacing Header.tsx's two-row (title, then a
  * separate status line) shape plus a bordered-box bottom rule.
  *
- * ghui devices adopted (docs/TUI_UI_REDESIGN.md):
- *   #6 "A real title bar": `GHUI  amitray007  authored … updated Mon, 8/3
- *      3:14 am` — brand, context, and freshness on ONE row, timestamp
- *      right-aligned. Here: `Orpheus [— scope]` on the left, connection
- *      state + filter + counts right-aligned.
- *   #2 "Horizontal rules, not boxes": the divider below the bar is a Rule
- *      component (full-width `─`), not a bordered box — see Rule.tsx.
+ * RENAME: filter -> view (card redesign) — the underlying VALUE domain
+ * ('active' | 'all', still literally `Filter` from tui/layout.ts — that
+ * type is shared with the Ink build and out of scope to rename there) is
+ * unchanged; only the user/dev-facing NAME changed. Header text now reads
+ * `view: active` / `view: all`, and the hidden-count hint reads
+ * `N hidden (v)` (was `(f)`).
+ *
+ * NO CONNECTION GLYPH — was `●`/`○` (U+25CF/U+25CB), both confirmed
+ * East_Asian_Width=Ambiguous per Unicode's EastAsianWidth.txt (see
+ * theme.ts's file header). Rather than hunt for a replacement glyph, the
+ * connection state is carried by its TEXT LABEL alone
+ * ("connected"/"disconnected"/"connecting…") plus its color — satisfying
+ * docs/TUI_OPENTUI_DESIGN.md's non-negotiable #3 (state never carried by
+ * colour alone) via the word itself, the same pattern the card design uses
+ * for status words (see WorkspaceCard.tsx).
+ *
+ * NO RULE BELOW THE BAR (card redesign amendment) — the prior build
+ * reserved a second row for a `Rule` component (a full-width `─`/`-` line)
+ * at medium/wide breakpoints. Owner call: with the title bar already dense
+ * (title + connection/view/count on one row), a repeated-dash line read as
+ * visual noise/a "dotted seam" once rendered — dropped in favor of a blank
+ * line so the header still occupies 2 rows at medium/wide (preserving
+ * App.tsx's headerReserved calculation) without drawing anything on the
+ * second one. narrow still reserves only 1 row (no blank line) — matching
+ * the prior build's "no rule at narrow" discipline, just extended to "no
+ * blank line either" since there's nothing to separate at that tier's
+ * scarce row budget.
  *
  * WIDTH BUDGETING IS MANUAL, NOT `justifyContent: "space-between"` —
  * verified via tui-mcp that space-between does NOT auto-shrink text nodes:
@@ -24,30 +44,30 @@
  * itself truncated via tui/layout.ts's shared `truncate()` helper, right
  * aligned by left-padding.
  *
- * ONE ROW ALWAYS (narrow included) — a deliberate compression from the old
- * Header.tsx's two body rows (title row + status row) into one, freeing a
- * second row of vertical budget on a 12-row narrow terminal, which is
- * exactly where every row counts most. The rule row is still reserved at
- * medium/wide only (a rule's own row would cost 8%+ of a 12-row narrow
- * screen for a purely decorative device) — same "no borders at narrow"
- * discipline the old Header.tsx used, just applied to the new Rule instead
- * of a box border.
- *
  * CONNECTION STATES: unchanged contract from the old Header.tsx — see that
  * file's original doc comment (now superseded) for why `disconnected` is a
  * distinct boolean from `connected: false`.
  */
 
 import { TextAttributes } from '@opentui/core'
-import { truncate, type Breakpoint, type Filter, type ProjectScope } from '../../tui/layout.js'
+import {
+  truncate,
+  type Breakpoint,
+  type Filter as View,
+  type ProjectScope
+} from '../../tui/layout.js'
 import type { Palette } from '../theme.js'
-import { Rule } from './Rule.js'
 
 export interface TitleBarProps {
   scope?: ProjectScope
   connected: boolean
   disconnected: boolean
-  filter: Filter
+  /** Local name is `view` (see file header's RENAME note) — the TYPE is
+   *  still literally `Filter` from tui/layout.ts (out of scope to rename
+   *  there), imported here under the local alias `View` so every reference
+   *  in tui-otui/ reads "view" consistently instead of mixing `Filter`
+   *  (type) with `view` (value). */
+  view: View
   hiddenCount: number
   totalCount: number
   breakpoint: Breakpoint
@@ -59,7 +79,6 @@ export interface TitleBarProps {
 
 export function TitleBar(props: TitleBarProps): JSX.Element {
   const title = (): string => (props.scope != null ? `Orpheus — ${props.scope.name}` : 'Orpheus')
-  const connectionGlyph = (): string => (props.connected ? '●' : '○')
   const connectionColor = (): string =>
     props.connected
       ? props.palette.working
@@ -70,18 +89,17 @@ export function TitleBar(props: TitleBarProps): JSX.Element {
     props.connected ? 'connected' : props.disconnected ? 'disconnected' : 'connecting…'
 
   const statusText = (): string => {
-    const parts = [connectionLabel(), `filter: ${props.filter}`]
-    if (props.hiddenCount > 0) parts.push(`${props.hiddenCount} hidden (f)`)
+    const parts = [connectionLabel(), `view: ${props.view}`]
+    if (props.hiddenCount > 0) parts.push(`${props.hiddenCount} hidden (v)`)
     if (props.totalCount === 0) parts.push('no workspaces')
-    return parts.join(' · ')
+    return parts.join(' - ')
   }
 
   // Title never shrinks below its own text — the brand is the one thing
   // that must always be legible. Status gets whatever's left after the
-  // title + a one-space gap + the connection glyph's own 2-col budget,
-  // floored at 0 (an absurdly narrow terminal just shows the title alone).
+  // title + a one-space gap.
   const titleText = (): string => title()
-  const statusBudget = (): number => Math.max(0, props.width - titleText().length - 1 - 2)
+  const statusBudget = (): number => Math.max(0, props.width - titleText().length - 1)
   const clippedStatus = (): string => truncate(statusText(), statusBudget())
 
   return (
@@ -96,13 +114,12 @@ export function TitleBar(props: TitleBarProps): JSX.Element {
           {titleText()}
         </text>
         <box flexGrow={1} minWidth={0} justifyContent="flex-end" flexDirection="row">
-          <text wrapMode="none" overflow="hidden">
-            <span fg={connectionColor()}>{connectionGlyph()} </span>
-            <span fg={props.palette.secondary}>{clippedStatus()}</span>
+          <text fg={connectionColor()} wrapMode="none" overflow="hidden">
+            {clippedStatus()}
           </text>
         </box>
       </box>
-      {props.breakpoint !== 'narrow' ? <Rule palette={props.palette} /> : null}
+      {props.breakpoint !== 'narrow' ? <box height={1} flexShrink={0} /> : null}
     </box>
   )
 }

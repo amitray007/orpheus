@@ -1,15 +1,18 @@
 /**
- * tui-otui/components/Rule.tsx — a full-width horizontal `─` divider.
+ * tui-otui/components/Rule.tsx — a full-width horizontal `-` divider.
  *
- * ghui device #2 (docs/TUI_UI_REDESIGN.md): "Horizontal rules as section
- * dividers, not boxes. Full-width `─` runs separate regions. No nested
- * bordered panels eating 2 cols + 2 rows each for no informational gain."
+ * GLYPH: was `─` (U+2500 BOX DRAWINGS LIGHT HORIZONTAL), confirmed
+ * East_Asian_Width=Ambiguous per Unicode's EastAsianWidth.txt (see theme.ts's
+ * file header). Now `-` (U+002D HYPHEN-MINUS, confirmed Narrow) via
+ * theme.ts's RULE_CHAR.
  *
- * Replaces Header.tsx's old `<box border={['bottom']}>` device (a bordered
- * box just to get one rule line, which is a heavier construct than needed)
- * and HelpOverlay's box-border framing is intentionally left alone — see
- * that file's own header for why the overlay keeps its border (transient,
- * not permanent chrome).
+ * NO LONGER USED BY TitleBar.tsx (card redesign) — the title bar's own
+ * divider was dropped entirely in favor of a blank line (owner call: a
+ * `-`-repeated line across 44+ columns read as visual noise/a "dotted seam"
+ * once rendered, given the header already carries structure via
+ * `title` + `view: active  N` on one row). This component is KEPT ALIVE for
+ * other callers (e.g. HelpOverlay's internal layout, if it grows one) —
+ * only its glyph changed and its TitleBar call site was removed.
  *
  * WIDTH: `width="100%"` relies on the parent having an explicit size
  * (App.tsx's root box always does — see its own file header on the root

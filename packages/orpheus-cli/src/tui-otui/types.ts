@@ -11,9 +11,11 @@
  * from tui/types.ts (not a re-export) per the task brief — the Ink tui/
  * directory is explicitly out of scope for this change.
  *
- * The one addition beyond tui/types.ts: `WorkspaceHostResult.refused`,
- * mirroring src/main/commandServer.ts's actual `workspace.host` response
- * shape (~line 775-790) and src/shared/types.ts's `WorkspaceHostResult`.
+ * Additions beyond tui/types.ts: `WorkspaceHostResult.refused`, mirroring
+ * src/main/commandServer.ts's actual `workspace.host` response shape
+ * (~line 775-790) and src/shared/types.ts's `WorkspaceHostResult`; and
+ * `TreeWorkspace.model`/`effort`, mirroring src/shared/types.ts's
+ * `TreeWorkspaceFrame` (card redesign — see docs/TUI_SPEC.md).
  */
 
 /** Workspace activity status, as emitted in a `tree` frame's workspace rows. */
@@ -33,6 +35,16 @@ export interface TreeWorkspace {
   /** Live OSC terminal title Claude Code sets while working; falls back to
    *  `name` when null/empty/absent. */
   lastTitle?: string | null
+  /** Effective (layered) Claude model for this workspace — see
+   *  src/main/claudeSettings.ts's resolveEffectiveModelAndEffort and
+   *  src/shared/types.ts's TreeWorkspaceFrame (this is a local copy of that
+   *  wire field, per this file's own header on why tui-otui keeps its own
+   *  copy instead of importing src/shared/types.ts). Optional so an older
+   *  server that hasn't shipped this field yet still renders (card omits
+   *  the model/effort line's content, not the whole card). */
+  model?: string | null
+  /** Effective effort for this workspace, same resolution ladder as `model`. */
+  effort?: string | null
 }
 
 /** A single project group inside a `tree` frame. */

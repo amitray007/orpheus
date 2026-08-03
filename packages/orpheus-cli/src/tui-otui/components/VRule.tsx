@@ -1,11 +1,19 @@
 /**
- * tui-otui/components/VRule.tsx — the single vertical `│` divider between
- * the wide-tier master (WorkspaceTable) and detail (DetailPane) panes.
+ * tui-otui/components/VRule.tsx — the single vertical `|` divider between
+ * the wide-tier master (card list) and detail (DetailPane) panes.
+ *
+ * GLYPH: was `│` (U+2502 BOX DRAWINGS LIGHT VERTICAL), confirmed
+ * East_Asian_Width=Ambiguous per Unicode's EastAsianWidth.txt (see
+ * theme.ts's file header). Now `|` (U+007C VERTICAL LINE, confirmed
+ * Narrow) via theme.ts's VRULE_CHAR.
  *
  * THE ONLY VERTICAL RULE IN THE WHOLE LAYOUT, AND IT ONLY EXISTS AT WIDE
  * (ghui device #2, docs/TUI_UI_REDESIGN.md: "the only vertical rule is the
  * master/detail split, and it disappears at narrow"). App.tsx only mounts
- * this at breakpoint()==='wide'.
+ * this at breakpoint()==='wide'. The card-redesign brief left the decision
+ * to keep or drop this split up to the implementer: KEPT — see App.tsx's
+ * file header for the full rationale (it's orthogonal to the card-vs-table
+ * decision, and DetailPane still earns its space at >=120 cols).
  *
  * A vertical rule is a COLUMN of the glyph, one per available row — NOT one
  * row of repeated glyphs (that would be a horizontal rule rotated in name

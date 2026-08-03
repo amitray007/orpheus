@@ -513,6 +513,14 @@ export type TreeWorkspaceFrame = {
    *  until a session has emitted one; the TUI falls back to `name` when
    *  null/empty. */
   lastTitle: string | null
+  /** Effective (global -> project -> workspace layered) Claude model for
+   *  this workspace, resolved server-side via
+   *  claudeSettings.ts's resolveEffectiveModelAndEffort (see
+   *  src/main/tmuxHost.ts's toTreeWorkspaceFrame). Used by the card-based
+   *  tui-otui picker's `model effort` line — see docs/TUI_SPEC.md. */
+  model: string
+  /** Effective effort for this workspace, same resolution ladder as `model`. */
+  effort: ClaudeEffort
 }
 
 /** A single project group inside a `tree` frame. */

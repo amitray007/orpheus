@@ -110,7 +110,15 @@ export function columnPlanFor(breakpoint: Breakpoint, columns: number): ColumnPl
 // Truncation — hard truncate, never wrap
 // ---------------------------------------------------------------------------
 
-const ELLIPSIS = '…'
+// Three ASCII dots, NOT the single-character U+2026 HORIZONTAL ELLIPSIS this
+// used to be. U+2026 is East_Asian_Width=Ambiguous (verified against
+// Unicode's own EastAsianWidth.txt: `2024..2027 ; A # Po [4] ONE DOT
+// LEADER..HYPHENATION POINT`) — on a terminal configured for CJK it renders
+// as TWO columns, silently under-reserving the truncation budget by one
+// column and overflowing every truncated title's column budget by 1. `.`
+// U+002E is confirmed Narrow (`002E..002F ; Na # Po [2] FULL STOP..SOLIDUS`),
+// so three of them are unambiguously 3 columns everywhere.
+const ELLIPSIS = '...'
 
 /**
  * Hard-truncate `name` to at most `width` TERMINAL COLUMNS, appending an
@@ -127,11 +135,14 @@ const ELLIPSIS = '…'
 export function truncate(name: string, width: number): string {
   if (width <= 0) return ''
   if (stringWidth(name) <= width) return name
-  if (width === 1) return ELLIPSIS
+  // A 3-char ellipsis doesn't fit in a 1- or 2-column budget the way the old
+  // 1-char '…' always did — degrade to as many literal dots as fit rather
+  // than returning the full '...' when it wouldn't fit.
+  if (width < ELLIPSIS.length) return ELLIPSIS.slice(0, width)
   // Walk code points (`for...of` iterates by code point, never splitting a
-  // surrogate pair) accumulating display width, reserving exactly one
-  // column for the trailing ellipsis.
-  const budget = width - 1
+  // surrogate pair) accumulating display width, reserving exactly
+  // ELLIPSIS.length columns for the trailing ellipsis.
+  const budget = width - ELLIPSIS.length
   let out = ''
   let used = 0
   for (const ch of name) {

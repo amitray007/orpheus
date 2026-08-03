@@ -7,6 +7,9 @@
  * aren't wired in this build, and the brief is explicit that unimplemented
  * keys should not appear in footer/help at all.
  *
+ * RENAME: `f` (filter) -> `v` (view) — card redesign, see TitleBar.tsx's
+ * file header. Copy updated to say "view" not "filter".
+ *
  * The one border used regardless of breakpoint — transient overlay
  * replacing the body, not permanent chrome competing for the narrow
  * layout's scarce rows (matches the Ink version's rationale).
@@ -18,9 +21,9 @@ import type { Breakpoint } from '../../tui/layout.js'
 import type { Palette } from '../theme.js'
 
 const ROWS: Array<[string, string]> = [
-  ['↵', 'open the highlighted workspace (hosts it in tmux, attaches)'],
-  ['↑/↓, j/k', 'move the highlighted row'],
-  ['f', 'cycle filter: active -> all'],
+  ['enter', 'open the highlighted workspace (hosts it in tmux, attaches)'],
+  ['j/k', 'move the highlighted row'],
+  ['v', 'cycle view: active -> all'],
   ['?', 'toggle this help'],
   ['q', 'quit']
 ]

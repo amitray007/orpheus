@@ -1275,6 +1275,40 @@ export function composeClaudeLaunch(
   return { flags, settingsJson, env, model: s.model }
 }
 
+/**
+ * Cheap, read-only resolution of the EFFECTIVE (global -> project ->
+ * workspace layered) model/effort for one workspace — used by the TUI's
+ * `tree` frame (docs/TUI_SPEC.md D5), which polls every workspace on a 1s
+ * interval (src/main/commandServer.ts's TREE_POLL_MS) while any subscriber
+ * is connected. Deliberately does NOT call composeClaudeLaunch: that
+ * function also tokenizes CLI flags, composes settingsJson, and merges
+ * launch env (including secrets via claudeAuth.ts) — none of which the TUI
+ * card needs, and doing that work per-workspace per-tick would be a real
+ * perf regression for a card that only prints `model effort`. Reuses the
+ * existing mergeProjectOverrides/mergeWorkspaceOverrides layering helpers
+ * (kept module-private) rather than duplicating their logic.
+ */
+export function resolveEffectiveModelAndEffort(
+  projectId: string,
+  workspaceId: string
+): { model: string; effort: ClaudeEffort } {
+  const global = getClaudeGlobalSettings()
+  const projectScope = mergeProjectOverrides(global, projectId)
+  const workspaceScope = mergeWorkspaceOverrides(projectScope.s, workspaceId)
+  if (process.env.ORPHEUS_DEBUG_MODEL_EFFORT === '1') {
+    console.warn(
+      '[DEBUG resolveEffectiveModelAndEffort]',
+      JSON.stringify({
+        workspaceId,
+        projectId,
+        wsSettingsRaw: getClaudeWorkspaceSettings(workspaceId),
+        result: { model: workspaceScope.s.model, effort: workspaceScope.s.effort }
+      })
+    )
+  }
+  return { model: workspaceScope.s.model, effort: workspaceScope.s.effort }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------

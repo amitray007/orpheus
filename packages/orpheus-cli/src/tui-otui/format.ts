@@ -42,3 +42,25 @@ export function formatAgeLong(
   const days = Math.floor(hours / 24)
   return `${days} day${days === 1 ? '' : 's'} ago`
 }
+
+/**
+ * Card redesign's `model effort` line-1 token (docs/TUI_SPEC.md, "AGENT /
+ * MODEL / EFFORT" section). Strips a leading `claude-` prefix if present
+ * (covers full model ids like `claude-opus-4-8`/`claude-sonnet-5`);
+ * otherwise used as-is (covers short aliases the dev DB actually uses
+ * today, e.g. `opus`/`sonnet`/`haiku`). No further abbreviation — the task
+ * brief is explicit not to guess at rules beyond the `claude-` strip.
+ * `effort` is OMITTED entirely when it's `'auto'` (or unset/empty) — per
+ * the brief, "auto" tells the user nothing, so it isn't worth a token.
+ */
+export function formatModelEffort(
+  model: string | null | undefined,
+  effort: string | null | undefined
+): string {
+  const modelText = (model ?? '').trim()
+  const shortModel = modelText.startsWith('claude-') ? modelText.slice('claude-'.length) : modelText
+  const effortText = (effort ?? '').trim()
+  const showEffort = effortText.length > 0 && effortText !== 'auto'
+  if (shortModel.length === 0) return showEffort ? effortText : ''
+  return showEffort ? `${shortModel} ${effortText}` : shortModel
+}

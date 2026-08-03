@@ -15,7 +15,8 @@
  * shape (which this task must not change — constraint: don't touch the
  * `/subscribe` wire protocol), a TreeWorkspace carries only: id, name,
  * status, waitingFor, parentWorkspaceId, worktreeBranch, sortOrder,
- * tmuxHosted, lastActivityAt. There is no literal "tmux session name" or
+ * tmuxHosted, lastActivityAt (plus model/effort, added for the card
+ * redesign — see types.ts). There is no literal "tmux session name" or
  * "claude session id" field on the wire — those are server-internal
  * (docs/TUI_SPEC.md's hosting section derives the tmux session name
  * server-side only when workspace.host is actually called). So:
@@ -29,6 +30,12 @@
  *     user needs to know at a glance ("is this workspace live in tmux right
  *     now"). Flagged explicitly in the final report as a deliberate,
  *     wire-protocol-respecting scope cut, not an oversight.
+ *
+ * NO PER-STATUS GLYPH (card redesign) — was `!`/spinner/`○` in a leading
+ * column. Per the card redesign brief, status is now carried by the
+ * spelled-out WORD alone (+ color), matching WorkspaceCard.tsx's line 1 —
+ * no redundant glyph column here either, for consistency across the whole
+ * picker.
  *
  * ROW-COLLAPSE BUG FOUND + FIXED DURING LIVE VERIFICATION (tui-mcp, 125x15)
  * -----------------------------------------------------------------------
@@ -52,14 +59,13 @@ import { Show } from 'solid-js'
 import { displayTitleFor, type DisplayRow } from '../../tui/layout.js'
 import type { Palette } from '../theme.js'
 import { formatAgeLong } from '../format.js'
-import { spinnerGlyph } from '../spinner.js'
 import type { WorkspaceStatus } from '../types.js'
 import { Rule } from './Rule.js'
 
 const STATUS_LABEL: Record<WorkspaceStatus, string> = {
-  attention: 'needs attention',
-  in_progress: 'working',
-  awaiting_input: 'awaiting input',
+  attention: 'attention',
+  in_progress: 'in progress',
+  awaiting_input: 'awaiting',
   idle: 'idle'
 }
 
@@ -68,12 +74,6 @@ function statusColor(status: WorkspaceStatus, palette: Palette): string {
   if (status === 'in_progress') return palette.working
   if (status === 'awaiting_input') return palette.awaiting
   return palette.idle
-}
-
-function statusGlyph(status: WorkspaceStatus): string {
-  if (status === 'attention') return '!'
-  if (status === 'in_progress') return spinnerGlyph()
-  return '○'
 }
 
 export interface DetailPaneProps {
@@ -128,8 +128,12 @@ export function DetailPane(props: DetailPaneProps): JSX.Element {
               </text>
               <box height={1} flexShrink={0} />
               <Field label="status" palette={props.palette}>
-                <span fg={statusColor(row.status, props.palette)}>{statusGlyph(row.status)} </span>
-                <span fg={statusColor(row.status, props.palette)}>{STATUS_LABEL[row.status]}</span>
+                <span
+                  fg={statusColor(row.status, props.palette)}
+                  attributes={row.status === 'attention' ? TextAttributes.BOLD : undefined}
+                >
+                  {STATUS_LABEL[row.status]}
+                </span>
                 {row.waitingFor != null ? (
                   <span fg={props.palette.secondary}> — {row.waitingFor}</span>
                 ) : null}
@@ -157,7 +161,7 @@ export function DetailPane(props: DetailPaneProps): JSX.Element {
               <Rule palette={props.palette} />
               <box height={1} flexShrink={0} />
               <text fg={props.palette.secondary} wrapMode="none" flexShrink={0} height={1}>
-                ↵ open this workspace
+                enter to open this workspace
               </text>
             </scrollbox>
           )

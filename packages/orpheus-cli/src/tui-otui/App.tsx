@@ -9,33 +9,48 @@
  * otherwise refuse to shrink below content size and the layout overflows).
  * Ported directly from OpenCode's app.tsx:1089-1124.
  *
- * THREE GENUINELY DIFFERENT LAYOUTS, NOT ONE LAYOUT SCALED (visual redesign
- * pass, docs/TUI_UI_REDESIGN.md)
+ * CARD REDESIGN — ONE LAYOUT, NOT THREE (supersedes the prior "three
+ * genuinely different layouts" pass)
  * -----------------------------------------------------------------------
- * The first OpenTUI pass rendered the same shape at every width — a wide
- * terminal just got wider padding, not more information. This pass branches
- * on tui-otui/breakpoints.ts's resolveOtuiBreakpoint (a tui-otui-LOCAL
- * threshold set, ~60/120 — see that file's header for why it's not the
- * same resolveBreakpoint the Ink build uses):
- *   - narrow (<60): single column, stacked WorkspaceRow/ProjectHeaderRow —
- *     today's shape, composed through the new TitleBar/Rule/Footer devices.
- *   - medium (60-119): single column, but the list is now a REAL TextTable
- *     (WorkspaceTable.tsx) with status/name/branch/age columns, replacing
- *     the hand-computed padEnd row rendering.
- *   - wide (>=120): master/detail split — the SAME WorkspaceTable on the
- *     left, a DetailPane on the right showing the selected workspace's full
- *     detail. This is what fills the wide-terminal dead space with
- *     information instead of whitespace (docs/TUI_UI_REDESIGN.md problem
- *     #1) — the single vertical rule between panes is the ONLY vertical
- *     rule in the whole layout and only exists at this breakpoint (ghui
- *     device #2).
+ * The prior OpenTUI pass branched narrow/medium/wide into three different
+ * SHAPES (stacked rows / TextTable / TextTable+detail-pane). This pass
+ * replaces the list body at EVERY breakpoint with the same 3-line
+ * WorkspaceCard renderer, grouped by project (ProjectGroupHeader) — one
+ * layout that breathes (spacing grows with width) rather than reflowing
+ * into a different shape. The ONLY breakpoint-conditional structure left is
+ * the wide-tier (>=120 cols) master/detail split: cards on the left,
+ * DetailPane + VRule on the right — kept because it's an orthogonal
+ * concern to the card-vs-table decision and still earns its space at that
+ * width (see VRule.tsx's file header). tableColumnPlanFor/columnPlanFor and
+ * the old WorkspaceTable/WorkspaceRow/ProjectHeaderRow components are gone.
  *
- * SELECTION/SCROLLING STAYS UNIFIED ACROSS ALL THREE TIERS — one
- * `selectedRowIndex` signal, one `scrollWindowFor` call feeding whichever
- * tier is currently mounted. Only the RENDERING of a row differs by tier;
- * the keyboard/selection/scroll model is identical everywhere, so switching
- * tiers mid-session (a live resize crossing a breakpoint) never loses or
- * reshuffles the user's selection.
+ * VARIABLE-HEIGHT BLOCK WINDOWING — WHY THIS DOESN'T REUSE tui/layout.ts's
+ * scrollWindowFor DIRECTLY
+ * -----------------------------------------------------------------------
+ * scrollWindowFor operates on a flat DisplayRow[] where every row is
+ * assumed to occupy exactly ONE terminal row. Cards are 3 terminal rows
+ * each, project headers are 1 (2 including a leading blank line for every
+ * project after the first), and the view:all idle-collapse box is
+ * `2 + N idle rows` tall — none of that fits scrollWindowFor's uniform-row
+ * assumption. So this file builds its OWN small "Block" model (below):
+ * each DisplayRow (or idle-collapse group) becomes one Block with a KNOWN
+ * terminal-row height, and `windowBlocks()` finds the window of blocks that
+ * keeps the selected card fully in view within the available body height,
+ * mirroring scrollWindowFor's spirit (keep selection in view with a little
+ * context) but operating on heights instead of counts. flattenTree() from
+ * tui/layout.ts is still reused UNCHANGED for the row list itself (project
+ * grouping, attention-first sibling ordering, active-filter, flat
+ * numbering) — only the WINDOWING math is local to this file.
+ *
+ * MODEL/EFFORT LOOKUP — WHY THIS ISN'T THREADED THROUGH DisplayRow
+ * -----------------------------------------------------------------------
+ * tui/layout.ts's DisplayRow (workspace variant) doesn't carry model/effort
+ * — extending it would mean editing tui/layout.ts, which is shared with the
+ * Ink build and out of scope for this task. Instead, `modelEffortByWorkspaceId`
+ * below builds a flat `workspaceId -> { model, effort }` lookup directly
+ * from the raw `TreeFrame` (props.frame()), which DOES carry these fields
+ * (see types.ts's TreeWorkspace). WorkspaceCard receives model/effort as
+ * separate props from this lookup, not from its `row` prop.
  *
  * FRAME DELIVERY: PLAIN SIGNAL, NOT frameStore.ts's COALESCING STORE
  * -----------------------------------------------------------------------
@@ -55,7 +70,7 @@
  * -----------------------------------------------------------------------
  * connecting: no frame has arrived yet (frame() is null, disconnected() is
  *   null). Shown as a body-level "connecting…" message, distinct from the
- *   TitleBar's own connecting/connected glyph.
+ *   TitleBar's own connection text.
  * connected: frame() is non-null AND disconnected() is null. Normal picker UI.
  * reconnecting (RECONNECT-WITH-BACKOFF, see entry.ts's file header): the
  *   /subscribe `done` promise settled (resolved OR rejected) without OUR
@@ -71,26 +86,20 @@
  *   entry.ts's useKeyboard note: quit must always be live).
  * disconnected mid-session (TERMINAL — reconnect exhausted or gave up, which
  *   per entry.ts's current policy only happens if render() itself rejects,
- *   since attemptReconnect() otherwise retries indefinitely): THIS WAS AN
- *   EXPLICIT INK-VERSION BUG (task owner callout: entry.ts wrote to
- *   process.stderr AFTER the alt-screen had already torn down, so the
- *   message was invisible in practice). Fixed here by making
- *   "disconnected" a first-class piece of App state (setDisconnected, wired
- *   from entry.ts's subscription.done handlers) that fully replaces the
- *   body with a visible, on-screen notice and requires a keypress before
+ *   since attemptReconnect() otherwise retries indefinitely): fully replaces
+ *   the body with a visible, on-screen notice and requires a keypress before
  *   entry.ts's loop is allowed to resolve `runPickerOnce`.
  *
- * HOST-REFUSED / COMMAND-FAILURE STATES
- * -----------------------------------------------------------------------
- * Both are OUTSIDE this component — they happen after the picker has
- * already resolved (the user pressed Enter and entry.ts is now awaiting
- * sendCommand('workspace.host', ...)). Rendering them correctly means NOT
- * tearing down the picker's alt-screen until the message has been shown and
- * acknowledged; see entry.ts's hostAndAttach() for how that's sequenced
- * (this component is unmounted/remounted per picker-loop iteration, so
- * these states render via plain process.stderr-free direct renderer text —
- * see entry.ts's renderNotice() helper — not through this component's own
- * signals).
+ * RENAME: filter -> view (card redesign) — see TitleBar.tsx's file header
+ * for the full rationale. tui/layout.ts's real exported type is still named
+ * `Filter` there (out of scope to rename — shared with the Ink build) and
+ * its own `flattenTree(frame, filter, scope)` parameter is still literally
+ * named `filter`. This file imports that type under the local alias `View`
+ * (`type Filter as View`) so every type reference INSIDE tui-otui/ reads
+ * "view" consistently — only the call into flattenTree() itself still
+ * passes a `View`-typed value into a parameter tui/layout.ts calls `filter`,
+ * which is fine (parameter names don't need to match at a call site). The
+ * LOCAL signal/setter/keybinding are all named `view`/`setView`/`v`.
  */
 
 import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
@@ -98,25 +107,22 @@ import { useKeyboard, useTerminalDimensions } from '@opentui/solid'
 import { TextAttributes } from '@opentui/core'
 import {
   flattenTree,
-  scrollWindowFor,
   type DisplayRow,
-  type Filter,
+  type Filter as View,
   type ProjectScope
 } from '../tui/layout.js'
 import { resolveOtuiBreakpoint } from './breakpoints.js'
-import type { TreeFrame } from './types.js'
+import type { TreeFrame, TreeWorkspace } from './types.js'
 import { PALETTE } from './theme.js'
-import { useSpinnerVote } from './spinner.js'
 import { TitleBar } from './components/TitleBar.js'
 import { Footer } from './components/Footer.js'
 import { HelpOverlay } from './components/HelpOverlay.js'
-import { ProjectHeaderRow } from './components/ProjectHeaderRow.js'
-import { WorkspaceRow } from './components/WorkspaceRow.js'
+import { ProjectGroupHeader } from './components/ProjectGroupHeader.js'
+import { WorkspaceCard } from './components/WorkspaceCard.js'
+import { IdleBox } from './components/IdleBox.js'
 import { ScrollAffordance } from './components/ScrollAffordance.js'
-import { WorkspaceTable, tableColumnPlanFor } from './components/WorkspaceTable.js'
 import { DetailPane } from './components/DetailPane.js'
 import { VRule } from './components/VRule.js'
-import { columnPlanFor } from '../tui/layout.js'
 
 export interface AppProps {
   scope?: ProjectScope
@@ -140,16 +146,35 @@ export interface AppProps {
 const FOOTER_ROWS = 1
 const DETAIL_PANE_WIDTH = 42
 const VRULE_WIDTH = 1
+const CARD_HEIGHT = 3
+/** Rows spent on the "more above/below" affordances once scrolling is
+ *  engaged at all — always both, mirroring tui/layout.ts's
+ *  ScrollWindow.windowed discipline (fixed budget, never variable, so the
+ *  content window's height never changes mid-scroll). */
+const AFFORDANCE_ROWS_WHEN_WINDOWED = 2
+
+type WorkspaceRow = Extract<DisplayRow, { kind: 'workspace' }>
+
+/** One renderable unit of the scrolling body, with a KNOWN terminal-row
+ *  height — see the file header's "VARIABLE-HEIGHT BLOCK WINDOWING" note. */
+type Block =
+  | { kind: 'project-header'; projectId: string; projectName: string; height: number }
+  | { kind: 'card'; row: WorkspaceRow; height: typeof CARD_HEIGHT }
+  | { kind: 'idle-box'; projectId: string; rows: WorkspaceRow[]; height: number }
+
+/** Idle-box height: top border + N idle rows + bottom border. */
+function idleBoxHeight(rowCount: number): number {
+  return 2 + rowCount
+}
 
 export function App(props: AppProps): JSX.Element {
   const dimensions = useTerminalDimensions()
 
-  const [filter, setFilter] = createSignal<Filter>('active')
+  const [view, setView] = createSignal<View>('active')
   // Selection is tracked by WORKSPACE ID, not raw row index — a plain
-  // numeric index clamped into bounds on frame changes (the previous
-  // `createEffect` below did exactly that) stays IN BOUNDS across a
-  // materially different tree (e.g. a reconnect after the Orpheus app
-  // restarted, or workspaces created/archived/reordered while
+  // numeric index clamped into bounds on frame changes stays IN BOUNDS
+  // across a materially different tree (e.g. a reconnect after the Orpheus
+  // app restarted, or workspaces created/archived/reordered while
   // disconnected) but can silently point at a DIFFERENT workspace than the
   // one actually highlighted — worse than an out-of-range index because
   // it's wrong without looking wrong. `null` means "no explicit selection
@@ -160,29 +185,42 @@ export function App(props: AppProps): JSX.Element {
   const [helpOpen, setHelpOpen] = createSignal(false)
 
   const breakpoint = createMemo(() => resolveOtuiBreakpoint(dimensions().width))
-  // Narrow tier still uses the shared tui/layout.ts columnPlanFor (its own
-  // row shape, WorkspaceRow.tsx, is unchanged from the pre-redesign build).
-  const narrowPlan = createMemo(() => columnPlanFor('narrow', dimensions().width))
 
   const flattened = createMemo(() => {
     const f = props.frame()
     if (f == null)
       return { rows: [] as DisplayRow[], hiddenCount: 0, visibleCount: 0, totalCount: 0 }
-    return flattenTree(f, filter(), props.scope)
+    // NOTE: `view` (not `filter`) is the local name; flattenTree()'s own
+    // parameter is still literally named/typed `filter: Filter` in
+    // tui/layout.ts (out of scope to rename there) — the VALUE domain is
+    // identical, only this file's own signal/prop names changed.
+    return flattenTree(f, view(), props.scope)
   })
 
-  const workspaceRows = createMemo(() => flattened().rows.filter((r) => r.kind === 'workspace'))
-
-  // Any row currently in_progress? Drives the shared spinner timer's active
-  // vote — see spinner.ts's file header for why this is a single vote at
-  // the App root, not one per row.
-  useSpinnerVote(() =>
-    workspaceRows().some((r) => r.kind === 'workspace' && r.status === 'in_progress')
+  // Selectable rows exclude idle workspaces under view:all (they collapse
+  // into an IdleBox, which is never keyboard-selectable) — under view:active
+  // idle rows are already absent from flattened().rows entirely (existing
+  // isActiveStatus/filter behavior in tui/layout.ts).
+  const workspaceRows = createMemo(() =>
+    flattened().rows.filter((r): r is WorkspaceRow => r.kind === 'workspace' && r.status !== 'idle')
   )
+
+  // Flat workspaceId -> TreeWorkspace lookup, built directly from the raw
+  // frame (NOT from DisplayRow, which doesn't carry model/effort) — see the
+  // file header's "MODEL/EFFORT LOOKUP" note.
+  const workspaceById = createMemo(() => {
+    const map = new Map<string, TreeWorkspace>()
+    const f = props.frame()
+    if (f == null) return map
+    for (const project of f.projects) {
+      for (const ws of project.workspaces) map.set(ws.id, ws)
+    }
+    return map
+  })
 
   // Derived, not synced-via-effect: re-resolved from `selectedRowIndexRaw`
   // (a workspace id) against the CURRENT `workspaceRows()` on every read, so
-  // a filter toggle/frame update/reconnect-with-a-different-tree/
+  // a view toggle/frame update/reconnect-with-a-different-tree/
   // disappearing workspace can never leave the effective index silently
   // pointing at the wrong row. Falls back to index 0 when there's no
   // selection yet OR the previously-selected id is no longer present in
@@ -193,41 +231,18 @@ export function App(props: AppProps): JSX.Element {
     if (rows.length === 0) return 0
     const id = selectedRowIndexRaw()
     if (id == null) return 0
-    const idx = rows.findIndex((r) => r.kind === 'workspace' && r.workspaceId === id)
+    const idx = rows.findIndex((r) => r.workspaceId === id)
     return idx >= 0 ? idx : 0
   })
 
-  // Reserved rows above the scrolling body: TitleBar is 1 row at narrow (no
-  // rule), 2 rows at medium/wide (title row + Rule). Footer is always 1 row.
-  const headerReserved = createMemo(() => (breakpoint() === 'narrow' ? 1 : 2))
-  const availableRows = createMemo(() =>
-    Math.max(0, dimensions().height - headerReserved() - FOOTER_ROWS)
-  )
-
-  // scrollWindowFor operates on the FULL row list (headers + workspace
-  // rows), with selectedRowIndex expressed as an index into workspaceRows()
-  // translated to its position in the full `rows` array.
-  const selectedRowPositionInFullList = createMemo(() => {
-    const wsRows = workspaceRows()
-    const target = wsRows[selectedRowIndex()]
-    if (target == null) return 0
-    const idx = flattened().rows.indexOf(target)
-    return idx < 0 ? 0 : idx
-  })
-
-  const scrollWindow = createMemo(() =>
-    scrollWindowFor(flattened().rows, selectedRowPositionInFullList(), availableRows())
-  )
-
   const selectedWorkspaceId = createMemo(() => {
     const row = workspaceRows()[selectedRowIndex()]
-    return row?.kind === 'workspace' ? row.workspaceId : null
+    return row?.workspaceId ?? null
   })
 
-  const selectedRow = createMemo((): Extract<DisplayRow, { kind: 'workspace' }> | null => {
-    const row = workspaceRows()[selectedRowIndex()]
-    return row?.kind === 'workspace' ? row : null
-  })
+  const selectedRow = createMemo(
+    (): WorkspaceRow | null => workspaceRows()[selectedRowIndex()] ?? null
+  )
 
   const selectedProjectName = createMemo(() => {
     const row = selectedRow()
@@ -237,15 +252,166 @@ export function App(props: AppProps): JSX.Element {
     return frame.projects.find((p) => p.id === row.projectId)?.name ?? null
   })
 
-  // Table column plan: at wide, the table's own pane width is narrowed by
-  // the detail pane + vertical rule budget so the table doesn't compute a
-  // name column wider than the space it's actually given.
-  const tableWidth = createMemo(() =>
+  // Reserved rows above the scrolling body: TitleBar is 1 row at narrow (no
+  // rule/blank line), 2 rows at medium/wide (title row + a blank line — the
+  // rule was dropped entirely, see TitleBar.tsx's file header). Footer is
+  // always 1 row.
+  const headerReserved = createMemo(() => (breakpoint() === 'narrow' ? 1 : 2))
+  const availableRows = createMemo(() =>
+    Math.max(0, dimensions().height - headerReserved() - FOOTER_ROWS)
+  )
+
+  // Card width == full available terminal width at every breakpoint (one
+  // layout that breathes, not a fixed 44-col card floating in a wider
+  // terminal) — narrowed by the detail pane + vertical rule budget only at
+  // wide, so the card list doesn't compute a width wider than the space
+  // it's actually given.
+  const cardAreaWidth = createMemo(() =>
     breakpoint() === 'wide'
       ? Math.max(20, dimensions().width - DETAIL_PANE_WIDTH - VRULE_WIDTH)
       : dimensions().width
   )
-  const tablePlan = createMemo(() => tableColumnPlanFor(breakpoint(), tableWidth()))
+
+  // ---- Build Blocks: project headers, cards, and (view:all only) a
+  // trailing idle-box per project group. flattenTree() already interleaves
+  // project-header + workspace rows in the right order; this regroups
+  // consecutive workspace rows under the same header into (active cards) +
+  // (collapsed idle rows), preserving flattenTree's own ordering otherwise.
+  //
+  // EMPTY-PROJECT SUPPRESSION: flattenTree() (tui/layout.ts, out of scope —
+  // deliberately, correctly, and test-locked) ALWAYS emits a project-header
+  // row even for a project with zero workspaces. Rendering that bare header
+  // with nothing under it is a presentation bug, not a data bug — fixed
+  // HERE by buffering each project's own header+body into a pending group
+  // and only committing it to `out` once at least one workspace row (card
+  // or idle) actually survives the current view filter for that project.
+  // An empty project (zero workspaces, or all its workspaces filtered out
+  // under view:active) contributes NOTHING to the rendered list.
+  const blocks = createMemo((): Block[] => {
+    const rows = flattened().rows
+    const out: Block[] = []
+    let renderedGroupCount = 0
+
+    let pendingHeader: { projectId: string; projectName: string } | null = null
+    let pendingCards: Block[] = []
+    let pendingIdleRows: WorkspaceRow[] = []
+
+    const commitPendingGroup = (): void => {
+      const hasBody = pendingCards.length > 0 || pendingIdleRows.length > 0
+      if (pendingHeader != null && hasBody) {
+        out.push({
+          kind: 'project-header',
+          projectId: pendingHeader.projectId,
+          projectName: pendingHeader.projectName,
+          height: renderedGroupCount > 0 ? 2 : 1
+        })
+        renderedGroupCount++
+        out.push(...pendingCards)
+        if (pendingIdleRows.length > 0) {
+          out.push({
+            kind: 'idle-box',
+            projectId: pendingHeader.projectId,
+            rows: pendingIdleRows,
+            height: idleBoxHeight(pendingIdleRows.length)
+          })
+        }
+      }
+      pendingHeader = null
+      pendingCards = []
+      pendingIdleRows = []
+    }
+
+    for (const row of rows) {
+      if (row.kind === 'project-header') {
+        commitPendingGroup()
+        pendingHeader = { projectId: row.projectId, projectName: row.projectName }
+        continue
+      }
+      if (view() === 'all' && row.status === 'idle') {
+        pendingIdleRows.push(row)
+        continue
+      }
+      pendingCards.push({ kind: 'card', row, height: CARD_HEIGHT })
+    }
+    commitPendingGroup()
+    return out
+  })
+
+  // ---- Windowing over Blocks (see file header's "VARIABLE-HEIGHT BLOCK
+  // WINDOWING" note) — keeps the selected card's Block fully in view within
+  // availableRows(), reserving a FIXED 2-row affordance budget for the
+  // whole scrolling session once windowing engages at all (never a variable
+  // 0/1/2, so the content window's own height never changes mid-scroll —
+  // same discipline as tui/layout.ts's scrollWindowFor).
+  const windowedBlocks = createMemo(
+    (): {
+      visible: Block[]
+      aboveCount: number
+      belowCount: number
+      windowed: boolean
+    } => {
+      const all = blocks()
+      const totalHeight = all.reduce((sum, b) => sum + b.height, 0)
+      const budget = availableRows()
+      if (budget <= 0 || all.length === 0) {
+        return { visible: [], aboveCount: all.length, belowCount: 0, windowed: all.length > 0 }
+      }
+      if (totalHeight <= budget) {
+        return { visible: all, aboveCount: 0, belowCount: 0, windowed: false }
+      }
+
+      const contentBudget = Math.max(1, budget - AFFORDANCE_ROWS_WHEN_WINDOWED)
+      const selectedId = selectedWorkspaceId()
+      const selectedBlockIndex = Math.max(
+        0,
+        all.findIndex((b) => b.kind === 'card' && b.row.workspaceId === selectedId)
+      )
+
+      // Walk forward from the selected block accumulating height until the
+      // budget is exhausted, then walk backward the same way, biasing toward
+      // keeping the selection with a little leading context rather than
+      // pinned to the window's top edge.
+      let start = selectedBlockIndex
+      let end = selectedBlockIndex + 1
+      let used = all[selectedBlockIndex]?.height ?? 0
+      let growBefore = true
+      while (used < contentBudget && (start > 0 || end < all.length)) {
+        if (growBefore && start > 0) {
+          start--
+          used += all[start]!.height
+        } else if (end < all.length) {
+          used += all[end]!.height
+          end++
+        } else if (start > 0) {
+          start--
+          used += all[start]!.height
+        } else {
+          break
+        }
+        growBefore = !growBefore
+      }
+      // If the walk overshot the budget (last block added pushed past it),
+      // trim from whichever edge is NOT the selected block.
+      while (used > contentBudget && end - start > 1) {
+        if (end - 1 > selectedBlockIndex) {
+          end--
+          used -= all[end]!.height
+        } else if (start < selectedBlockIndex) {
+          used -= all[start]!.height
+          start++
+        } else break
+      }
+
+      const aboveHeight = all.slice(0, start).reduce((s, b) => s + b.height, 0)
+      const belowHeight = all.slice(end).reduce((s, b) => s + b.height, 0)
+      return {
+        visible: all.slice(start, end),
+        aboveCount: aboveHeight > 0 ? Math.max(1, start) : 0,
+        belowCount: belowHeight > 0 ? Math.max(1, all.length - end) : 0,
+        windowed: true
+      }
+    }
+  )
 
   function moveSelection(delta: number): void {
     const rows = workspaceRows()
@@ -256,7 +422,7 @@ export function App(props: AppProps): JSX.Element {
     if (next < 0) next = 0
     if (next >= count) next = count - 1
     const nextRow = rows[next]
-    setSelectedRowIndexRaw(nextRow?.kind === 'workspace' ? nextRow.workspaceId : null)
+    setSelectedRowIndexRaw(nextRow?.workspaceId ?? null)
   }
 
   useKeyboard((key) => {
@@ -283,8 +449,8 @@ export function App(props: AppProps): JSX.Element {
       moveSelection(1)
       return
     }
-    if (key.name === 'f') {
-      setFilter((f) => (f === 'active' ? 'all' : 'active'))
+    if (key.name === 'v') {
+      setView((f) => (f === 'active' ? 'all' : 'active'))
       return
     }
     if (key.name === '?') {
@@ -296,10 +462,10 @@ export function App(props: AppProps): JSX.Element {
   // after this component has unmounted. This component itself never calls
   // destroy(); it just signals intent via onQuit/onOpen.
   onCleanup(() => {
-    // Nothing to clean up here directly — useKeyboard/useSpinnerVote own
-    // their own teardown. This onCleanup exists as a documented anchor: if
-    // a future change adds a resource here, it must be released here, not
-    // left to process exit.
+    // Nothing to clean up here directly — useKeyboard owns its own
+    // teardown. This onCleanup exists as a documented anchor: if a future
+    // change adds a resource here, it must be released here, not left to
+    // process exit.
   })
 
   const connecting = createMemo(() => props.frame() == null && props.disconnected() == null)
@@ -314,8 +480,6 @@ export function App(props: AppProps): JSX.Element {
     () => props.frame() != null && flattened().totalCount > 0 && flattened().visibleCount === 0
   )
 
-  const showTable = createMemo(() => breakpoint() !== 'narrow')
-
   return (
     <box
       width={dimensions().width}
@@ -327,7 +491,7 @@ export function App(props: AppProps): JSX.Element {
         scope={props.scope}
         connected={props.frame() != null && props.disconnected() == null}
         disconnected={props.disconnected() != null && !isReconnecting()}
-        filter={filter()}
+        view={view()}
         hiddenCount={flattened().hiddenCount}
         totalCount={flattened().totalCount}
         breakpoint={breakpoint()}
@@ -378,58 +542,58 @@ export function App(props: AppProps): JSX.Element {
                   fallback={
                     <box padding={1}>
                       <text fg={PALETTE.secondary}>
-                        {empty() ? 'no workspaces' : '(no workspaces — press f to show all)'}
+                        {empty() ? 'no workspaces' : '(no workspaces — press v to show all)'}
                       </text>
                     </box>
                   }
                 >
                   <box flexDirection="row" flexGrow={1} minHeight={0}>
                     <box flexDirection="column" flexGrow={1} minHeight={0}>
-                      <Show when={scrollWindow().windowed}>
+                      <Show when={windowedBlocks().windowed}>
                         <ScrollAffordance
-                          count={scrollWindow().aboveCount}
+                          count={windowedBlocks().aboveCount}
                           direction="up"
                           palette={PALETTE}
                         />
                       </Show>
                       <box flexDirection="column" flexGrow={1} minHeight={0}>
-                        <Show
-                          when={!showTable()}
-                          fallback={
-                            <WorkspaceTable
-                              rows={() => scrollWindow().visible}
-                              selectedWorkspaceId={selectedWorkspaceId}
-                              plan={tablePlan}
-                              palette={PALETTE}
-                            />
-                          }
-                        >
-                          <For each={scrollWindow().visible}>
-                            {(row) =>
-                              row.kind === 'project-header' ? (
-                                <ProjectHeaderRow
-                                  name={row.projectName}
+                        <For each={windowedBlocks().visible}>
+                          {(block) => {
+                            if (block.kind === 'project-header') {
+                              return (
+                                <ProjectGroupHeader
+                                  name={block.projectName}
                                   palette={PALETTE}
-                                  breakpoint={breakpoint()}
-                                  plan={narrowPlan()}
-                                />
-                              ) : (
-                                <WorkspaceRow
-                                  row={row}
-                                  plan={narrowPlan()}
-                                  selected={row.workspaceId === selectedWorkspaceId()}
-                                  open={row.tmuxHosted}
-                                  palette={PALETTE}
-                                  breakpoint={breakpoint()}
+                                  withLeadingBlank={block.height === 2}
                                 />
                               )
                             }
-                          </For>
-                        </Show>
+                            if (block.kind === 'idle-box') {
+                              return (
+                                <IdleBox
+                                  rows={block.rows}
+                                  width={cardAreaWidth()}
+                                  palette={PALETTE}
+                                />
+                              )
+                            }
+                            const workspace = workspaceById().get(block.row.workspaceId)
+                            return (
+                              <WorkspaceCard
+                                row={block.row}
+                                model={workspace?.model ?? null}
+                                effort={workspace?.effort ?? null}
+                                selected={block.row.workspaceId === selectedWorkspaceId()}
+                                width={cardAreaWidth()}
+                                palette={PALETTE}
+                              />
+                            )
+                          }}
+                        </For>
                       </box>
-                      <Show when={scrollWindow().windowed}>
+                      <Show when={windowedBlocks().windowed}>
                         <ScrollAffordance
-                          count={scrollWindow().belowCount}
+                          count={windowedBlocks().belowCount}
                           direction="down"
                           palette={PALETTE}
                         />

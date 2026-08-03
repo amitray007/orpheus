@@ -62,7 +62,8 @@ import type {
   WorkspaceUnhostResult,
   TreeWorkspaceFrame,
   TreeProjectFrame,
-  TreeFrame
+  TreeFrame,
+  ClaudeEffort
 } from '../shared/types'
 
 // ---------------------------------------------------------------------------
@@ -1024,6 +1025,18 @@ export async function renameHostedSession(
 export type TreeSourceWorkspace = WorkspaceRecord & {
   waitingFor?: string
   lastActivityAt?: number | null
+  /** Effective (layered) model/effort for this workspace — resolved by the
+   *  caller (commandServer.ts's withLiveTreeOverlay, via
+   *  claudeSettings.ts's resolveEffectiveModelAndEffort) BEFORE calling
+   *  buildTreeFrame, not inside this module. tmuxHost.ts must stay
+   *  Electron/DB-free (see this file's own "ELECTRON-IMPORT DISCIPLINE"
+   *  header) so scripts/verify-tmux-host.ts can keep running as a pure,
+   *  no-Electron/no-DB harness — resolveEffectiveModelAndEffort reads the
+   *  DB, so it cannot be called from toTreeWorkspaceFrame below. Optional so
+   *  existing pure-function test fixtures that don't set these keep
+   *  compiling; toTreeWorkspaceFrame falls back to safe defaults when absent. */
+  model?: string
+  effort?: ClaudeEffort
 }
 
 /** `sort_order ASC NULLS LAST, <time> DESC` — MUST match the desktop sidebar
@@ -1047,6 +1060,12 @@ function sortBySortOrderThenTimeDesc<T>(
   })
 }
 
+// Fallback effort when the caller hasn't resolved one (e.g. an older/stub
+// TreeSourceWorkspace fixture in scripts/verify-tmux-host.ts) — 'auto' is
+// the same "no override" default composeClaudeLaunch's own layering ladder
+// bottoms out at, so this is a safe, meaning-preserving default, not a guess.
+const DEFAULT_EFFORT: ClaudeEffort = 'auto'
+
 function toTreeWorkspaceFrame(
   ws: TreeSourceWorkspace,
   hostedSessions: ReadonlySet<string>
@@ -1059,6 +1078,8 @@ function toTreeWorkspaceFrame(
     ...(ws.waitingFor != null ? { waitingFor: ws.waitingFor } : {}),
     parentWorkspaceId: ws.parentWorkspaceId,
     worktreeBranch: ws.worktreeBranch,
+    model: ws.model ?? '',
+    effort: ws.effort ?? DEFAULT_EFFORT,
     sortOrder: ws.sortOrder,
     tmuxHosted: shouldBlockNativeMount(hostedSessions, sessionName),
     lastActivityAt: ws.lastActivityAt ?? ws.lastOpenedAt ?? null,

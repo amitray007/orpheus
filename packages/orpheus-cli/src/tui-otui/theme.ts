@@ -29,6 +29,25 @@
  * lowerCamel/UPPER_SNAKE constants rather than a re-exported `activePalette`
  * alias) — a future light palette would follow the exact same pattern the
  * Ink version documents.
+ *
+ * GLYPH-SAFETY OVERHAUL (card redesign — do not reintroduce ambiguous glyphs)
+ * -----------------------------------------------------------------------
+ * Every "fancy" glyph previously in this file (`●` U+25CF, `○` U+25CB,
+ * `◆` U+25C6, `▲` U+25B2, `▼` U+25BC, `▌` U+258C, `│` U+2502, `─` U+2500,
+ * `·` U+00B7) is East_Asian_Width=Ambiguous per the Unicode Consortium's own
+ * EastAsianWidth.txt — meaning it renders as TWO columns on a terminal
+ * configured for CJK, silently breaking every column alignment in this app.
+ * Verified against the actual data file, not guessed — `string-width`
+ * (already a dependency, used by tui/layout.ts's truncate()) measures the
+ * OPTIMISTIC non-CJK case and will happily report 1 for these, so it must
+ * NEVER be used to validate glyph safety; only a real EastAsianWidth.txt
+ * lookup counts as verification. Every glyph below is either from the
+ * pre-verified safe list (Na/N basic ASCII punctuation, plus `…` U+2026 and
+ * `⎇`/`»` which were separately confirmed Narrow) or was independently
+ * looked up (see the final report for the exact lookups performed for this
+ * pass, e.g. the ASCII idle-box punctuation: `,` U+002C Na, backtick U+0060
+ * Na, `'` U+0027 Na — plain ASCII, not to be confused with the curly
+ * U+2018/2019 quotes, which ARE ambiguous).
  */
 
 export interface Palette {
@@ -54,14 +73,27 @@ export interface Palette {
   text: string
   /** App background. */
   background: string
+  /** model/effort text color — distinct from all four status hues so the
+   *  two systems (status vs model/effort) never look related at a glance. */
+  modelText: string
 }
 
-/** Ported verbatim from tui/theme.ts's DARK palette. */
+/**
+ * Status colors updated for the card redesign (task brief's exact hexes):
+ *   attention: #ff6b6b (was #ff5d62 — "reds tuned off pure: #ff0000
+ *     vibrates against a near-black ground")
+ *   working (displayed as "in progress"): #7aa2f7 (was #7fd88f — this hex
+ *     was previously `awaiting`'s value; working/in-progress now takes it)
+ *   awaiting: #ffcc66 (NEW — previously awaiting shared working's old hex;
+ *     now has its own distinct yellow)
+ *   idle: #8a90a6 (nudged from #6b7089 to the brief's exact suggested hex —
+ *     same neighborhood, kept for consistency with the brief)
+ */
 export const PALETTE: Palette = {
-  attention: '#ff5d62',
-  working: '#7fd88f',
-  awaiting: '#7aa2f7',
-  idle: '#6b7089',
+  attention: '#ff6b6b',
+  working: '#7aa2f7',
+  awaiting: '#ffcc66',
+  idle: '#8a90a6',
   accent: '#bb9af7',
   border: '#3b3f58',
   secondary: '#8b90a8',
@@ -74,67 +106,106 @@ export const PALETTE: Palette = {
   // signal at a glance.
   openBg: '#1f2937',
   text: '#e3e5f0',
-  background: '#0f1117'
+  background: '#0f1117',
+  // Neutral teal-grey — distinct from attention (#ff6b6b red), working
+  // (#7aa2f7 blue), awaiting (#ffcc66 yellow), and idle (#8a90a6 grey-blue).
+  modelText: '#5fb3a3'
 }
 
 // ---------------------------------------------------------------------------
-// Glyphs — single-width only, ported from tui/theme.ts + tui/layout.ts.
+// Glyphs — VERIFIED single-width only. See file header for the verification
+// method. Every entry below is either plain ASCII (Na/N by construction) or
+// was independently checked against EastAsianWidth.txt.
 // ---------------------------------------------------------------------------
 
-export const ATTENTION_GLYPH = '!'
-export const WORKING_GLYPH = '●'
-export const IDLE_GLYPH = '○'
-export const WORKTREE_GLYPH = '»'
-/** Simpler `└ ` scheme (not full ├─/│ continuation lines) — see App.tsx's
- * indentFor() doc comment for why this deviates from the design spec's
- * fuller ASCII-tree suggestion. */
-export const CHILD_INDENT = '└ '
+/** Worktree-branch marker, prefixed to line 3 of a card (`⎇ branch`).
+ *  U+2387 — confirmed Narrow (N) in EastAsianWidth.txt; pre-verified safe
+ *  per the task brief, kept unchanged from its prior use as a "keep using
+ *  it" glyph. */
+export const WORKTREE_GLYPH = '⎇'
+
+/** "This workspace is live in tmux" marker — U+00BB, confirmed Narrow (N);
+ *  pre-verified safe, kept unchanged. */
 export const OPEN_GLYPH = '»'
 
-export const SELECTION_BAR = '▌'
-export const SELECTION_DOT = '●'
-export const SELECTION_GUTTER_EMPTY = ' '
-export const SCROLL_UP_GLYPH = '▲'
-export const SCROLL_DOWN_GLYPH = '▼'
-export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-export const SPINNER_INTERVAL_MS = 250
-export const KEYMAP_SEPARATOR = ' · '
+/** Gutter rune: reserved 1-column-wide leading slot on every card line.
+ *  Selected: `|` (U+007C, Na). Unselected: ` ` (space, Na). No bar/dot
+ *  distinction anymore — see App.tsx/WorkspaceCard.tsx for the "reserve the
+ *  slot, swap the rune" technique this replaces SELECTION_BAR/SELECTION_DOT
+ *  with. */
+export const GUTTER_SELECTED = '|'
+export const GUTTER_EMPTY = ' '
 
-// ---------------------------------------------------------------------------
-// ghui-inspired devices (docs/TUI_UI_REDESIGN.md) — full-width rules instead
-// of boxes, and a two-tier glyph hierarchy distinguishing project-group
-// headers from individual workspace rows.
-// ---------------------------------------------------------------------------
+/** Footer/keymap hint separator — was `' · '` (U+00B7 MIDDLE DOT, confirmed
+ *  AMBIGUOUS despite looking like it should be narrow). Tried a plain-ASCII
+ *  `' - '` (U+002D HYPHEN-MINUS, confirmed Narrow) first — verified glyph-
+ *  safe, but reviewed live via tui-mcp against a plain triple-space and the
+ *  dash read as visual noise next to already-bold/accent-colored key labels
+ *  (each key is already visually distinct without a punctuation separator).
+ *  Settled on three plain spaces — still trivially Na (space is Na), zero
+ *  extra glyphs, and the live render reads cleaner. */
+export const KEYMAP_SEPARATOR = '   '
 
-/** Full-width horizontal rule character — section divider, replacing nested
- * bordered boxes (ghui device #2: "Horizontal rules as section dividers,
- * not boxes"). Rendered by repeating this to the terminal's current width. */
-export const RULE_CHAR = '─'
+/**
+ * Horizontal rule character, used only where a rule still renders (the
+ * card redesign drops the TitleBar's own rule entirely in favor of a blank
+ * line — see App.tsx/TitleBar.tsx — but Rule.tsx itself is kept for other
+ * callers, e.g. HelpOverlay's internal layout). Was `─` (U+2500 BOX DRAWINGS
+ * LIGHT HORIZONTAL, confirmed Ambiguous); replaced with `-` (U+002D
+ * HYPHEN-MINUS, confirmed Narrow).
+ */
+export const RULE_CHAR = '-'
 
-/** Vertical rule character for the wide master/detail split — the only
+/**
+ * Vertical rule character for the wide master/detail split — the only
  * vertical rule in the whole layout, and it disappears entirely below the
- * wide breakpoint (ghui device #2: "the only vertical rule is the
- * master/detail split, and it disappears at narrow"). */
-export const VRULE_CHAR = '│'
+ * wide breakpoint. Was `│` (U+2502 BOX DRAWINGS LIGHT VERTICAL, confirmed
+ * Ambiguous); replaced with `|` (U+007C VERTICAL LINE, confirmed Narrow —
+ * already verified above as the gutter rune).
+ */
+export const VRULE_CHAR = '|'
 
-/** Project-group header glyph — ghui's `◆` marks group headers (repos in
- * ghui's case, projects here), sharpening the two-tier hierarchy: a project
- * header now reads as visually distinct from a workspace row at a glance,
- * not just via indentation (ghui device #3). */
-export const PROJECT_GLYPH = '◆'
+/**
+ * Idle-collapse box border glyphs (view:all only — see WorkspaceCard.tsx's
+ * IdleBox). All plain ASCII punctuation, independently verified against
+ * EastAsianWidth.txt for this pass (not assumed from "looks narrow"):
+ *   `,` U+002C COMMA — Na
+ *   `-` U+002D HYPHEN-MINUS — Na (already verified above)
+ *   `.` U+002E FULL STOP — Na
+ *   `` ` `` U+0060 GRAVE ACCENT — Na
+ *   `'` U+0027 APOSTROPHE (straight ASCII quote, NOT the curly U+2018/2019
+ *     quotes, which ARE ambiguous — do not substitute those in) — Na
+ *   `|` U+007C VERTICAL LINE — Na (already verified above as the gutter rune)
+ * This deliberately avoids the rounded Unicode box-drawing set (╭╮╰╯, in the
+ * U+25xx range) without justification — per the brief, box-drawing
+ * characters in that range are frequently Ambiguous and were not checked
+ * individually since this ASCII substitute avoids the question entirely.
+ */
+// Corners are single characters (not "corner + dash" pairs) — the dash run
+// itself is generated separately by IdleBox.tsx from ONE shared width
+// computation, so the top/bottom rule and the content rows can never drift
+// out of sync the way a "corner already includes a dash" encoding invited
+// (see IdleBox.tsx's file header for the exact bug this fixes: the old
+// 2-char `,-`/`` `- `` corners double-counted a column against
+// innerWidth, silently overflowing the box by 1 column and clipping the
+// closing corner off the right edge).
+export const IDLE_BOX_TOP_LEFT = ','
+export const IDLE_BOX_TOP_RIGHT = '.'
+export const IDLE_BOX_BOTTOM_LEFT = '`'
+export const IDLE_BOX_BOTTOM_RIGHT = "'"
+export const IDLE_BOX_HRULE = '-'
+export const IDLE_BOX_VRULE = '|'
 
-/** Gutter width in characters: 1 (bar) at narrow, 2 (dot + trailing space) at medium/wide. */
-export function gutterWidthFor(breakpoint: 'narrow' | 'medium' | 'wide'): number {
-  return breakpoint === 'narrow' ? 1 : 2
-}
+/** Gutter width in characters: always 1 — the reserved-gutter-slot
+ *  technique (task brief's "reserve the slot, swap the rune"). Kept as a
+ *  named export (rather than an inline literal) so every card line agrees
+ *  on the same width without re-deriving it. */
+export const CARD_GUTTER_WIDTH = 1
 
-/** The gutter's rendered content for a row — bar/dot when selected, matching blank space otherwise. */
-export function gutterContentFor(
-  breakpoint: 'narrow' | 'medium' | 'wide',
-  selected: boolean
-): string {
-  const width = gutterWidthFor(breakpoint)
-  if (!selected) return SELECTION_GUTTER_EMPTY.repeat(width)
-  const glyph = breakpoint === 'narrow' ? SELECTION_BAR : SELECTION_DOT
-  return (glyph + SELECTION_GUTTER_EMPTY.repeat(width - 1)).slice(0, width)
+/** The gutter's rendered content for a card line — `|` when the card is
+ *  selected, a single space otherwise. Same column, same width, on ALL
+ *  THREE lines of a card, always present — never added/removed on
+ *  selection (see WorkspaceCard.tsx for how this is applied per-line). */
+export function gutterContentFor(selected: boolean): string {
+  return selected ? GUTTER_SELECTED : GUTTER_EMPTY
 }

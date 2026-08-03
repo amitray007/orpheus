@@ -208,11 +208,15 @@ function workspaceRows(rows: DisplayRow[]): Array<Extract<DisplayRow, { kind: 'w
   )
   assert.equal(
     truncate('this-is-a-very-long-workspace-name', 10),
-    'this-is-a…',
-    'longer than width: hard-truncate + ellipsis, total length == width'
+    'this-is...',
+    'longer than width: hard-truncate + 3-char ascii ellipsis, total length == width'
   )
   assert.equal(truncate('this-is-a-very-long-workspace-name', 10).length, 10)
-  assert.equal(truncate('anything', 1), '…', 'width 1 is just the ellipsis')
+  // A 3-char ellipsis doesn't fit in a 1- or 2-column budget the way the old
+  // 1-char '…' always did — these degrade to as many literal dots as fit.
+  assert.equal(truncate('anything', 1), '.', 'width 1 degrades to a single dot')
+  assert.equal(truncate('anything', 2), '..', 'width 2 degrades to two dots')
+  assert.equal(truncate('anything', 3), '...', 'width 3 exactly fits the ellipsis, no content')
   assert.equal(truncate('anything', 0), '', 'width 0 truncates to empty')
   assert.equal(truncate('anything', -5), '', 'negative width truncates to empty (never throws)')
 
@@ -222,9 +226,10 @@ function workspaceRows(rows: DisplayRow[]): Array<Extract<DisplayRow, { kind: 'w
   // string like this one (20 display columns) fits inside a 10-column
   // budget and return it unclipped, corrupting alignment. The
   // display-width-aware implementation must clip it down to fit 10 columns
-  // (9 columns of content + 1 for the ellipsis), and every prefix character
-  // it keeps must be one that was actually present in the source string, in
-  // order (no mid-character corruption).
+  // (7 columns of content budget minus the 3-char ascii ellipsis reserves 3
+  // columns — see truncate()'s ELLIPSIS.length-aware budget), and every
+  // prefix character it keeps must be one that was actually present in the
+  // source string, in order (no mid-character corruption).
   const wide = '日本語のタイトルです' // 10 code points, 20 display columns
   const wideTruncated = truncate(wide, 10)
   assert.notEqual(
@@ -232,9 +237,12 @@ function workspaceRows(rows: DisplayRow[]): Array<Extract<DisplayRow, { kind: 'w
     wide,
     'a 20-column string must not fit unclipped in a 10-column budget'
   )
-  assert.ok(wideTruncated.endsWith('…'), 'wide truncation still ends in the ellipsis')
   assert.ok(
-    wide.startsWith(wideTruncated.slice(0, -1)),
+    wideTruncated.endsWith('...'),
+    'wide truncation still ends in the 3-char ascii ellipsis'
+  )
+  assert.ok(
+    wide.startsWith(wideTruncated.slice(0, -3)),
     'kept prefix is a real prefix of the source'
   )
 

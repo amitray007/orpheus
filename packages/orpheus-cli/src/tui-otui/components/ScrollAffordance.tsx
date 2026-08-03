@@ -1,5 +1,15 @@
 /**
- * tui-otui/components/ScrollAffordance.tsx — the "▲ 3 more" / "▼ 3 more" line.
+ * tui-otui/components/ScrollAffordance.tsx — the "more above (N)" /
+ * "more below (N)" line.
+ *
+ * GLYPH-SAFETY: no leading glyph at all. The prior build used `▲`/`▼`
+ * (U+25B2/U+25BC), both confirmed East_Asian_Width=Ambiguous per the
+ * Unicode Consortium's EastAsianWidth.txt (see theme.ts's file header for
+ * the verification method). Rather than hunt for a verified-safe
+ * replacement glyph, this uses plain text with no glyph at all — the
+ * task brief's own "simplest and zero-risk" recommendation — since the
+ * direction (above/below) is already unambiguous from the word itself and
+ * the line's position (top vs bottom of the scrolling body).
  *
  * ALWAYS MOUNTED (when scrollWindow.windowed), CONDITIONALLY COLORED — see
  * ../../tui/layout.ts's ScrollWindow.windowed doc comment for why: mounting
@@ -9,7 +19,6 @@
  * windowed session both directions stay mounted, recoloring only.
  */
 
-import { SCROLL_DOWN_GLYPH, SCROLL_UP_GLYPH } from '../theme.js'
 import type { Palette } from '../theme.js'
 
 export interface ScrollAffordanceProps {
@@ -19,12 +28,9 @@ export interface ScrollAffordanceProps {
 }
 
 export function ScrollAffordance(props: ScrollAffordanceProps): JSX.Element {
-  const glyph = props.direction === 'up' ? SCROLL_UP_GLYPH : SCROLL_DOWN_GLYPH
   const hasMore = (): boolean => props.count > 0
   const color = (): string => (hasMore() ? props.palette.accent : props.palette.secondary)
-  return (
-    <text fg={color()}>
-      {glyph} {hasMore() ? `${props.count} more` : ''}
-    </text>
-  )
+  const label = (): string =>
+    hasMore() ? `more ${props.direction === 'up' ? 'above' : 'below'} (${props.count})` : ''
+  return <text fg={color()}>{label()}</text>
 }

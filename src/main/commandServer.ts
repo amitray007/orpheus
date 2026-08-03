@@ -20,6 +20,7 @@ import type {
 } from '../shared/types'
 import { onWorkspaceStatusChange } from './orpheusNotify'
 import { getWorkspaceFileInfo } from './sessionState'
+import { resolveEffectiveModelAndEffort } from './claudeSettings'
 import {
   hostWorkspace,
   unhostWorkspace,
@@ -452,12 +453,19 @@ const treeFrameSubscribers = new Set<(frame: TreeFrame) => void>()
  *  file info is available (session not currently running). */
 function withLiveTreeOverlay(ws: WorkspaceRecord): TreeSourceWorkspace {
   const info = getWorkspaceFileInfo(ws.id)
+  // Effective (global -> project -> workspace layered) model/effort — see
+  // claudeSettings.ts's resolveEffectiveModelAndEffort doc comment for why
+  // this cheap resolution (not composeClaudeLaunch) is used here, on every
+  // poll tick, for every workspace.
+  const { model, effort } = resolveEffectiveModelAndEffort(ws.projectId, ws.id)
   return {
     ...ws,
     ...(ws.status === 'attention' && info.waitingFor != null
       ? { waitingFor: info.waitingFor }
       : {}),
-    lastActivityAt: info.statusUpdatedAt ?? ws.lastOpenedAt ?? null
+    lastActivityAt: info.statusUpdatedAt ?? ws.lastOpenedAt ?? null,
+    model,
+    effort
   }
 }
 
