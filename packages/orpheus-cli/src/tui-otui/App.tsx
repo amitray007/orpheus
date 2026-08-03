@@ -103,7 +103,7 @@
  * LOCAL signal/setter/keybinding are all named `view`/`setView`/`v`.
  */
 
-import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { useKeyboard, useTerminalDimensions } from '@opentui/solid'
 import { TextAttributes } from '@opentui/core'
 import {
@@ -350,6 +350,21 @@ export function App(props: AppProps): JSX.Element {
   // bring the selected block back into view when it falls outside the
   // current window — exactly scrollWindowFor's "keep in view, don't
   // recenter" contract, just adapted to variable block heights.
+  //
+  // MEMO STAYS PURE — THE WRITE-BACK IS A SEPARATE createEffect —
+  // an earlier version called `setWindowStartIndex(start)` DIRECTLY INSIDE
+  // this memo's own compute function, which also READS `windowStartIndex()`
+  // at its top (to clamp/seed `start`). A memo that reads a signal it also
+  // writes creates a dependency on its own output — Solid can re-trigger the
+  // memo from that write, and it only looked stable because the value
+  // happened to converge to a fixed point on the second pass. That's a
+  // latent re-render loop waiting for a timing/ordering change to surface
+  // it, not a guarantee. Fixed by having the memo compute-and-RETURN the
+  // resolved `start` (as part of its result object) without ever writing
+  // the signal itself, and a separate `createEffect` below (reacting to
+  // `windowedBlocks().start`) performs the ONE write into `windowStartIndex`
+  // — same "nudge, don't recenter" values as before, just relocated to an
+  // explicit side-effect scope instead of living inside the pure memo.
   const [windowStartIndex, setWindowStartIndex] = createSignal(0)
 
   const windowedBlocks = createMemo(
@@ -358,16 +373,22 @@ export function App(props: AppProps): JSX.Element {
       aboveCount: number
       belowCount: number
       windowed: boolean
+      start: number
     } => {
       const all = blocks()
       const totalHeight = all.reduce((sum, b) => sum + b.height, 0)
       const budget = availableRows()
       if (budget <= 0 || all.length === 0) {
-        return { visible: [], aboveCount: all.length, belowCount: 0, windowed: all.length > 0 }
+        return {
+          visible: [],
+          aboveCount: all.length,
+          belowCount: 0,
+          windowed: all.length > 0,
+          start: 0
+        }
       }
       if (totalHeight <= budget) {
-        setWindowStartIndex(0)
-        return { visible: all, aboveCount: 0, belowCount: 0, windowed: false }
+        return { visible: all, aboveCount: 0, belowCount: 0, windowed: false, start: 0 }
       }
 
       const contentBudget = Math.max(1, budget - AFFORDANCE_ROWS_WHEN_WINDOWED)
@@ -437,18 +458,30 @@ export function App(props: AppProps): JSX.Element {
         end = endForStart(start)
       }
 
-      setWindowStartIndex(start)
-
       const aboveHeight = heightFrom(0, start)
       const belowHeight = heightFrom(end, all.length)
       return {
         visible: all.slice(start, end),
         aboveCount: aboveHeight > 0 ? Math.max(1, start) : 0,
         belowCount: belowHeight > 0 ? Math.max(1, all.length - end) : 0,
-        windowed: true
+        windowed: true,
+        start
       }
     }
   )
+
+  // The ONE write into `windowStartIndex` — kept OUTSIDE the memo above (see
+  // that memo's own doc comment for why a self-referential read+write inside
+  // a createMemo is a latent re-render-loop risk, not just a style nit).
+  // This effect reacts to `windowedBlocks().start` — the memo's OWN computed
+  // result, not `windowStartIndex()` itself — so there is no cycle: the
+  // signal is pure state, the memo is a pure function of `blocks()` +
+  // `availableRows()` + `selectedWorkspaceId()` + (a READ of, never a write
+  // to) the signal's PREVIOUS value, and this effect is the only place that
+  // ever calls `setWindowStartIndex`.
+  createEffect(() => {
+    setWindowStartIndex(windowedBlocks().start)
+  })
 
   function moveSelection(delta: number): void {
     const rows = workspaceRows()

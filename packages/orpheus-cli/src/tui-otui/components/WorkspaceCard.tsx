@@ -21,12 +21,22 @@
  * the selected card, on all three lines:
  *   1. Gutter rune: ` ` -> `|` (theme.ts's gutterContentFor).
  *   2. Background tint across the FULL card width, all 3 lines.
- *   3. Bold on the title line ONLY (line 2) — line 1/3 get the bg tint but
- *      not forced bold; attention status text is always bold regardless of
- *      selection (matches the pre-redesign WorkspaceRow.tsx precedent:
- *      `props.selected || props.row.status === 'attention' ? BOLD :
- *      undefined`, applied here to whichever text carries the status word —
- *      line 1's right-aligned status token).
+ *   3. Bold on the title line (line 2) — SELECTION-CONDITIONAL, not
+ *      unconditional (`props.selected ? BOLD : undefined`, mirrored from
+ *      the status word's own `statusBold()` pattern one block up). An
+ *      earlier draft made title bold unconditional, which left that line's
+ *      ONLY selection signal as the fg colour swap (accent vs text) — a
+ *      colour-alone distinction, exactly the failure mode this file's three
+ *      signals exist to avoid (a client that quantizes/lacks truecolor
+ *      could collapse accent/text toward each other with nothing else to
+ *      tell the line apart). Making it conditional restores three
+ *      independent signals on the whole card — gutter rune, background
+ *      tint, and now title weight — each surviving the loss of the others.
+ *      Line 1/3 still never get forced bold; attention status text is
+ *      always bold regardless of selection (matches the pre-redesign
+ *      WorkspaceRow.tsx precedent: `props.selected || props.row.status ===
+ *      'attention' ? BOLD : undefined`, applied here to whichever text
+ *      carries the status word — line 1's right-aligned status token).
  *
  * THE "PAD BEFORE BG" DISCIPLINE (gh-dash's `.Width(w).Background(...)` bug
  * class — see WorkspaceTable.tsx's file header, point 3, for the fuller
@@ -160,7 +170,16 @@ export function WorkspaceCard(props: WorkspaceCardProps): JSX.Element {
         <text
           bg={bg()}
           fg={props.selected ? props.palette.accent : props.palette.text}
-          attributes={TextAttributes.BOLD}
+          // Bold is SELECTION-CONDITIONAL, not always-on. With it unconditional
+          // this line distinguished selected from unselected by colour alone
+          // (accent vs text) — the exact failure mode the file header's third
+          // signal exists to prevent, and the one that degrades first when a
+          // client quantizes truecolour (Termius on iOS may not support it at
+          // all). Selection now carries three independent signals — gutter
+          // rune, background tint, and weight — each surviving the loss of the
+          // others. The title has ample prominence from position and contrast
+          // without spending bold on every card.
+          attributes={props.selected ? TextAttributes.BOLD : undefined}
           wrapMode="none"
           overflow="hidden"
         >
