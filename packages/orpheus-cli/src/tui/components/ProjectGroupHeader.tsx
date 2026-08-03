@@ -37,7 +37,7 @@ function ProjectGroupHeaderImpl({
           the same column as the card text beneath it, rather than hanging one
           rail-width to the left of every workspace it groups. */}
       <Box paddingLeft={CARD_GUTTER_WIDTH + CARD_PAD_GUTTER} flexShrink={0}>
-        <Text bold color={palette.accent} wrap="truncate-end">
+        <Text bold color={palette.groupLabel} wrap="truncate-end">
           {name}
         </Text>
       </Box>

@@ -48,6 +48,16 @@ export interface TitleBarProps {
   width: number
 }
 
+/** Brand mark glyph — U+2726 BLACK FOUR POINTED STAR, East_Asian_Width=N
+ *  (single width, verified against EastAsianWidth.txt). Unlike the card's
+ *  selection rail — which lives in a fixed-width Box and merely clips if a
+ *  terminal renders it double-width — this glyph sits inline in a flowing
+ *  text row, so an Ambiguous-width mark WOULD shift the status text right by
+ *  a column in a CJK-configured terminal. `N` is safe; `◆ ● ▲ ■ ·` are all
+ *  Ambiguous and must not be substituted here without re-checking. */
+const BRAND_GLYPH = '\u2726'
+const BRAND_NAME = 'Orpheus'
+
 export function TitleBar({
   scope,
   connected,
@@ -59,7 +69,10 @@ export function TitleBar({
   palette,
   width
 }: TitleBarProps): React.JSX.Element {
-  const title = scope != null ? `Orpheus — ${scope.name}` : 'Orpheus'
+  const scopeSuffix = scope != null ? ` — ${scope.name}` : null
+  // Width budget still counts the FULL rendered mark (glyph + space + name +
+  // any scope suffix), even though it renders as several <Text> nodes.
+  const title = `${BRAND_GLYPH} ${BRAND_NAME}${scopeSuffix ?? ''}`
   const connectionColor = connected
     ? palette.working
     : disconnected
@@ -81,9 +94,22 @@ export function TitleBar({
   return (
     <Box flexDirection="column">
       <Box width={width}>
-        <Text bold color={palette.accent} wrap="truncate-end">
-          {title}
+        {/* WORDMARK, not a heading. A leading accent glyph gives the brand a
+            fixed visual anchor at the top-left, and the underline treats
+            `Orpheus` as a mark rather than as the first line of content —
+            without spending a whole row on a rule. `scope` (the --project
+            name) stays un-underlined: it is context, not part of the mark. */}
+        <Text bold color={palette.accent}>
+          {BRAND_GLYPH}{' '}
         </Text>
+        <Text bold underline color={palette.brand} wrap="truncate-end">
+          {BRAND_NAME}
+        </Text>
+        {scopeSuffix != null ? (
+          <Text color={palette.secondary} wrap="truncate-end">
+            {scopeSuffix}
+          </Text>
+        ) : null}
         <Box flexGrow={1} minWidth={0} justifyContent="flex-end">
           <Text color={connectionColor} wrap="truncate-end">
             {clippedStatus}

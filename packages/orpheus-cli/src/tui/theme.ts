@@ -101,13 +101,30 @@ export interface Palette {
   /** idle / muted metadata. */
   idle: string
   /**
-   * Brand/selection accent — the left gutter bar/dot, active project
-   * headers, selected-row text. MUST stay visually distinct from every
-   * status colour above: selection is a *cursor*, not a *state* — reusing
-   * a status hue here would make a selected row of that status and an
-   * unselected row of the same status harder to tell apart.
+   * SELECTION ONLY — the rail and the selected card's title. Nothing else.
+   *
+   * This colour previously did nine jobs at once (wordmark, project headers,
+   * selection rail, selected title, scroll arrows, footer keys, help keys,
+   * detail heading), which is why the UI read as uniformly purple: a hue
+   * meaning "brand" AND "cursor" AND "key hint" AND "group label"
+   * simultaneously carries no information. Selection is a *cursor*, so it
+   * keeps the one job that genuinely needs an attention-grabbing hue, and
+   * must stay distinct from every status colour above — otherwise a selected
+   * row of some status and an unselected row of that same status blur
+   * together.
    */
   accent: string
+  /** The `Orpheus` wordmark. Its own colour so the brand mark is not the
+   *  same ink as the selection cursor — they are unrelated concepts that
+   *  happened to share a hex. */
+  brand: string
+  /** Project group headers. A structural label, not a cursor and not brand:
+   *  it should read as quiet scaffolding that organises the list. */
+  groupLabel: string
+  /** Key glyphs in the footer and help overlay (`enter`, `j/k`, `q`). These
+   *  are affordances, not selection state, so they get their own quiet hue
+   *  rather than borrowing the cursor's. */
+  keyHint: string
   /** Border/rule color at medium+ breakpoints. */
   border: string
   /** Secondary text — dimmer than primary but still readable at any level. */
@@ -148,18 +165,38 @@ const DARK: Palette = {
   attention: '#ff6b6b',
   working: '#7aa2f7',
   awaiting: '#ffcc66',
-  idle: '#8a90a6',
-  // Purple — distinct from every status hue above (red/green/blue), so it
-  // reads unambiguously as "cursor", never as a 5th status color.
-  accent: '#bb9af7',
-  border: '#3b3f58',
-  secondary: '#8b90a8',
-  text: '#e3e5f0',
+  // Neutral grey, NOT the previous purple-tinted #8a90a6. That value and
+  // `secondary` both snapped to the SAME 256-colour index (#8787af), so on a
+  // 256-colour terminal an idle status and ordinary secondary text were
+  // literally indistinguishable — and both carried a violet cast that fed
+  // the "everything is purple" wash.
+  idle: '#7d8590',
+  // Cyan — the ONE saturated accent left, reserved for selection. Distinct
+  // from attention (red), working (blue), awaiting (yellow) and idle (grey).
+  // Deliberately not purple/magenta: with the wordmark, group labels and key
+  // hints no longer sharing this hue, the cursor is the only thing that
+  // reaches for the eye.
+  accent: '#39c5cf',
+  // Wordmark. Soft off-white with a cool cast — present without shouting,
+  // and clearly not the cursor.
+  brand: '#c9d1d9',
+  // Project headers: quiet structural scaffolding. Dimmer than `text` so a
+  // group label never competes with the workspace titles beneath it.
+  groupLabel: '#8b949e',
+  // Key glyphs. Muted green reads as "you can press this" without pulling
+  // against the cursor's cyan or any status hue.
+  keyHint: '#7ee787',
+  border: '#30363d',
+  // Neutral grey — the violet cast is gone here too (was #8b90a8).
+  secondary: '#8b949e',
+  text: '#e6edf3',
   // Neutral teal-grey — distinct from attention (red), working (blue),
-  // awaiting (yellow) and idle (grey-blue), so line 1's model token never
-  // reads as a status colour.
+  // awaiting (yellow) and idle (grey), so line 1's model token never reads
+  // as a status colour.
   modelText: '#5fb3a3',
-  selectedBg: '#2a2e45'
+  // Cool near-neutral tint. Was #2a2e45, a visibly indigo block behind every
+  // selected card; this reads as "lit" rather than "coloured".
+  selectedBg: '#21262d'
 }
 
 /**

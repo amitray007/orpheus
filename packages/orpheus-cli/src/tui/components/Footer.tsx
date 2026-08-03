@@ -55,7 +55,7 @@ export function Footer({ notice, palette, breakpoint }: FooterProps): React.JSX.
       {keys.map(([key, label], i) => (
         <React.Fragment key={key}>
           {i > 0 ? <Text color={palette.secondary}>{KEYMAP_SEPARATOR}</Text> : null}
-          <Text bold color={palette.accent}>
+          <Text bold color={palette.keyHint}>
             {key}
           </Text>
           <Text color={palette.secondary}> {label}</Text>

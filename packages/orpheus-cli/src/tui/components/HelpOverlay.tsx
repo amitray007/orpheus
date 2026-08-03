@@ -46,12 +46,12 @@ export function HelpOverlay({ breakpoint, palette }: HelpOverlayProps): React.JS
       borderColor={palette.border}
       paddingX={paddingX}
     >
-      <Text bold color={palette.accent}>
+      <Text bold color={palette.keyHint}>
         Keys
       </Text>
       {ROWS.map(([key, desc]) => (
         <Text key={key}>
-          <Text bold color={palette.accent}>
+          <Text bold color={palette.keyHint}>
             {key.padEnd(KEY_COL_WIDTH)}
           </Text>
           <Text color={palette.secondary}>{desc}</Text>
