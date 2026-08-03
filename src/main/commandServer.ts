@@ -547,14 +547,17 @@ function getCachedCurrentBranch(cwd: string): string | null {
  *  file info is available (session not currently running). Also resolves
  *  `gitBranch` — the workspace cwd's actual current git branch — via the
  *  synchronous, short-TTL-cached getCachedCurrentBranch() above; distinct
- *  from `worktreeBranch` (WorkspaceRecord's own persisted field). */
+ *  from `worktreeBranch` (WorkspaceRecord's own persisted field). Also
+ *  carries `providerId` — the resolved model's owning provider, from the
+ *  same resolveEffectiveModelAndEffort call as `model`/`effort` — used by
+ *  the TUI card to show a short agent/provider label. */
 function withLiveTreeOverlay(ws: WorkspaceRecord): TreeSourceWorkspace {
   const info = getWorkspaceFileInfo(ws.id)
   // Effective (global -> project -> workspace layered) model/effort — see
   // claudeSettings.ts's resolveEffectiveModelAndEffort doc comment for why
   // this cheap resolution (not composeClaudeLaunch) is used here, on every
   // poll tick, for every workspace.
-  const { model, effort } = resolveEffectiveModelAndEffort(ws.projectId, ws.id)
+  const { model, effort, providerId } = resolveEffectiveModelAndEffort(ws.projectId, ws.id)
   return {
     ...ws,
     ...(ws.status === 'attention' && info.waitingFor != null
@@ -563,6 +566,7 @@ function withLiveTreeOverlay(ws: WorkspaceRecord): TreeSourceWorkspace {
     lastActivityAt: info.statusUpdatedAt ?? ws.lastOpenedAt ?? null,
     model,
     effort,
+    providerId,
     gitBranch: getCachedCurrentBranch(ws.cwd)
   }
 }
@@ -1834,7 +1838,18 @@ export function startCommandServer(deps: CommandServerDeps): {
       function cleanup(): void {
         if (cleanedUp) return
         cleanedUp = true
-        activeSubscriptionCount = Math.max(0, activeSubscriptionCount - 1)
+        // Route through releaseSlotOnce() rather than decrementing directly.
+        // These were two INDEPENDENT release mechanisms for a single slot —
+        // `releaseSlotOnce` guarded by `slotReleased`, this one guarded by
+        // `cleanedUp` — each preventing its own double-release while knowing
+        // nothing about the other. That enforced "at most one decrement per
+        // guard", not the invariant that actually matters: exactly one
+        // decrement per increment. A request that released via one path and
+        // exited without reaching the other leaked a slot permanently, and
+        // 32 of those wedge every future /subscribe behind a 429 with no
+        // client actually connected — observed live with zero TUI processes
+        // running. One shared guard makes the pairing structural.
+        releaseSlotOnce()
         if (timeoutHandle != null) {
           clearTimeout(timeoutHandle)
           timeoutHandle = null
