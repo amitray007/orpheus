@@ -29,19 +29,21 @@
  * -----------------------------------------------------------------------
  * scrollWindowFor operates on a flat DisplayRow[] where every row is
  * assumed to occupy exactly ONE terminal row. Cards are 3 terminal rows
- * each, project headers are 1 (2 including a leading blank line for every
- * project after the first), and view:all idle workspaces render as their
- * own compact 1-row blocks (see IdleWorkspaceRow.tsx) — none of that fits
- * scrollWindowFor's uniform-row assumption (cards alone already break it).
- * So this file builds its OWN small "Block" model (below): each DisplayRow
- * becomes one Block with a KNOWN terminal-row height, and `windowBlocks()`
- * finds the window of blocks that keeps the selected card fully in view
- * within the available body height, mirroring scrollWindowFor's spirit
- * (keep selection in view with a little context) but operating on heights
- * instead of counts. flattenTree() from
- * tui/layout.ts is still reused UNCHANGED for the row list itself (project
- * grouping, attention-first sibling ordering, active-filter, flat
- * numbering) — only the WINDOWING math is local to this file.
+ * each (EVERY workspace renders as a card now, including idle ones — there
+ * is no separate compact idle treatment; see the `Block` type's own doc
+ * comment) and project headers are 1 (2 including a leading blank line for
+ * every project after the first) — two DIFFERENT known heights, which
+ * still doesn't fit scrollWindowFor's uniform-single-row assumption. So the
+ * block-construction and windowing logic here is extracted into
+ * `tui/blocks.ts` (`buildBlocks` / `windowBlocks`) — a pure, renderer-agnostic
+ * sibling of `tui/layout.ts`'s own `scrollWindowFor`, sharing its spirit
+ * (keep selection in view with a little context) but operating on
+ * variable block heights instead of a uniform row count. This file just
+ * calls those functions and owns the Solid-specific reactive wiring around
+ * them (the `windowStartIndex` signal + its write-back effect — see below).
+ * flattenTree() from tui/layout.ts is still reused UNCHANGED for the row
+ * list itself (project grouping, attention-first sibling ordering,
+ * active-filter, flat numbering).
  *
  * MODEL/EFFORT LOOKUP — WHY THIS ISN'T THREADED THROUGH DisplayRow
  * -----------------------------------------------------------------------
@@ -112,6 +114,7 @@ import {
   type Filter as View,
   type ProjectScope
 } from '../tui/layout.js'
+import { buildBlocks, windowBlocks, type Block } from '../tui/blocks.js'
 import { resolveOtuiBreakpoint } from './breakpoints.js'
 import type { TreeFrame, TreeWorkspace } from './types.js'
 import { PALETTE } from './theme.js'
@@ -120,7 +123,6 @@ import { Footer } from './components/Footer.js'
 import { HelpOverlay } from './components/HelpOverlay.js'
 import { ProjectGroupHeader } from './components/ProjectGroupHeader.js'
 import { WorkspaceCard } from './components/WorkspaceCard.js'
-import { IdleWorkspaceRow } from './components/IdleWorkspaceRow.js'
 import { ScrollAffordance } from './components/ScrollAffordance.js'
 import { DetailPane } from './components/DetailPane.js'
 import { VRule } from './components/VRule.js'
@@ -147,27 +149,13 @@ export interface AppProps {
 const FOOTER_ROWS = 1
 const DETAIL_PANE_WIDTH = 42
 const VRULE_WIDTH = 1
+/** Every workspace card is exactly this many terminal rows — see
+ *  tui/blocks.ts's file header for why this is a caller-supplied parameter
+ *  to `buildBlocks`/`windowBlocks` rather than a constant baked into that
+ *  module (a future renderer's card shape may differ). */
 const CARD_HEIGHT = 3
-/** Rows spent on the "more above/below" affordances once scrolling is
- *  engaged at all — always both, mirroring tui/layout.ts's
- *  ScrollWindow.windowed discipline (fixed budget, never variable, so the
- *  content window's height never changes mid-scroll). */
-const AFFORDANCE_ROWS_WHEN_WINDOWED = 2
 
 type WorkspaceRow = Extract<DisplayRow, { kind: 'workspace' }>
-
-/** One renderable unit of the scrolling body, with a KNOWN terminal-row
- *  height — see the file header's "VARIABLE-HEIGHT BLOCK WINDOWING" note.
- *  `idle-row` is its own block kind (not batched into a group) because idle
- *  workspaces are now ordinary, individually selectable rows — see
- *  IdleWorkspaceRow.tsx's file header for why the prior collapsed-group
- *  treatment was dropped. */
-type Block =
-  | { kind: 'project-header'; projectId: string; projectName: string; height: number }
-  | { kind: 'card'; row: WorkspaceRow; height: typeof CARD_HEIGHT }
-  | { kind: 'idle-row'; row: WorkspaceRow; height: typeof IDLE_ROW_HEIGHT }
-
-const IDLE_ROW_HEIGHT = 1
 
 export function App(props: AppProps): JSX.Element {
   const dimensions = useTerminalDimensions()
@@ -277,208 +265,39 @@ export function App(props: AppProps): JSX.Element {
       : dimensions().width
   )
 
-  // ---- Build Blocks: project headers, cards, and (view:all only) idle
-  // rows — idle workspaces are ordinary, individually selectable 1-row
-  // blocks now (see IdleWorkspaceRow.tsx's file header), not a collapsed
-  // group, so this just maps each workspace row to its Block kind while
-  // preserving flattenTree's own ordering.
+  // ---- Build Blocks: project headers + cards, thin wrapper over
+  // tui/blocks.ts's buildBlocks() — see that module's own doc comment for
+  // the grouping/empty-project-suppression logic this now delegates to.
+  const blocks = createMemo((): Block[] => buildBlocks(flattened().rows, CARD_HEIGHT))
+
+  // ---- Windowing over Blocks — thin wrapper over tui/blocks.ts's
+  // windowBlocks() (see the file header's "VARIABLE-HEIGHT BLOCK WINDOWING"
+  // note and that module's own doc comments for the full algorithm: sticky
+  // window start, minimal nudge, fixed affordance budget once windowed).
   //
-  // EMPTY-PROJECT SUPPRESSION: flattenTree() (tui/layout.ts, out of scope —
-  // deliberately, correctly, and test-locked) ALWAYS emits a project-header
-  // row even for a project with zero workspaces. Rendering that bare header
-  // with nothing under it is a presentation bug, not a data bug — fixed
-  // HERE by buffering each project's own header+body into a pending group
-  // and only committing it to `out` once at least one workspace row actually
-  // survives the current view filter for that project. An empty project
-  // (zero workspaces, or all its workspaces filtered out under view:active)
-  // contributes NOTHING to the rendered list.
-  const blocks = createMemo((): Block[] => {
-    const rows = flattened().rows
-    const out: Block[] = []
-    let renderedGroupCount = 0
-
-    let pendingHeader: { projectId: string; projectName: string } | null = null
-    let pendingBody: Block[] = []
-
-    const commitPendingGroup = (): void => {
-      if (pendingHeader != null && pendingBody.length > 0) {
-        out.push({
-          kind: 'project-header',
-          projectId: pendingHeader.projectId,
-          projectName: pendingHeader.projectName,
-          height: renderedGroupCount > 0 ? 2 : 1
-        })
-        renderedGroupCount++
-        out.push(...pendingBody)
-      }
-      pendingHeader = null
-      pendingBody = []
-    }
-
-    for (const row of rows) {
-      if (row.kind === 'project-header') {
-        commitPendingGroup()
-        pendingHeader = { projectId: row.projectId, projectName: row.projectName }
-        continue
-      }
-      if (row.status === 'idle') {
-        pendingBody.push({ kind: 'idle-row', row, height: IDLE_ROW_HEIGHT })
-        continue
-      }
-      pendingBody.push({ kind: 'card', row, height: CARD_HEIGHT })
-    }
-    commitPendingGroup()
-    return out
-  })
-
-  // ---- Windowing over Blocks (see file header's "VARIABLE-HEIGHT BLOCK
-  // WINDOWING" note) — keeps the selected card's Block fully in view within
-  // availableRows(), reserving a FIXED 2-row affordance budget for the
-  // whole scrolling session once windowing engages at all (never a variable
-  // 0/1/2, so the content window's own height never changes mid-scroll —
-  // same discipline as tui/layout.ts's scrollWindowFor).
+  // STICKY WINDOW START, SPLIT ACROSS A SIGNAL + THIS MEMO — windowBlocks()
+  // is a pure function of (blocks, selection, availableRows, previousStart)
+  // and returns the resolved `start` rather than owning any state itself
+  // (see its doc comment for why). `windowStartIndex` is the Solid signal
+  // holding that persisted `start` across renders; this memo reads it (via
+  // `windowBlocks`'s `previousStart` param) and a separate createEffect
+  // below performs the ONE write back into the signal.
   //
-  // STICKY WINDOW START, NOT RECOMPUTED-FROM-SCRATCH PER SELECTION — a first
-  // version recomputed [start, end) fresh on every selection change via a
-  // "walk out from the selected block" pass; that recentered the window even
-  // when the newly-selected card was ALREADY fully visible, producing a
-  // spurious scroll (e.g. moving from card 1 to card 2 when both already fit
-  // on screen still shifted the window and popped a "more above" affordance
-  // that shouldn't have appeared — caught live via tui-mcp's adjacent-
-  // selection diff). Fixed by keeping `windowStartIndex` as PERSISTENT state
-  // (a signal, not a memo) that's only nudged the MINIMUM amount needed to
-  // bring the selected block back into view when it falls outside the
-  // current window — exactly scrollWindowFor's "keep in view, don't
-  // recenter" contract, just adapted to variable block heights.
-  //
-  // MEMO STAYS PURE — THE WRITE-BACK IS A SEPARATE createEffect —
-  // an earlier version called `setWindowStartIndex(start)` DIRECTLY INSIDE
-  // this memo's own compute function, which also READS `windowStartIndex()`
-  // at its top (to clamp/seed `start`). A memo that reads a signal it also
-  // writes creates a dependency on its own output — Solid can re-trigger the
-  // memo from that write, and it only looked stable because the value
-  // happened to converge to a fixed point on the second pass. That's a
-  // latent re-render loop waiting for a timing/ordering change to surface
-  // it, not a guarantee. Fixed by having the memo compute-and-RETURN the
-  // resolved `start` (as part of its result object) without ever writing
-  // the signal itself, and a separate `createEffect` below (reacting to
-  // `windowedBlocks().start`) performs the ONE write into `windowStartIndex`
-  // — same "nudge, don't recenter" values as before, just relocated to an
-  // explicit side-effect scope instead of living inside the pure memo.
+  // MEMO STAYS PURE — THE WRITE-BACK IS A SEPARATE createEffect — a memo
+  // that both reads AND writes the same signal creates a dependency on its
+  // own output, a latent re-render-loop risk (Solid can re-trigger the memo
+  // from its own write) even if it happens to converge. This memo only
+  // READS `windowStartIndex()`; the createEffect below is the only place
+  // that ever calls `setWindowStartIndex`.
   const [windowStartIndex, setWindowStartIndex] = createSignal(0)
 
-  const windowedBlocks = createMemo(
-    (): {
-      visible: Block[]
-      aboveCount: number
-      belowCount: number
-      windowed: boolean
-      start: number
-    } => {
-      const all = blocks()
-      const totalHeight = all.reduce((sum, b) => sum + b.height, 0)
-      const budget = availableRows()
-      if (budget <= 0 || all.length === 0) {
-        return {
-          visible: [],
-          aboveCount: all.length,
-          belowCount: 0,
-          windowed: all.length > 0,
-          start: 0
-        }
-      }
-      if (totalHeight <= budget) {
-        return { visible: all, aboveCount: 0, belowCount: 0, windowed: false, start: 0 }
-      }
-
-      const contentBudget = Math.max(1, budget - AFFORDANCE_ROWS_WHEN_WINDOWED)
-      const selectedId = selectedWorkspaceId()
-      const selectedBlockIndex = Math.max(
-        0,
-        all.findIndex(
-          (b) => (b.kind === 'card' || b.kind === 'idle-row') && b.row.workspaceId === selectedId
-        )
-      )
-
-      // Clamp any prior start into the current block list's bounds first
-      // (a frame update / view toggle can change block count out from under
-      // a stale index).
-      let start = Math.min(windowStartIndex(), Math.max(0, all.length - 1))
-
-      const heightFrom = (from: number, to: number): number => {
-        let sum = 0
-        for (let i = from; i < to; i++) sum += all[i]!.height
-        return sum
-      }
-      const endForStart = (s: number): number => {
-        let used = 0
-        let e = s
-        while (e < all.length && used + all[e]!.height <= contentBudget) {
-          used += all[e]!.height
-          e++
-        }
-        // Always show at least the selected block itself even if it alone
-        // exceeds contentBudget (shouldn't happen with a 3-line card + a
-        // realistic terminal height, but never render zero rows).
-        return Math.max(e, s + 1)
-      }
-
-      // Nudge `start` forward if the selection fell BELOW the current
-      // window's end, or backward if it fell ABOVE the current start —
-      // minimal adjustment, never a full recenter.
-      let end = endForStart(start)
-      if (selectedBlockIndex < start) {
-        start = selectedBlockIndex
-      } else if (selectedBlockIndex >= end) {
-        // Walk start forward just far enough that selectedBlockIndex is the
-        // LAST block that fits — mirrors how a real scrolling list reveals
-        // one more row at a time rather than jumping to center.
-        while (
-          start < selectedBlockIndex &&
-          heightFrom(start, selectedBlockIndex + 1) > contentBudget
-        ) {
-          start++
-        }
-      }
-      end = endForStart(start)
-      // If start is deep enough that the tail end no longer reaches the
-      // list's end but there's slack (budget not fully used) and room to
-      // pull start back down without losing the selection, prefer showing
-      // more content — mirrors clampWindowStart's maxStart clamp so the
-      // window never scrolls needlessly past the point where the remaining
-      // content still fills the budget.
-      while (
-        start > 0 &&
-        heightFrom(start - 1, endForStart(start - 1)) <= contentBudget &&
-        endForStart(start - 1) > selectedBlockIndex
-      ) {
-        const candidateEnd = endForStart(start - 1)
-        if (candidateEnd - 1 < selectedBlockIndex) break
-        start--
-        end = endForStart(start)
-      }
-
-      const aboveHeight = heightFrom(0, start)
-      const belowHeight = heightFrom(end, all.length)
-      return {
-        visible: all.slice(start, end),
-        aboveCount: aboveHeight > 0 ? Math.max(1, start) : 0,
-        belowCount: belowHeight > 0 ? Math.max(1, all.length - end) : 0,
-        windowed: true,
-        start
-      }
-    }
+  const windowedBlocks = createMemo(() =>
+    windowBlocks(blocks(), selectedWorkspaceId(), availableRows(), windowStartIndex())
   )
 
-  // The ONE write into `windowStartIndex` — kept OUTSIDE the memo above (see
-  // that memo's own doc comment for why a self-referential read+write inside
-  // a createMemo is a latent re-render-loop risk, not just a style nit).
-  // This effect reacts to `windowedBlocks().start` — the memo's OWN computed
-  // result, not `windowStartIndex()` itself — so there is no cycle: the
-  // signal is pure state, the memo is a pure function of `blocks()` +
-  // `availableRows()` + `selectedWorkspaceId()` + (a READ of, never a write
-  // to) the signal's PREVIOUS value, and this effect is the only place that
-  // ever calls `setWindowStartIndex`.
+  // The ONE write into `windowStartIndex` — kept OUTSIDE the memo above.
+  // Reacts to `windowedBlocks().start` (the memo's OWN computed result, not
+  // `windowStartIndex()` itself), so there is no cycle.
   createEffect(() => {
     setWindowStartIndex(windowedBlocks().start)
   })
@@ -638,22 +457,13 @@ export function App(props: AppProps): JSX.Element {
                                 />
                               )
                             }
-                            if (block.kind === 'idle-row') {
-                              return (
-                                <IdleWorkspaceRow
-                                  row={block.row}
-                                  selected={block.row.workspaceId === selectedWorkspaceId()}
-                                  width={cardAreaWidth()}
-                                  palette={PALETTE}
-                                />
-                              )
-                            }
                             const workspace = workspaceById().get(block.row.workspaceId)
                             return (
                               <WorkspaceCard
                                 row={block.row}
                                 model={workspace?.model ?? null}
                                 effort={workspace?.effort ?? null}
+                                gitBranch={workspace?.gitBranch ?? null}
                                 selected={block.row.workspaceId === selectedWorkspaceId()}
                                 width={cardAreaWidth()}
                                 palette={PALETTE}

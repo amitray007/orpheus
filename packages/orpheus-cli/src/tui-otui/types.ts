@@ -13,9 +13,13 @@
  *
  * Additions beyond tui/types.ts: `WorkspaceHostResult.refused`, mirroring
  * src/main/commandServer.ts's actual `workspace.host` response shape
- * (~line 775-790) and src/shared/types.ts's `WorkspaceHostResult`; and
+ * (~line 775-790) and src/shared/types.ts's `WorkspaceHostResult`;
  * `TreeWorkspace.model`/`effort`, mirroring src/shared/types.ts's
- * `TreeWorkspaceFrame` (card redesign — see docs/TUI_SPEC.md).
+ * `TreeWorkspaceFrame` (card redesign — see docs/TUI_SPEC.md); and
+ * `TreeWorkspace.gitBranch`, mirroring src/shared/types.ts's own `gitBranch`
+ * field (see that file's doc comment for the full rationale) — the card's
+ * branch line (WorkspaceCard.tsx) computes `worktreeBranch ?? gitBranch` at
+ * render time, matching src/shared/types.ts's documented display precedence.
  */
 
 /** Workspace activity status, as emitted in a `tree` frame's workspace rows. */
@@ -29,6 +33,15 @@ export interface TreeWorkspace {
   waitingFor?: string | null
   parentWorkspaceId?: string | null
   worktreeBranch?: string | null
+  /** The workspace cwd's actual current git branch, resolved independently
+   *  server-side on every tree frame — see src/shared/types.ts's own
+   *  `gitBranch` field doc comment for the full rationale. Optional so an
+   *  older server that hasn't shipped this field yet still renders (card
+   *  falls back to a blank branch line, same as before this field existed).
+   *  DISPLAY PRECEDENCE (card's branch line): `worktreeBranch ?? gitBranch` —
+   *  `worktreeBranch` wins when non-null, `gitBranch` is the fallback that
+   *  actually populates the line for ordinary (non-worktree) workspaces. */
+  gitBranch?: string | null
   sortOrder?: number | null
   tmuxHosted?: boolean
   lastActivityAt?: number | null

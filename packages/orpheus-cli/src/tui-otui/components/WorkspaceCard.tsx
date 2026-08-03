@@ -7,11 +7,16 @@
  * -----------------------------------------------------------------------
  * 1. `model effort` left, `status elapsed` right — same line.
  * 2. Workspace title (displayTitleFor()).
- * 3. `⎇ branch` — rendered BLANK (not omitted) when there's no worktree
- *    branch, so every card is exactly 3 lines tall regardless of content.
- *    A variable card height would make the scroll-window math and the
- *    "no vertical shift on selection" requirement much harder to reason
- *    about and verify — see App.tsx's file header.
+ * 3. `⎇ branch` — `props.row.worktreeBranch ?? props.gitBranch`, rendered
+ *    BLANK (not omitted) when both are null, so every card is exactly 3
+ *    lines tall regardless of content. A variable card height would make
+ *    the scroll-window math and the "no vertical shift on selection"
+ *    requirement much harder to reason about and verify — see App.tsx's
+ *    file header. See `gitBranch`'s own prop doc comment below and
+ *    src/shared/types.ts's `gitBranch` field for the full
+ *    worktreeBranch-vs-gitBranch precedence rationale: `worktreeBranch` is
+ *    only ever non-null for worktree-backed workspaces, so this fallback is
+ *    what actually populates line 3 for ordinary (non-worktree) workspaces.
  *
  * SELECTION — RESERVE THE GUTTER SLOT, SWAP THE RUNE (ported from Charm's
  * soft-serve three-line card picker technique, per the task brief)
@@ -94,6 +99,13 @@ export interface WorkspaceCardProps {
    *  instead). */
   model: string | null
   effort: string | null
+  /** The workspace cwd's actual current git branch — see WorkspaceCard's
+   *  file header point 3 and src/shared/types.ts's `gitBranch` field doc
+   *  comment. Looked up by App.tsx from the raw TreeFrame (same pattern as
+   *  `model`/`effort` above), NOT from `row.worktreeBranch` — the two are
+   *  independent fields with a documented display precedence, computed
+   *  below via `props.row.worktreeBranch ?? props.gitBranch`. */
+  gitBranch: string | null
   selected: boolean
   /** Full width available for the card content, INCLUDING the 1-col
    *  gutter — i.e. the terminal's content width at this breakpoint. */
@@ -141,9 +153,15 @@ export function WorkspaceCard(props: WorkspaceCardProps): JSX.Element {
     truncate(displayTitleFor(props.row), innerWidth()).padEnd(innerWidth())
 
   // ---- Line 3: branch (blank when none — card stays exactly 3 lines) ----
+  // worktreeBranch wins when non-null (worktree intent); gitBranch is the
+  // fallback that actually populates this line for ordinary (non-worktree)
+  // workspaces — see this file's header and src/shared/types.ts's
+  // `gitBranch` doc comment for the full precedence rationale.
+  const branch = (): string | null => props.row.worktreeBranch ?? props.gitBranch
   const branchText = (): string => {
-    if (props.row.worktreeBranch == null) return ''.padEnd(innerWidth())
-    const raw = `${WORKTREE_GLYPH} ${props.row.worktreeBranch}`
+    const b = branch()
+    if (b == null) return ''.padEnd(innerWidth())
+    const raw = `${WORKTREE_GLYPH} ${b}`
     return truncate(raw, innerWidth()).padEnd(innerWidth())
   }
 
