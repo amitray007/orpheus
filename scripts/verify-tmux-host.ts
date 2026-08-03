@@ -1234,6 +1234,11 @@ async function runRealTmuxChecks(): Promise<void> {
     {
       const originalPath = process.env.PATH
       process.env.PATH = ''
+      // tmuxHost appends known package-manager bin dirs as a cold-start
+      // safety net (see tmuxSpawnEnv) — which would find the real tmux and
+      // make "not installed" unreachable. Opt out so this genuinely tests
+      // the missing-binary path.
+      process.env.ORPHEUS_TMUX_NO_PATH_FALLBACK = '1'
       try {
         await assert.rejects(
           () =>
@@ -1246,6 +1251,7 @@ async function runRealTmuxChecks(): Promise<void> {
         )
       } finally {
         process.env.PATH = originalPath
+        delete process.env.ORPHEUS_TMUX_NO_PATH_FALLBACK
       }
       console.log(
         '✓ unhostWorkspace() surfaces a missing tmux binary as a typed TmuxNotAvailableError ' +

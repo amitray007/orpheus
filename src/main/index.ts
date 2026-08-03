@@ -2047,6 +2047,19 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     return { workspaceId, aborted: 'gone' as const }
   }
 
+  // Close the cold-mount PATH race BEFORE anything spawns a binary.
+  //
+  // This await used to sit AFTER resolveTmuxForMount() below, which meant the
+  // very first mount of an app run probed for `tmux` with an unprimed PATH
+  // cache — and a Finder-launched Electron process has a stripped PATH with
+  // no Homebrew bin dir, so the probe ENOENT'd and the UI announced "tmux is
+  // not installed" to users who have it installed. Priming first fixes the
+  // tmux probe and still serves its original purpose (buildMountEnv can
+  // inject ORPHEUS_USER_PATH rather than falling back to .zshrc, +100–800 ms).
+  if (getCachedShellPath() === null) {
+    await getUserShellPath()
+  }
+
   const { tmuxAttach, tmuxFallback } = await resolveTmuxForMount(
     addon,
     ws,
@@ -2054,13 +2067,6 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     projectId,
     effectiveCwd
   )
-
-  // Close the cold-mount PATH race: if the boot-time shell-path spawn hasn't
-  // settled yet, await it now so buildMountEnv can inject ORPHEUS_USER_PATH
-  // instead of forcing the .zshrc fallback (+100–800 ms).
-  if (getCachedShellPath() === null) {
-    await getUserShellPath()
-  }
 
   // Re-validate again: the workspace may have been archived while
   // getUserShellPath was in flight. This is the last check before

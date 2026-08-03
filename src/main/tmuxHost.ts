@@ -285,8 +285,30 @@ function tmuxSpawnEnv(): NodeJS.ProcessEnv {
   } catch {
     shellPath = null
   }
-  if (shellPath == null || shellPath === '') return process.env
-  return { ...process.env, PATH: shellPath }
+  const basePath = shellPath != null && shellPath !== '' ? shellPath : (process.env['PATH'] ?? '')
+
+  // Belt-and-braces for the cold-mount case: callers are expected to prime
+  // the shell-path cache before probing (index.ts does), but if one does not,
+  // an unprimed cache would leave us on Electron's stripped PATH and report a
+  // perfectly-installed tmux as missing. Appending the common package-manager
+  // bin dirs costs nothing when they are already present (PATH lookup stops
+  // at the first hit) and turns that failure into a success. These are the
+  // standard Homebrew prefixes for Apple Silicon and Intel plus MacPorts —
+  // NOT a guess at where the user put things, and never a replacement for
+  // their real PATH, only a suffix.
+  // Opt-out so a caller can genuinely simulate "tmux is not installed" —
+  // without it, appending real bin dirs makes that state unreachable and
+  // scripts/verify-tmux-host.ts cannot test the TmuxNotAvailableError path
+  // that archive/teardown depends on catching (it caught exactly that).
+  if (process.env['ORPHEUS_TMUX_NO_PATH_FALLBACK'] === '1') {
+    return { ...process.env, PATH: basePath }
+  }
+
+  const FALLBACK_BIN_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/opt/local/bin']
+  const seen = new Set(basePath.split(':').filter(Boolean))
+  const merged = [...seen, ...FALLBACK_BIN_DIRS.filter((dir) => !seen.has(dir))].join(':')
+
+  return { ...process.env, PATH: merged }
 }
 
 async function queryTmuxVersion(): Promise<TmuxVersion> {
