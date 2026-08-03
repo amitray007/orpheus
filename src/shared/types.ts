@@ -547,7 +547,7 @@ export type TreeWorkspaceFrame = {
    *  this workspace, resolved server-side via
    *  claudeSettings.ts's resolveEffectiveModelAndEffort (see
    *  src/main/tmuxHost.ts's toTreeWorkspaceFrame). Used by the card-based
-   *  tui-otui picker's `model effort` line — see docs/TUI_SPEC.md. */
+   *  tui picker's `model effort` line — see docs/TUI_SPEC.md. */
   model: string
   /** Effective effort for this workspace, same resolution ladder as `model`. */
   effort: ClaudeEffort

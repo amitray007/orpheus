@@ -1327,7 +1327,7 @@ function parseSubscribeRequestBody(raw: Buffer): SubscribeRequestParseResult {
   //     is for explicit positive values only). Never silently overridden —
   //     this is the literal caller-stated value. This is what makes the
   //     TUI's long-lived tree-mode subscriptions (`{ tree: true, timeoutMs: 0 }`
-  //     — see tui/entry.ts / tui-otui/entry.ts) actually stay open
+  //     — see tui/entry.ts) actually stay open
   //     indefinitely instead of being silently downgraded to the 5-minute
   //     default; the real protection against a leaked-forever subscription
   //     is the MAX_CONCURRENT_SUBSCRIPTIONS cap above (bounded fan-out), not

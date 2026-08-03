@@ -1,12 +1,6 @@
 /**
- * tui/reconnect.ts — pure backoff-schedule helper shared by BOTH TUI builds.
- *
- * Used by tui/entry.ts (Ink) AND tui-otui/entry.ts (OpenTUI) — cross-importing
- * a pure helper from tui/ into tui-otui/ is an established pattern in this
- * codebase already (tui-otui/entry.ts imports `ProjectScope` from
- * '../tui/layout.js', tui-otui/App.tsx imports `flattenTree`/`scrollWindowFor`/
- * `columnPlanFor` from the same module). Kept here rather than duplicated so
- * the two builds' reconnect timing can never silently drift apart.
+ * tui/reconnect.ts — pure backoff-schedule helper for the Ink TUI, used by
+ * tui/entry.ts.
  *
  * WHY RECONNECT EXISTS AT ALL (see docs/TUI_SPEC.md D5, and Layer 1 of this
  * fix in src/main/subscribeTimeout.ts): even with the server no longer

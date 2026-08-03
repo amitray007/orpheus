@@ -30,11 +30,10 @@
 // actually gets JSON.stringify'd into the request body. So the pre-existing
 // TUI call `subscribe({ tree: true }, onEvent, { timeoutMs: 0 })` sent a
 // request body of exactly `{"tree":true}` — `body.timeoutMs` was `undefined`
-// server-side, not `0`. Both tui/entry.ts and tui-otui/entry.ts were updated
-// to also include `timeoutMs: 0` in the PAYLOAD object
-// (`subscribe({ tree: true, timeoutMs: 0 }, ...)`) so the explicit-zero rule
-// below actually reaches the server for these callers. See those files' own
-// comments at the subscribe() call site.
+// server-side, not `0`. tui/entry.ts was updated to also include
+// `timeoutMs: 0` in the PAYLOAD object (`subscribe({ tree: true, timeoutMs:
+// 0 }, ...)`) so the explicit-zero rule below actually reaches the server
+// for this caller. See that file's own comment at the subscribe() call site.
 //
 // SECONDARY (UX-ONLY) NICETY: omitted `timeoutMs` on a tree-only subscription
 // -----------------------------------------------------------------------

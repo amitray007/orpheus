@@ -1,8 +1,9 @@
 /**
- * tui-otui/format.ts — small formatting helpers for the redesign's
- * right-aligned metadata column (age/activity) and detail pane.
+ * tui/format.ts — small formatting helpers for the card redesign's
+ * right-aligned metadata column (age/activity) and detail pane. Shared by
+ * every component under tui/ that needs them (WorkspaceCard, DetailPane).
  *
- * NEW in this redesign pass — the previous build never surfaced
+ * NEW in the card-redesign pass — the previous build never surfaced
  * `lastActivityAt` anywhere in the UI. Ghui's "right-aligned metadata"
  * device (docs/TUI_UI_REDESIGN.md point 5) is the reason this exists: age
  * needs a compact, single-column-width-budget rendering (`16d`, `3h`, `30s`)
