@@ -518,6 +518,11 @@ function workspace(
   // it, tmuxHosted derived from the hosted-session set via the SAME session
   // name tmuxSessionName() would compute, worktreeBranch/parentWorkspaceId
   // passed through verbatim, lastActivityAt falls back to lastOpenedAt.
+  // gitBranch/model/effort are enrichment fields resolved by the CALLER
+  // (commandServer.ts's withLiveTreeOverlay) before buildTreeFrame ever runs
+  // — asserted here (present + correct when supplied, correctly defaulted
+  // when absent) so a broken enrichment path can't silently pass this test,
+  // the same failure mode this block exists to catch.
   const projects: ProjectRecord[] = [project({ id: 'p1', name: 'orpheus', path: '/repo/orpheus' })]
   const attentionWs = workspace({
     id: 'ws-attention',
@@ -529,7 +534,10 @@ function workspace(
     parentWorkspaceId: 'parent-1',
     sortOrder: 0,
     lastActivityAt: 999,
-    lastTitle: 'Understand codebase structure'
+    lastTitle: 'Understand codebase structure',
+    gitBranch: 'feat/tmux-mobile',
+    model: 'claude-opus-4-5',
+    effort: 'high'
   })
   const idleWs = workspace({
     id: 'ws-idle',
@@ -554,12 +562,38 @@ function workspace(
   assert.equal(attentionOut.tmuxHosted, true)
   assert.equal(attentionOut.lastActivityAt, 999)
   assert.equal(attentionOut.lastTitle, 'Understand codebase structure')
+  assert.equal(
+    attentionOut.gitBranch,
+    'feat/tmux-mobile',
+    'gitBranch must carry the resolved current-branch value through verbatim when supplied'
+  )
+  assert.equal(
+    attentionOut.model,
+    'claude-opus-4-5',
+    'model must pass through the exact value supplied'
+  )
+  assert.equal(attentionOut.effort, 'high', 'effort must pass through the exact value supplied')
 
   assert.equal(idleOut.id, 'ws-idle')
   assert.equal('waitingFor' in idleOut, false, 'waitingFor must be omitted, not null, when absent')
   assert.equal(idleOut.tmuxHosted, false)
   assert.equal(idleOut.lastActivityAt, 42, 'falls back to lastOpenedAt when no live overlay is set')
   assert.equal(idleOut.lastTitle, null, 'defaults to null when the source workspace has no title')
+  assert.equal(
+    idleOut.gitBranch,
+    null,
+    'gitBranch defaults to null when the source workspace never resolved a branch'
+  )
+  assert.equal(
+    idleOut.model,
+    '',
+    'model defaults to empty string when the caller never resolved one'
+  )
+  assert.equal(
+    idleOut.effort,
+    'auto',
+    'effort defaults to "auto" when the caller never resolved one'
+  )
   console.log('✓ tree-frame workspace rows carry the exact documented shape (docs/TUI_SPEC.md)')
 }
 

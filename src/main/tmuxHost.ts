@@ -1037,6 +1037,18 @@ export type TreeSourceWorkspace = WorkspaceRecord & {
    *  compiling; toTreeWorkspaceFrame falls back to safe defaults when absent. */
   model?: string
   effort?: ClaudeEffort
+  /** Current git branch of `cwd`, resolved by the caller (commandServer.ts's
+   *  withLiveTreeOverlay, via its synchronous getCachedCurrentBranch cache
+   *  over src/main/git.ts's getCurrentBranch) BEFORE calling buildTreeFrame —
+   *  same reason as model/effort above: this is an async subprocess-backed
+   *  lookup and tmuxHost.ts must stay Electron/DB/subprocess-free so
+   *  scripts/verify-tmux-host.ts keeps running as a pure harness. Distinct
+   *  from `worktreeBranch` (WorkspaceRecord's own persisted field, which is
+   *  only ever non-null for a worktree-backed workspace) — this is the
+   *  cwd's actual current branch, resolved independently, populated for
+   *  every git-backed workspace. Undefined/null both mean "not yet resolved
+   *  or not a git repo" — toTreeWorkspaceFrame normalizes either to `null`. */
+  gitBranch?: string | null
 }
 
 /** `sort_order ASC NULLS LAST, <time> DESC` — MUST match the desktop sidebar
@@ -1078,6 +1090,7 @@ function toTreeWorkspaceFrame(
     ...(ws.waitingFor != null ? { waitingFor: ws.waitingFor } : {}),
     parentWorkspaceId: ws.parentWorkspaceId,
     worktreeBranch: ws.worktreeBranch,
+    gitBranch: ws.gitBranch ?? null,
     model: ws.model ?? '',
     effort: ws.effort ?? DEFAULT_EFFORT,
     sortOrder: ws.sortOrder,

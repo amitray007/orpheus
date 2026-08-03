@@ -504,7 +504,37 @@ export type TreeWorkspaceFrame = {
   status: WorkspaceStatus
   waitingFor?: string
   parentWorkspaceId: string | null
+  /** The branch a worktree-backed workspace is checked out to (from
+   *  WorkspaceRecord's own persisted `worktreeBranch` column) — null for
+   *  every ordinary (non-worktree) workspace, by design; it is NOT a
+   *  general-purpose "current branch" field. */
   worktreeBranch: string | null
+  /** The workspace cwd's actual current git branch, resolved independently
+   *  server-side (src/main/git.ts's getCurrentBranch, cached — see
+   *  commandServer.ts's getCachedCurrentBranch) on every tree frame. Null
+   *  when cwd isn't a git repo, HEAD is detached, or the branch hasn't been
+   *  resolved yet — never the literal string "HEAD" or a commit SHA.
+   *  Populated for EVERY git-backed workspace, worktree or not — for a
+   *  worktree workspace this will typically equal `worktreeBranch`, but the
+   *  two are resolved independently and must be kept as separate fields:
+   *  `worktreeBranch` answers "is this a worktree, and if so checked out to
+   *  what", `gitBranch` answers "what branch is this cwd on right now".
+   *
+   *  DISPLAY PRECEDENCE (card's single branch line, e.g. WorkspaceCard.tsx):
+   *  prefer `worktreeBranch` when non-null, else fall back to `gitBranch`.
+   *  Rationale — for a worktree workspace the two values coincide in the
+   *  common case (a worktree usually stays checked out to the branch it was
+   *  created for), but `worktreeBranch` is the more authoritative signal of
+   *  *intent* (what this worktree exists for) whereas `gitBranch` is a
+   *  point-in-time observation that would otherwise still show something
+   *  reasonable if a worktree's HEAD were ever moved independently. For an
+   *  ordinary (non-worktree) workspace `worktreeBranch` is always null, so
+   *  the fallback to `gitBranch` is what actually populates the line for
+   *  the common case this feature exists for. This precedence is a
+   *  display-layer decision, deliberately NOT collapsed into one
+   *  server-computed field — the renderer is expected to implement exactly
+   *  this `worktreeBranch ?? gitBranch` order. */
+  gitBranch: string | null
   sortOrder: number | null
   tmuxHosted: boolean
   lastActivityAt: number | null

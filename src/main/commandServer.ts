@@ -21,6 +21,7 @@ import type {
 import { onWorkspaceStatusChange } from './orpheusNotify'
 import { getWorkspaceFileInfo } from './sessionState'
 import { resolveEffectiveModelAndEffort } from './claudeSettings'
+import { getCurrentBranch } from './git'
 import {
   hostWorkspace,
   unhostWorkspace,
@@ -445,12 +446,108 @@ let treePollInterval: NodeJS.Timeout | null = null
 let lastTreeFrame: TreeFrame | null = null
 const treeFrameSubscribers = new Set<(frame: TreeFrame) => void>()
 
+// ---------------------------------------------------------------------------
+// Current-branch cache for the tree frame's `gitBranch` overlay field.
+//
+// computeCandidateTreeFrame runs on EVERY tree poll tick (TREE_POLL_MS =
+// 1000ms, see below) for EVERY active workspace across EVERY project, via
+// collectTreeSourceWorkspaces -> withLiveTreeOverlay. A `git rev-parse`
+// subprocess per workspace per tick would mean N workspaces * 1 subprocess/
+// sec, blocking frame emission on subprocess latency — unacceptable, mirrors
+// the exact concern listHostedSessionsCached() (tmuxHost.ts) already solves
+// for `tmux list-sessions`.
+//
+// getCachedCurrentBranch() is a SYNCHRONOUS read: cache hit -> return
+// immediately, zero subprocess cost. Cache miss/stale -> kick off a
+// background refresh (fire-and-forget, de-duped per in-flight cwd so
+// concurrent calls during one refresh — e.g. several workspaces sharing a
+// cwd — never spawn duplicate subprocesses) and return the last-known value
+// (or null if never resolved) for THIS frame. The frame-build loop therefore
+// never awaits a fresh git subprocess call inline.
+//
+// Cache key is the workspace's cwd AS-IS (already an absolute, stable path
+// from WorkspaceRecord — unlike git.ts's own gitWatchers map this doesn't
+// need a separate nodePath.resolve() normalization pass since cwd is never
+// relative here) — workspaces sharing a cwd share one cache entry, so the
+// worst case is one in-flight subprocess per DISTINCT cwd per TTL window,
+// never one per workspace.
+// ---------------------------------------------------------------------------
+
+const CURRENT_BRANCH_CACHE_TTL_MS = 4000
+
+type CurrentBranchCacheEntry = {
+  branch: string | null
+  expiresAt: number
+  refreshing: boolean
+}
+
+const currentBranchCache = new Map<string, CurrentBranchCacheEntry>()
+
+/** Logged at most once (not per-tick) so a persistently-missing/broken git
+ *  binary doesn't spam the log every TTL cycle. */
+let currentBranchErrorLogged = false
+
+function refreshCurrentBranch(cwd: string): void {
+  const entry = currentBranchCache.get(cwd)
+  if (entry?.refreshing) return // already in flight for this cwd — de-duped
+  const placeholder: CurrentBranchCacheEntry = entry
+    ? { ...entry, refreshing: true }
+    : { branch: null, expiresAt: 0, refreshing: true }
+  currentBranchCache.set(cwd, placeholder)
+
+  getCurrentBranch(cwd)
+    .then((branch) => {
+      currentBranchCache.set(cwd, {
+        branch,
+        expiresAt: Date.now() + CURRENT_BRANCH_CACHE_TTL_MS,
+        refreshing: false
+      })
+    })
+    .catch((err) => {
+      // getCurrentBranch already swallows its own subprocess failures and
+      // resolves null rather than rejecting — this catch is an extra safety
+      // net only, matching the same defensive pattern git.ts's own
+      // refreshGitForDir uses around getGitStatus.
+      if (!currentBranchErrorLogged) {
+        currentBranchErrorLogged = true
+        console.warn(
+          '[commandServer] getCurrentBranch failed cwd=%s: %s',
+          cwd,
+          err instanceof Error ? err.message : String(err)
+        )
+      }
+      currentBranchCache.set(cwd, {
+        branch: null,
+        expiresAt: Date.now() + CURRENT_BRANCH_CACHE_TTL_MS,
+        refreshing: false
+      })
+    })
+}
+
+/** Synchronous, non-blocking read of the current-branch cache for `cwd` —
+ *  see the module comment above. Never spawns a subprocess inline; a
+ *  miss/stale entry only schedules a background refresh and returns the
+ *  last-known value (or null) for this call. */
+function getCachedCurrentBranch(cwd: string): string | null {
+  if (!cwd) return null
+  const now = Date.now()
+  const entry = currentBranchCache.get(cwd)
+  if (entry == null || entry.expiresAt <= now) {
+    refreshCurrentBranch(cwd)
+    return entry?.branch ?? null
+  }
+  return entry.branch
+}
+
 /** Live overlay on top of the DB-persisted WorkspaceRecord: `waitingFor`
  *  (only meaningful while `status === 'attention'`) and a best-effort
  *  `lastActivityAt`, both sourced from the same live session-file info
  *  `ws ls`/`ws status` already read (getWorkspaceFileInfo — see
  *  sessionState.ts). Falls back to the DB's own lastOpenedAt when no live
- *  file info is available (session not currently running). */
+ *  file info is available (session not currently running). Also resolves
+ *  `gitBranch` — the workspace cwd's actual current git branch — via the
+ *  synchronous, short-TTL-cached getCachedCurrentBranch() above; distinct
+ *  from `worktreeBranch` (WorkspaceRecord's own persisted field). */
 function withLiveTreeOverlay(ws: WorkspaceRecord): TreeSourceWorkspace {
   const info = getWorkspaceFileInfo(ws.id)
   // Effective (global -> project -> workspace layered) model/effort — see
@@ -465,7 +562,8 @@ function withLiveTreeOverlay(ws: WorkspaceRecord): TreeSourceWorkspace {
       : {}),
     lastActivityAt: info.statusUpdatedAt ?? ws.lastOpenedAt ?? null,
     model,
-    effort
+    effort,
+    gitBranch: getCachedCurrentBranch(ws.cwd)
   }
 }
 
