@@ -66,7 +66,10 @@ export function buildBlocks(rows: DisplayRow[], cardHeight: number): Block[] {
         kind: 'project-header',
         projectId: pendingHeader.projectId,
         projectName: pendingHeader.projectName,
-        height: renderedGroupCount > 0 ? 2 : 1
+        // name + underline rule (2 rows), plus a leading blank row for every
+        // group after the first (3). The rule is part of the header block, so
+        // windowing can never scroll a project name away from its own rule.
+        height: renderedGroupCount > 0 ? 3 : 2
       })
       renderedGroupCount++
       out.push(...pendingBody)

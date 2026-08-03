@@ -15,7 +15,7 @@
 import * as React from 'react'
 import { Box, Text } from 'ink'
 import type { Palette } from '../theme.js'
-import { CARD_GUTTER_WIDTH, CARD_PAD_GUTTER } from '../theme.js'
+import { CARD_GUTTER_WIDTH, CARD_PAD_GUTTER, CARD_PAD_RIGHT, GROUP_DIVIDER_CHAR } from '../theme.js'
 
 export interface ProjectGroupHeaderProps {
   name: string
@@ -23,13 +23,18 @@ export interface ProjectGroupHeaderProps {
   /** False for the very first project header under the title bar (no
    *  leading blank line needed); true for every subsequent project group. */
   withLeadingBlank: boolean
+  /** Full card-area width, so the underline spans the same columns the cards
+   *  below it occupy. */
+  width: number
 }
 
 function ProjectGroupHeaderImpl({
   name,
   palette,
-  withLeadingBlank
+  withLeadingBlank,
+  width
 }: ProjectGroupHeaderProps): React.JSX.Element {
+  const ruleWidth = Math.max(0, width - CARD_GUTTER_WIDTH - CARD_PAD_GUTTER - CARD_PAD_RIGHT)
   return (
     <Box flexDirection="column" flexShrink={0}>
       {withLeadingBlank ? <Box height={1} flexShrink={0} /> : null}
@@ -40,6 +45,12 @@ function ProjectGroupHeaderImpl({
         <Text bold color={palette.groupLabel} wrap="truncate-end">
           {name}
         </Text>
+      </Box>
+      {/* Rule directly under the project name, spanning the card content
+          columns — separates the group label from the cards it heads without
+          spending a blank row on the gap. */}
+      <Box paddingLeft={CARD_GUTTER_WIDTH + CARD_PAD_GUTTER} flexShrink={0}>
+        <Text color={palette.border}>{GROUP_DIVIDER_CHAR.repeat(ruleWidth)}</Text>
       </Box>
     </Box>
   )

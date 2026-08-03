@@ -110,8 +110,18 @@ function rowsFor(f: TreeFrame, filter: 'active' | 'all' = 'all'): DisplayRow[] {
   const blocks = buildBlocks(rowsFor(f, 'all'), CARD_HEIGHT)
   const headers = blocks.filter((b) => b.kind === 'project-header')
   assert.equal(headers.length, 2, 'both projects have surviving workspaces -> both headers emitted')
-  assert.equal(headers[0]!.height, 1, 'the first rendered header is 1 row (no leading blank)')
-  assert.equal(headers[1]!.height, 2, 'every subsequent header is 2 rows (leading blank line)')
+  // A header block is the project NAME plus its underline RULE — the two are
+  // one block so windowing can never scroll a name away from its own rule.
+  assert.equal(
+    headers[0]!.height,
+    2,
+    'the first rendered header is 2 rows: name + rule, no leading blank'
+  )
+  assert.equal(
+    headers[1]!.height,
+    3,
+    'every subsequent header is 3 rows: leading blank + name + rule'
+  )
 
   const cards = cardBlocks(blocks)
   assert.equal(cards.length, 5, 'one card block per workspace row, regardless of status')

@@ -173,13 +173,14 @@ function PickerBody({
           <ScrollAffordance count={windowedBlocks.aboveCount} direction="up" palette={palette} />
         ) : null}
         <Box flexDirection="column">
-          {windowedBlocks.visible.map((block) => {
+          {windowedBlocks.visible.map((block, blockIndex) => {
             if (block.kind === 'project-header') {
               return (
                 <ProjectGroupHeader
                   key={`project-${block.projectId}`}
                   name={truncate(block.projectName, cardAreaWidth)}
                   palette={palette}
+                  width={cardAreaWidth}
                   withLeadingBlank={block.height === 2}
                 />
               )
@@ -194,6 +195,15 @@ function PickerBody({
                 providerId={workspace?.providerId ?? null}
                 gitBranch={workspace?.gitBranch ?? null}
                 selected={block.row.workspaceId === selectedWorkspaceId}
+                // A card draws its own leading rule unless the thing directly
+                // above it is a project header (which already ends in a rule).
+                // Index 0 of the visible window counts as "no divider" too:
+                // its predecessor is scrolled off, so a rule there would hang
+                // under the scroll affordance with nothing above it.
+                showDivider={
+                  blockIndex > 0 &&
+                  windowedBlocks.visible[blockIndex - 1]?.kind !== 'project-header'
+                }
                 width={cardAreaWidth}
                 palette={palette}
               />

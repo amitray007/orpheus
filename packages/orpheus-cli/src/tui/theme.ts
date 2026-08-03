@@ -433,6 +433,18 @@ export const CARD_PAD_RIGHT = 1
  *  windowing height (which must budget for it) read the same constant. */
 export const CARD_SEPARATOR_ROWS = 1
 
+/** Dotted rule drawn in the card separator row, between consecutive cards.
+ *  U+254C BOX DRAWINGS LIGHT DOUBLE DASH HORIZONTAL — East_Asian_Width=N, so
+ *  it is single-width everywhere. `┈ ┄ · ‧` are all Ambiguous and would
+ *  overflow the padded line they sit in; `-` reads as a solid rule rather
+ *  than a dotted one. */
+export const CARD_DIVIDER_CHAR = '\u254c'
+
+/** Solid rule under a project name, separating the group label from its
+ *  cards. Same glyph as the card divider so the two rules read as one
+ *  family, drawn in `border` rather than a text colour. */
+export const GROUP_DIVIDER_CHAR = '\u254c'
+
 /** Card gutter content — see CARD_GUTTER_SELECTED. */
 export function cardGutterFor(selected: boolean): string {
   return selected ? CARD_GUTTER_SELECTED : CARD_GUTTER_EMPTY

@@ -58,7 +58,8 @@ import {
   CARD_GUTTER_WIDTH,
   CARD_PAD_GUTTER,
   CARD_PAD_RIGHT,
-  CARD_SEPARATOR_ROWS
+  CARD_SEPARATOR_ROWS,
+  CARD_DIVIDER_CHAR
 } from '../theme.js'
 import type { Palette } from '../theme.js'
 import { displayTitleFor, truncate, type DisplayRow } from '../layout.js'
@@ -97,6 +98,9 @@ export interface WorkspaceCardProps {
    *  `gitBranch` field for the full precedence rationale. */
   gitBranch: string | null
   selected: boolean
+  /** False for the first card in a project group — its separator row stays
+   *  blank because the project header's own rule already sits above it. */
+  showDivider: boolean
   /** Full width available INCLUDING the 1-col gutter. */
   width: number
   palette: Palette
@@ -109,6 +113,7 @@ export function WorkspaceCard({
   providerId,
   gitBranch,
   selected,
+  showDivider,
   width,
   palette
 }: WorkspaceCardProps): React.JSX.Element {
@@ -178,6 +183,23 @@ export function WorkspaceCard({
 
   return (
     <Box flexDirection="column" flexShrink={0}>
+      {/* Dotted rule ABOVE the card, not below — a trailing rule under the
+          LAST card in a group has nothing beneath it and reads as an
+          unfinished edge. Drawn for every card except the first in its group
+          (which sits directly under the project header's own rule), so every
+          rule always separates two things. UNTINTED even when the card below
+          is selected, so the highlight starts with the card's own content.
+          Counted in App.tsx's CARD_HEIGHT, so blocks.ts windows it with the
+          card it belongs to. */}
+      <Box
+        height={CARD_SEPARATOR_ROWS}
+        flexShrink={0}
+        paddingLeft={CARD_GUTTER_WIDTH + CARD_PAD_GUTTER}
+      >
+        {showDivider ? (
+          <Text color={palette.border}>{CARD_DIVIDER_CHAR.repeat(Math.max(0, innerWidth))}</Text>
+        ) : null}
+      </Box>
       <Box flexDirection="row" height={1} flexShrink={0}>
         {rail}
         <Text backgroundColor={bg} color={modelColor} wrap="truncate">
@@ -207,12 +229,6 @@ export function WorkspaceCard({
         </Text>
         {tailPad}
       </Box>
-      {/* Separator row — UNTINTED even when selected, so the highlight ends
-          with the card's own content and the gap reads as space BETWEEN
-          cards rather than as a trailing empty line inside the selected one.
-          Counted in App.tsx's CARD_HEIGHT, so blocks.ts windows it with the
-          card it belongs to. */}
-      <Box height={CARD_SEPARATOR_ROWS} flexShrink={0} />
     </Box>
   )
 }
