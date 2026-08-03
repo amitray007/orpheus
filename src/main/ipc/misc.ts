@@ -14,8 +14,7 @@ import type { ProjectRecord, ContextMenuNativeItem } from '../../shared/types'
 import { listAllPinned } from '../workspaces'
 import { showContextMenu } from '../contextMenu'
 import { fireTestNotification } from '../osNotifications'
-import { resolveMainWorktree, NotAGitRepoError } from '../worktrees'
-import { resolveOfferedModes } from '../orpheusConfig'
+import { resolveOfferedModesForProject } from '../orpheusConfig'
 import { getCachedAvatar } from '../avatarCache'
 import { handle } from './handle'
 
@@ -52,26 +51,15 @@ export function registerMiscIpc(deps: MiscIpcDeps): void {
     logs: app.getPath('logs')
   }))
 
-  // Which workspace-creation modes the UI should offer for this project. Computes
-  // is-git-repo authoritatively (resolveMainWorktree throws NotAGitRepoError for a
-  // non-git cwd) and narrows the resolver result to the bare {local, worktree} the
-  // renderer needs. Non-NotAGitRepo errors propagate.
+  // Which workspace-creation modes the UI should offer for this project.
+  // Narrows resolveOfferedModesForProject's result (shared with the command
+  // socket's project.offeredModes action — see orpheusConfig.ts) to the bare
+  // {local, worktree} the renderer needs. Non-NotAGitRepo errors propagate.
   handle('app:offeredModes', async (_e, { projectId }: { projectId: string }) => {
     const project = deps.getProject(projectId)
     if (!project) throw new Error(`app:offeredModes: project not found: ${projectId}`)
 
-    let isGit = true
-    try {
-      await resolveMainWorktree(project.path)
-    } catch (err) {
-      if (err instanceof NotAGitRepoError) {
-        isGit = false
-      } else {
-        throw err
-      }
-    }
-
-    const modes = await resolveOfferedModes(project.path, isGit)
+    const modes = await resolveOfferedModesForProject(project.path)
     return { local: modes.local, worktree: modes.worktree }
   })
 

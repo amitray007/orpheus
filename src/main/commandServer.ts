@@ -8,7 +8,9 @@ import { DIAG_EVENTS } from '../shared/diagEvents'
 import { getWorkspace, listChildWorkspaces, listWorkspacesForProject } from './workspaces'
 import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getProject, listProjects } from './projects'
+import { resolveOfferedModesForProject } from './orpheusConfig'
 import { withReconciledEffort } from './effortReconciliation'
+import { resolveSelectableModels } from './ipc/models'
 import { CLAUDE_EFFORT_VALUES } from '../shared/types'
 import type {
   WorkspaceRecord,
@@ -49,7 +51,7 @@ import type {
   ControlPermission,
   TrustedRuntimeBinding
 } from './controlPlane/types'
-import type { WorkspaceOperationActor } from './workspaceOrchestration/types'
+import type { WorkspaceOperationActor, WorkspaceMode } from './workspaceOrchestration/types'
 import type { WorkspaceOrchestrationService } from './workspaceOrchestration/service'
 import { legacyWaitReason, type MainWorkspaceWaitEngine } from './workspaceOrchestration/waitEngine'
 import { parseCommandAction } from './commandAction'
@@ -281,6 +283,24 @@ function buildWorkspaceSettingsOverride(args: Record<string, unknown>): {
   return settingsOverride
 }
 
+const VALID_WORKSPACE_MODES: WorkspaceMode[] = ['local', 'worktree']
+
+/**
+ * Resolve `args.mode` for `workspace.create`, defaulting to 'local' when
+ * absent so every existing caller (MCP tools, scripts, the CLI's `ws new`
+ * before it grows a --mode flag) keeps its current behavior unchanged.
+ * Anything other than 'local'/'worktree' is rejected outright rather than
+ * silently coerced, matching the neighbouring handlers' validation idiom
+ * (see buildWorkspaceSettingsOverride's permissionMode/effort checks above).
+ */
+function resolveLegacyCreateMode(args: Record<string, unknown>): WorkspaceMode {
+  if (args.mode === undefined) return 'local'
+  if (typeof args.mode === 'string' && VALID_WORKSPACE_MODES.includes(args.mode as WorkspaceMode)) {
+    return args.mode as WorkspaceMode
+  }
+  throw new Error(`args.mode must be one of ${VALID_WORKSPACE_MODES.join(', ')}`)
+}
+
 function commandWorkspaceActor(
   args: Record<string, unknown>,
   context: { workspaceId?: string }
@@ -353,15 +373,17 @@ async function handleLegacyWorkspaceCreate(
   if (typeof args.cwd !== 'string') throw new Error('args.cwd is required')
   if (getProject(args.projectId) == null) throw new Error(`project not found: ${args.projectId}`)
 
+  const mode = resolveLegacyCreateMode(args)
   const actor = commandWorkspaceActor(args, context)
   const created = await deps.workspaceOrchestration.create(
     {
-      mode: 'local',
+      mode,
       ...(typeof args.name === 'string' && args.name !== '' ? { name: args.name } : {}),
       ...(typeof args.parentWorkspaceId === 'string'
         ? { parentWorkspaceId: args.parentWorkspaceId }
         : {}),
-      ...(args.fork === true ? { fork: true } : {})
+      ...(args.fork === true ? { fork: true } : {}),
+      ...(typeof args.branch === 'string' && args.branch !== '' ? { branch: args.branch } : {})
     },
     actor
   )
@@ -663,6 +685,15 @@ function makeDispatchTable(
     // Args:
     //   projectId (required) — the project to create the workspace under
     //   cwd (required)       — working directory for the workspace
+    //   mode? ('local'|'worktree') — workspace-creation mode; defaults to 'local'
+    //                          when omitted so every pre-existing caller (MCP tools,
+    //                          scripts, `ws new` before it grows a --mode flag) keeps
+    //                          its current behavior. 'worktree' is a straight passthrough
+    //                          to the orchestration layer's existing worktree support
+    //                          (auto-derives the worktree path/branch) — it throws if the
+    //                          project doesn't offer worktree mode (see project.offeredModes).
+    //   branch?              — worktree branch name (mode: 'worktree' only); auto-named
+    //                          (worktree-<slug>) when omitted. Ignored for mode: 'local'.
     //   name?                — workspace name; defaults to 'New workspace'
     //   fork? (boolean)      — if true, inherit parent session history via --fork-session
     //   parentWorkspaceId?   — explicit parent id; falls back to context.workspaceId
@@ -1011,6 +1042,51 @@ function makeDispatchTable(
         resolveCommandReviewSetResolvedInput(args, ARGS_ID_REQUIRED_ERROR),
         commandReviewContext(context?.workspaceId ?? null)
       )
+    },
+
+    // Which workspace-creation modes a project offers — the command-socket
+    // counterpart to the renderer's app:offeredModes IPC handler
+    // (src/main/ipc/misc.ts), so a TUI/CLI new-workspace flow can gate its
+    // 'worktree' option the same way the GUI does (a project may legitimately
+    // be local-only: non-git cwd, or .orpheus/config.yml's allowWorktree:
+    // false). Shares resolveOfferedModesForProject (orpheusConfig.ts) with
+    // that IPC handler rather than re-deriving is-git-repo here, so the two
+    // surfaces can never disagree about what a project offers.
+    // Args:
+    //   projectId (required) — the project to check
+    'project.offeredModes': async (args) => {
+      if (typeof args.projectId !== 'string') throw new Error('args.projectId is required')
+      const project = getProject(args.projectId)
+      if (project == null) throw new Error(`project not found: ${args.projectId}`)
+      const modes = await resolveOfferedModesForProject(project.path)
+      return { local: modes.local, worktree: modes.worktree }
+    },
+
+    // Selectable-model list for a TUI/CLI model picker (new-workspace
+    // creation flow) — the SAME list + gating the renderer's
+    // WorkspaceDrawer/SettingsDrawer/DropdownChip pickers render from via
+    // the models:listSelectable IPC handler (src/main/ipc/models.ts).
+    // Reuses that handler's own resolveSelectableModels() verbatim rather
+    // than re-assembling routing-proxy/provider/cliproxy inputs here, so
+    // this can never silently drift from the renderer's list (different
+    // availability gating / provisional flags). Returned as-is — grouping
+    // by provider is the CLIENT's job, not this action's.
+    // Args:
+    //   currentModelId? — the workspace's currently-selected model id, if
+    //                      any; passed straight through so a routed model
+    //                      that's no longer healthy is still listed
+    //                      (available: false) rather than silently dropped.
+    'models.list': async (args) => {
+      if (args.currentModelId !== undefined && typeof args.currentModelId !== 'string') {
+        throw new Error('args.currentModelId must be a string')
+      }
+      const models = await resolveSelectableModels(args.currentModelId)
+      // Spread each entry into a plain object literal — NOT a reshape (same
+      // keys/values, untouched order) — purely so this structurally satisfies
+      // DispatchFn's JsonValue return type, which (unlike the type aliases
+      // other actions return) an `interface` like SelectableModel doesn't
+      // satisfy without an explicit index signature.
+      return models.map((model) => ({ ...model }))
     }
   }
   return dispatch
