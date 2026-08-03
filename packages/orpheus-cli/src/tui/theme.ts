@@ -195,7 +195,7 @@ const DARK: Palette = {
   brand: '#c9d1d9',
   // Project headers: quiet structural scaffolding. Dimmer than `text` so a
   // group label never competes with the workspace titles beneath it.
-  groupLabel: '#8b949e',
+  groupLabel: '#adbac7',
   // Key glyphs. Muted green reads as "you can press this" without pulling
   // against the cursor's cyan or any status hue.
   keyHint: '#7ee787',
@@ -223,15 +223,15 @@ const DARK: Palette = {
     // Pure white — snaps to itself (#ffffff, drift 0), distinct from
     // `text` (#e6edf3 -> snaps #eeeeee) and `brand` (#c9d1d9 -> snaps
     // #d0d0d0).
-    codex: '#ffffff',
+    codex: '#10a37f',
     // Grey — deliberately NOT `idle`/`groupLabel`/`secondary`'s hue
     // (#7d8590/#8b949e, both snapping near #878787-#949494); this snaps to
     // #767676, a full grayscale-ramp step away from all three.
-    xai: '#6e7681',
+    xai: '#c77dff',
     // Green — distinct from `keyHint` (#7ee787 -> snaps #87d787, already
     // a green used for key glyphs); this snaps to #5faf5f, a different
     // cube cell.
-    antigravity: '#3fb950'
+    antigravity: '#4285f4'
   }
 }
 
@@ -291,7 +291,18 @@ export interface DriftEntry {
 
 /** For each palette entry: its hex, the nearest ACTUAL 256-color match (cube or grayscale ramp), and the drift. */
 export function paletteDriftReport(palette: Palette = DARK): DriftEntry[] {
-  return Object.entries(palette).map(([name, hex]) => {
+  // Flatten nested groups (agentColors) alongside the top-level hex entries.
+  // Object.entries() over Palette yields `agentColors` as an OBJECT, and the
+  // hex parsing below then threw `hex.slice is not a function` — so the four
+  // per-provider colours, the ones most likely to collide with an existing
+  // hue, were the exact entries this report could not see. Reported as
+  // `agentColors.<id>` so a collision names which provider it involves.
+  const entries: [string, string][] = Object.entries(palette).flatMap(([name, value]) =>
+    typeof value === 'string'
+      ? [[name, value] as [string, string]]
+      : Object.entries(value).map(([id, hex]) => [`${name}.${id}`, hex] as [string, string])
+  )
+  return entries.map(([name, hex]) => {
     const n = Number.parseInt(hex.slice(1), 16)
     const channels: [number, number, number] = [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
 
@@ -440,10 +451,15 @@ export const CARD_SEPARATOR_ROWS = 1
  *  than a dotted one. */
 export const CARD_DIVIDER_CHAR = '\u254c'
 
-/** Solid rule under a project name, separating the group label from its
- *  cards. Same glyph as the card divider so the two rules read as one
- *  family, drawn in `border` rather than a text colour. */
-export const GROUP_DIVIDER_CHAR = '\u254c'
+/** Rule under the title bar, spanning the FULL content width so the top row
+ *  reads as a nav bar rather than as the first line of the list.
+ *
+ *  ASCII '-' rather than a box-drawing glyph: U+2500/2501/2550 are ALL
+ *  East_Asian_Width=Ambiguous (verified), so any of them would render
+ *  double-width in a CJK-configured terminal and overflow the padded row.
+ *  '-' is Narrow. The solid run also contrasts deliberately with the dotted
+ *  U+254C used between cards — a bar versus a soft separator. */
+export const NAV_DIVIDER_CHAR = '-'
 
 /** Card gutter content — see CARD_GUTTER_SELECTED. */
 export function cardGutterFor(selected: boolean): string {

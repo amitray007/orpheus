@@ -55,7 +55,6 @@ export type Block =
  */
 export function buildBlocks(rows: DisplayRow[], cardHeight: number): Block[] {
   const out: Block[] = []
-  let renderedGroupCount = 0
 
   let pendingHeader: { projectId: string; projectName: string } | null = null
   let pendingBody: Block[] = []
@@ -66,12 +65,12 @@ export function buildBlocks(rows: DisplayRow[], cardHeight: number): Block[] {
         kind: 'project-header',
         projectId: pendingHeader.projectId,
         projectName: pendingHeader.projectName,
-        // name + underline rule (2 rows), plus a leading blank row for every
-        // group after the first (3). The rule is part of the header block, so
-        // windowing can never scroll a project name away from its own rule.
-        height: renderedGroupCount > 0 ? 3 : 2
+        // Just the project name. The rule beneath it belongs to the first
+        // CARD's own leading-divider row, not to the header — that way every
+        // card renders an identical 4-row block (3 content + 1 divider) and
+        // none has to leave a blank spacer where a divider was suppressed.
+        height: 1
       })
-      renderedGroupCount++
       out.push(...pendingBody)
     }
     pendingHeader = null

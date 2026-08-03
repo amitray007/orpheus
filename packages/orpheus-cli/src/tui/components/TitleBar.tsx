@@ -32,8 +32,9 @@
 
 import * as React from 'react'
 import { Box, Text } from 'ink'
-import { truncate, type Breakpoint, type Filter as View, type ProjectScope } from '../layout.js'
+import { truncate, type Filter as View, type ProjectScope } from '../layout.js'
 import type { Palette } from '../theme.js'
+import { NAV_DIVIDER_CHAR } from '../theme.js'
 
 export interface TitleBarProps {
   scope?: ProjectScope
@@ -42,7 +43,6 @@ export interface TitleBarProps {
   view: View
   hiddenCount: number
   totalCount: number
-  breakpoint: Breakpoint
   palette: Palette
   /** Live terminal width — drives the manual title/status split. */
   width: number
@@ -65,7 +65,6 @@ export function TitleBar({
   view,
   hiddenCount,
   totalCount,
-  breakpoint,
   palette,
   width
 }: TitleBarProps): React.JSX.Element {
@@ -116,7 +115,10 @@ export function TitleBar({
           </Text>
         </Box>
       </Box>
-      {breakpoint !== 'narrow' ? <Box height={1} /> : null}
+      {/* Full-width rule: this is what turns the title row into a nav bar. */}
+      <Box width={width}>
+        <Text color={palette.border}>{NAV_DIVIDER_CHAR.repeat(Math.max(0, width))}</Text>
+      </Box>
     </Box>
   )
 }

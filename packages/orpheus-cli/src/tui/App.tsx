@@ -56,14 +56,7 @@
 import * as React from 'react'
 import { useMemo, useState, useSyncExternalStore } from 'react'
 import { Box, Text, useInput, useWindowSize } from 'ink'
-import {
-  flattenTree,
-  truncate,
-  type Breakpoint,
-  type DisplayRow,
-  type Filter,
-  type ProjectScope
-} from './layout.js'
+import { flattenTree, truncate, type DisplayRow, type Filter, type ProjectScope } from './layout.js'
 import { CARD_MEDIUM_MAX, resolveCardBreakpoint } from './cardBreakpoints.js'
 import { buildBlocks, windowBlocks, type Block } from './blocks.js'
 import { frameStore } from './frameStore.js'
@@ -123,8 +116,11 @@ function isWorkspaceRow(row: DisplayRow): row is WorkspaceDisplayRow {
 /** Reserved rows above the scrolling body: TitleBar is 1 row at narrow, 2 at
  *  medium/wide (title row + a blank line — see TitleBar.tsx). Footer is
  *  always 1 row. */
-function headerReservedFor(breakpoint: Breakpoint): number {
-  return breakpoint === 'narrow' ? 1 : 2
+function headerReservedFor(): number {
+  // Title row + its full-width nav rule. Was briefly 1 (a blank second row
+  // was removed as dead space); the rule reclaims that row for something
+  // that actually delimits the bar.
+  return 2
 }
 
 /**
@@ -180,8 +176,6 @@ function PickerBody({
                   key={`project-${block.projectId}`}
                   name={truncate(block.projectName, cardAreaWidth)}
                   palette={palette}
-                  width={cardAreaWidth}
-                  withLeadingBlank={block.height === 2}
                 />
               )
             }
@@ -347,7 +341,7 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
   const breakpoint = resolveCardBreakpoint(columns)
   const isWide = columns >= WIDE_MIN_COLUMNS
 
-  const headerReserved = headerReservedFor(breakpoint)
+  const headerReserved = headerReservedFor()
   const availableRows = Math.max(0, rows - headerReserved - FOOTER_ROWS)
 
   // Card width == full available terminal width at every breakpoint —
@@ -397,7 +391,6 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
         view={view}
         hiddenCount={flattened.hiddenCount}
         totalCount={flattened.totalCount}
-        breakpoint={breakpoint}
         palette={palette}
         width={contentWidth}
       />
