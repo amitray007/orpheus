@@ -313,20 +313,47 @@ async function hostAndAttach(workspaceId: string): Promise<void> {
     return
   }
 
-  await new Promise<void>((resolve) => {
-    const child = spawn(
-      'tmux',
-      ['-L', hostResult.socketName, 'attach', '-t', hostResult.sessionName],
-      { stdio: 'inherit' }
-    )
-    child.once('exit', () => resolve())
-    child.once('error', (err) => {
-      // e.g. tmux isn't installed (ENOENT) — surface it rather than crashing
-      // the whole TUI, then fall through to the "press any key" wait below.
-      process.stderr.write(`orpheus: could not run tmux: ${errorMessage(err)}\n`)
-      resolve()
+  // HAND STDIN OVER COMPLETELY BEFORE SPAWNING TMUX.
+  //
+  // `stdio: 'inherit'` shares the fd, it does not transfer ownership: Ink put
+  // stdin in raw mode and left Node's reader flowing, so with the picker
+  // unmounted but the stream still resumed, Node kept consuming keypresses
+  // that were meant for tmux. Typing inside an attached workspace did
+  // nothing, and tmux — reading a stream whose bytes another reader had
+  // already taken — would exit, dropping the user straight back to the
+  // picker. (Ink's own unmount does not undo this: the process, not the
+  // component, owns the stream.)
+  //
+  // Pausing the stream and clearing raw mode leaves the fd untouched for the
+  // child while stopping Node from racing it for input. Both are restored
+  // afterwards so the next picker iteration starts from the same state it
+  // would have had.
+  const stdin = process.stdin
+  const hadRawMode = stdin.isTTY === true && stdin.isRaw === true
+  if (stdin.isTTY === true) stdin.setRawMode(false)
+  stdin.pause()
+
+  try {
+    await new Promise<void>((resolve) => {
+      const child = spawn(
+        'tmux',
+        ['-L', hostResult.socketName, 'attach', '-t', hostResult.sessionName],
+        { stdio: 'inherit' }
+      )
+      child.once('exit', () => resolve())
+      child.once('error', (err) => {
+        // e.g. tmux isn't installed (ENOENT) — surface it rather than crashing
+        // the whole TUI, then fall through to the "press any key" wait below.
+        process.stderr.write(`orpheus: could not run tmux: ${errorMessage(err)}\n`)
+        resolve()
+      })
     })
-  })
+  } finally {
+    // finally, not after the await: an attach that throws must not leave
+    // stdin paused, or the picker would render but ignore every keypress.
+    if (stdin.isTTY === true) stdin.setRawMode(hadRawMode)
+    stdin.resume()
+  }
 }
 
 export async function runTui(options: RunTuiOptions = {}): Promise<void> {
