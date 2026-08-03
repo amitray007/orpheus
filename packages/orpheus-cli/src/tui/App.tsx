@@ -54,7 +54,7 @@
  */
 
 import * as React from 'react'
-import { useMemo, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { Box, Text, useInput, useWindowSize } from 'ink'
 import { flattenTree, truncate, type DisplayRow, type Filter, type ProjectScope } from './layout.js'
 import { CARD_MEDIUM_MAX, resolveCardBreakpoint } from './cardBreakpoints.js'
@@ -75,8 +75,34 @@ import type { TreeWorkspace } from './types.js'
 export interface AppProps {
   /** Set when `--project` narrows the picker to a single project. */
   scope?: ProjectScope
+  /**
+   * Initial `view` filter — defaults to 'all' below via ??, but entry.ts
+   * (whose `runTui()` loop remounts a fresh <App> on every picker<->tmux
+   * round trip — see that file's header) feeds in whatever the user last
+   * had selected so re-opening the picker after a detach doesn't silently
+   * reset the filter out from under them.
+   */
+  initialView?: Filter
+  /**
+   * Initial selection, by workspace id — same round-trip motivation as
+   * `initialView`. Deliberately typed and threaded exactly like the `null`
+   * default it replaces (a possibly-stale raw id): `selectedRowIndex` below
+   * already resolves this against the CURRENT frame and falls back to index
+   * 0 if the id isn't present, so a stale id from a since-archived/renamed
+   * workspace degrades gracefully with no extra handling here.
+   */
+  initialSelectedWorkspaceId?: string | null
   onOpen: (workspaceId: string) => void
   onQuit: () => void
+  /**
+   * Fired whenever the RESOLVED view/selection changes, so entry.ts can
+   * remember them across `runPickerOnce()` calls. Reports the derived
+   * `selectedWorkspaceId` (post stale-id-fallback), never the raw
+   * `selectedWorkspaceIdRaw` state — echoing the raw value back would let a
+   * stale id that already fell back to index 0 get persisted as if it were
+   * still valid, defeating the fallback the next time around.
+   */
+  onSelectionChange?: (view: Filter, selectedWorkspaceId: string | null) => void
 }
 
 const FOOTER_ROWS = 1
@@ -227,7 +253,14 @@ function PickerBody({
   )
 }
 
-export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
+export function App({
+  scope,
+  initialView,
+  initialSelectedWorkspaceId,
+  onOpen,
+  onQuit,
+  onSelectionChange
+}: AppProps): React.JSX.Element {
   const frame = useSyncExternalStore(
     frameStore.subscribe,
     frameStore.getSnapshot,
@@ -241,7 +274,14 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
     connectionStore.getSnapshot
   )
   const { columns, rows } = useWindowSize()
-  const [view, setView] = useState<Filter>('active')
+  // Default view is 'all', NOT 'active': isActiveStatus() (layout.ts) only
+  // counts attention/in_progress as "active", so an 'active' default hides
+  // every awaiting_input/idle workspace on first launch — surprising for a
+  // picker whose whole job is showing you what's there. `initialView` lets
+  // entry.ts override this with whatever the user last had selected when
+  // resuming the picker after a detach (see AppProps' doc comment); the `v`
+  // key (handleViewKey below) still cycles active<->all same as always.
+  const [view, setView] = useState<Filter>(initialView ?? 'all')
   // Selection is tracked by WORKSPACE ID, not raw row index — see tui-otui/
   // App.tsx's identical note: a plain numeric index clamped into bounds
   // across a materially different tree (reconnect, workspaces created/
@@ -249,8 +289,17 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
   // DIFFERENT workspace than the one actually highlighted. `null` means "no
   // explicit selection yet"; resolved against the CURRENT frame into
   // `selectedWorkspaceId` below (a derived value, not this raw state —
-  // everything else in this component reads THAT).
-  const [selectedWorkspaceIdRaw, setSelectedWorkspaceIdRaw] = useState<string | null>(null)
+  // everything else in this component reads THAT). `initialSelectedWorkspaceId`
+  // (entry.ts's memory of the last resolved selection from the PREVIOUS
+  // picker mount) flows in exactly like the `null` default it replaces — it
+  // gets the same stale-id fallback treatment below, no special-casing needed.
+  const [selectedWorkspaceIdRaw, setSelectedWorkspaceIdRaw] = useState<string | null>(
+    initialSelectedWorkspaceId ?? null
+  )
+  // Deliberately NOT persisted across picker mounts (no initial-value prop,
+  // no place in onSelectionChange) — the user just detached from a
+  // workspace; on return they expect to see the list, not have a help
+  // overlay silently reappear that they may not even remember opening.
   const [helpVisible, setHelpVisible] = useState(false)
 
   const palette = activePalette
@@ -295,6 +344,18 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
 
   const selectedRow = workspaceRows[selectedRowIndex] ?? null
   const selectedWorkspaceId = selectedRow?.workspaceId ?? null
+
+  // Report the RESOLVED view/selection back to entry.ts (whichever picker
+  // mount is live right now) so the NEXT `runPickerOnce()` call — after the
+  // user opens a workspace, detaches from tmux, and returns — can restore
+  // them as `initialView`/`initialSelectedWorkspaceId` instead of resetting
+  // to defaults. Keyed on the derived values, not `view`/`selectedWorkspaceIdRaw`
+  // directly: `selectedWorkspaceId` has already gone through the stale-id
+  // fallback above, so a raw id that no longer resolves to anything never
+  // gets echoed back and re-persisted as if it were still valid.
+  useEffect(() => {
+    onSelectionChange?.(view, selectedWorkspaceId)
+  }, [view, selectedWorkspaceId, onSelectionChange])
 
   const selectedProjectName = useMemo(() => {
     if (selectedRow == null || frame == null) return null

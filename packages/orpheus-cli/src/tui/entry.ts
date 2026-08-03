@@ -61,7 +61,7 @@ import { applyFrame, resetFrame } from './frameStore.js'
 import { setConnectionNotice } from './connectionStore.js'
 import { nextBackoffMs } from './reconnect.js'
 import { isTreeFrame, type WorkspaceHostResult } from './types.js'
-import type { ProjectScope } from './layout.js'
+import type { Filter, ProjectScope } from './layout.js'
 
 export interface RunTuiOptions {
   /** Set when `--project` narrows the picker to a single project. */
@@ -69,6 +69,25 @@ export interface RunTuiOptions {
 }
 
 type PickerOutcome = { type: 'open'; workspaceId: string } | { type: 'quit' }
+
+/**
+ * PICKER STATE ACROSS LOOP ITERATIONS — process-lifetime only, never disk.
+ * -------------------------------------------------------------
+ * `runTui()`'s `for (;;)` loop (bottom of this file) calls `runPickerOnce()`
+ * fresh on every iteration — opening a workspace and returning from tmux
+ * unmounts the old <App> entirely and mounts a brand-new one (see this
+ * file's header). Without carrying the last-seen `view`/selection forward,
+ * every return-from-tmux would silently reset the picker to its hardcoded
+ * defaults, undoing whatever filter/selection the user had left it on. These
+ * two module-scope `let`s are that memory: written from the `onSelectionChange`
+ * callback wired into <App> below, read back as `initialView`/
+ * `initialSelectedWorkspaceId` on the NEXT call. Deliberately NOT a ref, a
+ * file, or DB state — this is in-memory only, scoped to the current `orpheus
+ * tui` process, exactly per spec; a fresh process starts back at the
+ * defaults, same as before this existed.
+ */
+let lastView: Filter | undefined
+let lastSelectedWorkspaceId: string | null | undefined
 
 type Subscription = ReturnType<typeof subscribe>
 
@@ -210,6 +229,12 @@ function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
 
   const node = React.createElement(App, {
     scope: options.scope,
+    // Resume wherever the LAST picker mount left off (see the `lastView`/
+    // `lastSelectedWorkspaceId` doc comment above) — undefined on the very
+    // first loop iteration of a fresh process, in which case App.tsx's own
+    // `?? 'all'`/`?? null` defaults apply.
+    initialView: lastView,
+    initialSelectedWorkspaceId: lastSelectedWorkspaceId,
     onOpen: (workspaceId: string) => {
       currentSubscription?.close()
       settleOnce({ type: 'open', workspaceId })
@@ -217,6 +242,14 @@ function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
     onQuit: () => {
       currentSubscription?.close()
       settleOnce({ type: 'quit' })
+    },
+    // Mirrors whichever mount is CURRENTLY live into the module-scope
+    // holders, the same way onOpen/onQuit above mirror the live
+    // subscription — read back as this function's own `initialView`/
+    // `initialSelectedWorkspaceId` args on the next runPickerOnce() call.
+    onSelectionChange: (view: Filter, selectedWorkspaceId: string | null) => {
+      lastView = view
+      lastSelectedWorkspaceId = selectedWorkspaceId
     }
   })
 
