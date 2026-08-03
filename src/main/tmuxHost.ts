@@ -255,9 +255,43 @@ export function isTmuxVersionSufficient(
 // state). Cleared only by resetTmuxVersionCacheForTests() below.
 let tmuxVersionCache: Promise<TmuxVersion> | null = null
 
+/**
+ * Env for every `tmux` spawn — the USER's PATH, not Electron's.
+ *
+ * A Finder-launched Electron app starts with a stripped PATH that does not
+ * include Homebrew's bin dir, so `execFile('tmux', ...)` failed with ENOENT
+ * and surfaced as "tmux is not installed" to a user who has tmux installed
+ * and on their own PATH. It appeared INTERMITTENT because a terminal-launched
+ * build inherits the right PATH and works fine — only the normal,
+ * double-clicked launch broke.
+ *
+ * Same fix, and same reasoning, as github.ts's resolveGhPathEnv() for `gh`.
+ *
+ * shellHelpers is loaded through createRequire, NOT a static import: it pulls
+ * in `electron`, and a static import would break this module's Electron-free
+ * guarantee (scripts/verify-tmux-host.ts imports it under plain `bun` with no
+ * Electron runtime, and caught exactly that). Same deferral the file header
+ * documents for its own Electron access. If the helper is unavailable — which
+ * is the harness's case — we fall back to the inherited PATH, i.e. the old
+ * behaviour.
+ */
+function tmuxSpawnEnv(): NodeJS.ProcessEnv {
+  let shellPath: string | null = null
+  try {
+    const helpers = createRequire(__filename)('./shellHelpers') as {
+      getCachedShellPath?: () => string | null
+    }
+    shellPath = helpers.getCachedShellPath?.() ?? null
+  } catch {
+    shellPath = null
+  }
+  if (shellPath == null || shellPath === '') return process.env
+  return { ...process.env, PATH: shellPath }
+}
+
 async function queryTmuxVersion(): Promise<TmuxVersion> {
   return new Promise((resolve, reject) => {
-    execFile('tmux', ['-V'], (error, stdout) => {
+    execFile('tmux', ['-V'], { env: tmuxSpawnEnv() }, (error, stdout) => {
       if (error != null) {
         const code = (error as NodeJS.ErrnoException).code
         reject(code === 'ENOENT' ? new TmuxNotAvailableError() : error)
@@ -352,7 +386,7 @@ function runTmux(socketName: string, args: string[]): Promise<TmuxRunResult> {
     execFile(
       'tmux',
       ['-L', socketName, ...args],
-      { maxBuffer: 4 * 1024 * 1024 },
+      { maxBuffer: 4 * 1024 * 1024, env: tmuxSpawnEnv() },
       (error, stdout, stderr) => {
         if (error == null) {
           resolve({ stdout, stderr })
