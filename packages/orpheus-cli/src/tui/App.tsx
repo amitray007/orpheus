@@ -351,7 +351,12 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
   const filteredEmpty = frame != null && flattened.totalCount > 0 && flattened.visibleCount === 0
 
   return (
-    <Box flexDirection="column">
+    // height={rows} + the flexGrow body below are what pin the chrome to the
+    // terminal's real edges. Without an explicit height the root Box shrinks
+    // to its content, and Ink centres that short block vertically — the whole
+    // UI floats in the middle of an otherwise empty terminal with the footer
+    // riding directly under the last card instead of sitting at the bottom.
+    <Box flexDirection="column" height={rows}>
       <TitleBar
         scope={scope}
         connected={frame != null && connectionNotice == null}
@@ -363,7 +368,9 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
         palette={palette}
         width={columns}
       />
-      <Box flexDirection="column">
+      {/* flexGrow={1} takes every row the title bar and footer don't, so the
+          footer is pushed to the last line at any terminal height. */}
+      <Box flexDirection="column" flexGrow={1}>
         {connectionNotice != null ? (
           <Text color={palette.secondary}>{connectionNotice}</Text>
         ) : connecting ? (
