@@ -932,10 +932,31 @@ export async function applyManagedSessionOptions(
     // shell subprocess on a timer for every attached client. That matters on
     // a phone over Tailscale.
     ['status-interval', '0'],
-    ['status-left', ' #[fg=colour44]\u258c#[fg=colour252] #{pane_title}'],
-    ['status-left-length', '200'],
-    ['status-right', '#[fg=colour108]C-\\#[fg=colour245] picker '],
-    ['status-right-length', '40'],
+    // ONE format for the whole bar, not status-left/right — status-format[0]
+    // is what lets the footer be HIDDEN PER CLIENT. tmux has no per-client
+    // `set-option -c`, but formats DO resolve against the client rendering
+    // them (verified live: the same format returned different values for
+    // different clients), so the conditional below is evaluated separately
+    // for every attached client.
+    //
+    // The desktop attaches through ghostty (`xterm-ghostty`) and has the
+    // app's own UI, where this footer is just a stolen row. The TUI attaches
+    // from whatever terminal the user is in, and is the only client that
+    // needs to be told how to get back. So: blank for ghostty, footer for
+    // everyone else.
+    //
+    // #{=-N:...} truncates the title from the LEFT, keeping its tail — a long
+    // title's distinguishing words are usually at the end, and the fixed
+    // `^\\ Back` on the right must never be pushed off screen. The width is
+    // computed from the client's own width so it adapts as the client
+    // resizes.
+    [
+      'status-format[0]',
+      '#{?#{==:#{client_termname},xterm-ghostty},,' +
+        ' #[fg=colour44]\u258c#[fg=colour252] ' +
+        '#{=-#{e|-|:#{client_width},18}:#{pane_title}}' +
+        '#[align=right]#[fg=colour108]^\\#[fg=colour245] Back }'
+    ],
     // tmux pads the middle with the window list by default; blank it so the
     // bar is only the two things above.
     ['window-status-format', ''],
