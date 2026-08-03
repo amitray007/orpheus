@@ -32,7 +32,6 @@ import { promisify } from 'node:util'
 import { rm, mkdtemp, writeFile, readdir, readFile } from 'node:fs/promises'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import { stripTrailingSourceMappingComment } from './lib/sourceMapStrip.mjs'
 import {
   tmuxSocketNameForAppName,
   tmuxSessionName,
@@ -666,119 +665,6 @@ function workspace(
       `${matches[0]?.line}, hostWorkspace()'s own call) — a text-level regression check for the ` +
       'sole-call-site HARD INVARIANT documented on hostWorkspace()'
   )
-}
-
-// ---------------------------------------------------------------------------
-// stripTrailingSourceMappingComment — pure-function coverage for the fix to
-// the dangling `//# sourceMappingURL=...` comments left in vendored .js
-// files after scripts/package-tui-assets.mjs prunes the referenced .map
-// files. Bun's runtime source-map loader logged
-// `warn: Could not decode sourcemap in '<path>': UnsupportedFormat` straight
-// over the TUI's rendered output whenever it hit one of these.
-// ---------------------------------------------------------------------------
-
-{
-  // Real shape observed in @opentui/core/chunk-bun-t2myhmwd.js (the exact
-  // file the owner's warning named).
-  const real = 'var x=1;\n//# sourceMappingURL=chunk-bun-t2myhmwd.js.map\n'
-  assert.equal(stripTrailingSourceMappingComment(real), 'var x=1;\n')
-
-  // No trailing newline after the comment (EOF right after .map) — must
-  // still strip cleanly rather than leave a dangling partial line.
-  const noTrailingNewline = 'var x=1;\n//# sourceMappingURL=foo.js.map'
-  assert.equal(stripTrailingSourceMappingComment(noTrailingNewline), 'var x=1;\n')
-
-  // CRLF line endings — must not be missed just because the file uses \r\n.
-  const crlf = 'var x=1;\r\n//# sourceMappingURL=foo.js.map\r\n'
-  assert.equal(stripTrailingSourceMappingComment(crlf), 'var x=1;\n')
-
-  // A file with no sourceMappingURL comment at all must be returned
-  // byte-for-byte unchanged — this is the "don't corrupt normal JS" check.
-  const untouched = "var x=1;\nconsole.log('hello');\n"
-  assert.equal(stripTrailingSourceMappingComment(untouched), untouched)
-
-  // A sourceMappingURL-looking string that is NOT on the final line (e.g.
-  // appears inside a string literal mid-file) must be left alone — this
-  // function only ever touches a TRAILING comment, never scans/rewrites the
-  // whole file body.
-  const midFile = "var url = '//# sourceMappingURL=fake.js.map';\nconsole.log(url);\n"
-  assert.equal(
-    stripTrailingSourceMappingComment(midFile),
-    midFile,
-    'a sourceMappingURL-shaped string that is not the trailing comment must be left untouched'
-  )
-
-  console.log(
-    '✓ stripTrailingSourceMappingComment removes exactly the trailing sourceMappingURL comment ' +
-      '(LF or CRLF, with or without a final newline), leaves ordinary JS and mid-file lookalikes ' +
-      'byte-for-byte unchanged'
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Vendored bundle regression check — proves scripts/package-tui-assets.mjs's
-// actual staged output has NO dangling sourceMappingURL references left, not
-// just that the pure helper is correct in isolation. Skipped (not failed)
-// when the staged tree doesn't exist yet (i.e. `build:cli:tui-otui` hasn't
-// been run in this checkout) — this file must stay runnable standalone via
-// `bun run scripts/verify-tmux-host.ts` without requiring a full TUI build
-// first.
-// ---------------------------------------------------------------------------
-
-{
-  const stagedNodeModules = path.join(
-    import.meta.dir,
-    '..',
-    'packages',
-    'orpheus-cli',
-    'dist',
-    'node_modules'
-  )
-
-  async function findJsFiles(dir: string): Promise<string[]> {
-    let entries
-    try {
-      entries = await readdir(dir, { withFileTypes: true })
-    } catch {
-      return []
-    }
-    const files = await Promise.all(
-      entries.map(async (entry) => {
-        const full = path.join(dir, entry.name)
-        if (entry.isDirectory()) return findJsFiles(full)
-        return entry.isFile() && full.endsWith('.js') ? [full] : []
-      })
-    )
-    return files.flat()
-  }
-
-  const jsFiles = await findJsFiles(stagedNodeModules)
-  if (jsFiles.length === 0) {
-    console.log(
-      'staged packages/orpheus-cli/dist/node_modules not found — skipping vendored-bundle ' +
-        'sourcemap-reference check (run `bun run build:cli:tui-otui` first to exercise this; not ' +
-        'a failure)'
-    )
-  } else {
-    const offenders: string[] = []
-    for (const file of jsFiles) {
-      const content = await readFile(file, 'utf8')
-      if (/\/\/# sourceMappingURL=/u.test(content)) {
-        offenders.push(path.relative(stagedNodeModules, file))
-      }
-    }
-    assert.equal(
-      offenders.length,
-      0,
-      `expected ZERO staged .js files with a dangling sourceMappingURL reference — found ` +
-        `${offenders.length}: ${offenders.join(', ')}. package-tui-assets.mjs's stripping step ` +
-        'must strip every one, since the referenced .map files are never staged.'
-    )
-    console.log(
-      `✓ all ${jsFiles.length} staged .js file(s) under packages/orpheus-cli/dist/node_modules ` +
-        'have no dangling sourceMappingURL references'
-    )
-  }
 }
 
 // ---------------------------------------------------------------------------

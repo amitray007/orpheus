@@ -49,35 +49,6 @@ extraResources:
     to: cli
     filter:
       - '*.mjs'
-  # OpenTUI native dylib (packaging smoke test / future OpenTUI TUI), staged
-  # by scripts/package-tui-assets.mjs at packages/orpheus-cli/dist/@opentui/.
-  # electron-builder's default filter only matches top-level files by
-  # extension, so the *.mjs glob above would silently NOT pick up this nested
-  # binary asset — it needs its own explicit entry.
-  - from: packages/orpheus-cli/dist/@opentui
-    to: cli/@opentui
-    filter:
-      - '**/*'
-  # Trimmed node_modules tree for @opentui/core + its flat runtime deps,
-  # staged by scripts/package-tui-assets.mjs. tui-otui.mjs externalizes
-  # "@opentui/core" (see scripts/build-tui-otui.mjs's header for why it can't
-  # be bundled), so the two bare specifiers it leaves behind
-  # ("@opentui/core" / "@opentui/core/testing") must resolve from
-  # node_modules at runtime — resources/bin/orpheus points NODE_PATH here.
-  # electron-builder's default filter only matches top-level files by
-  # extension, so this nested directory needs its own explicit entry (same
-  # reasoning as the cli/@opentui entry above).
-  - from: packages/orpheus-cli/dist/node_modules
-    to: cli/node_modules
-    filter:
-      - '**/*'
-  # Bundled Bun runtime (darwin-arm64) — fetched by scripts/fetch-bun.sh into
-  # vendor/bun/ (gitignored, never committed; see that script's header for
-  # why it's vendored separately from node_modules/bun). Execed by
-  # resources/bin/orpheus for the OpenTUI/Bun-only codepaths that cannot run
-  # under Electron-as-Node (see @opentui/core's node:ffi dependency).
-  - from: vendor/bun/bun
-    to: bin/bun
   - from: resources/bin/orpheus-mcp
     to: bin/orpheus-mcp
   - from: packages/orpheus-mcp/dist/mcp.cjs
