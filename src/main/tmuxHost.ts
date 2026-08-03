@@ -904,16 +904,51 @@ export async function applyManagedSessionOptions(
   // exactly what the foreground process (claude) last set, matching what the
   // native (non-tmux) path already shows, so a workspace's title bar reads
   // identically whether it's tmux-hosted or not.
+  // ORPHEUS FOOTER — replaces tmux's own status bar (see the format strings
+  // below). Purpose: a workspace attached from the TUI had NO visible way
+  // back. The only exit was tmux's `prefix d`, which is undocumented in this
+  // UI and unreliable here anyway — Claude Code running in the pane can
+  // swallow the prefix. `C-\` is bound below as a direct, prefix-free
+  // detach, and the footer's whole job is to advertise it.
+  //
+  // WHY `C-\` AND NOT SOMETHING MORE OBVIOUS: tested live against a real
+  // Claude Code session. `C-g` opens its external editor, `C-o` toggles the
+  // transcript view, and `C-_` moved its effort indicator — all three are
+  // taken. `C-\` did nothing, leaving the prompt untouched. Anything bound
+  // here becomes unavailable to whatever runs inside the pane, so this was
+  // measured rather than assumed.
   const options: [string, string][] = [
     ['window-size', 'latest'],
     ['mouse', 'on'],
     ['history-limit', '50000'],
     ['set-titles', 'on'],
-    ['set-titles-string', '#{pane_title}']
+    ['set-titles-string', '#{pane_title}'],
+    // Status stays ON but is entirely re-drawn: the stock green bar with its
+    // window list is replaced by title-left / exit-hint-right.
+    ['status', 'on'],
+    ['status-style', 'bg=default,fg=colour245'],
+    // Deliberately NO live/refreshing content — nothing here goes stale, so
+    // status-interval can be 0 (never auto-refresh) instead of running a
+    // shell subprocess on a timer for every attached client. That matters on
+    // a phone over Tailscale.
+    ['status-interval', '0'],
+    ['status-left', ' #[fg=colour44]\u258c#[fg=colour252] #{pane_title}'],
+    ['status-left-length', '200'],
+    ['status-right', '#[fg=colour108]C-\\#[fg=colour245] picker '],
+    ['status-right-length', '40'],
+    // tmux pads the middle with the window list by default; blank it so the
+    // bar is only the two things above.
+    ['window-status-format', ''],
+    ['window-status-current-format', '']
   ]
   for (const [key, value] of options) {
     await runTmux(socketName, ['set-option', '-t', sessionName, key, value])
   }
+
+  // Prefix-free detach: `C-\` returns straight to the picker. `-n` binds it
+  // in the ROOT table (no prefix), which is the whole point — an escape that
+  // depends on a prefix the inner app might eat is not an escape.
+  await runTmux(socketName, ['bind-key', '-n', 'C-\\', 'detach-client'])
 }
 
 export async function unhostWorkspace(
