@@ -33,6 +33,7 @@ import {
   type ProjectScope
 } from './layout.js'
 import { frameStore } from './frameStore.js'
+import { connectionStore } from './connectionStore.js'
 import { Header } from './components/Header.js'
 import { Footer } from './components/Footer.js'
 import { HelpOverlay } from './components/HelpOverlay.js'
@@ -98,9 +99,29 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
     frameStore.getSnapshot,
     frameStore.getSnapshot
   )
+  // Reconnect/disconnected notice — see connectionStore.ts's header for why
+  // this is a separate store from frameStore. `null` means no notice: normal
+  // "connecting…"/list UI, driven purely by `frame`, same as before this fix.
+  const connectionNotice = useSyncExternalStore(
+    connectionStore.subscribe,
+    connectionStore.getSnapshot,
+    connectionStore.getSnapshot
+  )
   const { columns, rows } = useWindowSize()
   const [filter, setFilter] = useState<Filter>('active')
-  const [selected, setSelected] = useState(0)
+  // Selection is tracked by WORKSPACE ID, not raw row index — see the note
+  // below on why an index-only `selected` state is unsafe across a frame
+  // change (e.g. a reconnect landing a materially different tree: workspaces
+  // created/archived/reordered while disconnected). A plain numeric index
+  // clamped to the new list length (`Math.min(selected, length - 1)`) stays
+  // IN BOUNDS but can silently point at a DIFFERENT workspace than the one
+  // the user actually had highlighted — worse than an out-of-range index
+  // because it's wrong without looking wrong. `null` means "no explicit
+  // selection yet" (first render, or the previously-selected id vanished);
+  // resolved against the CURRENT frame into `selectedWorkspaceId` below,
+  // which is what the rest of this component reads (this raw state is only
+  // ever written by the arrow-key handlers, never read directly elsewhere).
+  const [selectedWorkspaceIdRaw, setSelectedWorkspaceIdRaw] = useState<string | null>(null)
   const [helpVisible, setHelpVisible] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -112,12 +133,20 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
   )
   const workspaceRows = useMemo(() => result?.rows.filter(isWorkspaceRow) ?? [], [result])
 
-  // Derived, not synced-via-effect: the highlighted row is clamped to the
-  // CURRENT visible set at render time, so a filter toggle/frame update/
-  // disappearing workspace can never leave `selected` pointing past the end
-  // (no separate effect needed to "fix up" state after the fact).
-  const effectiveSelected =
-    workspaceRows.length === 0 ? 0 : Math.min(selected, workspaceRows.length - 1)
+  // Derived, not synced-via-effect: re-resolved from `selectedWorkspaceIdRaw`
+  // against the CURRENT `workspaceRows` every render, so a filter toggle/
+  // frame update/reconnect-with-a-different-tree/disappearing workspace can
+  // never leave the effective index silently pointing at the wrong row (no
+  // separate effect needed to "fix up" state after the fact). Falls back to
+  // index 0 when there's no selection yet OR the previously-selected id is
+  // no longer present in this frame — matching the OpenTUI build's own
+  // fallback-to-0 behavior for the same situation.
+  const effectiveSelected = useMemo(() => {
+    if (workspaceRows.length === 0) return 0
+    if (selectedWorkspaceIdRaw == null) return 0
+    const idx = workspaceRows.findIndex((r) => r.workspaceId === selectedWorkspaceIdRaw)
+    return idx >= 0 ? idx : 0
+  }, [workspaceRows, selectedWorkspaceIdRaw])
 
   useInput((input, key) => {
     if (helpVisible) {
@@ -133,11 +162,13 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
       return
     }
     if (key.downArrow || input === 'j') {
-      setSelected(Math.min(effectiveSelected + 1, Math.max(0, workspaceRows.length - 1)))
+      const nextIndex = Math.min(effectiveSelected + 1, Math.max(0, workspaceRows.length - 1))
+      setSelectedWorkspaceIdRaw(workspaceRows[nextIndex]?.workspaceId ?? null)
       return
     }
     if (key.upArrow || input === 'k') {
-      setSelected(Math.max(effectiveSelected - 1, 0))
+      const nextIndex = Math.max(effectiveSelected - 1, 0)
+      setSelectedWorkspaceIdRaw(workspaceRows[nextIndex]?.workspaceId ?? null)
       return
     }
     if (key.return) {
@@ -150,6 +181,10 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
 
   const breakpoint = resolveBreakpoint(columns)
   const plan = columnPlanFor(breakpoint, columns)
+  // The ACTUAL selected id for this render, resolved from effectiveSelected
+  // (itself derived from selectedWorkspaceIdRaw above) — this, not the raw
+  // state, is what windowing/highlighting below must read, so a reconnect
+  // that changes the tree can never leave a stale id driving the UI.
   const selectedWorkspaceId = workspaceRows[effectiveSelected]?.workspaceId
 
   // Windowing: the selected row's position within `result.rows` (not
@@ -174,7 +209,7 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
     <Box flexDirection="column">
       <Header
         scope={scope}
-        connected={frame != null}
+        connected={frame != null && connectionNotice == null}
         filter={filter}
         hiddenCount={result?.hiddenCount ?? 0}
         totalCount={result?.totalCount ?? 0}
@@ -182,7 +217,16 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
         palette={palette}
       />
       <Box flexDirection="column">
-        {result == null || scrollWindow == null ? (
+        {connectionNotice != null ? (
+          // Reconnecting (or the initial connect taking unusually long) —
+          // reuses this exact text spot rather than adding new layout, per
+          // the same "Connecting to Orpheus…" placeholder this replaces.
+          // Distinct copy from the initial-connect case (connectionStore.ts's
+          // setConnectionNotice() callers choose the exact wording) so a
+          // reconnect after a genuine drop reads differently from a first
+          // connect that just hasn't landed yet.
+          <Text color={palette.secondary}>{connectionNotice}</Text>
+        ) : result == null || scrollWindow == null ? (
           <Text color={palette.secondary}>Connecting to Orpheus…</Text>
         ) : result.rows.length === 0 ? (
           <Text color={palette.secondary}>

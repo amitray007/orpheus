@@ -394,6 +394,18 @@ export async function sendCommand(
 // should pass timeoutMs: 0 to disable the timeout.
 const DEFAULT_SUBSCRIBE_TIMEOUT_MS = 5 * 60 * 1000
 
+// Bound on how long CONNECTION ESTABLISHMENT (opening the Unix socket +
+// receiving response headers with a 200 status) is allowed to take, applied
+// REGARDLESS of what `opts.timeoutMs` the caller passed for the live-stream
+// portion. See subscribe()'s "ESTABLISHMENT VS STREAM DEADLINE" doc comment
+// for why this exists as a separate concern from the overall
+// connect+stream deadline `timeoutMs` covers for positive values. 20s is
+// generous for a Unix domain socket connect plus the app responding (both
+// should normally complete in well under a second) while still catching a
+// genuinely wedged connection (accepted the socket, never sent headers)
+// promptly rather than hanging the caller's "connecting…" UI forever.
+const CONNECTION_ESTABLISHMENT_TIMEOUT_MS = 20 * 1000
+
 /**
  * Extract the server's `{ ok: false, error: "..." }` message from a
  * /subscribe error-response body, or undefined if the body isn't that shape
@@ -472,6 +484,29 @@ export function buildSubscriptionHttpError(statusCode: number, rawBody: string):
  * @returns         { close, done, timedOut } — call close() to tear down the
  *                  connection; done resolves when the server closes or the
  *                  timeout fires; timedOut identifies the latter case.
+ *
+ * ESTABLISHMENT VS STREAM DEADLINE (two different failure modes, one timer
+ * used to cover both — this is the split that matters for `timeoutMs: 0`)
+ * -----------------------------------------------------------------------
+ * Before this split existed, a single `timeoutHandle` covered the ENTIRE
+ * call from `subscribe()` to `teardown()` — both (a) "the Unix socket never
+ * connects / the server never sends response headers" (an ESTABLISHMENT
+ * failure — should always be bounded, regardless of the caller's desired
+ * stream lifetime) and (b) "the live NDJSON stream itself should give up
+ * after N ms" (a STREAM deadline — legitimately wants to be `0`/unbounded
+ * for a long-lived TUI picker subscription). Passing `timeoutMs: 0` to get
+ * (b) unbounded ALSO disabled (a) entirely (`if (timeoutMs > 0)` skipped
+ * arming any timer) — so a server that accepted the socket but never sent
+ * headers back left the caller stuck "connecting…" forever with no client-
+ * side backstop either. Fixed by always arming
+ * CONNECTION_ESTABLISHMENT_TIMEOUT_MS as a SEPARATE, always-on guard around
+ * establishment only, cleared the instant a 200 response's headers are in
+ * (regardless of `timeoutMs`), with the CALLER's `timeoutMs` behavior
+ * unchanged after that point: `0` stays unbounded for the stream itself (the
+ * actual fix for the 300s-death bug this whole change addresses), a
+ * positive value keeps combining connect+stream into one deadline exactly
+ * as before (the original `timeoutHandle` is simply never cleared early for
+ * that case — same as today).
  */
 export function subscribe(
   payload: object,
@@ -484,6 +519,12 @@ export function subscribe(
 
   let reqRef: http.ClientRequest | null = null
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+  // Separate establishment-only guard — see the "ESTABLISHMENT VS STREAM
+  // DEADLINE" doc comment above. Only ever armed when `timeoutMs === 0`
+  // (unbounded stream requested); for a positive `timeoutMs`, `timeoutHandle`
+  // above already covers connect+stream as one deadline, unchanged from
+  // before this split, so a second timer here would be redundant.
+  let establishmentTimeoutHandle: ReturnType<typeof setTimeout> | null = null
   let timedOut = false
   let closed = false
   let resolveDone!: () => void
@@ -493,6 +534,13 @@ export function subscribe(
     rejectDone = reject
   })
 
+  function clearEstablishmentTimeout(): void {
+    if (establishmentTimeoutHandle != null) {
+      clearTimeout(establishmentTimeoutHandle)
+      establishmentTimeoutHandle = null
+    }
+  }
+
   function teardown(error?: SubscriptionError): void {
     if (closed) return
     closed = true
@@ -500,6 +548,7 @@ export function subscribe(
       clearTimeout(timeoutHandle)
       timeoutHandle = null
     }
+    clearEstablishmentTimeout()
     if (reqRef != null) {
       try {
         reqRef.destroy()
@@ -518,11 +567,28 @@ export function subscribe(
   // The deadline covers socket connection and response-header establishment,
   // not only an already-open response stream. A server that accepts the Unix
   // socket but never sends headers must still terminate at the caller's bound.
+  // Unchanged for positive timeoutMs — this single timer still covers
+  // connect+stream as one combined deadline exactly as before this fix.
   if (timeoutMs > 0) {
     timeoutHandle = setTimeout(() => {
       timedOut = true
       teardown()
     }, timeoutMs)
+  } else {
+    // timeoutMs === 0 (unbounded stream requested): the stream itself must
+    // stay unbounded, but ESTABLISHMENT still needs a real bound — see the
+    // "ESTABLISHMENT VS STREAM DEADLINE" doc comment. Cleared as soon as a
+    // 200 response's headers are confirmed, below.
+    establishmentTimeoutHandle = setTimeout(() => {
+      establishmentTimeoutHandle = null
+      timedOut = true
+      teardown(
+        new SubscriptionError(
+          'transport',
+          `Orpheus subscription did not establish within ${CONNECTION_ESTABLISHMENT_TIMEOUT_MS}ms`
+        )
+      )
+    }, CONNECTION_ESTABLISHMENT_TIMEOUT_MS)
   }
 
   // Kick off the connection asynchronously (subscribe is not async itself so
@@ -545,6 +611,15 @@ export function subscribe(
 
     const req = http.request(options, (res) => {
       res.setEncoding('utf-8')
+
+      // Response headers are in — establishment is over (success OR a
+      // non-200 error status; either way the connection DID establish,
+      // it just may not have been accepted). Clear the establishment-only
+      // guard now regardless of statusCode: a non-200 response gets its own
+      // error handling below (still bounded, just via the error path, not
+      // this timer), and a 200 response falls through to the unbounded
+      // stream `timeoutMs === 0` requested.
+      clearEstablishmentTimeout()
 
       const statusCode = res.statusCode ?? 0
       if (statusCode !== 200) {

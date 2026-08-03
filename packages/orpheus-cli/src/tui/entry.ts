@@ -34,6 +34,22 @@
  * defeated memoization (the closures passed as props were recreated every
  * call). App.tsx reads the store via `useSyncExternalStore`, so Ink diffs
  * normally against the previous render.
+ *
+ * RECONNECT WITH BACKOFF (see tui/reconnect.ts, subscribeTimeout.ts)
+ * -------------------------------------------------------------
+ * Even with the server no longer killing a tree-mode subscription at 300s
+ * (subscribeTimeout.ts's SERVER_NO_DEADLINE_TIMEOUT_MS), a stream can still
+ * end for reasons outside anyone's control: the Orpheus app restarting, a
+ * laptop sleeping, a phone's connection dropping in a tunnel (Termius — the
+ * whole premise of this feature). `runPickerOnce` distinguishes a
+ * USER-INITIATED close (onOpen/onQuit calling `.close()` — see `settled`)
+ * from an UNEXPECTED end (the connection dying on its own) and, only for the
+ * latter, attempts to resubscribe with `nextBackoffMs()`-paced delays instead
+ * of immediately giving up and dropping to a shell. The revision guard
+ * (frameStore's lastRevision) is reset on every reconnect attempt, not just
+ * the first subscribe of a loop iteration — see attemptReconnect() below for
+ * why that matters. Reconnect state is shown via connectionStore.ts, reusing
+ * the same "Connecting to Orpheus…" text spot App.tsx already had.
  */
 
 import { spawn } from 'node:child_process'
@@ -42,6 +58,8 @@ import { render, type Instance } from 'ink'
 import { subscribe, sendCommand } from '../socket-client.js'
 import { App } from './App.js'
 import { applyFrame, resetFrame } from './frameStore.js'
+import { setConnectionNotice } from './connectionStore.js'
+import { nextBackoffMs } from './reconnect.js'
 import { isTreeFrame, type WorkspaceHostResult } from './types.js'
 import type { ProjectScope } from './layout.js'
 
@@ -52,46 +70,176 @@ export interface RunTuiOptions {
 
 type PickerOutcome = { type: 'open'; workspaceId: string } | { type: 'quit' }
 
+type Subscription = ReturnType<typeof subscribe>
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
 /**
  * Mount the picker ONCE and resolve once the user opens a workspace or
- * quits. `tree` frames arrive from OUTSIDE React (the /subscribe event
- * callback) and are pushed into frameStore, which App.tsx reads via
- * `useSyncExternalStore` — see the file header for why this replaced a
- * per-frame `instance.rerender()`.
+ * quits (or reconnect ultimately gives up — see attemptReconnect()). `tree`
+ * frames arrive from OUTSIDE React (the /subscribe event callback) and are
+ * pushed into frameStore, which App.tsx reads via `useSyncExternalStore` —
+ * see the file header for why this replaced a per-frame `instance.rerender()`.
  */
 function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
   let settleOnce: (outcome: PickerOutcome) => void = () => {}
+  let settled = false
 
-  const node = React.createElement(App, {
-    scope: options.scope,
-    onOpen: (workspaceId: string) => {
-      subscription.close()
-      settleOnce({ type: 'open', workspaceId })
-    },
-    onQuit: () => {
-      subscription.close()
-      settleOnce({ type: 'quit' })
-    }
-  })
+  // Mutable holder: onOpen/onQuit (wired once into the single <App> mount
+  // below) must always close whichever subscription is CURRENTLY live, which
+  // changes across reconnect attempts — a plain `const subscription` (the
+  // pre-reconnect shape) would go stale after the first resubscribe.
+  let currentSubscription: Subscription | null = null
 
+  // STUCK-CONNECTING GAP — HANDLED IN socket-client.ts, NOT HERE (companion
+  // bug to the 300s server-side kill this whole fix addresses): before this
+  // fix, "connecting…" had no timeout at all — if the first frame simply
+  // never arrived (a wedged server that accepts the socket but never sends
+  // response headers), the user saw an unexplained, permanently frozen
+  // "Connecting to Orpheus…" with no way to tell it apart from a slow-but-
+  // working connect, and `subscribe()`'s own `timeoutMs: 0` disabled its
+  // ONLY client-side timer entirely (it covered both connection
+  // establishment AND the live stream as one deadline). Fixed at the root:
+  // socket-client.ts's `subscribe()` now arms a separate, always-on
+  // CONNECTION_ESTABLISHMENT_TIMEOUT_MS guard whenever `timeoutMs === 0`,
+  // independent of the stream's own unbounded lifetime — see that file's
+  // "ESTABLISHMENT VS STREAM DEADLINE" doc comment. A wedged/never-responds
+  // connection now surfaces as a rejected `sub.done` through the EXACT SAME
+  // path as any other unexpected disconnect (handleUnexpectedEnd below),
+  // which already drives attemptReconnect()/connectionStore — so there is
+  // only ONE state machine handling both "never connected" and "connection
+  // dropped mid-session", not two independently racing mechanisms. No
+  // separate App.tsx-level timer needed.
   const onEvent = (evt: unknown): void => {
     if (!isTreeFrame(evt)) return
     applyFrame(evt)
   }
 
+  /**
+   * Open one subscribe() attempt and wire its `done` settlement to either
+   * resolve the picker (user-initiated close) or trigger a reconnect
+   * (unexpected end). Returns the new Subscription so the caller can stash
+   * it as `currentSubscription`.
+   *
+   * RECONNECT ATTEMPTS MUST NOT THROW UNCAUGHT (unlike the FIRST subscribe of
+   * the process — see the file header's "CONNECTION REUSE" note): a thrown
+   * AppNotRunningError here must be caught and treated as "this attempt
+   * failed, schedule another backoff retry", not propagate up through
+   * runTui()'s promise into cli.ts's autoLaunch flow (that flow exists for
+   * the FIRST invocation of the CLI, not a mid-session reconnect).
+   */
+  function openSubscription(): Subscription {
+    const sub = subscribe({ tree: true, timeoutMs: 0 }, onEvent, { timeoutMs: 0 })
+    sub.done
+      .then(() => {
+        if (!settled) handleUnexpectedEnd(null)
+      })
+      .catch((err: unknown) => {
+        if (!settled) handleUnexpectedEnd(err)
+      })
+    return sub
+  }
+
+  /**
+   * The connection ended WITHOUT us asking for it (see the two cases
+   * documented at the original call site below). Instead of settling
+   * immediately, kick off the backoff-paced reconnect loop.
+   */
+  function handleUnexpectedEnd(err: unknown): void {
+    if (err == null) {
+      process.stderr.write('orpheus: connection to Orpheus closed; attempting to reconnect…\n')
+    } else {
+      const detail = errorMessage(err)
+      process.stderr.write(
+        `orpheus: lost connection to Orpheus: ${detail}; attempting to reconnect…\n`
+      )
+    }
+    void attemptReconnect(1)
+  }
+
+  /**
+   * Reconnect loop: wait `nextBackoffMs(attempt)`, then try to resubscribe.
+   * No cap on the number of attempts — a phone losing signal in a tunnel for
+   * ten minutes and then regaining it is exactly the scenario this exists
+   * for, and the backoff is capped at 30s per attempt so a long outage just
+   * settles into periodic retries rather than spinning. The user can still
+   * quit at any time: `<App>`'s useInput (`q`/escape) stays wired to
+   * onQuit for the whole reconnect loop's duration since the component never
+   * unmounts here (only runPickerOnce's returned promise is pending).
+   *
+   * REVISION GUARD RESET (see file header, tui/frameStore.ts's applyFrame):
+   * resetFrame() is called before EVERY reconnect subscribe, not just the
+   * very first one at the top of runPickerOnce. A fresh connection may
+   * legitimately start numbering revisions lower than what was last seen
+   * (e.g. the Orpheus app itself restarted and its in-memory revision
+   * counter reset) — without this reset, applyFrame's `revision <=
+   * lastRevision` guard would silently drop every frame from the new
+   * connection forever, leaving the picker frozen on stale data with no
+   * visible sign anything is wrong. Strictly worse than the bug being fixed.
+   */
+  async function attemptReconnect(attempt: number): Promise<void> {
+    if (settled) return
+    setConnectionNotice(`Reconnecting to Orpheus… (attempt ${attempt})`)
+    const delay = nextBackoffMs(attempt)
+    await new Promise<void>((r) => setTimeout(r, delay))
+    if (settled) return
+
+    resetFrame() // see doc comment above — must happen before the resubscribe
+    try {
+      currentSubscription = openSubscription()
+      // Attempt "succeeded" in the sense that a request was issued without
+      // throwing synchronously; socket-client.ts's `subscribe()` returns
+      // immediately and connects on process.nextTick, so genuine transport
+      // failures still surface later via `sub.done` rejecting, which
+      // handleUnexpectedEnd() above will route back into another
+      // attemptReconnect() call (attempt + 1). Clear the notice optimistically
+      // once we're not immediately erroring here; a frame arriving is the
+      // real "fully recovered" signal and clears the notice again via
+      // frameStore's own render path (connectionNotice just stops gating
+      // the UI once null).
+      setConnectionNotice(null)
+    } catch (err) {
+      // AppNotRunningError (or anything else) from a RECONNECT attempt must
+      // not crash the process — see this function's doc comment.
+      void err
+      void attemptReconnect(attempt + 1)
+    }
+  }
+
+  const node = React.createElement(App, {
+    scope: options.scope,
+    onOpen: (workspaceId: string) => {
+      currentSubscription?.close()
+      settleOnce({ type: 'open', workspaceId })
+    },
+    onQuit: () => {
+      currentSubscription?.close()
+      settleOnce({ type: 'quit' })
+    }
+  })
+
   // Start clean: a previous loop iteration (returning here after a tmux
   // detach) must not flash the last-known frame from before this
   // subscription existed.
   resetFrame()
+  setConnectionNotice(null)
 
-  // No client-side timeout — the picker stays open indefinitely until the
-  // user acts. May throw AppNotRunningError synchronously; see the file
-  // header for why that's intentionally left uncaught here.
-  const subscription = subscribe({ tree: true }, onEvent, { timeoutMs: 0 })
+  // No client- or server-side timeout — the picker stays open indefinitely
+  // until the user acts. `timeoutMs: 0` must be in BOTH places: the `opts`
+  // arg (3rd param) only controls socket-client.ts's own local
+  // connection-establishment timer; the request BODY's `timeoutMs: 0` (1st
+  // param, `payload`) is what commandServer.ts's parseSubscribeRequestBody
+  // actually reads to resolve the server-side stream deadline (see
+  // subscribeTimeout.ts) — omitting it from the payload was the root cause
+  // of the 300s server-side kill this fix addresses; the two are otherwise
+  // independent knobs that happen to want the same value here. May throw
+  // AppNotRunningError synchronously; see the file header for why that's
+  // intentionally left uncaught here (first call only — see
+  // attemptReconnect() above for why RECONNECT calls must NOT let that
+  // propagate the same way).
+  currentSubscription = openSubscription()
 
   // Mount immediately, before the first frame lands — App.tsx renders its
   // own "connecting…" state for a null store snapshot.
@@ -104,38 +252,13 @@ function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
   const instance: Instance = render(node, { alternateScreen: true })
 
   return new Promise<PickerOutcome>((resolve) => {
-    let settled = false
     settleOnce = (outcome) => {
       if (settled) return
       settled = true
       resolve(outcome)
     }
-    // subscription.done never rejects for OUR OWN subscription.close() call
-    // (see onOpen/onQuit above) — teardown() there passes no error, and by
-    // the time `done` settles, settleOnce has ALREADY run synchronously, so
-    // this handler becomes a no-op for that case (guarded by `settled`).
-    // The two cases where this handler actually does something are both
-    // the connection ending WITHOUT us asking for it:
-    //   - done RESOLVES: the server's response stream ended on its own
-    //     (res.on('end') in socket-client.ts — e.g. Orpheus quit cleanly).
-    //     Not an error, but the user didn't ask to leave the picker either,
-    //     so a neutral note (not an alarming one) explains why they're
-    //     suddenly back at a shell prompt instead of silently dropping them
-    //     there with zero explanation.
-    //   - done REJECTS with a SubscriptionError: a genuine transport
-    //     failure (aborted/errored response — see socket-client.ts). Print
-    //     its message; this is worth a real "something went wrong" line.
-    subscription.done
-      .then(() => {
-        if (!settled) {
-          process.stderr.write('orpheus: connection to Orpheus closed; returning to shell\n')
-        }
-      })
-      .catch((err: unknown) => {
-        process.stderr.write(`orpheus: lost connection to Orpheus: ${errorMessage(err)}\n`)
-      })
-      .finally(() => settleOnce({ type: 'quit' }))
   }).finally(async () => {
+    setConnectionNotice(null)
     instance.unmount()
     await instance.waitUntilExit()
   })

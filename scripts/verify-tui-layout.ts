@@ -44,6 +44,7 @@ import {
   resolveBreakpoint,
   columnPlanFor,
   truncate,
+  displayTitleFor,
   flattenTree,
   scrollWindowFor,
   isActiveStatus,
@@ -71,6 +72,13 @@ import {
   extractSubscriptionErrorDetail,
   buildSubscriptionHttpError
 } from '../packages/orpheus-cli/src/socket-client.ts'
+import {
+  resolveSubscribeTimeoutMs,
+  SERVER_DEFAULT_TIMEOUT_MS,
+  SERVER_MAX_TIMEOUT_MS,
+  SERVER_NO_DEADLINE_TIMEOUT_MS
+} from '../src/main/subscribeTimeout.ts'
+import { nextBackoffMs } from '../packages/orpheus-cli/src/tui/reconnect.ts'
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -208,8 +216,71 @@ function workspaceRows(rows: DisplayRow[]): Array<Extract<DisplayRow, { kind: 'w
   assert.equal(truncate('anything', 0), '', 'width 0 truncates to empty')
   assert.equal(truncate('anything', -5), '', 'negative width truncates to empty (never throws)')
 
+  // Wide-unicode (CJK) case: Claude can write arbitrary text into an OSC
+  // title, and each CJK character is 1 JS `.length` unit but 2 terminal
+  // display columns. A char-count-only truncate would think a 10-char CJK
+  // string like this one (20 display columns) fits inside a 10-column
+  // budget and return it unclipped, corrupting alignment. The
+  // display-width-aware implementation must clip it down to fit 10 columns
+  // (9 columns of content + 1 for the ellipsis), and every prefix character
+  // it keeps must be one that was actually present in the source string, in
+  // order (no mid-character corruption).
+  const wide = '日本語のタイトルです' // 10 code points, 20 display columns
+  const wideTruncated = truncate(wide, 10)
+  assert.notEqual(
+    wideTruncated,
+    wide,
+    'a 20-column string must not fit unclipped in a 10-column budget'
+  )
+  assert.ok(wideTruncated.endsWith('…'), 'wide truncation still ends in the ellipsis')
+  assert.ok(
+    wide.startsWith(wideTruncated.slice(0, -1)),
+    'kept prefix is a real prefix of the source'
+  )
+
   console.log(
-    '✓ truncate: unchanged under/at width, hard-truncated + ellipsis over width, degenerate widths handled'
+    '✓ truncate: unchanged under/at width, hard-truncated + ellipsis over width, degenerate widths handled, wide-unicode display-width-aware'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 3b. displayTitleFor() — title-primary-with-name-fallback rule
+// ---------------------------------------------------------------------------
+
+{
+  assert.equal(
+    displayTitleFor({ name: 'Workspace 1', lastTitle: null }),
+    'Workspace 1',
+    'null lastTitle falls back to name'
+  )
+  assert.equal(
+    displayTitleFor({ name: 'Workspace 1', lastTitle: '' }),
+    'Workspace 1',
+    'empty-string lastTitle falls back to name'
+  )
+  assert.equal(
+    displayTitleFor({ name: 'Workspace 1', lastTitle: '   ' }),
+    'Workspace 1',
+    'whitespace-only lastTitle falls back to name'
+  )
+  assert.equal(
+    displayTitleFor({ name: 'Workspace 1', lastTitle: undefined }),
+    'Workspace 1',
+    'absent (undefined) lastTitle falls back to name'
+  )
+  assert.equal(
+    displayTitleFor({ name: 'Workspace 1', lastTitle: 'Understand codebase structure' }),
+    'Understand codebase structure',
+    'a non-empty lastTitle wins over name'
+  )
+  assert.equal(
+    displayTitleFor({ name: 'Workspace 1', lastTitle: '  Understand codebase structure  ' }),
+    'Understand codebase structure',
+    'a non-empty lastTitle is trimmed'
+  )
+
+  console.log(
+    '✓ displayTitleFor: title wins when non-empty (trimmed), falls back to name when null/empty/whitespace/absent'
   )
 }
 
@@ -749,6 +820,138 @@ function workspaceRows(rows: DisplayRow[]): Array<Extract<DisplayRow, { kind: 'w
 
   console.log(
     '✓ extractSubscriptionErrorDetail/buildSubscriptionHttpError: server error body surfaced, malformed bodies degrade to bare-status message'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 12. resolveSubscribeTimeoutMs (src/main/subscribeTimeout.ts) — the /subscribe
+//     server-side timeout resolution table (Layer 1 of the reconnect fix:
+//     `timeoutMs: 0` used to be indistinguishable from "omitted" under the
+//     old `> 0` guard, silently downgrading the TUI's long-lived tree-mode
+//     subscription to the 5-minute default and getting killed by
+//     commandServer.ts's own setTimeout at exactly 300s).
+// ---------------------------------------------------------------------------
+
+{
+  // Omitted / non-number / NaN / negative, non-tree subscription (the
+  // ws-wait shape: workspaceIds-based, includeTree=false) → 5 min default —
+  // unchanged from the original inline logic.
+  assert.equal(resolveSubscribeTimeoutMs(undefined, false), SERVER_DEFAULT_TIMEOUT_MS)
+  assert.equal(resolveSubscribeTimeoutMs(null, false), SERVER_DEFAULT_TIMEOUT_MS)
+  assert.equal(resolveSubscribeTimeoutMs('300000', false), SERVER_DEFAULT_TIMEOUT_MS)
+  assert.equal(resolveSubscribeTimeoutMs(Number.NaN, false), SERVER_DEFAULT_TIMEOUT_MS)
+  assert.equal(resolveSubscribeTimeoutMs(-1, false), SERVER_DEFAULT_TIMEOUT_MS)
+  assert.equal(resolveSubscribeTimeoutMs(0 - 1, false), SERVER_DEFAULT_TIMEOUT_MS)
+
+  // Explicit 0 (any subscription — the primary rule, never silently
+  // overridden by includeTree or anything else) → no-deadline ceiling. This
+  // is the exact case the TUI's `{ tree: true, timeoutMs: 0 }` payload now
+  // hits (see tui/entry.ts, tui-otui/entry.ts).
+  assert.equal(resolveSubscribeTimeoutMs(0, true), SERVER_NO_DEADLINE_TIMEOUT_MS)
+  assert.equal(resolveSubscribeTimeoutMs(0, false), SERVER_NO_DEADLINE_TIMEOUT_MS)
+
+  // Omitted timeoutMs on a TREE-ONLY subscription (includeTree=true) — the
+  // narrower UX-only nicety: a live tree view has no workspaceIds terminal
+  // condition to wait for, so it also defaults to no-deadline rather than
+  // the 5-minute ws-wait default.
+  assert.equal(resolveSubscribeTimeoutMs(undefined, true), SERVER_NO_DEADLINE_TIMEOUT_MS)
+  assert.equal(resolveSubscribeTimeoutMs(Number.NaN, true), SERVER_NO_DEADLINE_TIMEOUT_MS)
+  assert.equal(resolveSubscribeTimeoutMs(-5, true), SERVER_NO_DEADLINE_TIMEOUT_MS)
+
+  // Explicit positive value, non-tree subscription → respected (below the
+  // 1-hour cap) — unchanged from the original behavior.
+  assert.equal(resolveSubscribeTimeoutMs(10_000, false), 10_000)
+  assert.equal(resolveSubscribeTimeoutMs(1, false), 1)
+
+  // Explicit positive value, TREE subscription → an explicit caller-stated
+  // deadline is NEVER silently discarded by includeTree — this is the
+  // load-bearing invariant the "keyed off includeTree alone" draft of this
+  // fix got wrong (see subscribeTimeout.ts's file header). A future tree
+  // caller that DOES want a bounded wait must get exactly that bound.
+  assert.equal(resolveSubscribeTimeoutMs(10_000, true), 10_000)
+
+  // Over-cap explicit positive value (any subscription) → clamped to the
+  // 1-hour SERVER_MAX_TIMEOUT_MS — unchanged from the original behavior.
+  assert.equal(resolveSubscribeTimeoutMs(SERVER_MAX_TIMEOUT_MS + 1, false), SERVER_MAX_TIMEOUT_MS)
+  assert.equal(resolveSubscribeTimeoutMs(SERVER_MAX_TIMEOUT_MS * 10, false), SERVER_MAX_TIMEOUT_MS)
+  assert.equal(resolveSubscribeTimeoutMs(SERVER_MAX_TIMEOUT_MS, false), SERVER_MAX_TIMEOUT_MS)
+
+  // Sanity on the constants themselves — catches an accidental value edit
+  // silently changing behavior without any of the above assertions moving.
+  assert.equal(SERVER_DEFAULT_TIMEOUT_MS, 5 * 60 * 1000)
+  assert.equal(SERVER_MAX_TIMEOUT_MS, 60 * 60 * 1000)
+  assert.equal(SERVER_NO_DEADLINE_TIMEOUT_MS, 24 * 60 * 60 * 1000)
+
+  console.log(
+    '✓ resolveSubscribeTimeoutMs: explicit 0 always no-deadline, omitted+includeTree defaults to no-deadline, omitted otherwise 5min, positive respected up to 1h cap, explicit positive never overridden by includeTree'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 13. nextBackoffMs (packages/orpheus-cli/src/tui/reconnect.ts) — the client
+//     reconnect backoff schedule (Layer 2 of the reconnect fix).
+// ---------------------------------------------------------------------------
+
+{
+  // Deterministic random sources for reproducible bounds-testing.
+  const always0 = (): number => 0
+  const always1 = (): number => 0.999999 // just under 1 — random() never returns exactly 1
+  const alwaysHalf = (): number => 0.5
+
+  // Floor holds even when jitter rolls near 0 — this is the fix for the
+  // UI-flicker failure mode (near-zero delays making "reconnecting…" and
+  // the next failed attempt land in the same terminal frame).
+  assert.equal(nextBackoffMs(1, always0), 200, 'MIN_DELAY_MS floor holds at attempt 1, jitter=0')
+  assert.equal(nextBackoffMs(2, always0), 200, 'floor holds at attempt 2, jitter=0')
+  assert.equal(nextBackoffMs(50, always0), 200, 'floor holds even at a very high attempt, jitter=0')
+
+  // Growth is monotonic-ish across attempts at a fixed jitter fraction
+  // (full jitter means the SAME random() draw scales with the exponential
+  // base, so holding random() fixed isolates the exponential-growth part).
+  const a1 = nextBackoffMs(1, alwaysHalf)
+  const a2 = nextBackoffMs(2, alwaysHalf)
+  const a3 = nextBackoffMs(3, alwaysHalf)
+  const a4 = nextBackoffMs(4, alwaysHalf)
+  assert.ok(a1 <= a2, `attempt 1 (${a1}) must not exceed attempt 2 (${a2})`)
+  assert.ok(a2 <= a3, `attempt 2 (${a2}) must not exceed attempt 3 (${a3})`)
+  assert.ok(a3 <= a4, `attempt 3 (${a3}) must not exceed attempt 4 (${a4})`)
+  // Concretely: base 500ms, doubling, at random()=0.5 → 250, 500, 1000, 2000.
+  assert.equal(a1, 250)
+  assert.equal(a2, 500)
+  assert.equal(a3, 1000)
+  assert.equal(a4, 2000)
+
+  // Hard cap (30s) holds even at a very high attempt number where the raw
+  // exponential would otherwise be astronomically larger than the cap.
+  assert.equal(nextBackoffMs(100, always1), 30_000 * 0.999999)
+  assert.ok(nextBackoffMs(100, always1) <= 30_000, 'cap holds at attempt 100')
+  assert.ok(nextBackoffMs(1000, always1) <= 30_000, 'cap holds at attempt 1000')
+
+  // Jitter stays within [MIN_DELAY_MS, cappedExponential] bounds for a range
+  // of injected deterministic random values, at an attempt where the
+  // exponential is already at the 30s cap (attempt large enough that
+  // BASE_DELAY_MS * 2^(attempt-1) exceeds MAX_DELAY_MS).
+  for (const r of [0, 0.1, 0.25, 0.5, 0.75, 0.999999]) {
+    const delay = nextBackoffMs(20, () => r)
+    assert.ok(delay >= 200, `delay ${delay} for random()=${r} must be >= the 200ms floor`)
+    assert.ok(delay <= 30_000, `delay ${delay} for random()=${r} must be <= the 30s cap`)
+  }
+
+  // attempt <= 0 is clamped to 1 (never a negative/zero exponent) — same
+  // result as calling with attempt=1 explicitly.
+  assert.equal(nextBackoffMs(0, alwaysHalf), nextBackoffMs(1, alwaysHalf))
+  assert.equal(nextBackoffMs(-5, alwaysHalf), nextBackoffMs(1, alwaysHalf))
+
+  // Default random source (Math.random, no explicit arg) never throws and
+  // always stays within the documented bounds — smoke test for the default
+  // parameter itself, not just the injectable override used everywhere above.
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    const delay = nextBackoffMs(attempt)
+    assert.ok(delay >= 200 && delay <= 30_000, `default-random delay ${delay} out of bounds`)
+  }
+
+  console.log(
+    '✓ nextBackoffMs: 200ms floor holds at all attempts, exponential growth matches the documented formula, 30s cap holds at high attempts, jitter stays in bounds, attempt<=0 clamped to 1'
   )
 }
 

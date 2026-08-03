@@ -56,6 +56,25 @@
  * process.exitCode assignment (non-TTY guard) fires BEFORE any renderer is
  * ever created, so it never races live renderer teardown. No code path in
  * this file calls process.exit()/process.abort().
+ *
+ * RECONNECT WITH BACKOFF (see tui/reconnect.ts, src/main/subscribeTimeout.ts)
+ * -----------------------------------------------------------------------
+ * Even with the server no longer killing a tree-mode subscription at 300s,
+ * a stream can still end for reasons outside anyone's control: the Orpheus
+ * app restarting, a laptop sleeping, a phone's connection dropping in a
+ * tunnel (Termius — the whole premise of this feature). `runPickerOnce`
+ * distinguishes a USER-INITIATED close (onOpen/onQuit calling `.close()` —
+ * see `settled`) from an UNEXPECTED end and, only for the latter, attempts
+ * to resubscribe with `nextBackoffMs()`-paced delays instead of immediately
+ * showing the terminal "connection lost, press any key" screen. The
+ * `disconnected` signal now carries a distinguishable "reconnecting…"
+ * message DURING an active retry loop, reusing the SAME signal App.tsx
+ * already threads to TitleBar.tsx (no new UI surface) — it only becomes the
+ * final unrecoverable message if reconnect is abandoned (never, by current
+ * policy — see attemptReconnect()'s own doc comment) or the user quits.
+ * `frame` is reset to `null` before every reconnect attempt, not just the
+ * first subscribe — see attemptReconnect() for why that matters (the
+ * revision-monotonicity guard in `onEvent` below keys off `frame()`).
  */
 
 import { spawn } from 'node:child_process'
@@ -65,6 +84,7 @@ import { render } from '@opentui/solid'
 import { createSignal } from 'solid-js'
 import { subscribe, sendCommand } from '../socket-client.js'
 import { App } from './App.js'
+import { nextBackoffMs } from '../tui/reconnect.js'
 import { isTreeFrame, type TreeFrame, type WorkspaceHostResult } from './types.js'
 import type { ProjectScope } from '../tui/layout.js'
 
@@ -178,6 +198,12 @@ async function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
   let settleOnce: (outcome: PickerOutcome) => void = () => {}
   let settled = false
 
+  // Mutable holder: onOpen/onQuit (wired once into the single render() call
+  // below) must always close whichever subscription is CURRENTLY live,
+  // which changes across reconnect attempts — see tui/entry.ts's identical
+  // note for the Ink build.
+  let currentSubscription: ReturnType<typeof subscribe> | null = null
+
   const onEvent = (evt: unknown): void => {
     if (!isTreeFrame(evt)) return
     // Revision-monotonicity guard (self-heals a stale/reordered frame on a
@@ -189,12 +215,108 @@ async function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
     setFrame(evt)
   }
 
-  // No client-side timeout — the picker stays open indefinitely until the
-  // user acts. May throw AppNotRunningError synchronously; propagates out
-  // of runTui()'s returned promise into cli.ts's existing
-  // runWithSingleAppRetry + autoLaunch flow, same as the Ink build (see
-  // tui/entry.ts's "CONNECTION REUSE" note — same contract applies here).
-  const subscription = subscribe({ tree: true }, onEvent, { timeoutMs: 0 })
+  /**
+   * Open one subscribe() attempt and wire its `done` settlement to either
+   * do nothing further (user-initiated close — settled already true by the
+   * time `done` resolves) or trigger a reconnect (unexpected end). Mirrors
+   * tui/entry.ts's openSubscription(); see that file for the fuller
+   * "RECONNECT ATTEMPTS MUST NOT THROW UNCAUGHT" rationale — the same
+   * contract applies here (the FIRST call, at the bottom of this function,
+   * is deliberately left to throw synchronously so AppNotRunningError still
+   * propagates into cli.ts's autoLaunch flow; only RECONNECT calls, from
+   * attemptReconnect() below, are wrapped in try/catch).
+   */
+  function openSubscription(): ReturnType<typeof subscribe> {
+    const sub = subscribe({ tree: true, timeoutMs: 0 }, onEvent, { timeoutMs: 0 })
+    sub.done
+      .then(() => {
+        if (!settled) handleUnexpectedEnd(null)
+      })
+      .catch((err: unknown) => {
+        if (!settled) handleUnexpectedEnd(err)
+      })
+    return sub
+  }
+
+  /**
+   * The connection ended WITHOUT us asking for it (see the DISCONNECTED
+   * MID-SESSION note this replaces). Instead of settling immediately with a
+   * terminal "connection lost" notice, kick off the backoff-paced reconnect
+   * loop — the terminal notice is now reserved for reconnect genuinely
+   * giving up (see attemptReconnect()'s policy) or the render() promise
+   * itself rejecting.
+   */
+  function handleUnexpectedEnd(err: unknown): void {
+    void err // detail folded into the first "Reconnecting…" notice isn't needed; see attemptReconnect
+    void attemptReconnect(1)
+  }
+
+  /**
+   * Reconnect loop: wait `nextBackoffMs(attempt)`, then try to resubscribe.
+   * No cap on the number of attempts — matches tui/entry.ts's policy exactly
+   * (a phone regaining signal after minutes in a tunnel is the scenario this
+   * exists for; the 30s-capped backoff keeps a long outage from spinning).
+   * The user can still quit at any time: App.tsx's useKeyboard stays wired
+   * for the whole reconnect loop's duration since the renderer/component
+   * tree never unmounts here (only this function's returned promise is
+   * pending).
+   *
+   * REVISION GUARD RESET: `setFrame(null)` before EVERY reconnect subscribe,
+   * not just the initial one — mirrors tui/entry.ts's frameStore.resetFrame()
+   * call for the identical reason. `onEvent`'s guard above reads `frame()`
+   * as `current`; a fresh connection may legitimately start numbering
+   * revisions lower than what was last seen (e.g. the Orpheus app itself
+   * restarted), so leaving a stale non-null `frame()` in place would make
+   * the guard silently drop every frame from the new connection forever —
+   * a frozen picker with no visible sign anything is wrong, strictly worse
+   * than the bug being fixed. Setting `frame` back to `null` makes `current
+   * == null` true again, so the guard's condition short-circuits and the
+   * next frame is accepted regardless of its revision number.
+   */
+  async function attemptReconnect(attempt: number): Promise<void> {
+    if (settled) return
+    setDisconnected(`reconnecting… (attempt ${attempt})`)
+    const delay = nextBackoffMs(attempt)
+    await new Promise<void>((r) => setTimeout(r, delay))
+    if (settled) return
+
+    setFrame(null) // see doc comment above — must happen before the resubscribe
+    try {
+      currentSubscription = openSubscription()
+      // Attempt "succeeded" in the sense that a request was issued without
+      // throwing synchronously — see tui/entry.ts's identical note for why
+      // this doesn't guarantee the connection actually established; a
+      // later transport failure routes back into handleUnexpectedEnd() ->
+      // another attemptReconnect() call. Clear the notice optimistically;
+      // a frame arriving is the real "fully recovered" signal (App.tsx's
+      // `connecting`/normal-UI branches key off `frame()`, not `disconnected()`,
+      // once this clears).
+      setDisconnected(null)
+    } catch (err) {
+      // AppNotRunningError (or anything else) from a RECONNECT attempt must
+      // not crash the process — see openSubscription()'s doc comment.
+      void err
+      void attemptReconnect(attempt + 1)
+    }
+  }
+
+  // No client- or server-side timeout — the picker stays open indefinitely
+  // until the user acts. `timeoutMs: 0` must be in BOTH places: the `opts`
+  // arg (3rd param) only bounds socket-client.ts's own CONNECTION
+  // ESTABLISHMENT phase now (not the whole lifetime — see socket-client.ts's
+  // "ESTABLISHMENT VS STREAM DEADLINE" doc comment), while the request
+  // BODY's `timeoutMs: 0` (1st param, `payload`) is what
+  // commandServer.ts's parseSubscribeRequestBody actually reads to resolve
+  // the server-side stream deadline (see src/main/subscribeTimeout.ts) —
+  // omitting it from the payload was the root cause of the 300s
+  // server-side kill this fix addresses. May throw AppNotRunningError
+  // synchronously; propagates out of runTui()'s returned promise into
+  // cli.ts's existing runWithSingleAppRetry + autoLaunch flow, same as the
+  // Ink build (see tui/entry.ts's "CONNECTION REUSE" note — same contract
+  // applies here). This is the FIRST subscribe of a picker-loop iteration
+  // only — see attemptReconnect() above for why reconnect calls must NOT
+  // let a throw propagate the same way.
+  currentSubscription = openSubscription()
 
   const outcome = await new Promise<PickerOutcome>((resolve) => {
     settleOnce = (o) => {
@@ -203,19 +325,6 @@ async function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
       resolve(o)
     }
 
-    // DISCONNECTED MID-SESSION (explicit Ink-version bug fix — see App.tsx's
-    // header). Both the resolve and reject paths render a VISIBLE on-screen
-    // notice via the disconnected() signal, then wait for a keypress
-    // (App.tsx's useKeyboard treats ANY key as "quit" once disconnected is
-    // set, because the picker has nothing live left to interact with).
-    subscription.done
-      .then(() => {
-        if (!settled) setDisconnected('Orpheus closed the connection')
-      })
-      .catch((err: unknown) => {
-        if (!settled) setDisconnected(errorMessage(err))
-      })
-
     render(
       () =>
         App({
@@ -223,11 +332,11 @@ async function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
           frame,
           disconnected,
           onOpen: (workspaceId: string) => {
-            subscription.close()
+            currentSubscription?.close()
             settleOnce({ type: 'open', workspaceId })
           },
           onQuit: () => {
-            subscription.close()
+            currentSubscription?.close()
             settleOnce({ type: 'quit' })
           }
         }),
@@ -238,13 +347,16 @@ async function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
     })
   })
 
-  // Once disconnected fires (and wasn't already resolved by onOpen/onQuit),
-  // App.tsx's useKeyboard treats the next keypress as quit — but if the
-  // user never presses a key (e.g. piping stdin), the promise above never
-  // resolves on its own from setDisconnected() alone. That's intentional:
-  // the task requires a VISIBLE notice + keypress ack, not an auto-timeout,
-  // matching hostAndAttach's waitForKeypress() pattern below for the other
-  // error states this build must not silently blow past.
+  // Once disconnected fires as a TERMINAL (not "reconnecting…") notice —
+  // which per current policy only happens if the render() promise itself
+  // rejects, since attemptReconnect() retries indefinitely otherwise — or
+  // the user quits, App.tsx's useKeyboard treats the next keypress as quit.
+  // If the user never presses a key (e.g. piping stdin) while genuinely
+  // disconnected, the promise above simply never resolves on its own from
+  // setDisconnected() alone. That's intentional: the task requires a
+  // VISIBLE notice + keypress ack, not an auto-timeout, matching
+  // hostAndAttach's waitForKeypress() pattern below for the other error
+  // states this build must not silently blow past.
 
   renderer.destroy() // NEVER process.exit() — see file header.
   return outcome

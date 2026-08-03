@@ -54,11 +54,24 @@
  * CONNECTION STATE MACHINE — THE STATES THIS TASK REQUIRES REAL UI FOR
  * -----------------------------------------------------------------------
  * connecting: no frame has arrived yet (frame() is null, disconnected() is
- *   false). Shown as a body-level "connecting…" message, distinct from the
+ *   null). Shown as a body-level "connecting…" message, distinct from the
  *   TitleBar's own connecting/connected glyph.
- * connected: frame() is non-null. Normal picker UI.
- * disconnected mid-session: the /subscribe `done` promise settled (resolved
- *   OR rejected) without OUR code closing the subscription. THIS WAS AN
+ * connected: frame() is non-null AND disconnected() is null. Normal picker UI.
+ * reconnecting (RECONNECT-WITH-BACKOFF, see entry.ts's file header): the
+ *   /subscribe `done` promise settled (resolved OR rejected) without OUR
+ *   code closing the subscription, and entry.ts's attemptReconnect() is
+ *   actively retrying. Reuses this SAME `disconnected` signal — no separate
+ *   third signal — but with a message DISTINGUISHABLE from the terminal
+ *   "connection lost" case below: entry.ts calls
+ *   `setDisconnected('reconnecting… (attempt N)')` while a retry is in
+ *   flight. isReconnecting() below detects this by checking the message
+ *   text; the fallback UI shows a calmer "reconnecting" notice (no "press
+ *   any key to quit" framing — that's reserved for the genuinely terminal
+ *   case) even though quitting still works identically in both states (see
+ *   entry.ts's useKeyboard note: quit must always be live).
+ * disconnected mid-session (TERMINAL — reconnect exhausted or gave up, which
+ *   per entry.ts's current policy only happens if render() itself rejects,
+ *   since attemptReconnect() otherwise retries indefinitely): THIS WAS AN
  *   EXPLICIT INK-VERSION BUG (task owner callout: entry.ts wrote to
  *   process.stderr AFTER the alt-screen had already torn down, so the
  *   message was invisible in practice). Fixed here by making
@@ -80,7 +93,7 @@
  * signals).
  */
 
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
+import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { useKeyboard, useTerminalDimensions } from '@opentui/solid'
 import { TextAttributes } from '@opentui/core'
 import {
@@ -109,7 +122,16 @@ export interface AppProps {
   scope?: ProjectScope
   /** Reactive accessor for the latest tree frame — null until the first frame lands. */
   frame: () => TreeFrame | null
-  /** Reactive accessor: true once the /subscribe connection has ended (resolved or rejected) unexpectedly. */
+  /**
+   * Reactive accessor: non-null once the /subscribe connection has ended
+   * (resolved or rejected) unexpectedly. Carries TWO distinguishable kinds
+   * of message — see the file header's "CONNECTION STATE MACHINE" note and
+   * `isReconnecting()` below: a "reconnecting… (attempt N)" message while
+   * entry.ts's attemptReconnect() is actively retrying (transient, quit
+   * still works, picker UI keeps trying to recover), or any other message
+   * once reconnect has genuinely given up (terminal — requires a keypress
+   * to quit).
+   */
   disconnected: () => string | null
   onOpen: (workspaceId: string) => void
   onQuit: () => void
@@ -123,7 +145,18 @@ export function App(props: AppProps): JSX.Element {
   const dimensions = useTerminalDimensions()
 
   const [filter, setFilter] = createSignal<Filter>('active')
-  const [selectedRowIndex, setSelectedRowIndex] = createSignal(0)
+  // Selection is tracked by WORKSPACE ID, not raw row index — a plain
+  // numeric index clamped into bounds on frame changes (the previous
+  // `createEffect` below did exactly that) stays IN BOUNDS across a
+  // materially different tree (e.g. a reconnect after the Orpheus app
+  // restarted, or workspaces created/archived/reordered while
+  // disconnected) but can silently point at a DIFFERENT workspace than the
+  // one actually highlighted — worse than an out-of-range index because
+  // it's wrong without looking wrong. `null` means "no explicit selection
+  // yet"; resolved against the CURRENT frame into `selectedRowIndex` below
+  // (a derived memo, not the raw signal — everything else in this
+  // component reads THAT, never `selectedRowIndexRaw` directly).
+  const [selectedRowIndexRaw, setSelectedRowIndexRaw] = createSignal<string | null>(null)
   const [helpOpen, setHelpOpen] = createSignal(false)
 
   const breakpoint = createMemo(() => resolveOtuiBreakpoint(dimensions().width))
@@ -147,15 +180,21 @@ export function App(props: AppProps): JSX.Element {
     workspaceRows().some((r) => r.kind === 'workspace' && r.status === 'in_progress')
   )
 
-  // Clamp selection whenever the row list changes shape (filter toggle, a
-  // workspace disappearing/appearing between frames).
-  createEffect(() => {
-    const count = workspaceRows().length
-    if (count === 0) {
-      setSelectedRowIndex(0)
-      return
-    }
-    setSelectedRowIndex((i) => Math.min(Math.max(0, i), count - 1))
+  // Derived, not synced-via-effect: re-resolved from `selectedRowIndexRaw`
+  // (a workspace id) against the CURRENT `workspaceRows()` on every read, so
+  // a filter toggle/frame update/reconnect-with-a-different-tree/
+  // disappearing workspace can never leave the effective index silently
+  // pointing at the wrong row. Falls back to index 0 when there's no
+  // selection yet OR the previously-selected id is no longer present in
+  // this frame — matching the Ink build's own fallback-to-0 behavior for
+  // the same situation (see tui/App.tsx's `effectiveSelected`).
+  const selectedRowIndex = createMemo(() => {
+    const rows = workspaceRows()
+    if (rows.length === 0) return 0
+    const id = selectedRowIndexRaw()
+    if (id == null) return 0
+    const idx = rows.findIndex((r) => r.kind === 'workspace' && r.workspaceId === id)
+    return idx >= 0 ? idx : 0
   })
 
   // Reserved rows above the scrolling body: TitleBar is 1 row at narrow (no
@@ -209,14 +248,15 @@ export function App(props: AppProps): JSX.Element {
   const tablePlan = createMemo(() => tableColumnPlanFor(breakpoint(), tableWidth()))
 
   function moveSelection(delta: number): void {
-    const count = workspaceRows().length
+    const rows = workspaceRows()
+    const count = rows.length
     if (count === 0) return
-    setSelectedRowIndex((i) => {
-      const next = i + delta
-      if (next < 0) return 0
-      if (next >= count) return count - 1
-      return next
-    })
+    const current = selectedRowIndex()
+    let next = current + delta
+    if (next < 0) next = 0
+    if (next >= count) next = count - 1
+    const nextRow = rows[next]
+    setSelectedRowIndexRaw(nextRow?.kind === 'workspace' ? nextRow.workspaceId : null)
   }
 
   useKeyboard((key) => {
@@ -263,6 +303,12 @@ export function App(props: AppProps): JSX.Element {
   })
 
   const connecting = createMemo(() => props.frame() == null && props.disconnected() == null)
+  // See the file header's "reconnecting" bullet — entry.ts's attemptReconnect()
+  // reuses `disconnected()` for BOTH the transient retry-in-progress notice
+  // AND the terminal give-up notice, distinguished by this prefix check.
+  // Keeping the distinguishing string in ONE place (this memo) rather than
+  // matching it ad hoc at each render call site.
+  const isReconnecting = createMemo(() => props.disconnected()?.startsWith('reconnecting') ?? false)
   const empty = createMemo(() => props.frame() != null && flattened().totalCount === 0)
   const filteredEmpty = createMemo(
     () => props.frame() != null && flattened().totalCount > 0 && flattened().visibleCount === 0
@@ -280,7 +326,7 @@ export function App(props: AppProps): JSX.Element {
       <TitleBar
         scope={props.scope}
         connected={props.frame() != null && props.disconnected() == null}
-        disconnected={props.disconnected() != null}
+        disconnected={props.disconnected() != null && !isReconnecting()}
         filter={filter()}
         hiddenCount={flattened().hiddenCount}
         totalCount={flattened().totalCount}
@@ -294,7 +340,7 @@ export function App(props: AppProps): JSX.Element {
           fallback={<HelpOverlay breakpoint={breakpoint()} palette={PALETTE} />}
         >
           <Show
-            when={props.disconnected() == null}
+            when={props.disconnected() == null || isReconnecting()}
             fallback={
               <box flexDirection="column" padding={1}>
                 <text fg={PALETTE.attention} attributes={TextAttributes.BOLD}>
@@ -306,86 +352,101 @@ export function App(props: AppProps): JSX.Element {
             }
           >
             <Show
-              when={!connecting()}
+              when={!isReconnecting()}
               fallback={
+                // Reconnecting — reuses this exact "connecting…"-shaped body
+                // slot (same padding/position as the plain connecting state
+                // below) rather than adding new layout, per the "no third
+                // signal / no new UI surface" constraint. Shows the attempt
+                // detail from entry.ts's setDisconnected() call so a long
+                // outage reads as "still trying", not a frozen screen.
                 <box padding={1}>
-                  <text fg={PALETTE.secondary}>connecting…</text>
+                  <text fg={PALETTE.secondary}>{props.disconnected()}</text>
                 </box>
               }
             >
               <Show
-                when={!empty() && !filteredEmpty()}
+                when={!connecting()}
                 fallback={
                   <box padding={1}>
-                    <text fg={PALETTE.secondary}>
-                      {empty() ? 'no workspaces' : '(no workspaces — press f to show all)'}
-                    </text>
+                    <text fg={PALETTE.secondary}>connecting…</text>
                   </box>
                 }
               >
-                <box flexDirection="row" flexGrow={1} minHeight={0}>
-                  <box flexDirection="column" flexGrow={1} minHeight={0}>
-                    <Show when={scrollWindow().windowed}>
-                      <ScrollAffordance
-                        count={scrollWindow().aboveCount}
-                        direction="up"
-                        palette={PALETTE}
-                      />
-                    </Show>
+                <Show
+                  when={!empty() && !filteredEmpty()}
+                  fallback={
+                    <box padding={1}>
+                      <text fg={PALETTE.secondary}>
+                        {empty() ? 'no workspaces' : '(no workspaces — press f to show all)'}
+                      </text>
+                    </box>
+                  }
+                >
+                  <box flexDirection="row" flexGrow={1} minHeight={0}>
                     <box flexDirection="column" flexGrow={1} minHeight={0}>
-                      <Show
-                        when={!showTable()}
-                        fallback={
-                          <WorkspaceTable
-                            rows={() => scrollWindow().visible}
-                            selectedWorkspaceId={selectedWorkspaceId}
-                            plan={tablePlan}
-                            palette={PALETTE}
-                          />
-                        }
-                      >
-                        <For each={scrollWindow().visible}>
-                          {(row) =>
-                            row.kind === 'project-header' ? (
-                              <ProjectHeaderRow
-                                name={row.projectName}
-                                palette={PALETTE}
-                                breakpoint={breakpoint()}
-                                plan={narrowPlan()}
-                              />
-                            ) : (
-                              <WorkspaceRow
-                                row={row}
-                                plan={narrowPlan()}
-                                selected={row.workspaceId === selectedWorkspaceId()}
-                                open={row.tmuxHosted}
-                                palette={PALETTE}
-                                breakpoint={breakpoint()}
-                              />
-                            )
+                      <Show when={scrollWindow().windowed}>
+                        <ScrollAffordance
+                          count={scrollWindow().aboveCount}
+                          direction="up"
+                          palette={PALETTE}
+                        />
+                      </Show>
+                      <box flexDirection="column" flexGrow={1} minHeight={0}>
+                        <Show
+                          when={!showTable()}
+                          fallback={
+                            <WorkspaceTable
+                              rows={() => scrollWindow().visible}
+                              selectedWorkspaceId={selectedWorkspaceId}
+                              plan={tablePlan}
+                              palette={PALETTE}
+                            />
                           }
-                        </For>
+                        >
+                          <For each={scrollWindow().visible}>
+                            {(row) =>
+                              row.kind === 'project-header' ? (
+                                <ProjectHeaderRow
+                                  name={row.projectName}
+                                  palette={PALETTE}
+                                  breakpoint={breakpoint()}
+                                  plan={narrowPlan()}
+                                />
+                              ) : (
+                                <WorkspaceRow
+                                  row={row}
+                                  plan={narrowPlan()}
+                                  selected={row.workspaceId === selectedWorkspaceId()}
+                                  open={row.tmuxHosted}
+                                  palette={PALETTE}
+                                  breakpoint={breakpoint()}
+                                />
+                              )
+                            }
+                          </For>
+                        </Show>
+                      </box>
+                      <Show when={scrollWindow().windowed}>
+                        <ScrollAffordance
+                          count={scrollWindow().belowCount}
+                          direction="down"
+                          palette={PALETTE}
+                        />
                       </Show>
                     </box>
-                    <Show when={scrollWindow().windowed}>
-                      <ScrollAffordance
-                        count={scrollWindow().belowCount}
-                        direction="down"
-                        palette={PALETTE}
-                      />
+                    <Show when={breakpoint() === 'wide'}>
+                      <VRule palette={PALETTE} rows={availableRows()} />
+                      <box width={DETAIL_PANE_WIDTH} flexShrink={0}>
+                        <DetailPane
+                          row={selectedRow()}
+                          projectName={selectedProjectName()}
+                          palette={PALETTE}
+                        />
+                      </box>
                     </Show>
                   </box>
-                  <Show when={breakpoint() === 'wide'}>
-                    <VRule palette={PALETTE} rows={availableRows()} />
-                    <box width={DETAIL_PANE_WIDTH} flexShrink={0}>
-                      <DetailPane
-                        row={selectedRow()}
-                        projectName={selectedProjectName()}
-                        palette={PALETTE}
-                      />
-                    </box>
-                  </Show>
-                </box>
+                </Show>
               </Show>
             </Show>
           </Show>

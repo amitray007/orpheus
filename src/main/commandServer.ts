@@ -51,6 +51,7 @@ import type { WorkspaceOrchestrationService } from './workspaceOrchestration/ser
 import { legacyWaitReason, type MainWorkspaceWaitEngine } from './workspaceOrchestration/waitEngine'
 import { parseCommandAction } from './commandAction'
 import { redactErrorForLog, redactLogString } from './logRedaction'
+import { resolveSubscribeTimeoutMs } from './subscribeTimeout'
 
 // ---------------------------------------------------------------------------
 // Deps injected from index.ts (these live as locals there, so we receive them
@@ -1164,10 +1165,14 @@ type SubscribeRequestParseResult =
  * workspaceIds (non-empty string[] UNLESS `tree: true` opts into the TUI's
  * tree-only mode — see `includeTree` below), resolve --until (falls back to
  * 'done' on anything invalid/missing — the CLI already validates client-side),
- * and compute the effective server-side timeout (default 5 min, hard-capped at
- * 1 hour). Behavior-identical to the original inline logic for existing
- * ws-wait callers; only the response-writing was left to the caller since
- * this function doesn't have access to `res`.
+ * and compute the effective server-side timeout via resolveSubscribeTimeoutMs
+ * (see subscribeTimeout.ts for the full resolution table). Behavior-identical
+ * to the original inline logic for existing ws-wait callers (omitted/NaN/
+ * negative → 5 min default, explicit positive → capped at 1 hour); an
+ * explicit `timeoutMs: 0` (any subscription) or an omitted `timeoutMs` on a
+ * tree-only subscription now resolve to a 24h no-deadline ceiling instead —
+ * see subscribeTimeout.ts. Only the response-writing was left to the caller
+ * since this function doesn't have access to `res`.
  */
 function parseSubscribeRequestBody(raw: Buffer): SubscribeRequestParseResult {
   let body: { workspaceIds?: unknown; timeoutMs?: unknown; until?: unknown; tree?: unknown }
@@ -1208,17 +1213,30 @@ function parseSubscribeRequestBody(raw: Buffer): SubscribeRequestParseResult {
   const until: UntilMode =
     typeof body.until === 'string' && isValidUntilMode(body.until) ? body.until : 'done'
 
-  // Server-side timeout policy:
-  //   - Default (timeoutMs omitted or zero): 5 minutes (300 000 ms)
-  //   - Explicit caller value: respected up to 1 hour hard cap
-  //   - 1 hour cap still accessible for callers that explicitly opt in
-  const SERVER_MAX_TIMEOUT_MS = 60 * 60 * 1000
-  const SERVER_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
-  const requestedTimeout =
-    typeof body.timeoutMs === 'number' && body.timeoutMs > 0
-      ? body.timeoutMs
-      : SERVER_DEFAULT_TIMEOUT_MS
-  const effectiveTimeoutMs = Math.min(requestedTimeout, SERVER_MAX_TIMEOUT_MS)
+  // Server-side timeout policy (resolveSubscribeTimeoutMs, subscribeTimeout.ts
+  // — see that file's header for the full table + reasoning):
+  //   - Exactly 0 (any subscription): explicit "no deadline requested" —
+  //     resolves to SERVER_NO_DEADLINE_TIMEOUT_MS (24h), a long-but-finite
+  //     ceiling, NOT Infinity and NOT passed through the 1-hour cap (that cap
+  //     is for explicit positive values only). Never silently overridden —
+  //     this is the literal caller-stated value. This is what makes the
+  //     TUI's long-lived tree-mode subscriptions (`{ tree: true, timeoutMs: 0 }`
+  //     — see tui/entry.ts / tui-otui/entry.ts) actually stay open
+  //     indefinitely instead of being silently downgraded to the 5-minute
+  //     default; the real protection against a leaked-forever subscription
+  //     is the MAX_CONCURRENT_SUBSCRIPTIONS cap above (bounded fan-out), not
+  //     this duration.
+  //   - Omitted/non-number/NaN/negative on a tree-only (includeTree)
+  //     subscription: also resolves to the no-deadline ceiling (a live tree
+  //     view has no workspaceIds terminal condition to wait for) — but this
+  //     is a narrower UX-only nicety, distinct from the primary explicit-zero
+  //     rule, and is NOT applied to workspaceIds-based (ws-wait) subscriptions.
+  //   - Omitted/non-number/NaN/negative on a workspaceIds-based subscription:
+  //     5 minutes (SERVER_DEFAULT_TIMEOUT_MS) — unchanged from the original
+  //     behavior; "didn't say" is not a deliberate signal from ws-wait callers.
+  //   - Explicit positive value (any subscription): respected, capped at 1
+  //     hour (SERVER_MAX_TIMEOUT_MS) — unchanged from the original behavior.
+  const effectiveTimeoutMs = resolveSubscribeTimeoutMs(body.timeoutMs, includeTree)
 
   return { ok: true, workspaceIds, until, effectiveTimeoutMs, includeTree }
 }
