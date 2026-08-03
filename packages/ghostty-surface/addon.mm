@@ -2530,6 +2530,12 @@ static void close_surface_cb(void* /*userdata*/, bool process_alive) {
 static ghostty_config_t g_config = nullptr;
 static const char* g_resDir = nullptr;  // set once in ensureApp, used by reloadGhosttyConfig
 
+// Forward-declared so ensureApp() (defined just below, before the gap-fill
+// colour section further down the file) can call it. Definition + full doc
+// comment lives with orpheusGapFillColor()/g_gapFillColor near their other
+// callers (~line 2712).
+static void refreshGapFillColorFromConfig(ghostty_config_t config);
+
 // ---------------------------------------------------------------------------
 // Build, load, and finalise a ghostty config using the standard Orpheus
 // load order:  default files → bundled overrides → user config → recursive
@@ -2669,6 +2675,12 @@ static bool ensureApp() {
     g_config = buildGhosttyConfig(resDir);
     if (!g_config) return false;
 
+    // Resolve the gap-fill colour from the just-built config's "background"
+    // (see refreshGapFillColorFromConfig's doc comment) so the addon's
+    // backstop/pre-paint fill matches the terminal's actual theme instead of
+    // the hardcoded midnight-theme fallback.
+    refreshGapFillColorFromConfig(g_config);
+
     ghostty_runtime_config_s rt = {};
     rt.userdata = nullptr;
     rt.supports_selection_clipboard = false;  // macOS has no separate X11-style selection clipboard
@@ -2705,11 +2717,12 @@ static bool ensureApp() {
 // If no entry exists → create surface from scratch.
 // ---------------------------------------------------------------------------
 
-// Returns the CGColor used to fill the terminal view's layer background before
-// ghostty's GPU layer renders its first frame. Midnight theme surface-base
-// (#0b0b0c) hardcoded as gap-fill fallback. A sub-second flash; threading the
-// active theme into native is not worth it.
-static CGColorRef orpheusGapFillColor() {
+// Fallback gap-fill colour (Orpheus's midnight theme surface-base, #0b0b0c),
+// used only before g_config exists or if ghostty_config_get ever fails to
+// resolve "background" — never guessed beyond that, matching the discipline
+// used for cellHeightPx in snapHeightToCellGrid (pass through rather than
+// invent a value).
+static CGColorRef orpheusFallbackGapFillColor() {
     static CGColorRef color = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -2721,6 +2734,63 @@ static CGColorRef orpheusGapFillColor() {
         );
     });
     return color;
+}
+
+// Current gap-fill colour. Starts as the fallback above; ensureApp() and
+// ReloadGhosttyConfig() both call refreshGapFillColorFromConfig() once
+// g_config exists, replacing this with ghostty's actual RESOLVED terminal
+// background — including the user's own ghostty theme/config file, since
+// g_config is already the fully-layered (defaults → bundled overrides → user
+// config → theme) config object built by buildGhosttyConfig(). Retained for
+// process lifetime; refreshed in place, never left stale after a reload.
+//
+// PROCESS-WIDE, NOT PER-SURFACE: there is exactly one g_config/g_app for the
+// whole addon (see ensureApp()), so there is only one true "resolved
+// background" to track today. This matches the rest of the codebase — the
+// ghostty config path (ORPHEUS_GHOSTTY_CONFIG) is written once per app
+// instance by writeGhosttyConfigFile() (src/main/orpheusSurfaceAdapter.ts),
+// not per workspace — so no workspace can currently run a different ghostty
+// theme than another. If per-workspace ghostty themes are ever introduced,
+// this single global will need to become per-entry (like cellHeightPx) and
+// ensureBackstopView's single shared view would need to become per-surface
+// too; until then a shared value is correct, not a shortcut.
+static CGColorRef g_gapFillColor = nil;
+
+// Returns the CGColor used to fill the terminal view's layer background
+// before ghostty's GPU layer renders its first frame, and the colour the
+// addon's own backstop paints. Falls back to the hardcoded default if the
+// config hasn't resolved a background yet.
+static CGColorRef orpheusGapFillColor() {
+    return g_gapFillColor ? g_gapFillColor : orpheusFallbackGapFillColor();
+}
+
+// Reads ghostty's resolved "background" config value (config.Color, exposed
+// via ghostty_config_get + ghostty_config_color_s — see
+// vendor/ghostty/src/config/c_get.zig's own "ghostty_config_get: struct cval
+// conversion" test for the exact shape) and replaces g_gapFillColor with it.
+// Called once g_config is known-good in ensureApp(), and again in
+// ReloadGhosttyConfig() so a live theme change doesn't leave a stale colour
+// cached. Leaves g_gapFillColor untouched (falls back to the hardcoded
+// default via orpheusGapFillColor() above) if the read ever fails — a failed
+// read should not paint something worse than the previous state.
+static void refreshGapFillColorFromConfig(ghostty_config_t config) {
+    if (!config) return;
+    ghostty_config_color_s bg{};
+    static const char* kKey = "background";
+    if (!ghostty_config_get(config, &bg, kKey, strlen(kKey))) {
+        NSLog(@"[ghostty-surface] refreshGapFillColorFromConfig: ghostty_config_get(\"background\") failed; keeping prior gap-fill colour");
+        return;
+    }
+    CGColorRef newColor = CGColorRetain(
+        [NSColor colorWithSRGBRed:bg.r / 255.0
+                            green:bg.g / 255.0
+                             blue:bg.b / 255.0
+                            alpha:1.0].CGColor
+    );
+    if (g_gapFillColor) CGColorRelease(g_gapFillColor);
+    g_gapFillColor = newColor;
+    NSLog(@"[ghostty-surface] gap-fill colour resolved from config background: r=%u g=%u b=%u",
+          bg.r, bg.g, bg.b);
 }
 
 // Decorative-only backstop: a full-bounds opaque dark fill pinned at the bottom
@@ -4297,6 +4367,10 @@ static Napi::Value ReloadGhosttyConfig(const Napi::CallbackInfo& info) {
     // Free the old config now that update_config has cloned it, then adopt the new one.
     ghostty_config_free(g_config);
     g_config = newConfig;
+
+    // Re-resolve the gap-fill colour too — a live theme reload must not leave
+    // the backstop/pre-paint fill pointing at the PREVIOUS theme's background.
+    refreshGapFillColorFromConfig(g_config);
 
     NSLog(@"[ghostty-surface] config reloaded successfully");
     return Napi::Boolean::New(env, true);
