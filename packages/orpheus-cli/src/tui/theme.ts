@@ -346,8 +346,14 @@ export const CARD_GUTTER_WIDTH = 1
 
 /** Blank columns between the terminal edge and the rail, and again between
  *  the rail and the card text — so nothing sits flush against the border. */
-export const CARD_PAD_LEFT = 1
 export const CARD_PAD_GUTTER = 1
+
+/** Blank columns held at the card's RIGHT edge, inside the selection tint.
+ *  Without this the right-aligned status/elapsed token ends on the tint's
+ *  last column — `idle 2h` sits flush against the highlight's border, which
+ *  reads as clipped rather than as a padded object. Mirrors CARD_PAD_GUTTER
+ *  on the left so the tinted block is symmetrically inset from its content. */
+export const CARD_PAD_RIGHT = 1
 
 /** Card gutter content — see CARD_GUTTER_SELECTED. */
 export function cardGutterFor(selected: boolean): string {

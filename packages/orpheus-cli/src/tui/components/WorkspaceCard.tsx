@@ -45,7 +45,13 @@
 
 import React from 'react'
 import { Box, Text } from 'ink'
-import { WORKTREE_GLYPH, cardGutterFor, CARD_GUTTER_WIDTH, CARD_PAD_GUTTER } from '../theme.js'
+import {
+  WORKTREE_GLYPH,
+  cardGutterFor,
+  CARD_GUTTER_WIDTH,
+  CARD_PAD_GUTTER,
+  CARD_PAD_RIGHT
+} from '../theme.js'
 import type { Palette } from '../theme.js'
 import { displayTitleFor, truncate, type DisplayRow } from '../layout.js'
 import { formatAge, formatModelEffort, line1Parts } from '../format.js'
@@ -94,7 +100,7 @@ export function WorkspaceCard({
   const gutter = cardGutterFor(selected)
   // The rail column PLUS the blank column separating it from the text, so
   // neither the rail nor the tint sits flush against the card's own copy.
-  const innerWidth = Math.max(1, width - CARD_GUTTER_WIDTH - CARD_PAD_GUTTER)
+  const innerWidth = Math.max(1, width - CARD_GUTTER_WIDTH - CARD_PAD_GUTTER - CARD_PAD_RIGHT)
   const bg = selected ? palette.selectedBg : undefined
 
   // ---- Line 1: model/effort (left) + status/elapsed (right) ----
@@ -136,6 +142,16 @@ export function WorkspaceCard({
     </>
   )
 
+  /** Trailing inset, CARRYING THE TINT — it has to be part of the highlighted
+   *  block, not a gap after it, or the selection would visibly stop one column
+   *  short of where the card ends. Same width as the rail's gap on the left,
+   *  so the tinted block is inset equally on both sides. */
+  const tailPad = (
+    <Box width={CARD_PAD_RIGHT} flexShrink={0}>
+      <Text backgroundColor={bg}> </Text>
+    </Box>
+  )
+
   return (
     <Box flexDirection="column" flexShrink={0}>
       <Box flexDirection="row" height={1} flexShrink={0}>
@@ -146,6 +162,7 @@ export function WorkspaceCard({
         <Text backgroundColor={bg} color={statusColor(row.status, palette)} bold={statusBold}>
           {right}
         </Text>
+        {tailPad}
       </Box>
       <Box flexDirection="row" height={1} flexShrink={0}>
         {rail}
@@ -157,12 +174,14 @@ export function WorkspaceCard({
         >
           {titleText}
         </Text>
+        {tailPad}
       </Box>
       <Box flexDirection="row" height={1} flexShrink={0}>
         {rail}
         <Text backgroundColor={bg} color={palette.secondary} wrap="truncate">
           {branchText}
         </Text>
+        {tailPad}
       </Box>
     </Box>
   )
