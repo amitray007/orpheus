@@ -143,6 +143,14 @@ struct GhosttySurfaceEntry {
     uint64_t lastTitlePushMs{0}; // per-workspace title throttle stamp (plain, not atomic — read/written on main thread only)
     bool desiredVisible{false};  // true when this workspace should be shown+focused
     uint64_t generation{0}; // bumped on each create; deferred free compares against this
+    // Reported by GHOSTTY_ACTION_CELL_SIZE (see action_cb). Physical pixels —
+    // ghostty's renderer/size.zig documents that all pixel values it emits are
+    // already scaled to the surface's content scale, matching the physW/physH
+    // units ghostty_surface_set_size expects. 0 until the first action fires
+    // (surface creation emits it once synchronously; font-size changes re-fire
+    // it). Used to snap set_size's height down to a whole row so no partial
+    // row is left unpainted at the bottom — see snapHeightToCellGrid.
+    uint32_t cellHeightPx{0};
 };
 
 // workspaceId → entry
@@ -1514,6 +1522,19 @@ static void installWebContentsRoutingSwizzles(NSView* contentView) {
 // instead of the O(n) linear scan over g_surfaces.
 static std::map<ghostty_surface_t, std::string> g_surfaceToWorkspaceId;
 
+// GHOSTTY_ACTION_CELL_SIZE fires SYNCHRONOUSLY from inside ghostty_surface_new
+// (see vendor/ghostty/src/Surface.zig's init — it reports cell size once right
+// after the surface is constructed, before ghostty_surface_new returns to us).
+// At that point neither g_surfaces nor g_surfaceToWorkspaceId know about this
+// surface yet (Mount only inserts them afterward), so action_cb's normal
+// workspaceId lookup would silently drop this one-time value — and since the
+// action otherwise only re-fires on a runtime font-size change, it could be
+// lost for the surface's entire lifetime. Cache it here by raw surface
+// pointer; Mount drains it into the new GhosttySurfaceEntry right after
+// insertion, then erases it — this map should never hold more than one entry
+// per in-flight surface_new call in practice.
+static std::map<ghostty_surface_t, uint32_t> g_pendingCellHeightPx;
+
 // Per-workspaceId freeing registry.
 //
 // g_freeingGeneration[workspaceId] = gen means a deferred ghostty_surface_free
@@ -2292,6 +2313,41 @@ static bool action_cb(ghostty_app_t /*app*/,
         }
     }
 
+    if (action.tag == GHOSTTY_ACTION_CELL_SIZE && target.tag == GHOSTTY_TARGET_SURFACE) {
+        // Fired once synchronously at surface creation, and again whenever the
+        // font size changes at runtime. Payload is in PHYSICAL pixels — see
+        // vendor/ghostty/src/renderer/size.zig's Size doc comment ("any pixel
+        // values should already be scaled to the current DPI of the screen"),
+        // which is the same unit ghostty_surface_set_size expects. Stash it so
+        // the set_size call sites can snap height to a whole row (see
+        // snapHeightToCellGrid) instead of leaving a partial row unpainted.
+        ghostty_surface_t surf = target.target.surface;
+        std::string workspaceId;
+        auto rmIt = g_surfaceToWorkspaceId.find(surf);
+        if (rmIt != g_surfaceToWorkspaceId.end()) {
+            workspaceId = rmIt->second;
+        } else {
+            for (auto& [id, entry] : g_surfaces) {
+                if (entry.surface == surf) { workspaceId = id; break; }
+            }
+        }
+        if (!workspaceId.empty()) {
+            auto cellEntryIt = g_surfaces.find(workspaceId);
+            if (cellEntryIt != g_surfaces.end()) {
+                cellEntryIt->second.cellHeightPx = action.action.cell_size.height;
+                NSLog(@"[ghostty-surface] cell_size workspaceId=%s w=%u h=%u (physical px)",
+                      workspaceId.c_str(), action.action.cell_size.width, action.action.cell_size.height);
+            }
+        } else {
+            // Fires from inside ghostty_surface_new, before Mount has recorded
+            // this surface anywhere — stash by raw pointer; Mount drains this
+            // right after insertion (see g_pendingCellHeightPx doc comment).
+            g_pendingCellHeightPx[surf] = action.action.cell_size.height;
+            NSLog(@"[ghostty-surface] cell_size (pending, pre-mount) w=%u h=%u (physical px)",
+                  action.action.cell_size.width, action.action.cell_size.height);
+        }
+    }
+
     // Note: GHOSTTY_ACTION_RENDER is NOT handled here.
     //
     // For the embedded apprt (Orpheus), must_draw_from_app_thread is false
@@ -2551,6 +2607,38 @@ static NSRect cssRectToAppKit(double x, double y, double w, double h,
     // AppKit Y origin is at the bottom; CSS Y is at the top.
     double appKitY = parentHeight - y - h;
     return NSMakeRect(x, appKitY, w, h);
+}
+
+// Snap a physical-pixel height down to the nearest whole multiple of the
+// reported cell height. Ghostty only ever paints whole rows, so any
+// (physH % cellHeightPx) remainder passed to ghostty_surface_set_size is
+// never drawn — it shows through as a blank band. cellHeightPx == 0 means
+// GHOSTTY_ACTION_CELL_SIZE hasn't fired for this surface yet (can happen on
+// the very first mount, before the surface reports back); pass the height
+// through unrounded rather than guessing, since a wrong guess is worse than
+// the pre-existing behaviour and the next resize/cell_size action corrects it.
+static uint32_t snapHeightToCellGrid(uint32_t physH, uint32_t cellHeightPx) {
+    if (cellHeightPx == 0) return physH;
+    return (physH / cellHeightPx) * cellHeightPx;
+}
+
+// Build the AppKit frame for a CSS rect whose physical height has been
+// snapped down to a whole cell-row multiple (see snapHeightToCellGrid). The
+// NSView is layer-hosting for ghostty's Metal/IOSurface layer, so the layer's
+// drawable bounds track the NSView's OWN frame — it is not enough to snap the
+// value passed to ghostty_surface_set_size; the view's frame must shrink to
+// match, or the layer would still span the full unsnapped rect and repaint
+// whatever's beneath it as clear/stretched content, not our gap-fill color.
+//
+// Passing the same CSS `y` (top) with a shorter `h` anchors the shrink at the
+// CSS top and drops the leftover into the bottom automatically: cssRectToAppKit
+// computes appKitY = parentHeight - y - h, so a smaller h raises appKitY,
+// moving the AppKit-bottom-left origin UP while the top edge (origin.y +
+// height, fixed at parentHeight - y) is untouched. No separate origin
+// adjustment is needed — just call cssRectToAppKit with the snapped height.
+static NSRect cssRectToAppKitSnapped(double x, double y, double w,
+                                      double snappedH, double parentHeight) {
+    return cssRectToAppKit(x, y, w, snappedH, parentHeight);
 }
 
 // ---------------------------------------------------------------------------
@@ -3243,11 +3331,13 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             NSLog(@"[ghostty-surface] mount workspaceId=%s: already attached (defensive resize)",
                   workspaceId.c_str());
             double parentH = contentView.bounds.size.height;
-            NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
-            [entry.view setFrame:newFrame];
             uint32_t physW = (uint32_t)(rw * scaleFactor);
             uint32_t physH = (uint32_t)(rh * scaleFactor);
-            ghostty_surface_set_size(entry.surface, physW, physH);
+            uint32_t snappedPhysH = snapHeightToCellGrid(physH, entry.cellHeightPx);
+            double snappedH = (scaleFactor > 0.0) ? (snappedPhysH / scaleFactor) : rh;
+            NSRect newFrame = cssRectToAppKitSnapped(rx, ry, rw, snappedH, parentH);
+            [entry.view setFrame:newFrame];
+            ghostty_surface_set_size(entry.surface, physW, snappedPhysH);
             ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
             setVisibleWorkspace(workspaceId, contentView, false);
         } else {
@@ -3257,7 +3347,15 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             entry.view.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
 
             double parentH = contentView.bounds.size.height;
-            NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
+            uint32_t physW = (uint32_t)(rw * scaleFactor);
+            uint32_t physH = (uint32_t)(rh * scaleFactor);
+            uint32_t snappedPhysH = snapHeightToCellGrid(physH, entry.cellHeightPx);
+            double snappedH = (scaleFactor > 0.0) ? (snappedPhysH / scaleFactor) : rh;
+            // The view frame must reflect the snapped height on every re-attach
+            // (not just when set_size below is actually called) — the NSView is
+            // layer-hosting, so its OWN frame is what bounds ghostty's Metal
+            // layer, regardless of whether set_size ran this call.
+            NSRect newFrame = cssRectToAppKitSnapped(rx, ry, rw, snappedH, parentH);
             [entry.view setFrame:newFrame];
 
             // Update size only if dimensions actually changed while hidden.
@@ -3266,14 +3364,12 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             // on a plain switch-and-back where nothing actually changed.
             // The surface persists across hide/mount, so when size and scale are
             // identical we skip the resize and ghostty keeps the prior scroll position.
-            uint32_t physW = (uint32_t)(rw * scaleFactor);
-            uint32_t physH = (uint32_t)(rh * scaleFactor);
             const bool sizeChanged =
                 entry.lastRect.size.width != rw ||
                 entry.lastRect.size.height != rh ||
                 entry.lastScale != scaleFactor;
             if (sizeChanged) {
-                ghostty_surface_set_size(entry.surface, physW, physH);
+                ghostty_surface_set_size(entry.surface, physW, snappedPhysH);
                 ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
             }
 
@@ -3448,10 +3544,35 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     // Wire the surface pointer back into the view so keyDown:/keyUp: can forward events.
     termView.surface = surface;
 
-    // Set initial size (physical pixels).
+    // ghostty_surface_new (above) fires GHOSTTY_ACTION_CELL_SIZE synchronously
+    // (see vendor/ghostty/src/Surface.zig's init) — before this surface was
+    // known to g_surfaces/g_surfaceToWorkspaceId, so action_cb couldn't
+    // attribute it to a workspace and stashed it in g_pendingCellHeightPx by
+    // raw pointer instead. Drain it now, BEFORE the initial set_size below —
+    // the cell height is already known at this point, so the very first
+    // mount of a workspace must snap too, not just its first resize.
+    uint32_t initialCellHeightPx = 0;
+    {
+        auto pendingIt = g_pendingCellHeightPx.find(surface);
+        if (pendingIt != g_pendingCellHeightPx.end()) {
+            initialCellHeightPx = pendingIt->second;
+            g_pendingCellHeightPx.erase(pendingIt);
+        }
+    }
+
+    // Set initial size (physical pixels), snapped to a whole cell-row multiple
+    // (see snapHeightToCellGrid) so a fresh mount never shows the partial-row
+    // gap either — not just resizes of an already-mounted surface. The view's
+    // OWN frame must shrink to match too (layer-hosting — see
+    // cssRectToAppKitSnapped), so reapply frame with the snapped height.
     uint32_t physW = (uint32_t)(rw * scaleFactor);
     uint32_t physH = (uint32_t)(rh * scaleFactor);
-    ghostty_surface_set_size(surface, physW, physH);
+    uint32_t snappedPhysH = snapHeightToCellGrid(physH, initialCellHeightPx);
+    double snappedH = (scaleFactor > 0.0) ? (snappedPhysH / scaleFactor) : rh;
+    if (snappedPhysH != physH) {
+        [termView setFrame:cssRectToAppKitSnapped(rx, ry, rw, snappedH, parentH)];
+    }
+    ghostty_surface_set_size(surface, physW, snappedPhysH);
     ghostty_surface_set_content_scale(surface, scaleFactor, scaleFactor);
 
     // Store entry — view is retained by the map (ARC __strong).
@@ -3466,6 +3587,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     entry.lastRect      = CGRectMake(rx, ry, rw, rh);
     entry.lastScale     = scaleFactor;
     entry.generation    = createGen;
+    entry.cellHeightPx  = initialCellHeightPx;
     // A surface id may be reused after deferred teardown. Never let the new
     // surface inherit even the previous entry's sub-500ms text snapshot.
     g_screenTailCache.erase(workspaceId);
@@ -3487,8 +3609,8 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     // the watchdog or Focus() will kick it with forceWake=true.
     reconcileSurface(workspaceId, contentView, false);
 
-    NSLog(@"[ghostty-surface] mount workspaceId=%s created (physPx %ux%u)",
-          workspaceId.c_str(), physW, physH);
+    NSLog(@"[ghostty-surface] mount workspaceId=%s created (physPx %ux%u, requested %ux%u, cellH=%u)",
+          workspaceId.c_str(), physW, snappedPhysH, physW, physH, initialCellHeightPx);
 
     Napi::Object result = Napi::Object::New(env);
     result.Set("workspaceId", Napi::String::New(env, workspaceId));
@@ -3580,16 +3702,21 @@ static Napi::Value Resize(const Napi::CallbackInfo& info) {
     entry.lastScale = scaleFactor;
 
     if (entry.isAttached) {
-        // Update NSView frame (with coordinate flip).
+        // Update NSView frame (with coordinate flip), snapping height to a
+        // whole cell-row multiple so ghostty's layer-hosted Metal layer never
+        // has an unpainted partial row at the bottom. See snapHeightToCellGrid
+        // and cssRectToAppKitSnapped for the reasoning.
         NSView* parentView = [entry.view superview];
         double parentH = parentView ? parentView.bounds.size.height : rh;
-        NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
+        uint32_t physW = (uint32_t)(rw * scaleFactor);
+        uint32_t physH = (uint32_t)(rh * scaleFactor);
+        uint32_t snappedPhysH = snapHeightToCellGrid(physH, entry.cellHeightPx);
+        double snappedH = (scaleFactor > 0.0) ? (snappedPhysH / scaleFactor) : rh;
+        NSRect newFrame = cssRectToAppKitSnapped(rx, ry, rw, snappedH, parentH);
         [entry.view setFrame:newFrame];
 
         // Update Ghostty surface size.
-        uint32_t physW = (uint32_t)(rw * scaleFactor);
-        uint32_t physH = (uint32_t)(rh * scaleFactor);
-        ghostty_surface_set_size(entry.surface, physW, physH);
+        ghostty_surface_set_size(entry.surface, physW, snappedPhysH);
         ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
     }
     // If not attached: rect is cached above; will be applied on next mount.
@@ -3943,6 +4070,10 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     }
     if (doomed.surface) {
         g_surfaceToWorkspaceId.erase(doomed.surface);
+        // Defensive: Mount drains this synchronously right after surface_new,
+        // so there should be nothing left here by the time an entry exists to
+        // destroy — but erase it anyway rather than leak a stale pointer key.
+        g_pendingCellHeightPx.erase(doomed.surface);
     }
 
     // Detach the view so the workspace appears gone right away.
