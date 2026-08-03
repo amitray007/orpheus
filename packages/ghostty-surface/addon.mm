@@ -2630,15 +2630,17 @@ static uint32_t snapHeightToCellGrid(uint32_t physH, uint32_t cellHeightPx) {
 // match, or the layer would still span the full unsnapped rect and repaint
 // whatever's beneath it as clear/stretched content, not our gap-fill color.
 //
-// Passing the same CSS `y` (top) with a shorter `h` anchors the shrink at the
-// CSS top and drops the leftover into the bottom automatically: cssRectToAppKit
-// computes appKitY = parentHeight - y - h, so a smaller h raises appKitY,
-// moving the AppKit-bottom-left origin UP while the top edge (origin.y +
-// height, fixed at parentHeight - y) is untouched. No separate origin
-// adjustment is needed — just call cssRectToAppKit with the snapped height.
-static NSRect cssRectToAppKitSnapped(double x, double y, double w,
+// Claude's TUI is bottom-anchored (status line on the last grid row) and the
+// workspace quick-actions footer sits flush below the terminal, so the seam
+// at the container's bottom edge must stay exact — any leftover band there
+// reads as a conspicuous gap between the status line and the footer. Anchor
+// the shrink at the CSS bottom instead: shift `y` down by the remainder
+// (rawH - snappedH) so the bottom edge is unchanged and the leftover moves to
+// the top, under the title bar, where the backstop (app-chrome colour, same
+// family as the title bar above it) reads it as intentional padding.
+static NSRect cssRectToAppKitSnapped(double x, double y, double w, double rawH,
                                       double snappedH, double parentHeight) {
-    return cssRectToAppKit(x, y, w, snappedH, parentHeight);
+    return cssRectToAppKit(x, y + (rawH - snappedH), w, snappedH, parentHeight);
 }
 
 // ---------------------------------------------------------------------------
@@ -3335,7 +3337,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             uint32_t physH = (uint32_t)(rh * scaleFactor);
             uint32_t snappedPhysH = snapHeightToCellGrid(physH, entry.cellHeightPx);
             double snappedH = (scaleFactor > 0.0) ? (snappedPhysH / scaleFactor) : rh;
-            NSRect newFrame = cssRectToAppKitSnapped(rx, ry, rw, snappedH, parentH);
+            NSRect newFrame = cssRectToAppKitSnapped(rx, ry, rw, rh, snappedH, parentH);
             [entry.view setFrame:newFrame];
             ghostty_surface_set_size(entry.surface, physW, snappedPhysH);
             ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
@@ -3355,7 +3357,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             // (not just when set_size below is actually called) — the NSView is
             // layer-hosting, so its OWN frame is what bounds ghostty's Metal
             // layer, regardless of whether set_size ran this call.
-            NSRect newFrame = cssRectToAppKitSnapped(rx, ry, rw, snappedH, parentH);
+            NSRect newFrame = cssRectToAppKitSnapped(rx, ry, rw, rh, snappedH, parentH);
             [entry.view setFrame:newFrame];
 
             // Update size only if dimensions actually changed while hidden.
@@ -3570,7 +3572,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     uint32_t snappedPhysH = snapHeightToCellGrid(physH, initialCellHeightPx);
     double snappedH = (scaleFactor > 0.0) ? (snappedPhysH / scaleFactor) : rh;
     if (snappedPhysH != physH) {
-        [termView setFrame:cssRectToAppKitSnapped(rx, ry, rw, snappedH, parentH)];
+        [termView setFrame:cssRectToAppKitSnapped(rx, ry, rw, rh, snappedH, parentH)];
     }
     ghostty_surface_set_size(surface, physW, snappedPhysH);
     ghostty_surface_set_content_scale(surface, scaleFactor, scaleFactor);
@@ -3712,7 +3714,7 @@ static Napi::Value Resize(const Napi::CallbackInfo& info) {
         uint32_t physH = (uint32_t)(rh * scaleFactor);
         uint32_t snappedPhysH = snapHeightToCellGrid(physH, entry.cellHeightPx);
         double snappedH = (scaleFactor > 0.0) ? (snappedPhysH / scaleFactor) : rh;
-        NSRect newFrame = cssRectToAppKitSnapped(rx, ry, rw, snappedH, parentH);
+        NSRect newFrame = cssRectToAppKitSnapped(rx, ry, rw, rh, snappedH, parentH);
         [entry.view setFrame:newFrame];
 
         // Update Ghostty surface size.
