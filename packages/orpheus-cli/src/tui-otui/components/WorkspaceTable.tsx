@@ -68,7 +68,7 @@
 import { RGBA, TextAttributes, TextTableRenderable, type TextTableContent } from '@opentui/core'
 import { extend } from '@opentui/solid'
 import { createEffect, createMemo, onMount, type Accessor } from 'solid-js'
-import { truncate, type Breakpoint, type DisplayRow } from '../../tui/layout.js'
+import { truncate, displayTitleFor, type Breakpoint, type DisplayRow } from '../../tui/layout.js'
 import type { Palette } from '../theme.js'
 import { PROJECT_GLYPH, OPEN_GLYPH, WORKTREE_GLYPH, CHILD_INDENT, SELECTION_DOT } from '../theme.js'
 import { spinnerGlyph } from '../spinner.js'
@@ -202,7 +202,7 @@ export function WorkspaceTable(props: WorkspaceTableProps): JSX.Element {
           ? `${WORKTREE_GLYPH} `
           : ''
       const nameText = padded(
-        truncate(indent + openMark + row.name, plan.nameWidth),
+        truncate(indent + openMark + displayTitleFor(row), plan.nameWidth),
         plan.nameWidth
       )
 

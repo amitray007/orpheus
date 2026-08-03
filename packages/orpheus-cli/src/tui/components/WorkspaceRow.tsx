@@ -43,6 +43,7 @@ import {
   WORKTREE_GLYPH,
   statusGlyph,
   truncate,
+  displayTitleFor,
   type Breakpoint,
   type ColumnPlan
 } from '../layout.js'
@@ -88,7 +89,7 @@ function WorkspaceRowImpl({
 }: WorkspaceRowProps): React.JSX.Element {
   const indent = indentFor(row.depth)
   const nameBudget = Math.max(1, plan.nameWidth - indent.length)
-  const name = (indent + truncate(row.name, nameBudget)).padEnd(plan.nameWidth)
+  const name = (indent + truncate(displayTitleFor(row), nameBudget)).padEnd(plan.nameWidth)
   // The gutter (accent bar/dot or matching blank space) is carved OUT of
   // plan.numWidth's existing budget rather than added on top — so a row's
   // total rendered width still equals plan.total exactly and the 44-col
@@ -157,6 +158,7 @@ function propsAreEqual(prev: WorkspaceRowProps, next: WorkspaceRowProps): boolea
     prev.breakpoint === next.breakpoint &&
     prev.row.workspaceId === next.row.workspaceId &&
     prev.row.name === next.row.name &&
+    prev.row.lastTitle === next.row.lastTitle &&
     prev.row.status === next.row.status &&
     prev.row.index === next.row.index &&
     prev.row.depth === next.row.depth &&

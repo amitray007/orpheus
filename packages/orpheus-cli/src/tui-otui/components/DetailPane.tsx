@@ -49,7 +49,7 @@
 
 import { TextAttributes } from '@opentui/core'
 import { Show } from 'solid-js'
-import type { DisplayRow } from '../../tui/layout.js'
+import { displayTitleFor, type DisplayRow } from '../../tui/layout.js'
 import type { Palette } from '../theme.js'
 import { formatAgeLong } from '../format.js'
 import { spinnerGlyph } from '../spinner.js'
@@ -124,7 +124,7 @@ export function DetailPane(props: DetailPaneProps): JSX.Element {
                 flexShrink={0}
                 height={1}
               >
-                {row.name}
+                {displayTitleFor(row)}
               </text>
               <box height={1} flexShrink={0} />
               <Field label="status" palette={props.palette}>
@@ -133,6 +133,9 @@ export function DetailPane(props: DetailPaneProps): JSX.Element {
                 {row.waitingFor != null ? (
                   <span fg={props.palette.secondary}> — {row.waitingFor}</span>
                 ) : null}
+              </Field>
+              <Field label="workspace" palette={props.palette}>
+                <span fg={props.palette.text}>{row.name}</span>
               </Field>
               <Field label="project" palette={props.palette}>
                 <span fg={props.palette.text}>{props.projectName ?? '—'}</span>

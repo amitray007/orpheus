@@ -508,6 +508,11 @@ export type TreeWorkspaceFrame = {
   sortOrder: number | null
   tmuxHosted: boolean
   lastActivityAt: number | null
+  /** Live OSC terminal title Claude Code sets while working (e.g. "Understand
+   *  codebase structure"), mirrored from `WorkspaceRecord.lastTitle`. Null
+   *  until a session has emitted one; the TUI falls back to `name` when
+   *  null/empty. */
+  lastTitle: string | null
 }
 
 /** A single project group inside a `tree` frame. */

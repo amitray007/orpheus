@@ -528,7 +528,8 @@ function workspace(
     worktreeBranch: 'feat/tmux-mobile',
     parentWorkspaceId: 'parent-1',
     sortOrder: 0,
-    lastActivityAt: 999
+    lastActivityAt: 999,
+    lastTitle: 'Understand codebase structure'
   })
   const idleWs = workspace({
     id: 'ws-idle',
@@ -552,11 +553,13 @@ function workspace(
   assert.equal(attentionOut.parentWorkspaceId, 'parent-1')
   assert.equal(attentionOut.tmuxHosted, true)
   assert.equal(attentionOut.lastActivityAt, 999)
+  assert.equal(attentionOut.lastTitle, 'Understand codebase structure')
 
   assert.equal(idleOut.id, 'ws-idle')
   assert.equal('waitingFor' in idleOut, false, 'waitingFor must be omitted, not null, when absent')
   assert.equal(idleOut.tmuxHosted, false)
   assert.equal(idleOut.lastActivityAt, 42, 'falls back to lastOpenedAt when no live overlay is set')
+  assert.equal(idleOut.lastTitle, null, 'defaults to null when the source workspace has no title')
   console.log('✓ tree-frame workspace rows carry the exact documented shape (docs/TUI_SPEC.md)')
 }
 

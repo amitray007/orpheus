@@ -1061,7 +1061,8 @@ function toTreeWorkspaceFrame(
     worktreeBranch: ws.worktreeBranch,
     sortOrder: ws.sortOrder,
     tmuxHosted: shouldBlockNativeMount(hostedSessions, sessionName),
-    lastActivityAt: ws.lastActivityAt ?? ws.lastOpenedAt ?? null
+    lastActivityAt: ws.lastActivityAt ?? ws.lastOpenedAt ?? null,
+    lastTitle: ws.lastTitle
   }
 }
 

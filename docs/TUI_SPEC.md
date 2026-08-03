@@ -94,7 +94,8 @@ Request `{ id }` → `{ killed }`. Kills the tmux session; workspace untouched.
           "id": "…", "name": "tmux-mobile", "status": "attention",
           "waitingFor": "permission prompt", "parentWorkspaceId": null,
           "worktreeBranch": "feat/tmux-mobile", "sortOrder": 0,
-          "tmuxHosted": true, "lastActivityAt": 1234567890
+          "tmuxHosted": true, "lastActivityAt": 1234567890,
+          "lastTitle": "Understand codebase structure"
         }
       ]
     }

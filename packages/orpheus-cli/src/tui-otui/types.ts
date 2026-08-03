@@ -30,6 +30,9 @@ export interface TreeWorkspace {
   sortOrder?: number | null
   tmuxHosted?: boolean
   lastActivityAt?: number | null
+  /** Live OSC terminal title Claude Code sets while working; falls back to
+   *  `name` when null/empty/absent. */
+  lastTitle?: string | null
 }
 
 /** A single project group inside a `tree` frame. */

@@ -11,6 +11,7 @@
  * implements.
  */
 
+import stringWidth from 'string-width'
 import type { TreeFrame, TreeProject, TreeWorkspace, WorkspaceStatus } from './types.js'
 
 // ---------------------------------------------------------------------------
@@ -111,12 +112,35 @@ export function columnPlanFor(breakpoint: Breakpoint, columns: number): ColumnPl
 
 const ELLIPSIS = '…'
 
-/** Hard-truncate `name` to at most `width` chars, appending an ellipsis when cut. */
+/**
+ * Hard-truncate `name` to at most `width` TERMINAL COLUMNS, appending an
+ * ellipsis when cut. Uses `string-width` (already an installed dependency of
+ * `@opentui/core`, transitively reachable from this package without a
+ * package.json edit — see the caller's investigation notes) for measurement
+ * because JS string `.length` counts UTF-16 code units, not display columns:
+ * wide CJK/fullwidth characters are 1 `.length` unit but 2 terminal columns,
+ * which would silently corrupt column alignment for real Claude-set OSC
+ * titles (arbitrary text, not guaranteed ASCII). For pure-ASCII input
+ * (`.length` charcount == display width), this produces byte-for-byte the
+ * same output as the old plain char-count implementation it replaces.
+ */
 export function truncate(name: string, width: number): string {
   if (width <= 0) return ''
-  if (name.length <= width) return name
+  if (stringWidth(name) <= width) return name
   if (width === 1) return ELLIPSIS
-  return name.slice(0, width - 1) + ELLIPSIS
+  // Walk code points (`for...of` iterates by code point, never splitting a
+  // surrogate pair) accumulating display width, reserving exactly one
+  // column for the trailing ellipsis.
+  const budget = width - 1
+  let out = ''
+  let used = 0
+  for (const ch of name) {
+    const w = stringWidth(ch)
+    if (used + w > budget) break
+    out += ch
+    used += w
+  }
+  return out + ELLIPSIS
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +186,29 @@ export type DisplayRow =
        * shape change existing Ink call sites need to handle.
        */
       lastActivityAt?: number | null
+      /**
+       * Optional passthrough of the wire frame's `lastTitle` — the live OSC
+       * terminal title Claude Code sets while working, mirrored from
+       * `WorkspaceRecord.lastTitle`. ADDITIVE field following the exact
+       * precedent set by `lastActivityAt` above: optional, populated by
+       * flattenForest() below whenever the source TreeWorkspace carries it,
+       * and safe for the Ink build to ignore if it chooses not to read it.
+       * Use `displayTitleFor()` (below) to resolve the row's actual label —
+       * never read `lastTitle` directly for display.
+       */
+      lastTitle?: string | null
     }
+
+/**
+ * Resolve what a workspace row should actually show as its primary label:
+ * the live terminal title when one has been set (trimmed, non-empty), else
+ * the workspace's own `name`. Centralizing this here (rather than in each
+ * renderer) keeps the fallback rule identical across tui/ and tui-otui/.
+ */
+export function displayTitleFor(row: { name: string; lastTitle?: string | null }): string {
+  const t = row.lastTitle?.trim()
+  return t != null && t.length > 0 ? t : row.name
+}
 
 export interface FlattenResult {
   rows: DisplayRow[]
@@ -259,7 +305,8 @@ function flattenForest(
         depth,
         worktreeBranch: node.ws.worktreeBranch ?? null,
         tmuxHosted: node.ws.tmuxHosted === true,
-        lastActivityAt: node.ws.lastActivityAt ?? null
+        lastActivityAt: node.ws.lastActivityAt ?? null,
+        lastTitle: node.ws.lastTitle ?? null
       })
     } else {
       counters.hidden++

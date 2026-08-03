@@ -33,7 +33,13 @@ import {
   gutterWidthFor
 } from '../theme.js'
 import type { Palette } from '../theme.js'
-import { truncate, type Breakpoint, type ColumnPlan, type DisplayRow } from '../../tui/layout.js'
+import {
+  truncate,
+  displayTitleFor,
+  type Breakpoint,
+  type ColumnPlan,
+  type DisplayRow
+} from '../../tui/layout.js'
 import type { WorkspaceStatus } from '../types.js'
 import { spinnerGlyph } from '../spinner.js'
 
@@ -81,7 +87,7 @@ export function WorkspaceRow(props: WorkspaceRowProps): JSX.Element {
   const indent = (): string => indentFor(props.row.depth)
   const nameBudget = (): number => Math.max(1, props.plan.nameWidth - indent().length)
   const name = (): string =>
-    (indent() + truncate(props.row.name, nameBudget())).padEnd(props.plan.nameWidth)
+    (indent() + truncate(displayTitleFor(props.row), nameBudget())).padEnd(props.plan.nameWidth)
   const gutterWidth = (): number => gutterWidthFor(props.breakpoint)
   const numLabel = (): string =>
     String(props.row.index).padStart(Math.max(1, props.plan.numWidth - gutterWidth() - 1)) + ' '
