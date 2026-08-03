@@ -58,7 +58,7 @@ import { TextAttributes } from '@opentui/core'
 import { Show } from 'solid-js'
 import { displayTitleFor, type DisplayRow } from '../../tui/layout.js'
 import type { Palette } from '../theme.js'
-import { formatAgeLong } from '../format.js'
+import { formatAgeLong } from '../../tui/format.js'
 import type { WorkspaceStatus } from '../types.js'
 import { Rule } from './Rule.js'
 

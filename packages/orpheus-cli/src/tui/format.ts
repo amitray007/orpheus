@@ -64,3 +64,27 @@ export function formatModelEffort(
   if (shortModel.length === 0) return showEffort ? effortText : ''
   return showEffort ? `${shortModel} ${effortText}` : shortModel
 }
+
+/**
+ * Card line 1's left (model/effort) + right (status/elapsed) split, already
+ * padded so `left.length + right.length === innerWidth` exactly — the two
+ * pieces concatenate back to the full padded line with no gap arithmetic at
+ * the call site.
+ *
+ * Status and elapsed are more time-sensitive than the model token, so the
+ * LEFT side is what truncates when the line is tight. Lives here rather than
+ * beside the card component so BOTH renderers share one implementation and a
+ * harness can exercise it without importing a renderer.
+ */
+export function line1Parts(
+  modelEffort: string,
+  statusRight: string,
+  innerWidth: number,
+  truncateFn: (s: string, width: number) => string
+): { left: string; right: string } {
+  const rightBudget = Math.min(statusRight.length, innerWidth)
+  const right = statusRight.slice(statusRight.length - rightBudget)
+  const leftBudget = Math.max(0, innerWidth - rightBudget)
+  const left = truncateFn(modelEffort, leftBudget).padEnd(leftBudget)
+  return { left, right: right.padStart(rightBudget) }
+}

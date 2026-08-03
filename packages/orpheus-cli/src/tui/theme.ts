@@ -112,6 +112,11 @@ export interface Palette {
   border: string
   /** Secondary text — dimmer than primary but still readable at any level. */
   secondary: string
+  /** Primary text — the card's title line when NOT selected. */
+  text: string
+  /** The card's line-1 model/effort token — deliberately dimmer than `text`
+   *  so the title (line 2) stays the card's focal point. */
+  modelText: string
   /** Background tint for the selected row — ALL breakpoints (see WorkspaceRow.tsx). */
   selectedBg: string
 }
@@ -134,6 +139,11 @@ const DARK: Palette = {
   accent: '#bb9af7',
   border: '#3b3f58',
   secondary: '#8b90a8',
+  text: '#e3e5f0',
+  // Neutral teal-grey — distinct from attention (red), working (green),
+  // awaiting (blue) and idle (grey-blue), so line 1's model token never
+  // reads as a status colour.
+  modelText: '#5fb3a3',
   selectedBg: '#2a2e45'
 }
 
@@ -256,6 +266,28 @@ export function gutterWidthFor(breakpoint: Breakpoint): number {
 }
 
 /** The gutter's rendered content for a row — bar/dot when selected, matching blank space otherwise. */
+/**
+ * The CARD gutter — 1 column, ASCII only, at every breakpoint.
+ *
+ * Deliberately NOT the `▌`/`●` glyphs gutterContentFor() uses for the older
+ * one-line rows: both are East_Asian_Width=**A (Ambiguous)**, meaning a
+ * CJK-configured terminal renders them TWO columns wide. In a card whose
+ * every line is padded to an exact width, that one extra column overflows
+ * the line and wraps it — silently, and only for some users. `|` is
+ * East_Asian_Width=Na (Narrow), single-width everywhere by definition.
+ *
+ * The slot is always occupied — a space when unselected — so selecting a
+ * card swaps a rune in place and can never shift layout by a cell.
+ */
+export const CARD_GUTTER_SELECTED = '|'
+export const CARD_GUTTER_EMPTY = ' '
+export const CARD_GUTTER_WIDTH = 1
+
+/** Card gutter content — see CARD_GUTTER_SELECTED. */
+export function cardGutterFor(selected: boolean): string {
+  return selected ? CARD_GUTTER_SELECTED : CARD_GUTTER_EMPTY
+}
+
 export function gutterContentFor(breakpoint: Breakpoint, selected: boolean): string {
   const width = gutterWidthFor(breakpoint)
   if (!selected) return SELECTION_GUTTER_EMPTY.repeat(width)

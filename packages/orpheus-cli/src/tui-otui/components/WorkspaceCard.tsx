@@ -70,7 +70,7 @@ import { TextAttributes } from '@opentui/core'
 import { WORKTREE_GLYPH, gutterContentFor } from '../theme.js'
 import type { Palette } from '../theme.js'
 import { displayTitleFor, truncate, type DisplayRow } from '../../tui/layout.js'
-import { formatAge, formatModelEffort } from '../format.js'
+import { formatAge, formatModelEffort } from '../../tui/format.js'
 import type { WorkspaceStatus } from '../types.js'
 
 /** Exactly four status words, one each — see docs/TUI_SPEC.md's "STATUS
