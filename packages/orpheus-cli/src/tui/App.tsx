@@ -56,7 +56,14 @@
 import * as React from 'react'
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { Box, Text, useInput, useWindowSize } from 'ink'
-import { flattenTree, truncate, type DisplayRow, type Filter, type ProjectScope } from './layout.js'
+import {
+  flattenTree,
+  truncate,
+  type Breakpoint,
+  type DisplayRow,
+  type Filter,
+  type ProjectScope
+} from './layout.js'
 import { CARD_MEDIUM_MAX, resolveCardBreakpoint } from './cardBreakpoints.js'
 import { buildBlocks, windowBlocks, type Block } from './blocks.js'
 import { frameStore } from './frameStore.js'
@@ -68,9 +75,11 @@ import { ProjectGroupHeader } from './components/ProjectGroupHeader.js'
 import { WorkspaceCard } from './components/WorkspaceCard.js'
 import { ScrollAffordance } from './components/ScrollAffordance.js'
 import { DetailPane } from './components/DetailPane.js'
+import { NewWorkspaceWizard } from './components/NewWorkspaceWizard.js'
 import { activePalette, VRULE_PAD_X, CARD_SEPARATOR_ROWS } from './theme.js'
 import type { Palette } from './theme.js'
-import type { TreeWorkspace } from './types.js'
+import type { TreeProject, TreeWorkspace } from './types.js'
+import type { WizardProject } from './wizardTypes.js'
 
 export interface AppProps {
   /** Set when `--project` narrows the picker to a single project. */
@@ -158,6 +167,30 @@ function handleViewKey(input: string, setView: React.Dispatch<React.SetStateActi
   if (input === 'v') {
     setView((f) => (f === 'active' ? 'all' : 'active'))
   }
+}
+
+/**
+ * Handles `n` (open the new-workspace wizard) — extracted from the main
+ * useInput callback for the same cognitive-complexity reason as
+ * handleViewKey above; this one specifically pulled App's useInput handler
+ * over the sonarjs/cognitive-complexity budget (20) once the wizard's
+ * open/close branch was added inline.
+ *
+ * Project is inferred from the currently-highlighted row — the task spec is
+ * explicit that there's no project-picker step. When the list is empty (a
+ * brand-new project with no workspaces yet, or the active filter hiding
+ * everything), there's no row to infer from; rather than guess or crash,
+ * `n` is simply a no-op here. This does leave a genuinely-empty project
+ * unable to get its first workspace via the wizard — an acceptable narrow
+ * gap given the spec's constraint, not a design goal.
+ */
+function handleNewWorkspaceKey(
+  selectedProject: TreeProject | null,
+  setWizardProject: React.Dispatch<React.SetStateAction<WizardProject | null>>
+): void {
+  if (selectedProject == null) return
+  const { id, name, cwd } = selectedProject
+  setWizardProject({ id, name, cwd })
 }
 
 interface PickerBodyProps {
@@ -301,6 +334,17 @@ export function App({
   // workspace; on return they expect to see the list, not have a help
   // overlay silently reappear that they may not even remember opening.
   const [helpVisible, setHelpVisible] = useState(false)
+  // The new-workspace wizard (`n`) — null means closed. Also NOT persisted
+  // across picker mounts, same rationale as `helpVisible`: reopening the
+  // picker after a detach should never silently resurrect an in-progress
+  // wizard the user has forgotten about. Holds only the inferred project
+  // (id/name/cwd) the wizard was opened for; the wizard component itself
+  // (NewWorkspaceWizard.tsx) owns every other piece of its own state
+  // (selected model, name, mode, submit status) so a re-render of App
+  // triggered by an unrelated frame update can never reset wizard progress —
+  // this state only flips null<->non-null, it never mutates while the
+  // wizard is open.
+  const [wizardProject, setWizardProject] = useState<WizardProject | null>(null)
 
   const palette = activePalette
 
@@ -357,10 +401,18 @@ export function App({
     onSelectionChange?.(view, selectedWorkspaceId)
   }, [view, selectedWorkspaceId, onSelectionChange])
 
-  const selectedProjectName = useMemo(() => {
+  // Extended from a bare `.name` lookup into the FULL project object so the
+  // new-workspace wizard (opened by `n`, see `wizardProject` state above) can
+  // read `cwd` — TreeProject.cwd (types.ts) is exactly the `cwd` arg
+  // workspace.create needs, and this is the one place App.tsx already
+  // resolves "which project owns the highlighted row". `selectedProjectName`
+  // is derived from this rather than kept as a separate memo, so the two can
+  // never disagree about which project is selected.
+  const selectedProject = useMemo((): TreeProject | null => {
     if (selectedRow == null || frame == null) return null
-    return frame.projects.find((p) => p.id === selectedRow.projectId)?.name ?? null
+    return frame.projects.find((p) => p.id === selectedRow.projectId) ?? null
   }, [selectedRow, frame])
+  const selectedProjectName = selectedProject?.name ?? null
 
   function moveSelection(delta: number): void {
     const count = workspaceRows.length
@@ -372,6 +424,14 @@ export function App({
   }
 
   useInput((input, key) => {
+    // The wizard owns its OWN useInput while open (NewWorkspaceWizard.tsx)
+    // and this component's body isn't even mounted then (see the render
+    // swap below) — but Ink's useInput hooks are all live simultaneously
+    // regardless of what's rendered, so this early return is what actually
+    // stops j/k/v/q/?/enter from leaking through to the picker's own
+    // handlers while the wizard is up, exactly mirroring the `helpVisible`
+    // short-circuit immediately below it.
+    if (wizardProject != null) return
     if (helpVisible) {
       setHelpVisible(false)
       return
@@ -382,6 +442,10 @@ export function App({
     }
     if (input === '?') {
       setHelpVisible(true)
+      return
+    }
+    if (input === 'n') {
+      handleNewWorkspaceKey(selectedProject, setWizardProject)
       return
     }
     if (key.return) {
@@ -449,10 +513,77 @@ export function App({
         scope={scope}
         connected={frame != null && connectionNotice == null}
         disconnected={connectionNotice != null}
-        hiddenCount={flattened.hiddenCount}
+        // Hide the hidden-count hint while the wizard is open: "N hidden
+        // (v)" advertises a picker key (`v`) that does nothing right now —
+        // the wizard has swallowed the whole keymap (see useInput's
+        // wizardProject early-return above) — so showing it would read as a
+        // broken affordance. The connection state itself still matters
+        // (the wizard's own workspace.create depends on it), so only this
+        // one hint is suppressed, not the whole bar.
+        hiddenCount={wizardProject != null ? 0 : flattened.hiddenCount}
         palette={palette}
         width={contentWidth}
       />
+      {wizardProject != null ? (
+        <NewWorkspaceWizard
+          project={wizardProject}
+          width={contentWidth}
+          palette={palette}
+          onDone={() => setWizardProject(null)}
+        />
+      ) : (
+        <PickerScreen
+          connectionNotice={connectionNotice}
+          connecting={connecting}
+          empty={empty}
+          filteredEmpty={filteredEmpty}
+          windowedBlocks={windowedBlocks}
+          cardAreaWidth={cardAreaWidth}
+          selectedWorkspaceId={selectedWorkspaceId}
+          selectedRow={selectedRow}
+          selectedProjectName={selectedProjectName}
+          workspaceById={workspaceById}
+          isWide={isWide}
+          availableRows={availableRows}
+          palette={palette}
+          helpVisible={helpVisible}
+          breakpoint={breakpoint}
+        />
+      )}
+    </Box>
+  )
+}
+
+interface PickerScreenProps extends PickerBodyProps {
+  connectionNotice: string | null
+  connecting: boolean
+  empty: boolean
+  filteredEmpty: boolean
+  helpVisible: boolean
+  breakpoint: Breakpoint
+}
+
+/**
+ * The picker's own body+footer, extracted from App() itself so its
+ * connecting/empty/filtered-empty/normal branching (plus the help<->footer
+ * swap) doesn't count against App()'s own cognitive-complexity budget
+ * (sonarjs/cognitive-complexity, capped at 20) — the wizard's arrival pushed
+ * App() over that cap with this logic still inline. Mirrors PickerBody's own
+ * extraction one level up: App() now only decides wizard-vs-picker, this
+ * component decides which of the picker's four possible states to show.
+ */
+function PickerScreen({
+  connectionNotice,
+  connecting,
+  empty,
+  filteredEmpty,
+  helpVisible,
+  breakpoint,
+  palette,
+  ...pickerBodyProps
+}: PickerScreenProps): React.JSX.Element {
+  return (
+    <>
       {/* flexGrow={1} takes every row the title bar and footer don't, so the
           footer is pushed to the last line at any terminal height. */}
       <Box flexDirection="column" flexGrow={1}>
@@ -475,17 +606,7 @@ export function App({
             {empty ? 'no workspaces' : '(no workspaces — press v to show all)'}
           </Text>
         ) : (
-          <PickerBody
-            windowedBlocks={windowedBlocks}
-            cardAreaWidth={cardAreaWidth}
-            selectedWorkspaceId={selectedWorkspaceId}
-            selectedRow={selectedRow}
-            selectedProjectName={selectedProjectName}
-            workspaceById={workspaceById}
-            isWide={isWide}
-            availableRows={availableRows}
-            palette={palette}
-          />
+          <PickerBody palette={palette} {...pickerBodyProps} />
         )}
       </Box>
       {helpVisible ? (
@@ -493,6 +614,6 @@ export function App({
       ) : (
         <Footer notice={null} palette={palette} breakpoint={breakpoint} />
       )}
-    </Box>
+    </>
   )
 }

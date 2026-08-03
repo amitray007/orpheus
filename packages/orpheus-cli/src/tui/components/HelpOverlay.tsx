@@ -1,10 +1,12 @@
 /**
  * tui/components/HelpOverlay.tsx — full keymap reference, shown on `?`.
  *
- * ONLY LISTS IMPLEMENTED KEYS — n/x/a/r are omitted entirely (not listed as
+ * ONLY LISTS IMPLEMENTED KEYS — x/a/r are omitted entirely (not listed as
  * "not yet wired"), matching the card redesign's smaller keymap: those
- * require server actions beyond workspace.host/unhost that aren't wired in
- * this build.
+ * require server actions beyond workspace.host/unhost/create that aren't
+ * wired in this build. `n` (new workspace) IS wired — see
+ * NewWorkspaceWizard.tsx — and is listed here right after `enter`, the row
+ * it's most often reached for alongside.
  *
  * RENAME: `f` (filter) -> `v` (view) — card redesign.
  *
@@ -21,6 +23,7 @@ import type { Palette } from '../theme.js'
 
 const ROWS: Array<[string, string]> = [
   ['enter', 'open the highlighted workspace (hosts it in tmux, attaches)'],
+  ['n', "new workspace, in the highlighted row's project"],
   ['j/k', 'move the highlighted row'],
   ['v', 'cycle view: active -> all'],
   ['?', 'toggle this help'],

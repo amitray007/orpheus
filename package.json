@@ -33,6 +33,7 @@
     "tui:dev": "./scripts/tui-dev.sh",
     "test:tui": "bun run scripts/verify-tui-layout.ts",
     "test:tui-blocks": "bun run scripts/verify-tui-blocks.ts",
+    "test:tui-wizard": "bun run scripts/verify-tui-wizard.ts",
     "test:workbench": "bun run scripts/verify-workbench-reducer.ts",
     "test:models": "bun run scripts/verify-model-registry.ts",
     "test:routing": "bun run scripts/verify-routing.ts",
