@@ -388,9 +388,7 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
         scope={scope}
         connected={frame != null && connectionNotice == null}
         disconnected={connectionNotice != null}
-        view={view}
         hiddenCount={flattened.hiddenCount}
-        totalCount={flattened.totalCount}
         palette={palette}
         width={contentWidth}
       />
@@ -398,11 +396,21 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
           footer is pushed to the last line at any terminal height. */}
       <Box flexDirection="column" flexGrow={1}>
         {connectionNotice != null ? (
-          <Text color={palette.secondary}>{connectionNotice}</Text>
+          <Text color={palette.secondary} wrap="truncate-end">
+            {connectionNotice}
+          </Text>
         ) : connecting ? (
-          <Text color={palette.secondary}>Connecting to Orpheus…</Text>
+          <Text color={palette.secondary} wrap="truncate-end">
+            Connecting to Orpheus…
+          </Text>
         ) : empty || filteredEmpty ? (
-          <Text color={palette.secondary}>
+          // wrap="truncate-end" on every one-line status: without it Ink
+          // WRAPS these strings, and on a very narrow terminal the extra rows
+          // overflow the frame's fixed height and paint over the footer and
+          // the rows beside them (observed at 20 cols as fragments bleeding
+          // through). One line that clips is correct here; these are hints,
+          // not content.
+          <Text color={palette.secondary} wrap="truncate-end">
             {empty ? 'no workspaces' : '(no workspaces — press v to show all)'}
           </Text>
         ) : (

@@ -16,23 +16,22 @@
  * connection state is carried by its TEXT LABEL alone
  * ("connected"/"disconnected"/"connecting…") plus its color.
  *
- * NO RULE BELOW THE BAR (card redesign amendment) — the prior Header.tsx
- * reserved a second row for a bordered rule at medium/wide. Dropped in favor
- * of a blank line: the title bar is already dense (title + connection/view/
- * count on one row), and a repeated-dash line read as visual noise. Still
- * occupies 2 rows at medium/wide (matching App.tsx's headerReserved calc)
- * without drawing anything on the second one; narrow stays 1 row.
+ * FULL-WIDTH RULE BELOW THE BAR — 2 rows at EVERY breakpoint (title row +
+ * rule), matching App.tsx's headerReservedFor(). An earlier revision left the
+ * second row blank instead; the rule is what makes the top read as a nav bar
+ * rather than as the first line of the list.
  *
- * WIDTH BUDGETING IS MANUAL — `width` (App.tsx passes the live terminal
- * width) drives an explicit split: title gets a fixed-priority budget (never
- * truncated below the bare "Orpheus" label), status gets whatever's left and
- * is itself truncated via ../layout.js's shared `truncate()`, right-aligned
- * by left-padding via a flexGrow spacer Box.
+ * WIDTH BUDGETING IS MANUAL — `width` (App.tsx passes the live CONTENT width,
+ * already inset by the root frame's padding) drives an explicit split: the
+ * title never truncates below the bare wordmark, and status takes what is
+ * left after MIN_TITLE_GAP, disappearing entirely below MIN_STATUS_WIDTH
+ * rather than degrading to an uninformative `...`. See those constants for
+ * the narrow-terminal collision this arrangement fixes.
  */
 
 import * as React from 'react'
 import { Box, Text } from 'ink'
-import { truncate, type Filter as View, type ProjectScope } from '../layout.js'
+import { truncate, type ProjectScope } from '../layout.js'
 import type { Palette } from '../theme.js'
 import { NAV_DIVIDER_CHAR } from '../theme.js'
 
@@ -40,9 +39,7 @@ export interface TitleBarProps {
   scope?: ProjectScope
   connected: boolean
   disconnected: boolean
-  view: View
   hiddenCount: number
-  totalCount: number
   palette: Palette
   /** Live terminal width — drives the manual title/status split. */
   width: number
@@ -58,13 +55,20 @@ export interface TitleBarProps {
 const BRAND_GLYPH = '\u2726'
 const BRAND_NAME = 'Orpheus'
 
+/** Columns the spacer between wordmark and status is never allowed to drop
+ *  below — see the status-budget comment in TitleBar for the collision this
+ *  prevents. */
+const MIN_TITLE_GAP = 2
+/** Below this many columns the status is dropped rather than truncated: a
+ *  status clipped to `...` spends the row's scarcest columns saying nothing,
+ *  and the connection state is still carried by colour. */
+const MIN_STATUS_WIDTH = 12
+
 export function TitleBar({
   scope,
   connected,
   disconnected,
-  view,
   hiddenCount,
-  totalCount,
   palette,
   width
 }: TitleBarProps): React.JSX.Element {
@@ -77,18 +81,37 @@ export function TitleBar({
     : disconnected
       ? palette.attention
       : palette.idle
-  const connectionLabel = connected ? 'connected' : disconnected ? 'disconnected' : 'connecting…'
-
-  const statusParts = [connectionLabel, `view: ${view}`]
+  // SHOW ONLY WHAT THE USER CANNOT SEE FOR THEMSELVES.
+  //
+  // This row used to read `connected - view: all - 4 hidden (v) - no
+  // workspaces` — four facts, three of them redundant. `connected` is the
+  // normal state and says nothing (its ABNORMAL states still do, and keep
+  // their own colour); `no workspaces` restates the empty-state line already
+  // rendered in the body directly below. What survives is the view mode, and
+  // only when it is hiding something: `4 hidden (v)` tells the user both that
+  // rows are missing AND which key reveals them. In the `all` view, nothing
+  // is hidden and nothing is shown.
+  const statusParts: string[] = []
+  if (!connected) statusParts.push(disconnected ? 'disconnected' : 'connecting…')
   if (hiddenCount > 0) statusParts.push(`${hiddenCount} hidden (v)`)
-  if (totalCount === 0) statusParts.push('no workspaces')
   const statusText = statusParts.join(' - ')
 
-  // Title never shrinks below its own text — the brand is the one thing
-  // that must always be legible. Status gets whatever's left after the
-  // title + a one-space gap.
-  const statusBudget = Math.max(0, width - title.length - 1)
-  const clippedStatus = truncate(statusText, statusBudget)
+  // Title never shrinks below its own text — the brand is the one thing that
+  // must always be legible. Status takes what's left after a REAL gap.
+  //
+  // The gap used to be 1 column, which is what let the status collide with
+  // the wordmark on a narrow terminal: the status is right-aligned by a
+  // flexGrow spacer, so once its truncated text filled the remainder the
+  // spacer collapsed to nothing and `connected - view: active - ...` began
+  // immediately after `Orpheus`. MIN_TITLE_GAP is what the spacer is
+  // guaranteed to keep.
+  //
+  // And below MIN_STATUS_WIDTH the status is dropped ENTIRELY rather than
+  // truncated: a status clipped to `co...` or a bare `...` spends the row's
+  // scarcest columns saying nothing. The connection state is still carried
+  // by the row's colour, and the full text returns as soon as it fits.
+  const statusBudget = Math.max(0, width - title.length - MIN_TITLE_GAP)
+  const clippedStatus = statusBudget >= MIN_STATUS_WIDTH ? truncate(statusText, statusBudget) : ''
 
   return (
     <Box flexDirection="column">
@@ -109,7 +132,11 @@ export function TitleBar({
             {scopeSuffix}
           </Text>
         ) : null}
-        <Box flexGrow={1} minWidth={0} justifyContent="flex-end">
+        {/* minWidth is the GAP, not 0 — with 0 the spacer collapsed and the
+            status ran straight into the wordmark on a narrow terminal. Yoga
+            now cannot shrink it below the gap, so the separation holds even
+            if the budget arithmetic above is ever wrong. */}
+        <Box flexGrow={1} minWidth={MIN_TITLE_GAP} justifyContent="flex-end">
           <Text color={connectionColor} wrap="truncate-end">
             {clippedStatus}
           </Text>
