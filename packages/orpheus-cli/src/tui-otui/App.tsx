@@ -30,14 +30,15 @@
  * scrollWindowFor operates on a flat DisplayRow[] where every row is
  * assumed to occupy exactly ONE terminal row. Cards are 3 terminal rows
  * each, project headers are 1 (2 including a leading blank line for every
- * project after the first), and the view:all idle-collapse box is
- * `2 + N idle rows` tall — none of that fits scrollWindowFor's uniform-row
- * assumption. So this file builds its OWN small "Block" model (below):
- * each DisplayRow (or idle-collapse group) becomes one Block with a KNOWN
- * terminal-row height, and `windowBlocks()` finds the window of blocks that
- * keeps the selected card fully in view within the available body height,
- * mirroring scrollWindowFor's spirit (keep selection in view with a little
- * context) but operating on heights instead of counts. flattenTree() from
+ * project after the first), and view:all idle workspaces render as their
+ * own compact 1-row blocks (see IdleWorkspaceRow.tsx) — none of that fits
+ * scrollWindowFor's uniform-row assumption (cards alone already break it).
+ * So this file builds its OWN small "Block" model (below): each DisplayRow
+ * becomes one Block with a KNOWN terminal-row height, and `windowBlocks()`
+ * finds the window of blocks that keeps the selected card fully in view
+ * within the available body height, mirroring scrollWindowFor's spirit
+ * (keep selection in view with a little context) but operating on heights
+ * instead of counts. flattenTree() from
  * tui/layout.ts is still reused UNCHANGED for the row list itself (project
  * grouping, attention-first sibling ordering, active-filter, flat
  * numbering) — only the WINDOWING math is local to this file.
@@ -119,7 +120,7 @@ import { Footer } from './components/Footer.js'
 import { HelpOverlay } from './components/HelpOverlay.js'
 import { ProjectGroupHeader } from './components/ProjectGroupHeader.js'
 import { WorkspaceCard } from './components/WorkspaceCard.js'
-import { IdleBox } from './components/IdleBox.js'
+import { IdleWorkspaceRow } from './components/IdleWorkspaceRow.js'
 import { ScrollAffordance } from './components/ScrollAffordance.js'
 import { DetailPane } from './components/DetailPane.js'
 import { VRule } from './components/VRule.js'
@@ -156,16 +157,17 @@ const AFFORDANCE_ROWS_WHEN_WINDOWED = 2
 type WorkspaceRow = Extract<DisplayRow, { kind: 'workspace' }>
 
 /** One renderable unit of the scrolling body, with a KNOWN terminal-row
- *  height — see the file header's "VARIABLE-HEIGHT BLOCK WINDOWING" note. */
+ *  height — see the file header's "VARIABLE-HEIGHT BLOCK WINDOWING" note.
+ *  `idle-row` is its own block kind (not batched into a group) because idle
+ *  workspaces are now ordinary, individually selectable rows — see
+ *  IdleWorkspaceRow.tsx's file header for why the prior collapsed-group
+ *  treatment was dropped. */
 type Block =
   | { kind: 'project-header'; projectId: string; projectName: string; height: number }
   | { kind: 'card'; row: WorkspaceRow; height: typeof CARD_HEIGHT }
-  | { kind: 'idle-box'; projectId: string; rows: WorkspaceRow[]; height: number }
+  | { kind: 'idle-row'; row: WorkspaceRow; height: typeof IDLE_ROW_HEIGHT }
 
-/** Idle-box height: top border + N idle rows + bottom border. */
-function idleBoxHeight(rowCount: number): number {
-  return 2 + rowCount
-}
+const IDLE_ROW_HEIGHT = 1
 
 export function App(props: AppProps): JSX.Element {
   const dimensions = useTerminalDimensions()
@@ -197,12 +199,15 @@ export function App(props: AppProps): JSX.Element {
     return flattenTree(f, view(), props.scope)
   })
 
-  // Selectable rows exclude idle workspaces under view:all (they collapse
-  // into an IdleBox, which is never keyboard-selectable) — under view:active
-  // idle rows are already absent from flattened().rows entirely (existing
-  // isActiveStatus/filter behavior in tui/layout.ts).
+  // Idle workspaces are selectable and openable, exactly like every other
+  // workspace — opening one is how you wake it up, so it's a primary action,
+  // not an edge case (owner's call; supersedes the prior "idle rows collapse
+  // into a non-selectable group" behavior). Under view:active, idle rows are
+  // already absent from flattened().rows entirely (existing isActiveStatus/
+  // filter behavior in tui/layout.ts) — this filter only needs to keep
+  // 'workspace' rows generally, no idle-specific exclusion.
   const workspaceRows = createMemo(() =>
-    flattened().rows.filter((r): r is WorkspaceRow => r.kind === 'workspace' && r.status !== 'idle')
+    flattened().rows.filter((r): r is WorkspaceRow => r.kind === 'workspace')
   )
 
   // Flat workspaceId -> TreeWorkspace lookup, built directly from the raw
@@ -272,33 +277,31 @@ export function App(props: AppProps): JSX.Element {
       : dimensions().width
   )
 
-  // ---- Build Blocks: project headers, cards, and (view:all only) a
-  // trailing idle-box per project group. flattenTree() already interleaves
-  // project-header + workspace rows in the right order; this regroups
-  // consecutive workspace rows under the same header into (active cards) +
-  // (collapsed idle rows), preserving flattenTree's own ordering otherwise.
+  // ---- Build Blocks: project headers, cards, and (view:all only) idle
+  // rows — idle workspaces are ordinary, individually selectable 1-row
+  // blocks now (see IdleWorkspaceRow.tsx's file header), not a collapsed
+  // group, so this just maps each workspace row to its Block kind while
+  // preserving flattenTree's own ordering.
   //
   // EMPTY-PROJECT SUPPRESSION: flattenTree() (tui/layout.ts, out of scope —
   // deliberately, correctly, and test-locked) ALWAYS emits a project-header
   // row even for a project with zero workspaces. Rendering that bare header
   // with nothing under it is a presentation bug, not a data bug — fixed
   // HERE by buffering each project's own header+body into a pending group
-  // and only committing it to `out` once at least one workspace row (card
-  // or idle) actually survives the current view filter for that project.
-  // An empty project (zero workspaces, or all its workspaces filtered out
-  // under view:active) contributes NOTHING to the rendered list.
+  // and only committing it to `out` once at least one workspace row actually
+  // survives the current view filter for that project. An empty project
+  // (zero workspaces, or all its workspaces filtered out under view:active)
+  // contributes NOTHING to the rendered list.
   const blocks = createMemo((): Block[] => {
     const rows = flattened().rows
     const out: Block[] = []
     let renderedGroupCount = 0
 
     let pendingHeader: { projectId: string; projectName: string } | null = null
-    let pendingCards: Block[] = []
-    let pendingIdleRows: WorkspaceRow[] = []
+    let pendingBody: Block[] = []
 
     const commitPendingGroup = (): void => {
-      const hasBody = pendingCards.length > 0 || pendingIdleRows.length > 0
-      if (pendingHeader != null && hasBody) {
+      if (pendingHeader != null && pendingBody.length > 0) {
         out.push({
           kind: 'project-header',
           projectId: pendingHeader.projectId,
@@ -306,19 +309,10 @@ export function App(props: AppProps): JSX.Element {
           height: renderedGroupCount > 0 ? 2 : 1
         })
         renderedGroupCount++
-        out.push(...pendingCards)
-        if (pendingIdleRows.length > 0) {
-          out.push({
-            kind: 'idle-box',
-            projectId: pendingHeader.projectId,
-            rows: pendingIdleRows,
-            height: idleBoxHeight(pendingIdleRows.length)
-          })
-        }
+        out.push(...pendingBody)
       }
       pendingHeader = null
-      pendingCards = []
-      pendingIdleRows = []
+      pendingBody = []
     }
 
     for (const row of rows) {
@@ -327,11 +321,11 @@ export function App(props: AppProps): JSX.Element {
         pendingHeader = { projectId: row.projectId, projectName: row.projectName }
         continue
       }
-      if (view() === 'all' && row.status === 'idle') {
-        pendingIdleRows.push(row)
+      if (row.status === 'idle') {
+        pendingBody.push({ kind: 'idle-row', row, height: IDLE_ROW_HEIGHT })
         continue
       }
-      pendingCards.push({ kind: 'card', row, height: CARD_HEIGHT })
+      pendingBody.push({ kind: 'card', row, height: CARD_HEIGHT })
     }
     commitPendingGroup()
     return out
@@ -343,6 +337,21 @@ export function App(props: AppProps): JSX.Element {
   // whole scrolling session once windowing engages at all (never a variable
   // 0/1/2, so the content window's own height never changes mid-scroll —
   // same discipline as tui/layout.ts's scrollWindowFor).
+  //
+  // STICKY WINDOW START, NOT RECOMPUTED-FROM-SCRATCH PER SELECTION — a first
+  // version recomputed [start, end) fresh on every selection change via a
+  // "walk out from the selected block" pass; that recentered the window even
+  // when the newly-selected card was ALREADY fully visible, producing a
+  // spurious scroll (e.g. moving from card 1 to card 2 when both already fit
+  // on screen still shifted the window and popped a "more above" affordance
+  // that shouldn't have appeared — caught live via tui-mcp's adjacent-
+  // selection diff). Fixed by keeping `windowStartIndex` as PERSISTENT state
+  // (a signal, not a memo) that's only nudged the MINIMUM amount needed to
+  // bring the selected block back into view when it falls outside the
+  // current window — exactly scrollWindowFor's "keep in view, don't
+  // recenter" contract, just adapted to variable block heights.
+  const [windowStartIndex, setWindowStartIndex] = createSignal(0)
+
   const windowedBlocks = createMemo(
     (): {
       visible: Block[]
@@ -357,6 +366,7 @@ export function App(props: AppProps): JSX.Element {
         return { visible: [], aboveCount: all.length, belowCount: 0, windowed: all.length > 0 }
       }
       if (totalHeight <= budget) {
+        setWindowStartIndex(0)
         return { visible: all, aboveCount: 0, belowCount: 0, windowed: false }
       }
 
@@ -364,46 +374,73 @@ export function App(props: AppProps): JSX.Element {
       const selectedId = selectedWorkspaceId()
       const selectedBlockIndex = Math.max(
         0,
-        all.findIndex((b) => b.kind === 'card' && b.row.workspaceId === selectedId)
+        all.findIndex(
+          (b) => (b.kind === 'card' || b.kind === 'idle-row') && b.row.workspaceId === selectedId
+        )
       )
 
-      // Walk forward from the selected block accumulating height until the
-      // budget is exhausted, then walk backward the same way, biasing toward
-      // keeping the selection with a little leading context rather than
-      // pinned to the window's top edge.
-      let start = selectedBlockIndex
-      let end = selectedBlockIndex + 1
-      let used = all[selectedBlockIndex]?.height ?? 0
-      let growBefore = true
-      while (used < contentBudget && (start > 0 || end < all.length)) {
-        if (growBefore && start > 0) {
-          start--
-          used += all[start]!.height
-        } else if (end < all.length) {
-          used += all[end]!.height
-          end++
-        } else if (start > 0) {
-          start--
-          used += all[start]!.height
-        } else {
-          break
-        }
-        growBefore = !growBefore
+      // Clamp any prior start into the current block list's bounds first
+      // (a frame update / view toggle can change block count out from under
+      // a stale index).
+      let start = Math.min(windowStartIndex(), Math.max(0, all.length - 1))
+
+      const heightFrom = (from: number, to: number): number => {
+        let sum = 0
+        for (let i = from; i < to; i++) sum += all[i]!.height
+        return sum
       }
-      // If the walk overshot the budget (last block added pushed past it),
-      // trim from whichever edge is NOT the selected block.
-      while (used > contentBudget && end - start > 1) {
-        if (end - 1 > selectedBlockIndex) {
-          end--
-          used -= all[end]!.height
-        } else if (start < selectedBlockIndex) {
-          used -= all[start]!.height
-          start++
-        } else break
+      const endForStart = (s: number): number => {
+        let used = 0
+        let e = s
+        while (e < all.length && used + all[e]!.height <= contentBudget) {
+          used += all[e]!.height
+          e++
+        }
+        // Always show at least the selected block itself even if it alone
+        // exceeds contentBudget (shouldn't happen with a 3-line card + a
+        // realistic terminal height, but never render zero rows).
+        return Math.max(e, s + 1)
       }
 
-      const aboveHeight = all.slice(0, start).reduce((s, b) => s + b.height, 0)
-      const belowHeight = all.slice(end).reduce((s, b) => s + b.height, 0)
+      // Nudge `start` forward if the selection fell BELOW the current
+      // window's end, or backward if it fell ABOVE the current start —
+      // minimal adjustment, never a full recenter.
+      let end = endForStart(start)
+      if (selectedBlockIndex < start) {
+        start = selectedBlockIndex
+      } else if (selectedBlockIndex >= end) {
+        // Walk start forward just far enough that selectedBlockIndex is the
+        // LAST block that fits — mirrors how a real scrolling list reveals
+        // one more row at a time rather than jumping to center.
+        while (
+          start < selectedBlockIndex &&
+          heightFrom(start, selectedBlockIndex + 1) > contentBudget
+        ) {
+          start++
+        }
+      }
+      end = endForStart(start)
+      // If start is deep enough that the tail end no longer reaches the
+      // list's end but there's slack (budget not fully used) and room to
+      // pull start back down without losing the selection, prefer showing
+      // more content — mirrors clampWindowStart's maxStart clamp so the
+      // window never scrolls needlessly past the point where the remaining
+      // content still fills the budget.
+      while (
+        start > 0 &&
+        heightFrom(start - 1, endForStart(start - 1)) <= contentBudget &&
+        endForStart(start - 1) > selectedBlockIndex
+      ) {
+        const candidateEnd = endForStart(start - 1)
+        if (candidateEnd - 1 < selectedBlockIndex) break
+        start--
+        end = endForStart(start)
+      }
+
+      setWindowStartIndex(start)
+
+      const aboveHeight = heightFrom(0, start)
+      const belowHeight = heightFrom(end, all.length)
       return {
         visible: all.slice(start, end),
         aboveCount: aboveHeight > 0 ? Math.max(1, start) : 0,
@@ -568,10 +605,11 @@ export function App(props: AppProps): JSX.Element {
                                 />
                               )
                             }
-                            if (block.kind === 'idle-box') {
+                            if (block.kind === 'idle-row') {
                               return (
-                                <IdleBox
-                                  rows={block.rows}
+                                <IdleWorkspaceRow
+                                  row={block.row}
+                                  selected={block.row.workspaceId === selectedWorkspaceId()}
                                   width={cardAreaWidth()}
                                   palette={PALETTE}
                                 />

@@ -1295,17 +1295,6 @@ export function resolveEffectiveModelAndEffort(
   const global = getClaudeGlobalSettings()
   const projectScope = mergeProjectOverrides(global, projectId)
   const workspaceScope = mergeWorkspaceOverrides(projectScope.s, workspaceId)
-  if (process.env.ORPHEUS_DEBUG_MODEL_EFFORT === '1') {
-    console.warn(
-      '[DEBUG resolveEffectiveModelAndEffort]',
-      JSON.stringify({
-        workspaceId,
-        projectId,
-        wsSettingsRaw: getClaudeWorkspaceSettings(workspaceId),
-        result: { model: workspaceScope.s.model, effort: workspaceScope.s.effort }
-      })
-    )
-  }
   return { model: workspaceScope.s.model, effort: workspaceScope.s.effort }
 }
 

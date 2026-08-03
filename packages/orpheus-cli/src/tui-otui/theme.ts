@@ -44,10 +44,7 @@
  * lookup counts as verification. Every glyph below is either from the
  * pre-verified safe list (Na/N basic ASCII punctuation, plus `…` U+2026 and
  * `⎇`/`»` which were separately confirmed Narrow) or was independently
- * looked up (see the final report for the exact lookups performed for this
- * pass, e.g. the ASCII idle-box punctuation: `,` U+002C Na, backtick U+0060
- * Na, `'` U+0027 Na — plain ASCII, not to be confused with the curly
- * U+2018/2019 quotes, which ARE ambiguous).
+ * looked up against the same file.
  */
 
 export interface Palette {
@@ -164,37 +161,6 @@ export const RULE_CHAR = '-'
  * already verified above as the gutter rune).
  */
 export const VRULE_CHAR = '|'
-
-/**
- * Idle-collapse box border glyphs (view:all only — see WorkspaceCard.tsx's
- * IdleBox). All plain ASCII punctuation, independently verified against
- * EastAsianWidth.txt for this pass (not assumed from "looks narrow"):
- *   `,` U+002C COMMA — Na
- *   `-` U+002D HYPHEN-MINUS — Na (already verified above)
- *   `.` U+002E FULL STOP — Na
- *   `` ` `` U+0060 GRAVE ACCENT — Na
- *   `'` U+0027 APOSTROPHE (straight ASCII quote, NOT the curly U+2018/2019
- *     quotes, which ARE ambiguous — do not substitute those in) — Na
- *   `|` U+007C VERTICAL LINE — Na (already verified above as the gutter rune)
- * This deliberately avoids the rounded Unicode box-drawing set (╭╮╰╯, in the
- * U+25xx range) without justification — per the brief, box-drawing
- * characters in that range are frequently Ambiguous and were not checked
- * individually since this ASCII substitute avoids the question entirely.
- */
-// Corners are single characters (not "corner + dash" pairs) — the dash run
-// itself is generated separately by IdleBox.tsx from ONE shared width
-// computation, so the top/bottom rule and the content rows can never drift
-// out of sync the way a "corner already includes a dash" encoding invited
-// (see IdleBox.tsx's file header for the exact bug this fixes: the old
-// 2-char `,-`/`` `- `` corners double-counted a column against
-// innerWidth, silently overflowing the box by 1 column and clipping the
-// closing corner off the right edge).
-export const IDLE_BOX_TOP_LEFT = ','
-export const IDLE_BOX_TOP_RIGHT = '.'
-export const IDLE_BOX_BOTTOM_LEFT = '`'
-export const IDLE_BOX_BOTTOM_RIGHT = "'"
-export const IDLE_BOX_HRULE = '-'
-export const IDLE_BOX_VRULE = '|'
 
 /** Gutter width in characters: always 1 — the reserved-gutter-slot
  *  technique (task brief's "reserve the slot, swap the rune"). Kept as a
