@@ -409,6 +409,10 @@ const commandServerSource = fs.readFileSync(
   path.join(repoRoot, 'src/main/commandServer.ts'),
   'utf8'
 )
+const subscribeTimeoutSource = fs.readFileSync(
+  path.join(repoRoot, 'src/main/subscribeTimeout.ts'),
+  'utf8'
+)
 assert.match(commandServerSource, /workspaceOrchestration\.create/)
 assert.match(commandServerSource, /workspaceOrchestration\.startTask/)
 assert.match(commandServerSource, /workspaceOrchestration\.open/)
@@ -422,7 +426,14 @@ assert.match(
   /if \(taskText == null\) \{[\s\S]*?deps\.requestOpenWorkspace\(workspaceId, focus\)[\s\S]*?\} else if \(submit\)/
 )
 assert.match(commandServerSource, /key != null \|\| text == null/)
-assert.match(commandServerSource, /SERVER_MAX_TIMEOUT_MS = 60 \* 60 \* 1000/)
+// SERVER_MAX_TIMEOUT_MS moved OUT of commandServer.ts and into
+// subscribeTimeout.ts when the subscription-timeout logic was extracted
+// there; this assertion kept reading commandServerSource and so had been
+// failing against the extracted layout (the name survives in
+// commandServer.ts only inside a comment). The invariant it guards — the
+// 1h server-side subscription cap — is still real, so it follows the
+// constant to its new home rather than being dropped.
+assert.match(subscribeTimeoutSource, /SERVER_MAX_TIMEOUT_MS = 60 \* 60 \* 1000/)
 assert.match(commandServerSource, /req\.socket\.setTimeout\(0\)/)
 assert.match(commandServerSource, /JSON\.stringify\(frame\) \+ '\\n'/)
 assert.match(commandServerSource, /legacyWaitReason\(until, observation\)/)
