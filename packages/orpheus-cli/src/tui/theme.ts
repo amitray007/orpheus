@@ -281,10 +281,10 @@ export const KEYMAP_SEPARATOR = '   '
 
 /** Worktree-branch marker, prefixed to line 3 of a WorkspaceCard
  *  (`⎇ branch`) — U+2387, confirmed Narrow (N) in EastAsianWidth.txt. NOT
- *  the same export as layout.ts's own `WORKTREE_GLYPH` (`»`, used by the
- *  older WorkspaceRow.tsx one-line-row renderer) — that's a different
- *  glyph for a different (soon-to-be-dead) component; this one is what
- *  WorkspaceCard.tsx actually imports and renders. */
+ *  the same export as layout.ts's `ROW_WORKTREE_GLYPH` (`»`) — that was the
+ *  old one-line-row renderer's glyph (WorkspaceRow.tsx, deleted in the card
+ *  redesign) and is unused now; this one is what WorkspaceCard.tsx actually
+ *  imports and renders. */
 export const WORKTREE_GLYPH = '⎇'
 
 /** Horizontal rule character (Rule.tsx). Was `─` (U+2500 BOX DRAWINGS LIGHT

@@ -23,7 +23,14 @@ import type { TreeFrame, TreeProject, TreeWorkspace, WorkspaceStatus } from './t
 export const ATTENTION_GLYPH = '!'
 export const WORKING_GLYPH = '●'
 export const IDLE_GLYPH = '○'
-export const WORKTREE_GLYPH = '»'
+/** Worktree marker for the old one-line-row renderer (WorkspaceRow.tsx,
+ *  deleted in the Ink card-redesign port). Unused by any current component —
+ *  the card design's own worktree marker is theme.ts's `WORKTREE_GLYPH`
+ *  (`⎇`), a DIFFERENT constant with the same name in a different module.
+ *  Kept (not deleted) since it's covered by no test either way and this file
+ *  is otherwise additive-only; renamed so the two never look like the same
+ *  export imported from two places. */
+export const ROW_WORKTREE_GLYPH = '»'
 export const CHILD_INDENT = '└ '
 
 /** Status → single-width glyph. awaiting_input and idle intentionally share

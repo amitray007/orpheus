@@ -12,6 +12,10 @@
  * breakpoint-conditional structure is the wide-tier (>=120 cols)
  * master/detail split: cards on the left, DetailPane + VRule on the right.
  *
+ * BREAKPOINT RESOLUTION — cardBreakpoints.ts, NOT layout.ts's
+ * resolveBreakpoint. The two disagree on where "narrow" ends (59 vs 51) —
+ * see cardBreakpoints.ts's file header for the real gap this closes.
+ *
  * VARIABLE-HEIGHT BLOCK WINDOWING — blocks.ts's buildBlocks()/windowBlocks(),
  * NOT layout.ts's scrollWindowFor (which assumes one row per DisplayRow and
  * cannot window 3-line cards). flattenTree() from layout.ts is still reused
@@ -53,13 +57,13 @@ import { useMemo, useState, useSyncExternalStore } from 'react'
 import { Box, Text, useInput, useWindowSize } from 'ink'
 import {
   flattenTree,
-  resolveBreakpoint,
   truncate,
   type Breakpoint,
   type DisplayRow,
   type Filter,
   type ProjectScope
 } from './layout.js'
+import { CARD_MEDIUM_MAX, resolveCardBreakpoint } from './cardBreakpoints.js'
 import { buildBlocks, windowBlocks, type Block } from './blocks.js'
 import { frameStore } from './frameStore.js'
 import { connectionStore } from './connectionStore.js'
@@ -89,9 +93,12 @@ const VRULE_WIDTH = 1
  *  blocks.ts's file header for why this is a caller-supplied parameter
  *  rather than a constant baked into that module. */
 const CARD_HEIGHT = 3
-/** Master/detail split engages at this width — matches the OpenTUI build's
- *  own wide-tier threshold (tui-otui/breakpoints.ts's OTUI_MEDIUM_MAX + 1). */
-const WIDE_MIN_COLUMNS = 120
+/** Master/detail split engages at this width — one more than
+ *  cardBreakpoints.ts's own CARD_MEDIUM_MAX, so this can never drift out of
+ *  sync with resolveCardBreakpoint()'s own wide-tier threshold the way the
+ *  hardcoded 120 previously could (see cardBreakpoints.ts's file header for
+ *  the bug that caused). */
+const WIDE_MIN_COLUMNS = CARD_MEDIUM_MAX + 1
 
 type WorkspaceDisplayRow = Extract<DisplayRow, { kind: 'workspace' }>
 
@@ -312,7 +319,7 @@ export function App({ scope, onOpen, onQuit }: AppProps): React.JSX.Element {
     handleViewKey(input, setView)
   })
 
-  const breakpoint = resolveBreakpoint(columns)
+  const breakpoint = resolveCardBreakpoint(columns)
   const isWide = columns >= WIDE_MIN_COLUMNS
 
   const headerReserved = headerReservedFor(breakpoint)
