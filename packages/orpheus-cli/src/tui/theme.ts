@@ -355,6 +355,11 @@ export const CARD_PAD_GUTTER = 1
  *  on the left so the tinted block is symmetrically inset from its content. */
 export const CARD_PAD_RIGHT = 1
 
+/** Blank rows BELOW each card, separating it from the next. Lives here rather
+ *  than in App.tsx so the card component (which renders the row) and the
+ *  windowing height (which must budget for it) read the same constant. */
+export const CARD_SEPARATOR_ROWS = 1
+
 /** Card gutter content — see CARD_GUTTER_SELECTED. */
 export function cardGutterFor(selected: boolean): string {
   return selected ? CARD_GUTTER_SELECTED : CARD_GUTTER_EMPTY

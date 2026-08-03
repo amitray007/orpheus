@@ -50,7 +50,8 @@ import {
   cardGutterFor,
   CARD_GUTTER_WIDTH,
   CARD_PAD_GUTTER,
-  CARD_PAD_RIGHT
+  CARD_PAD_RIGHT,
+  CARD_SEPARATOR_ROWS
 } from '../theme.js'
 import type { Palette } from '../theme.js'
 import { displayTitleFor, truncate, type DisplayRow } from '../layout.js'
@@ -183,6 +184,12 @@ export function WorkspaceCard({
         </Text>
         {tailPad}
       </Box>
+      {/* Separator row — UNTINTED even when selected, so the highlight ends
+          with the card's own content and the gap reads as space BETWEEN
+          cards rather than as a trailing empty line inside the selected one.
+          Counted in App.tsx's CARD_HEIGHT, so blocks.ts windows it with the
+          card it belongs to. */}
+      <Box height={CARD_SEPARATOR_ROWS} flexShrink={0} />
     </Box>
   )
 }

@@ -75,7 +75,7 @@ import { ProjectGroupHeader } from './components/ProjectGroupHeader.js'
 import { WorkspaceCard } from './components/WorkspaceCard.js'
 import { ScrollAffordance } from './components/ScrollAffordance.js'
 import { DetailPane } from './components/DetailPane.js'
-import { activePalette, VRULE_PAD_X } from './theme.js'
+import { activePalette, VRULE_PAD_X, CARD_SEPARATOR_ROWS } from './theme.js'
 import type { Palette } from './theme.js'
 import type { TreeWorkspace } from './types.js'
 
@@ -96,7 +96,17 @@ const FRAME_PAD_X = 1
 /** Every workspace card is exactly this many terminal rows — see
  *  blocks.ts's file header for why this is a caller-supplied parameter
  *  rather than a constant baked into that module. */
-const CARD_HEIGHT = 3
+/** Card rows: 3 lines of content + 1 blank separator BELOW each card.
+ *
+ *  Without the separator, consecutive cards butt directly against each other
+ *  and a list of four reads as one unbroken 12-line block — the selection
+ *  rail marks which card is current, but nothing marks where any OTHER card
+ *  starts or ends. The blank row is part of the card's own height (rather
+ *  than a gap the list inserts between siblings) so blocks.ts's windowing
+ *  arithmetic stays a simple sum and a partially-scrolled card can never
+ *  strand its separator on its own. */
+const CARD_CONTENT_ROWS = 3
+const CARD_HEIGHT = CARD_CONTENT_ROWS + CARD_SEPARATOR_ROWS
 /** Master/detail split engages at this width — one more than
  *  cardBreakpoints.ts's own CARD_MEDIUM_MAX, so this can never drift out of
  *  sync with resolveCardBreakpoint()'s own wide-tier threshold the way the
