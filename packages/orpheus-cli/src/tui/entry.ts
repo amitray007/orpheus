@@ -333,13 +333,66 @@ function waitForKeypress(): Promise<void> {
   })
 }
 
+/** Alternate-screen control sequences, written directly rather than pulled
+ *  from a dependency: `orpheus-cli` has no runtime deps (see its
+ *  package.json), and these two are the most stable escapes in the terminal
+ *  world — the same `smcup`/`rmcup` (`\e[?1049h` / `\e[?1049l`) Ink itself
+ *  writes via ansi-escapes, and that tmux writes on attach. Entering while
+ *  already on the alternate screen is a no-op, so the nesting below is safe. */
+const ENTER_ALT_SCREEN = '[?1049h'
+const EXIT_ALT_SCREEN = '[?1049l'
+
+/**
+ * Hold the alternate screen across the picker -> tmux handover.
+ *
+ * THE FLASH THIS FIXES: runPickerOnce()'s `.finally()` calls
+ * `instance.unmount()`, and Ink's teardown unconditionally writes
+ * exitAlternativeScreen (ink/build/ink.js) — restoring the user's ordinary
+ * terminal and scrollback. Only THEN does hostAndAttach() run, and its first
+ * act is a `workspace.host` round trip over the socket that may create a
+ * tmux session server-side. For that whole window the user is looking at
+ * their normal shell, which reads as "the TUI just exited" — then tmux
+ * spawns, enters its OWN alternate screen, and the workspace appears.
+ *
+ * Re-entering the alternate screen immediately (before the round trip) means
+ * the normal terminal is never revealed: we hand tmux an already-alternate
+ * screen to paint over. Ink cannot do this for us — `alternateScreen` is a
+ * private constructor-time option with no runtime toggle, so the sequence is
+ * written here instead.
+ *
+ * Returns a restore function that leaves the alternate screen again, for the
+ * paths that must NOT hand off to tmux (a hosting failure that needs its
+ * error read on the real terminal). The happy path deliberately does NOT
+ * call it: tmux owns the screen from attach until detach, and leaving the
+ * buffer on its way in would reintroduce the very flash this removes.
+ */
+function holdAlternateScreen(): () => void {
+  if (process.stdout.isTTY !== true) return () => {}
+  process.stdout.write(ENTER_ALT_SCREEN)
+  let restored = false
+  return () => {
+    if (restored) return
+    restored = true
+    process.stdout.write(EXIT_ALT_SCREEN)
+  }
+}
+
 /** Host the workspace in tmux (via the running app) and attach, inheriting stdio. */
 async function hostAndAttach(workspaceId: string): Promise<void> {
+  // Taken BEFORE the workspace.host round trip — that request is the longest
+  // part of the gap Ink's unmount opens up (it can create a tmux session
+  // server-side), so covering it is the whole point. See holdAlternateScreen.
+  const releaseAlternateScreen = holdAlternateScreen()
+
   let hostResult: WorkspaceHostResult
   try {
     const result = await sendCommand('workspace.host', { id: workspaceId })
     hostResult = result as WorkspaceHostResult
   } catch (err) {
+    // Drop back to the REAL terminal before printing: this error and its
+    // "press any key" prompt have to survive on screen, and anything written
+    // to the alternate screen vanishes the moment we leave it.
+    releaseAlternateScreen()
     process.stderr.write(`orpheus: failed to host workspace: ${errorMessage(err)}\n`)
     process.stderr.write('press any key to return to the picker…\n')
     await waitForKeypress()
@@ -388,6 +441,10 @@ async function hostAndAttach(workspaceId: string): Promise<void> {
       child.once('error', (err) => {
         // e.g. tmux isn't installed (ENOENT) — surface it rather than crashing
         // the whole TUI, then fall through to the "press any key" wait below.
+        // Leave the held alternate screen first for the same reason the
+        // host-failure path above does: a message written to a buffer we're
+        // about to abandon is a message the user never reads.
+        releaseAlternateScreen()
         process.stderr.write(`orpheus: could not run tmux: ${errorMessage(err)}\n`)
         resolve()
       })
@@ -397,6 +454,24 @@ async function hostAndAttach(workspaceId: string): Promise<void> {
     // stdin paused, or the picker would render but ignore every keypress.
     if (stdin.isTTY === true) stdin.setRawMode(hadRawMode)
     stdin.resume()
+
+    // BALANCE THE HELD ALTERNATE SCREEN before looping back to the picker.
+    //
+    // tmux writes its own rmcup as it detaches, which returns the terminal
+    // to the buffer WE entered above — not to the user's normal screen. If
+    // that enter were left unbalanced, the next runPickerOnce() would mount
+    // Ink (whose own enter is a no-op, since we're already alternate) and
+    // its eventual unmount would write a single exit, landing the user on
+    // the normal screen with our extra enter still outstanding — the buffer
+    // stack drifts one deeper on every open/detach cycle.
+    //
+    // Releasing here keeps enters and exits matched 1:1 per iteration. It
+    // costs no visible flash on this path: the picker is about to re-enter
+    // the alternate screen microseconds later, with no socket round trip in
+    // between (unlike the outbound direction this whole mechanism exists to
+    // cover). Idempotent, so the error paths that already released are
+    // unaffected.
+    releaseAlternateScreen()
   }
 }
 
