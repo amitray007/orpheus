@@ -6,8 +6,8 @@
 // mirrors scripts/verify-tui-layout.ts's/verify-tui-blocks.ts's own
 // no-Ink/no-TTY/no-socket constraint. wizardLayout.ts imports nothing from
 // react/ink, so this exercises exactly the same functions
-// NewWorkspaceWizard.tsx and its step components (ListStep/NameStep/
-// ConfirmStep) consume, with no component mounted and no terminal involved.
+// NewWorkspaceWizard.tsx and its step components (ListStep/ConfirmStep)
+// consume, with no component mounted and no terminal involved.
 //
 // WHY THIS SCRIPT EXISTS AT ALL (see wizardLayout.ts's own file header):
 // the wizard is a phone-first, full-screen flow whose entire reason to exist
@@ -244,20 +244,33 @@ function testBuildClosePromptLine(): void {
 }
 
 /**
- * buildCreateArgs — the workspace.create payload. The load-bearing
- * assertion here is `focus: false`: workspace.create defaults `focus` to
- * TRUE server-side, which makes the DESKTOP app raise and foreground the
- * new workspace. That's right for the GUI's own create flow and wrong for
- * the TUI's, whose primary client is a phone over SSH — creating a
- * workspace from there must not yank the user's Mac to the front. Nothing
- * in the type system enforces it (the payload is Record<string, unknown>),
- * so it's asserted here instead.
+ * buildCreateArgs — the workspace.create payload. Two load-bearing
+ * assertions here:
+ *
+ * 1. `focus: false` — workspace.create defaults `focus` to TRUE
+ *    server-side, which makes the DESKTOP app raise and foreground the new
+ *    workspace. That's right for the GUI's own create flow and wrong for
+ *    the TUI's, whose primary client is a phone over SSH — creating a
+ *    workspace from there must not yank the user's Mac to the front.
+ *
+ * 2. `name` is ALWAYS present and non-empty — the wizard has no name-entry
+ *    step (removed; see wizardTypes.ts's header for why) and must never omit
+ *    `name` entirely, because an omitted name makes the server default to
+ *    the literal string 'New workspace' (DEFAULT_WORKSPACE_NAME in
+ *    src/main/workspaceOrchestration/service.ts), and several workspaces
+ *    created back to back would then be indistinguishable in the picker
+ *    until Claude emits its own terminal title. The generated name must
+ *    include the project name so it's still distinguishable across
+ *    different projects, and it's derived from `state.project.name`, not
+ *    typed by the user.
+ *
+ * Nothing in the type system enforces either — the payload is
+ * Record<string, unknown> — so both are asserted here instead.
  */
 function testBuildCreateArgs(): void {
   const project = { id: 'p1', name: 'orpheus', cwd: '/tmp/orpheus' }
   const base = {
     project,
-    name: '',
     mode: null,
     selectedModel: null
   } as unknown as Parameters<typeof buildCreateArgs>[0]
@@ -267,25 +280,44 @@ function testBuildCreateArgs(): void {
   assert.equal(args.projectId, 'p1', 'project id is threaded through')
   assert.equal(args.cwd, '/tmp/orpheus', 'project cwd is threaded through')
   assert.equal(args.mode, 'local', 'absent mode falls back to local')
-  assert.ok(!('name' in args), 'an empty name is OMITTED so the server can default it')
+  assert.ok('name' in args, 'a name is ALWAYS sent — never omitted for the server to default')
+  assert.equal(typeof args.name, 'string', 'the generated name is a string')
+  assert.ok((args.name as string).length > 0, 'the generated name is non-empty')
+  assert.ok(
+    (args.name as string).includes(project.name),
+    'the generated name includes the project name, so back-to-back creates stay distinguishable'
+  )
   assert.ok(!('model' in args), 'no model selected means no model key')
 
-  // A named/worktree/model-bearing create carries all three through, and
-  // still never foregrounds.
+  // A worktree/model-bearing create carries mode/model through, and still
+  // never foregrounds and still always names.
   const full = buildCreateArgs({
     ...base,
-    name: 'my-ws',
     mode: 'worktree',
     selectedModel: { id: 'claude-opus-5' }
   } as unknown as Parameters<typeof buildCreateArgs>[0])
   assert.equal(full.focus, false, 'focus stays false regardless of the other fields')
-  assert.equal(full.name, 'my-ws', 'a non-empty name is sent')
+  assert.ok(
+    typeof full.name === 'string' && full.name.length > 0 && full.name.includes(project.name),
+    'name is still generated and non-empty regardless of mode/model'
+  )
   assert.equal(full.mode, 'worktree', 'worktree mode is sent')
   assert.equal(full.model, 'claude-opus-5', 'the selected model id is sent')
 
+  // Two calls in quick succession (simulating two workspaces created
+  // back-to-back) must both carry a name that includes the project name —
+  // the whole point of generating rather than omitting.
+  const first = buildCreateArgs(base)
+  const second = buildCreateArgs(base)
+  assert.ok(
+    (first.name as string).includes(project.name) && (second.name as string).includes(project.name),
+    'repeated creates for the same project both get a distinguishable, project-scoped name'
+  )
+
   console.log(
     '✓ buildCreateArgs: always sends focus:false (never foregrounds the desktop from a phone), ' +
-      'omits an empty name so the server defaults it, and threads mode/model/cwd through'
+      'always sends a non-empty generated name that includes the project name (never omitted, ' +
+      'never left to the server default), and threads mode/model/cwd through'
   )
 }
 

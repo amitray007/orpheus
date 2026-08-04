@@ -40,9 +40,15 @@
  * 'model-detail' (drilled into a provider's own model list) is NOT "later"
  * for this purpose even though it comes chronologically after
  * 'model-provider' — esc there returns to 'model-provider', not to the
- * picker, because it's the SAME logical step (Step 1) as the task brief
- * describes it ("esc on later steps goes back one step" — 'model-detail'
- * going back to 'model-provider' IS one step back within Step 1).
+ * picker, because it's the SAME logical step (Step 1) — 'model-detail' going
+ * back to 'model-provider' IS one step back within Step 1.
+ *
+ * The wizard is a 3-step flow — model (Step 1, two screens) -> mode (Step 2,
+ * conditionally skipped) -> confirm (Step 3). It used to have a fourth,
+ * name-entry step between model-detail and mode; that step was removed (see
+ * wizardTypes.ts's header for why) and every esc/confirm-skip target that
+ * used to point at 'name' now points at 'model-detail' instead, since that's
+ * the step immediately before mode in the shortened chain.
  *
  * WHY BOTH ASYNC CALLS FIRE IMMEDIATELY ON OPEN, NOT LAZILY PER STEP
  * -----------------------------------------------------------------------
@@ -68,7 +74,6 @@ import {
   groupModelsByProvider,
   handleModelStepKey,
   handleModeStepKey,
-  handleNameStepKey,
   initialWizardState,
   modeStepNeeded,
   resolveDefaultMode,
@@ -168,15 +173,18 @@ function useWizardData(
 }
 
 /**
- * Resolve the confirm screen's esc target: 'mode' if Step 3 was actually
- * shown (both modes offered), else 'name' — mirrors the auto-skip effect's
- * own "was mode really a choice" check so backing out of confirm always
- * lands on whichever step the user actually saw.
+ * Resolve the confirm screen's esc target: 'mode' if Step 2 was actually
+ * shown (both modes offered), else 'model-detail' — mirrors the auto-skip
+ * effect's own "was mode really a choice" check so backing out of confirm
+ * always lands on whichever step the user actually saw. 'model-detail' (not
+ * 'model-provider') is the fallback because it's the step immediately before
+ * mode in the current chain — going back further would skip past the user's
+ * already-drilled-in model list.
  */
-function confirmEscapeTarget(state: WizardState): 'mode' | 'name' {
+function confirmEscapeTarget(state: WizardState): 'mode' | 'model-detail' {
   return state.offeredModes.kind === 'ready' && modeStepNeeded(state.offeredModes.value)
     ? 'mode'
-    : 'name'
+    : 'model-detail'
 }
 
 export function NewWorkspaceWizard({
@@ -188,14 +196,14 @@ export function NewWorkspaceWizard({
   const [state, setState] = useState<WizardState>(() => initialWizardState(project))
   useWizardData(project, setState)
 
-  // AUTO-SKIP STEP 3 — once offeredModes resolves (or errors) and the
+  // AUTO-SKIP STEP 2 — once offeredModes resolves (or errors) and the
   // wizard has reached 'mode', immediately resolve which mode to use and
   // jump straight to 'confirm' if the project doesn't offer a real choice.
   // Lives in an effect (not inline in the key handler) because it must also
   // fire if offeredModes finishes loading WHILE the user is already sitting
-  // on the name step and then presses enter — the transition into 'mode' can
-  // happen before or after the data resolves, and either ordering must reach
-  // the same outcome.
+  // on the model-detail step and then presses enter — the transition into
+  // 'mode' can happen before or after the data resolves, and either ordering
+  // must reach the same outcome.
   useEffect(() => {
     if (state.step !== 'mode') return
     if (state.offeredModes.kind === 'loading') return
@@ -219,10 +227,6 @@ export function NewWorkspaceWizard({
       // always reports "no workspace" rather than forwarding onDone's
       // create-id argument (which handleModelStepKey has no way to supply).
       handleModelStepKey(input, key, state, setState, () => onDone(null))
-      return
-    }
-    if (state.step === 'name') {
-      handleNameStepKey(input, key, setState)
       return
     }
     if (state.step === 'mode') {

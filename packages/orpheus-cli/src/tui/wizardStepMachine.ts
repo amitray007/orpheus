@@ -24,6 +24,7 @@
  */
 
 import type { Key } from 'ink'
+import { truncate } from './layout.js'
 import type {
   AsyncSlot,
   OfferedModes,
@@ -69,10 +70,10 @@ export function groupModelsByProvider(models: SelectableModel[]): ProviderGroup[
 }
 
 /**
- * Whether Step 3 (mode choice) should actually be shown, per the task
- * brief: only when BOTH local and worktree are offered. A slot that's still
- * loading is treated as "not yet decided" (callers must not call this before
- * checking `offeredModes.kind === 'ready'`); a slot that errored degrades to
+ * Whether Step 2 (mode choice) should actually be shown: only when BOTH
+ * local and worktree are offered. A slot that's still loading is treated as
+ * "not yet decided" (callers must not call this before checking
+ * `offeredModes.kind === 'ready'`); a slot that errored degrades to
  * "skip the step, default to local" (see resolveDefaultMode below) — this
  * function only answers the ready case.
  */
@@ -81,9 +82,9 @@ export function modeStepNeeded(offeredModes: OfferedModes): boolean {
 }
 
 /**
- * The mode to use when Step 3 is skipped (either because the project only
- * offers one mode, or because `project.offeredModes` itself failed — see the
- * task brief's "treat like only one mode offered, degrade to local" note).
+ * The mode to use when Step 2 is skipped (either because the project only
+ * offers one mode, or because `project.offeredModes` itself failed — degrade
+ * to "treat like only one mode offered, default to local").
  * Prefers whichever single mode IS offered over a bare 'local' guess, so a
  * worktree-only project (if that combination is ever possible) still gets
  * the right default instead of one the server would reject.
@@ -103,8 +104,6 @@ export function initialWizardState(project: WizardProject): WizardState {
     providerIndex: 0,
     modelIndex: 0,
     selectedModel: null,
-    name: '',
-    namePos: 0,
     modeIndex: 0,
     mode: null,
     submitting: false,
@@ -210,55 +209,15 @@ function handleModelListKey(
     // Footer.notice pattern) since the row's own dimmed/marked rendering
     // already explains why nothing happened.
     if (model != null && model.available) {
-      setState((s) => ({ ...s, selectedModel: model, step: 'name' }))
+      setState((s) => ({ ...s, selectedModel: model, step: 'mode' }))
     }
   }
 }
 
-/** Step 2 (name) key handling — a hand-rolled text buffer, see
- *  components/wizard/NameStep.tsx. */
-export function handleNameStepKey(input: string, key: Key, setState: SetWizardState): void {
-  if (key.escape) {
-    setState((s) => ({ ...s, step: 'model-detail' }))
-    return
-  }
-  if (key.return) {
-    setState((s) => ({ ...s, step: 'mode' }))
-    return
-  }
-  if (key.leftArrow) {
-    setState((s) => ({ ...s, namePos: Math.max(0, s.namePos - 1) }))
-    return
-  }
-  if (key.rightArrow) {
-    setState((s) => ({ ...s, namePos: Math.min(s.name.length, s.namePos + 1) }))
-    return
-  }
-  if (key.backspace || key.delete) {
-    setState((s) => {
-      if (s.namePos === 0) return s
-      const name = s.name.slice(0, s.namePos - 1) + s.name.slice(s.namePos)
-      return { ...s, name, namePos: s.namePos - 1 }
-    })
-    return
-  }
-  // Printable character — Ink reports control/navigation keys via the `key`
-  // object with `input` either empty or a non-printable escape sequence, so
-  // gating on `input.length > 0` (after the above control-key checks have
-  // all already returned) is the same discipline App.tsx's own useInput
-  // relies on implicitly by only checking specific `input === 'x'` values.
-  if (input.length > 0) {
-    setState((s) => {
-      const name = s.name.slice(0, s.namePos) + input + s.name.slice(s.namePos)
-      return { ...s, name, namePos: s.namePos + input.length }
-    })
-  }
-}
-
-/** Step 3 (mode) key handling. */
+/** Step 2 (mode) key handling. */
 export function handleModeStepKey(key: Key, input: string, setState: SetWizardState): void {
   if (key.escape) {
-    setState((s) => ({ ...s, step: 'name' }))
+    setState((s) => ({ ...s, step: 'model-detail' }))
     return
   }
   if (key.downArrow || input === 'j') {
@@ -278,18 +237,47 @@ export function handleModeStepKey(key: Key, input: string, setState: SetWizardSt
   }
 }
 
+/** Cap on the project-name portion of a generated workspace name — see
+ *  `generateDefaultName` below. Chosen defensively: project names are
+ *  user-controlled and unbounded, but `<name> HH:MM` must stay well under
+ *  the wizard's 38-column phone-width budget wherever it's later displayed
+ *  (the picker list), so the project-name portion alone is capped here well
+ *  short of that. */
+const GENERATED_NAME_PROJECT_CAP = 24
+
+/**
+ * Generate the default workspace name: `<project name> HH:MM`, local
+ * 24-hour time, e.g. `orpheus 14:32`. Called once per `buildCreateArgs`
+ * invocation (itself called once, at submit time) — never in a render path,
+ * so there's no need to memoize or store the result back in `WizardState`.
+ * Uses `truncate` from layout.ts (the same "..." ellipsis convention used
+ * throughout this package, never the banned U+2026 character) so a long
+ * project name degrades the same way every other truncated string in this
+ * UI does, rather than inventing a second convention.
+ */
+function generateDefaultName(projectName: string, now: Date): string {
+  const hh = String(now.getHours()).padStart(2, '0')
+  const mm = String(now.getMinutes()).padStart(2, '0')
+  const project = truncate(projectName, GENERATED_NAME_PROJECT_CAP)
+  return `${project} ${hh}:${mm}`
+}
+
 /** Build the `workspace.create` args object from the wizard's collected
- *  state — omits `name`/`branch` entirely rather than sending an empty
- *  string, matching commandServer.ts's own `typeof === 'string' && !== ''`
- *  gate (an omitted key and an empty string are equivalent there, but
- *  omitting is the cleaner signal — see the task brief). No `branch` is ever
- *  sent: the 4-step flow deliberately has no branch-entry step, so worktree
- *  mode always auto-derives the branch server-side. */
+ *  state. `name` is ALWAYS set to a generated value (project name + local
+ *  HH:MM time — see `generateDefaultName`), never omitted: the wizard has no
+ *  name-entry step, and if `name` were left out entirely the server would
+ *  default every workspace to the literal string 'New workspace', making
+ *  several workspaces created back to back indistinguishable in the picker
+ *  until Claude emits its own terminal title. `branch` is still omitted
+ *  entirely rather than sent as an empty string, matching commandServer.ts's
+ *  own `typeof === 'string' && !== ''` gate: this flow has no branch-entry
+ *  step, so worktree mode always auto-derives the branch server-side. */
 export function buildCreateArgs(state: WizardState): Record<string, unknown> {
   const args: Record<string, unknown> = {
     projectId: state.project.id,
     cwd: state.project.cwd,
     mode: state.mode ?? 'local',
+    name: generateDefaultName(state.project.name, new Date()),
     // focus:false — workspace.create defaults `focus` to TRUE, which makes
     // the DESKTOP app raise and foreground the new workspace
     // (activateLegacyCreatedWorkspace -> requestOpenWorkspace(id, focus) in
@@ -302,7 +290,6 @@ export function buildCreateArgs(state: WizardState): Record<string, unknown> {
     // desktop to get there.
     focus: false
   }
-  if (state.name.length > 0) args.name = state.name
   if (state.selectedModel != null) args.model = state.selectedModel.id
   return args
 }

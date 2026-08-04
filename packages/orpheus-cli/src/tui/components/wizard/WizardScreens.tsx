@@ -3,8 +3,10 @@
  * NewWorkspaceWizard.tsx, split out for the same reason PickerBody is its
  * own extraction in App.tsx: keeping this branching out of the top-level
  * component's own body is what keeps that component's cognitive complexity
- * under the sonarjs budget (20) once the wizard grew five distinct step
+ * under the sonarjs budget (20) once the wizard grew four distinct step
  * screens (two for Step 1 alone: provider list + drilled-in model list).
+ * (A fifth screen, a name-entry step, existed here and was deliberately
+ * removed — see wizardTypes.ts's header for why.)
  *
  * WizardBody is the only export other files need — it fully hides the
  * loading/error/ready branching each async-backed screen (model-provider,
@@ -16,7 +18,6 @@ import { Box, Text } from 'ink'
 import { CARD_GUTTER_WIDTH, CARD_PAD_GUTTER } from '../../theme.js'
 import type { Palette } from '../../theme.js'
 import { ListStep, type ListRow } from './ListStep.js'
-import { NameStep } from './NameStep.js'
 import { ConfirmStep } from './ConfirmStep.js'
 import { STEP_MODEL_PROVIDER, MODE_KEYS } from '../../wizardStepMachine.js'
 import type { AsyncSlot, ProviderGroup, WizardState } from '../../wizardTypes.js'
@@ -169,9 +170,6 @@ export function WizardBody({ state, width, palette }: WizardBodyProps): React.JS
       />
     )
   }
-  if (state.step === 'name') {
-    return <NameStep name={state.name} namePos={state.namePos} width={width} palette={palette} />
-  }
   if (state.step === 'mode') {
     return (
       <ListStep
@@ -187,7 +185,6 @@ export function WizardBody({ state, width, palette }: WizardBodyProps): React.JS
   return (
     <ConfirmStep
       selectedModel={state.selectedModel}
-      name={state.name}
       mode={state.mode ?? 'local'}
       submitting={state.submitting}
       submitError={state.submitError}
