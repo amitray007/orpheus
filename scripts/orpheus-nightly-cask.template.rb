@@ -17,6 +17,19 @@ cask "orpheus-nightly" do
 
   app "Orpheus Nightly.app"
 
+  # Symlinks the in-bundle CLI shim onto PATH as `orpheus-nightly` (target:
+  # renames the link so it doesn't collide with the stable cask's `orpheus`
+  # link — both casks can be installed side by side). brew manages the link:
+  # created on install, re-pointed on upgrade, removed on uninstall — no
+  # privilege prompt. The shim itself needs no per-variant logic: it resolves
+  # ORPHEUS_INVOKED_VARIANT from which Electron binary sits next to it inside
+  # THIS bundle, regardless of what the symlink is named (see
+  # resources/bin/orpheus's header comment). Path must match
+  # electron-builder-nightly.yml's extraResources mapping for
+  # resources/bin/orpheus -> Contents/Resources/bin/orpheus; if that mapping
+  # ever moves, update this line too or the symlink dangles.
+  binary "#{appdir}/Orpheus Nightly.app/Contents/Resources/bin/orpheus", target: "orpheus-nightly"
+
   # Strip quarantine + re-sign ad-hoc after install so macOS 15+ accepts the bundle.
   # electron-builder leaves inner frameworks with mismatched Team IDs;
   # a unified ad-hoc re-sign normalises them.
