@@ -465,6 +465,22 @@ export const CARD_DIVIDER_CHAR = '\u254c'
  *  U+254C used between cards — a bar versus a soft separator. */
 export const NAV_DIVIDER_CHAR = '-'
 
+/** Rule between a project name and its workspace count
+ *  (components/ProjectGroupHeader.tsx). U+2500 BOX DRAWINGS LIGHT
+ *  HORIZONTAL — a CONTINUOUS line, deliberately unlike NAV_DIVIDER_CHAR's
+ *  ASCII '-' (which reads as dashes-with-gaps at most terminal fonts) and
+ *  unlike CARD_DIVIDER_CHAR's dotted U+254C between cards.
+ *
+ *  EastAsianWidth=AMBIGUOUS, and that is acceptable HERE specifically —
+ *  unlike every other glyph in this UI. The header line is composed by
+ *  projectHeaderLayout.ts to an exact column budget and rendered with
+ *  `wrap="truncate-end"`, so a terminal that renders this double-width
+ *  clips the RULE (the one segment that carries no information) instead of
+ *  shifting the name or pushing the count off the row. Do NOT copy this
+ *  glyph into a padded string context — see this file's header for why
+ *  Ambiguous width breaks those. */
+export const PROJECT_RULE_CHAR = '─'
+
 /** Card gutter content — see CARD_GUTTER_SELECTED. */
 export function cardGutterFor(selected: boolean): string {
   return selected ? CARD_GUTTER_SELECTED : CARD_GUTTER_EMPTY

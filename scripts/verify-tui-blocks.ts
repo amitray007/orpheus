@@ -89,9 +89,14 @@ const CARD_HEIGHT = CARD_CONTENT_ROWS + SEPARATOR_ROWS
 const HEADER_NAME_LINE_ROWS = 1
 const HEADER_BLANK_BELOW_ROWS = 1
 const HEADER_BLANK_ABOVE_ROWS = 1
-function headerRenderedRows(blankAbove: boolean): number {
+function headerRenderedRows(blankAbove: boolean, isEmpty = false): number {
+  // Mirrors ProjectGroupHeader.tsx: the below-row is empty-groups-only (it
+  // carries the "no workspaces" placeholder); a populated group's first card
+  // follows the name line directly.
   return (
-    HEADER_NAME_LINE_ROWS + HEADER_BLANK_BELOW_ROWS + (blankAbove ? HEADER_BLANK_ABOVE_ROWS : 0)
+    HEADER_NAME_LINE_ROWS +
+    (isEmpty ? HEADER_BLANK_BELOW_ROWS : 0) +
+    (blankAbove ? HEADER_BLANK_ABOVE_ROWS : 0)
   )
 }
 
@@ -192,7 +197,7 @@ function headerSel(projectId: string): SelectedBlockId {
   assert.equal(
     headers[1]!.height,
     headerRenderedRows(true),
-    'second header: blank above + name+rule line + blank below (3 rows)'
+    "second header: name+rule line + blank below (2 rows) — HEADER_BLANK_ABOVE_ROWS is 0, the previous card's own separator already pads the gap between groups"
   )
 
   // visibleCount threads straight from flattenTree's per-project count.
@@ -278,12 +283,12 @@ function headerSel(projectId: string): SelectedBlockId {
 
   assert.equal(
     headers[0]!.height,
-    headerRenderedRows(headers[0]!.blankAbove),
+    headerRenderedRows(headers[0]!.blankAbove, headers[0]!.isEmpty),
     "FIRST project-header block height must equal ProjectGroupHeader.tsx's rendered row count for blankAbove=false (name+rule line + blank below, no blank above)"
   )
   assert.equal(
     headers[1]!.height,
-    headerRenderedRows(headers[1]!.blankAbove),
+    headerRenderedRows(headers[1]!.blankAbove, headers[1]!.isEmpty),
     "SUBSEQUENT project-header block height must equal ProjectGroupHeader.tsx's rendered row count for blankAbove=true (blank above + name+rule line + blank below)"
   )
 
@@ -420,13 +425,13 @@ function headerSel(projectId: string): SelectedBlockId {
   assert.ok(header.kind === 'project-header' && header.isEmpty)
   assert.equal(
     header.height,
-    headerRenderedRows(false),
-    'an empty header (first in the list) is exactly the ordinary first-header height — no extra rows for the placeholder text'
+    headerRenderedRows(false, true),
+    'an empty header (first in the list): name line + the "no workspaces" placeholder row'
   )
   const totalHeight = blocks.reduce((s, b) => s + b.height, 0)
   assert.equal(
     totalHeight,
-    headerRenderedRows(false),
+    headerRenderedRows(false, true),
     'a solo empty project group: total block height is JUST the header, zero card contribution'
   )
 

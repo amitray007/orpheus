@@ -68,7 +68,7 @@ import {
   CARD_GUTTER_WIDTH,
   CARD_PAD_GUTTER,
   CARD_PAD_RIGHT,
-  NAV_DIVIDER_CHAR,
+  PROJECT_RULE_CHAR,
   cardGutterFor
 } from '../theme.js'
 import { buildProjectGroupHeaderLine, HEADER_GAP_COLUMNS } from '../projectHeaderLayout.js'
@@ -117,7 +117,7 @@ function ProjectGroupHeaderImpl({
   // card respects, so the rule's right end — and the count after it — never
   // touches the terminal edge, matching the cards it groups.
   const lineWidth = Math.max(0, width - HEADER_INDENT - CARD_PAD_RIGHT)
-  const parts = buildProjectGroupHeaderLine(name, visibleCount, lineWidth, NAV_DIVIDER_CHAR)
+  const parts = buildProjectGroupHeaderLine(name, visibleCount, lineWidth, PROJECT_RULE_CHAR)
   const gap = ' '.repeat(HEADER_GAP_COLUMNS)
   const bg = selected ? palette.selectedBg : undefined
   const gutter = cardGutterFor(selected)
@@ -161,17 +161,33 @@ function ProjectGroupHeaderImpl({
             {parts.count}
           </Text>
         </Text>
+        {/* Trailing inset, CARRYING THE TINT — the same trick WorkspaceCard
+            uses for its own selected rows. Without it the selection
+            background ends on the count's last digit, so the number sits
+            flush against the highlight's right edge (visible in a bug
+            report). It has to be part of the tinted block rather than a gap
+            after it, and it mirrors the gutter's spacer on the left so a
+            selected header is inset equally on both sides. */}
+        <Box width={CARD_PAD_RIGHT} flexShrink={0}>
+          <Text backgroundColor={bg}> </Text>
+        </Box>
       </Box>
-      {/* Breather below the header, before the first card — owned by this
-          block, not by the first card (see this file's header). An empty
-          group has no first card, so this row instead carries a quiet
-          placeholder confirming the project really does have zero
-          workspaces right now (rather than reading as a blank glitch). */}
-      <Box paddingLeft={HEADER_INDENT} flexShrink={0}>
-        <Text color={palette.secondary} wrap="truncate-end">
-          {isEmpty ? 'no workspaces' : ' '}
-        </Text>
-      </Box>
+      {/* EMPTY GROUPS ONLY. A populated group renders NOTHING here — its
+          first card follows the name line directly, which is the tighter
+          spacing a bug report asked for; the card's own content gives the
+          eye enough separation without a blank row. An EMPTY group has no
+          card beneath it at all, so this row carries a quiet placeholder
+          instead — otherwise the project would read as a rendering glitch
+          (a name with nothing under it). Height follows the same condition
+          in blocks.ts's headerHeight(), so rendered rows and the windowing
+          sum stay in lockstep. */}
+      {isEmpty ? (
+        <Box paddingLeft={HEADER_INDENT} flexShrink={0}>
+          <Text color={palette.secondary} wrap="truncate-end">
+            no workspaces
+          </Text>
+        </Box>
+      ) : null}
     </Box>
   )
 }

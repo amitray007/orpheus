@@ -83,15 +83,29 @@ const HEADER_NAME_ROWS = 1
  *  drawn there) — this is a new, deliberate 1-row breather owned by the
  *  header, not a reintroduction of that dead space. The first card's block
  *  still gets zero separator rows (see `firstCardHeightDelta` below). */
+/** Rows between a project's name+rule line and its first card. Kept at 1 —
+ *  a terminal row is the smallest unit there is, so this is already the
+ *  tightest non-touching gap; dropping it to 0 puts the first card flush
+ *  against the header, which is the state a bug report explicitly called
+ *  out. Tightening the LIST is done via HEADER_BLANK_ABOVE_ROWS instead. */
 const HEADER_BLANK_BELOW_ROWS = 1
 /** Rows ProjectGroupHeader.tsx renders ABOVE the name+rule line, separating
  *  this project's group from the PREVIOUS project's last card — see
  *  `buildBlocks`'s "BLANK ABOVE" section for why this is 0 for the first
  *  header in the whole list and 1 for every one after it. */
-const HEADER_BLANK_ABOVE_ROWS = 1
+export const HEADER_BLANK_ABOVE_ROWS = 1
 
-function headerHeight(blankAbove: boolean): number {
-  return HEADER_NAME_ROWS + HEADER_BLANK_BELOW_ROWS + (blankAbove ? HEADER_BLANK_ABOVE_ROWS : 0)
+function headerHeight(blankAbove: boolean, isEmpty: boolean): number {
+  // The below-row is EMPTY-GROUPS-ONLY (it carries the "no workspaces"
+  // placeholder). A populated group's first card follows the name line
+  // directly — the tighter spacing a bug report asked for. Mirrors exactly
+  // what ProjectGroupHeader.tsx renders; the two must move together or the
+  // windowing sum drifts from the drawn rows.
+  return (
+    HEADER_NAME_ROWS +
+    (isEmpty ? HEADER_BLANK_BELOW_ROWS : 0) +
+    (blankAbove ? HEADER_BLANK_ABOVE_ROWS : 0)
+  )
 }
 
 /**
@@ -159,7 +173,7 @@ export function buildBlocks(
         visibleCount: pendingHeader.visibleCount,
         blankAbove,
         isEmpty: pendingBody.length === 0,
-        height: headerHeight(blankAbove)
+        height: headerHeight(blankAbove, pendingBody.length === 0)
       })
       out.push(...pendingBody)
     }
