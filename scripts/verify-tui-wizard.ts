@@ -77,6 +77,16 @@ import {
   moveModelCursor
 } from '../packages/orpheus-cli/src/tui/wizardStepMachine.ts'
 import type { ProviderGroup, SelectableModel } from '../packages/orpheus-cli/src/tui/wizardTypes.ts'
+import {
+  pathFieldInnerWidth,
+  buildPathFieldWindow,
+  moveCursor as movePathCursor,
+  backspace as backspacePathBuffer,
+  insertText as insertPathText,
+  PATH_FIELD_GUTTER_COLUMNS,
+  PATH_FIELD_PAD_RIGHT,
+  type PathBuffer
+} from '../packages/orpheus-cli/src/tui/addProjectLayout.ts'
 
 // Phone-portrait target column count (Termius on an iPhone in portrait,
 // per the task brief). Named so every assertion below reads as "at phone
@@ -673,6 +683,221 @@ function testWindowListRows(): void {
   )
 }
 
+// ---------------------------------------------------------------------------
+// addProjectLayout.ts — the `p` (add project) overlay's path-field width
+// math and text-buffer mutation (components/AddProjectPrompt.tsx). Same
+// no-Ink/no-TTY/no-socket constraint and phone-width (38 columns) focus as
+// the wizard's own layout module above — see addProjectLayout.ts's own file
+// header for why a scrolling field (not end-truncation) is used here.
+//
+// Covers:
+//   1. pathFieldInnerWidth: floors at 1, matches the documented gutter/pad
+//      carve-out at phone width (38 columns).
+//   2. buildPathFieldWindow: renders EXACTLY the field width for a short
+//      path (unpadded end padded), a path longer than the field (scrolled,
+//      keeping the cursor visible), and an empty field (all blanks) — the
+//      three cases the task brief calls out explicitly.
+//   3. Cursor movement (moveCursor) and backspace (backspace) at the string
+//      boundaries (position 0, end) — clamp rather than throw or go
+//      negative/out-of-range.
+// ---------------------------------------------------------------------------
+
+function testPathFieldInnerWidth(): void {
+  assert.equal(pathFieldInnerWidth(0), 1, 'floors at 1 for a zero-width terminal')
+  assert.equal(pathFieldInnerWidth(1), 1, 'floors at 1 for a 1-column terminal')
+  assert.equal(
+    pathFieldInnerWidth(PATH_FIELD_GUTTER_COLUMNS + PATH_FIELD_PAD_RIGHT),
+    1,
+    'floors at 1 when columns == the gutter+pad budget'
+  )
+
+  const expectedAt38 = PHONE_COLUMNS - PATH_FIELD_GUTTER_COLUMNS - PATH_FIELD_PAD_RIGHT
+  assert.equal(
+    pathFieldInnerWidth(PHONE_COLUMNS),
+    expectedAt38,
+    'phone-width (38) inner budget matches columns - gutter - pad'
+  )
+
+  console.log(
+    '✓ pathFieldInnerWidth: floors at 1 for degenerate widths, correct budget at phone width (38)'
+  )
+}
+
+function testBuildPathFieldWindow(): void {
+  const innerWidth = pathFieldInnerWidth(PHONE_COLUMNS) // 35
+
+  // EMPTY FIELD: renders as exactly innerWidth blank columns, cursor at 0.
+  const empty = buildPathFieldWindow('', 0, innerWidth)
+  assert.equal(empty.text.length, innerWidth, 'empty field still renders exactly the field width')
+  assert.equal(empty.text, ' '.repeat(innerWidth), 'empty field is all blanks')
+  assert.equal(empty.cursorColumn, 0, 'empty field cursor sits at column 0')
+
+  // SHORT PATH (fits comfortably under 35 columns): renders unscrolled,
+  // padded to exactly innerWidth, cursor at its raw position (no scroll
+  // offset applied since the whole value is already visible).
+  const short = buildPathFieldWindow('/tmp/demo', 9, innerWidth)
+  assert.equal(short.text.length, innerWidth, 'short path pads to exactly the field width')
+  assert.ok(short.text.startsWith('/tmp/demo'), 'short path content preserved at the field start')
+  assert.equal(short.cursorColumn, 9, 'short path cursor at end == raw position (no scroll)')
+
+  // LONG PATH (exceeds the field): must render EXACTLY innerWidth chars
+  // (never more — the house rule this whole harness exists to enforce) and
+  // keep the cursor inside the visible window rather than scrolling it off
+  // either edge.
+  const longPath = '/Users/example/code/projects/some-very-deeply-nested-monorepo/packages/app'
+  assert.ok(longPath.length > innerWidth, 'sanity: fixture path exceeds the 35-column field')
+
+  // Cursor at the END of a long path: window must scroll right so the
+  // cursor (and the text immediately before it) stays visible — the exact
+  // "typing past the field edge" case the scrolling design exists for. The
+  // exact expected scroll offset is maxStart == value.length - innerWidth
+  // (the field's LAST possible window — scrolling any further would leave
+  // trailing blank columns before the value is actually exhausted) —
+  // asserted exactly, not just length/bounds, since an off-by-one in the
+  // scroll math would otherwise still produce a correctly-SIZED window with
+  // silently wrong CONTENT. cursorColumn == innerWidth (one past the last
+  // visible character) is the correct "appending after the last typed
+  // character" position — see buildPathFieldWindow's own [0, innerWidth]
+  // contract.
+  const atEnd = buildPathFieldWindow(longPath, longPath.length, innerWidth)
+  assert.equal(atEnd.text.length, innerWidth, 'long path (cursor at end) never exceeds field width')
+  assert.equal(
+    atEnd.cursorColumn,
+    innerWidth,
+    'long path (cursor at end) cursor renders one past the last visible column (append position)'
+  )
+  const expectedMaxStart = longPath.length - innerWidth
+  assert.equal(
+    atEnd.text,
+    longPath.slice(expectedMaxStart),
+    'long path (cursor at end) window shows EXACTLY the tail starting at value.length - innerWidth ' +
+      '(the precise scroll offset, not just "some window of the right size")'
+  )
+  assert.ok(
+    longPath.endsWith(atEnd.text.trimEnd()),
+    'long path (cursor at end) window shows the TAIL of the path (what the user is actively typing)'
+  )
+
+  // Cursor at the START (position 0) of a long path: window must NOT be
+  // scrolled — the cursor is at the very beginning, so the visible slice
+  // starts at column 0 of the value.
+  const atStart = buildPathFieldWindow(longPath, 0, innerWidth)
+  assert.equal(
+    atStart.text.length,
+    innerWidth,
+    'long path (cursor at start) never exceeds field width'
+  )
+  assert.equal(atStart.cursorColumn, 0, 'long path (cursor at start) cursor renders at column 0')
+  assert.ok(
+    atStart.text.startsWith(longPath.slice(0, innerWidth)),
+    'long path (cursor at start) window shows the HEAD of the path, unscrolled'
+  )
+
+  // Cursor in the MIDDLE of a long path: window must still be exactly
+  // innerWidth and the cursor must land inside it (neither edge).
+  const midPos = Math.floor(longPath.length / 2)
+  const atMiddle = buildPathFieldWindow(longPath, midPos, innerWidth)
+  assert.equal(atMiddle.text.length, innerWidth, 'long path (cursor mid) never exceeds field width')
+  assert.ok(
+    atMiddle.cursorColumn >= 0 && atMiddle.cursorColumn <= innerWidth,
+    'long path (cursor mid) cursor column stays within the rendered field'
+  )
+
+  console.log(
+    '✓ buildPathFieldWindow: renders EXACTLY the field width at phone width (38) for a short path, ' +
+      'a path longer than the field (scrolled to keep the cursor visible, at start/middle/end), ' +
+      'and an empty field (all blanks)'
+  )
+}
+
+function testPathBufferMutation(): void {
+  // CURSOR MOVEMENT AT BOUNDARIES — never throws, clamps rather than going
+  // negative or past the string length.
+  const empty: PathBuffer = { value: '', cursorPos: 0 }
+  assert.deepEqual(
+    movePathCursor(empty, -1),
+    empty,
+    'moving left on an empty buffer at position 0 is a no-op (clamps, does not throw)'
+  )
+  assert.deepEqual(
+    movePathCursor(empty, 1),
+    empty,
+    'moving right on an empty buffer at position 0 is a no-op (clamps, does not throw)'
+  )
+
+  const short: PathBuffer = { value: 'abc', cursorPos: 0 }
+  assert.equal(
+    movePathCursor(short, -1).cursorPos,
+    0,
+    'moving left from position 0 clamps at 0, never goes negative'
+  )
+  const atEndBuf: PathBuffer = { value: 'abc', cursorPos: 3 }
+  assert.equal(
+    movePathCursor(atEndBuf, 1).cursorPos,
+    3,
+    'moving right from the end (position == length) clamps, never exceeds length'
+  )
+  assert.equal(
+    movePathCursor({ value: 'abc', cursorPos: 1 }, 1).cursorPos,
+    2,
+    'moving right from a middle position advances by one, unclamped'
+  )
+
+  // BACKSPACE AT BOUNDARIES — no-op at position 0 (nothing before the
+  // cursor to delete), removes the preceding char otherwise, and at the
+  // end-of-string boundary removes the LAST character.
+  assert.deepEqual(
+    backspacePathBuffer({ value: 'abc', cursorPos: 0 }),
+    { value: 'abc', cursorPos: 0 },
+    'backspace at position 0 is a no-op — nothing before the cursor to delete'
+  )
+  assert.deepEqual(
+    backspacePathBuffer({ value: '', cursorPos: 0 }),
+    { value: '', cursorPos: 0 },
+    'backspace on an empty buffer never throws, stays empty'
+  )
+  assert.deepEqual(
+    backspacePathBuffer({ value: 'abc', cursorPos: 3 }),
+    { value: 'ab', cursorPos: 2 },
+    'backspace at the end removes the last character and moves the cursor back one'
+  )
+  assert.deepEqual(
+    backspacePathBuffer({ value: 'abc', cursorPos: 1 }),
+    { value: 'bc', cursorPos: 0 },
+    'backspace in the middle removes the character immediately before the cursor'
+  )
+
+  // INSERTION AT BOUNDARIES — inserting at position 0 prepends; inserting
+  // at the end appends; the cursor always advances past the inserted text.
+  assert.deepEqual(
+    insertPathText({ value: 'bc', cursorPos: 0 }, 'a'),
+    { value: 'abc', cursorPos: 1 },
+    'insertion at position 0 prepends and advances the cursor past it'
+  )
+  assert.deepEqual(
+    insertPathText({ value: 'ab', cursorPos: 2 }, 'c'),
+    { value: 'abc', cursorPos: 3 },
+    'insertion at the end appends and advances the cursor past it'
+  )
+  assert.deepEqual(
+    insertPathText({ value: '', cursorPos: 0 }, '/'),
+    { value: '/', cursorPos: 1 },
+    'insertion into an empty buffer works and advances the cursor'
+  )
+  assert.deepEqual(
+    insertPathText({ value: 'ac', cursorPos: 1 }, 'b'),
+    { value: 'abc', cursorPos: 2 },
+    'insertion in the middle splices in place and advances the cursor past it'
+  )
+
+  console.log(
+    '✓ path buffer mutation: cursor movement clamps at both boundaries (position 0, end) without ' +
+      'throwing; backspace no-ops at position 0 and removes the preceding character elsewhere ' +
+      '(including the end-of-string case); insertion at position 0/end/middle splices correctly ' +
+      'and always advances the cursor past the inserted text'
+  )
+}
+
 testListRowInnerWidth()
 testBuildListRowText()
 testBuildSummaryLine()
@@ -681,5 +906,8 @@ testBuildCreateArgs()
 testBuildModelListRows()
 testMoveModelCursor()
 testWindowListRows()
+testPathFieldInnerWidth()
+testBuildPathFieldWindow()
+testPathBufferMutation()
 
 console.log('\nAll tui-wizard assertions passed.')

@@ -1,5 +1,6 @@
 /**
- * commands/project.ts — `project ls` and `project show <id|name|path>` commands.
+ * commands/project.ts — `project ls`, `project show <id|name|path>`, and
+ * `project add <path>` commands.
  *
  * project ls:
  *   Lists all registered Orpheus projects with id, name, path, and workspace
@@ -11,6 +12,21 @@
  *     2. by name (exact case-sensitive match)
  *     3. by path (realpath-normalised)
  *   Also shows the project's workspaces (non-archived) as a sub-table.
+ *
+ * project add <path>:
+ *   Registers a project by filesystem path, via the 'project.add' command-
+ *   socket action (src/main/commandServer.ts) — an ACTION command (not
+ *   isRead), since it mutates the app's project list through the running
+ *   Orpheus process rather than reading sqlite/JSONL directly, and so
+ *   AppNotRunningError triggers the standard auto-launch + retry loop in
+ *   cli.ts. `~`/relative paths are expanded/resolved against THIS PROCESS'S
+ *   cwd before being sent — the socket connects to a DIFFERENT process
+ *   (Electron main), whose own cwd is meaningless to a user typing
+ *   `orpheus project add .` in their shell. The server independently
+ *   re-resolves + existence-checks the path it receives (defense in depth —
+ *   the socket has other callers besides this CLI), so sending an already-
+ *   absolute path here is a safe no-op on that side, never a double-resolve
+ *   bug (path.resolve on an absolute path returns it unchanged).
  *
  * NAME RESOLUTION + LIFECYCLE (#9)
  * ---------------------------------
@@ -36,15 +52,20 @@
  */
 
 import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { registerCommand } from '../registry.js'
 import { openDb } from '../reads/db.js'
 import { effectiveLifecycleStatus } from '../reads/session-status.js'
 import { resolveWorkspaceDisplayName, extractSessionTitle } from '../reads/resolve-name.js'
+import { sendCommand, AppNotRunningError } from '../socket-client.js'
+import { isNotFoundError } from './ws-lifecycle.js'
 import {
   printResult,
   printKeyValue,
   printTable,
   printError,
+  printUsageError,
   printNotFoundError,
   printLines,
   truncateForDisplay,
@@ -292,5 +313,86 @@ registerCommand('project show', {
     } finally {
       db.close()
     }
+  }
+})
+
+// ---------------------------------------------------------------------------
+// project add
+// ---------------------------------------------------------------------------
+
+/**
+ * Expand a leading `~` and resolve relative segments against THIS process's
+ * cwd — mirrors src/main/projectPathResolve.ts's resolveProjectPath exactly
+ * (same two-branch tilde check, same path.resolve fallback), but is its own
+ * copy rather than a shared import: this CLI package cannot reach into
+ * src/main (a different process/runtime — see this file's header), and the
+ * logic is small enough (6 lines) that duplicating it here is simpler than
+ * standing up a shared leaf module for one function used on each side of a
+ * process boundary that already re-validates independently.
+ */
+function resolveLocalPath(rawPath: string): string {
+  let expanded = rawPath
+  if (expanded === '~') {
+    expanded = os.homedir()
+  } else if (expanded.startsWith('~/')) {
+    expanded = path.join(os.homedir(), expanded.slice(2))
+  }
+  return path.resolve(process.cwd(), expanded)
+}
+
+registerCommand('project add', {
+  usage: 'project add <path>',
+  help: 'Register a project by filesystem path',
+  longDesc:
+    'Resolves <path> (expanding a leading ~, and relative segments against the ' +
+    "current shell's cwd) to an absolute path, then registers it as a project " +
+    '(deduping by path — re-adding an already-registered path just bumps its ' +
+    'lastOpenedAt and returns the existing record) and creates its default ' +
+    'workspace. The path must already exist and be a directory.',
+  minPositionals: 1,
+  maxPositionals: 1,
+  argsSpec: [
+    {
+      name: 'path',
+      required: true,
+      desc: 'Filesystem path to register, absolute or relative to the current directory.'
+    }
+  ],
+  examples: [
+    'orpheus project add .',
+    'orpheus project add ~/code/my-project',
+    'orpheus --json project add ../other-project | jq -r .id'
+  ],
+  handler: async (ctx) => {
+    const rawPath = ctx.positionals[0]
+    if (rawPath == null || rawPath === '') {
+      printUsageError('usage: project add <path>')
+      return
+    }
+
+    const resolvedPath = resolveLocalPath(rawPath)
+
+    let result: unknown
+    try {
+      result = await sendCommand('project.add', { path: resolvedPath })
+    } catch (err) {
+      if (err instanceof AppNotRunningError) throw err
+      const msg = err instanceof Error ? err.message : String(err)
+      printError(err, { exitCode: isNotFoundError(msg) ? 3 : 1 })
+      return
+    }
+
+    const project = result as ProjectRecord
+
+    printResult(project, () => {
+      printKeyValue({
+        id: project.id,
+        name: project.name,
+        path: project.path,
+        addedAt: new Date(project.addedAt).toISOString(),
+        lastOpenedAt:
+          project.lastOpenedAt != null ? new Date(project.lastOpenedAt).toISOString() : null
+      })
+    })
   }
 })

@@ -2,11 +2,13 @@
  * tui/components/Footer.tsx — keymap hint line, or a transient notice in its
  * place.
  *
- * KEYMAP: enter/j-k/v/n/c/a/?/q are implemented — `n` (new workspace) is
+ * KEYMAP: enter/j-k/v/n/p/c/a/?/q are implemented — `n` (new workspace) is
  * wired to NewWorkspaceWizard.tsx (see App.tsx's `wizardProject` state);
- * `c` (close, reversible) and `a` (archive, PERMANENT DELETE) are wired to
- * workspace.close/workspace.archive via App.tsx's `handleCloseArchiveKey`
- * and components/CloseArchiveConfirm.tsx. Both are UNSHIFTED and are not a
+ * `p` (add project) is wired to AddProjectPrompt.tsx (see App.tsx's
+ * `addProjectOpen` state and `handleAddProjectKey`); `c` (close, reversible)
+ * and `a` (archive, PERMANENT DELETE) are wired to workspace.close/
+ * workspace.archive via App.tsx's `handleCloseArchiveKey` and
+ * components/CloseArchiveConfirm.tsx. `c`/`a` are UNSHIFTED and are not a
  * shifted pair of one letter — this UI's primary client is a phone, where
  * shift is a mode switch, and a missed shift must never turn the reversible
  * action into the permanent one (see App.tsx's useInput comment). `r`
@@ -34,12 +36,15 @@ import type { Palette } from '../theme.js'
  * 56-char/6-entry set (56 + 19 = 75, plus one more inter-entry separator for
  * the 8th entry = 78 total) — comfortably inside a medium (>=52 col) or wide
  * (>=104 col) terminal, which is exactly why this set doesn't need the same
- * character-budget discipline NARROW_KEYS below does.
+ * character-budget discipline NARROW_KEYS below does. `p` (add project) adds
+ * another `p project` (9 chars) + separator (3) = 12 more (78 + 12 = 90) —
+ * still comfortably inside medium/wide.
  */
 const ALL_KEYS: Array<[string, string]> = [
   ['enter', 'open'],
   ['j/k', 'move'],
   ['n', 'new'],
+  ['p', 'project'],
   ['v', 'view'],
   ['c', 'close'],
   ['a', 'archive'],
@@ -86,6 +91,20 @@ const ALL_KEYS: Array<[string, string]> = [
  * (they're not gated behind ALL_KEYS in any functional sense, only hidden
  * from this hint line) — `?` is one keypress away and is itself always in
  * this set for exactly that reason.
+ *
+ * p (add project) EVALUATED AND DELIBERATELY KEPT OUT — CHARACTER MATH
+ * -----------------------------------------------------------------------
+ * `p add` (1+1+3 = 5 chars) plus one more KEYMAP_SEPARATOR (3) costs 8:
+ * 36 + 8 = 44 — lands EXACTLY on the ~44 budget, with zero headroom left
+ * for anything after it. That's a worse position than c/a's clean rejection
+ * above: not over budget, but pinned to the edge with no margin for a
+ * future addition or a label-length correction. Adding a project is also a
+ * rarer action than opening a workspace (`n`/`enter`) — most sessions add
+ * zero or one project, then spend the rest of their time inside workspaces
+ * that already exist — so it doesn't clear the "no picker screen should
+ * ever be caught without this" bar `enter`/`n`/`?`/`q` do. Kept out of
+ * NARROW_KEYS for both reasons; fully documented in the `?` help overlay
+ * (HelpOverlay.tsx), same as `v`/`c`/`a` today.
  */
 const NARROW_KEYS: Array<[string, string]> = [
   ['enter', 'open'],
