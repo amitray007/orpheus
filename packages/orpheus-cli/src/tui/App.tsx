@@ -151,8 +151,18 @@ const WIDE_MIN_COLUMNS = CARD_MEDIUM_MAX + 1
 const CLOSE_NOTICE_MS = 3000
 /** How often the picker repaints purely to advance the rendered ages — see
  *  the age-ticker effect in App() for why a local timer (rather than a
- *  server-side frame) is the right place to fix a frozen "2h". */
-const AGE_TICK_MS = 30_000
+ *  server-side frame) is the right place to fix a frozen age.
+ *
+ *  1s, NOT a coarser interval: formatAge() (format.ts) renders whole
+ *  SECONDS below the one-minute mark ("0s", "1s", ... "59s"), so anything
+ *  slower than 1s visibly freezes a freshly-created workspace — the exact
+ *  case where the user is most likely to be watching. An earlier revision
+ *  used 30s on the reasoning that the label "only changes once a minute";
+ *  that is true from one minute onward and plainly false before it, which
+ *  is when a new workspace is on screen. Above a minute the extra ticks
+ *  merely recompute an unchanged string, which is far cheaper than the
+ *  frame it would otherwise take to notice. */
+const AGE_TICK_MS = 1_000
 
 type WorkspaceDisplayRow = Extract<DisplayRow, { kind: 'workspace' }>
 
@@ -470,13 +480,17 @@ export function App({
   // the fix belongs HERE, not on the wire: re-render locally on a timer and
   // let the existing formatters recompute against the current clock.
   //
-  // 30s (not 1s): the coarsest unit these formatters can show is seconds,
-  // but only below 60 — past a minute the label only changes once a minute
-  // at best, and past an hour once an hour. A 30s tick keeps sub-minute
-  // ages honest to within half their own resolution while costing two
-  // repaints a minute on an otherwise-idle SSH link. The state value is
-  // deliberately unused-but-incrementing: it exists purely to invalidate
-  // the render, since the timestamps themselves never change.
+  // See AGE_TICK_MS for why this ticks every second rather than something
+  // coarser: the sub-minute range of formatAge() counts real seconds, so a
+  // slower timer visibly freezes a just-created workspace.
+  //
+  // The cost of the extra ticks is a re-render, NOT a re-fetch: nothing
+  // here touches the socket, and Ink only writes the rows that actually
+  // changed, so a second where no visible label moves is close to free.
+  //
+  // The state value is deliberately unused-but-incrementing: it exists
+  // purely to invalidate the render, since the timestamps themselves never
+  // change.
   const [, setAgeTick] = useState(0)
   useEffect(() => {
     const handle = setInterval(() => setAgeTick((n) => n + 1), AGE_TICK_MS)
