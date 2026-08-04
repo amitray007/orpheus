@@ -2,14 +2,17 @@
  * tui/components/Footer.tsx — keymap hint line, or a transient notice in its
  * place.
  *
- * KEYMAP: enter/j-k/v/n/x/X/?/q are implemented — `n` (new workspace) is
+ * KEYMAP: enter/j-k/v/n/c/a/?/q are implemented — `n` (new workspace) is
  * wired to NewWorkspaceWizard.tsx (see App.tsx's `wizardProject` state);
- * `x` (close, reversible) and `X` (archive, PERMANENT DELETE) are wired to
+ * `c` (close, reversible) and `a` (archive, PERMANENT DELETE) are wired to
  * workspace.close/workspace.archive via App.tsx's `handleCloseArchiveKey`
- * and components/CloseArchiveConfirm.tsx. `a`/`r` (any further host/unhost-
- * adjacent actions beyond close/archive) still require server actions not
- * yet exposed and remain out of scope. No "not yet wired" placeholders for
- * keys that don't exist in this keymap at all.
+ * and components/CloseArchiveConfirm.tsx. Both are UNSHIFTED and are not a
+ * shifted pair of one letter — this UI's primary client is a phone, where
+ * shift is a mode switch, and a missed shift must never turn the reversible
+ * action into the permanent one (see App.tsx's useInput comment). `r`
+ * (rename) still requires a server action not yet exposed and remains out
+ * of scope. No "not yet wired" placeholders for keys that don't exist in
+ * this keymap at all.
  *
  * RENAME: `f` (filter) -> `v` (view) — card redesign. NO ARROW GLYPHS: `↵`/
  * `↑`/`↓` are dropped in favor of the plain-ASCII word `enter` and `j/k`
@@ -25,8 +28,8 @@ import type { Palette } from '../theme.js'
 
 /**
  * ALL_KEYS (medium/wide) — no tight budget (see this file's own comment on
- * NARROW_KEYS for the numbers that DO matter). `x`/`X` (close/archive, this
- * unit) are added here: `x close` (7 chars) + separator (3) + `X archive`
+ * NARROW_KEYS for the numbers that DO matter). `c`/`a` (close/archive) are
+ * added here: `c close` (7 chars) + separator (3) + `a archive`
  * (9 chars) = 19 more content+separator chars on top of the pre-existing
  * 56-char/6-entry set (56 + 19 = 75, plus one more inter-entry separator for
  * the 8th entry = 78 total) — comfortably inside a medium (>=52 col) or wide
@@ -38,8 +41,8 @@ const ALL_KEYS: Array<[string, string]> = [
   ['j/k', 'move'],
   ['n', 'new'],
   ['v', 'view'],
-  ['x', 'close'],
-  ['X', 'archive'],
+  ['c', 'close'],
+  ['a', 'archive'],
   ['?', 'keys'],
   ['q', 'quit']
 ]
@@ -66,16 +69,16 @@ const ALL_KEYS: Array<[string, string]> = [
  * `q quit` = 10+5+6+6 = 27 + 3*3 = 9, total 36 chars — comfortably under
  * the 44-column budget with headroom to spare.
  *
- * x/X (close/archive) EVALUATED AND DELIBERATELY KEPT OUT — CHARACTER MATH
+ * c/a (close/archive) EVALUATED AND DELIBERATELY KEPT OUT — CHARACTER MATH
  * -----------------------------------------------------------------------
- * Adding `x close` (1+1+5 = 7 chars) as a 5th entry costs that 7 plus one
+ * Adding `c close` (1+1+5 = 7 chars) as a 5th entry costs that 7 plus one
  * more KEYMAP_SEPARATOR (3): 36 + 7 + 3 = 46 — 2 over the ~44 budget this
- * set already targets. `X archive` would cost even more (1+1+7 = 9, +3 =
+ * set already targets. `a archive` would cost even more (1+1+7 = 9, +3 =
  * 12, landing at 48) and both together would be 58 — nearly 15 over.
- * Shortening the label doesn't rescue it either (`x shut` still lands at
+ * Shortening the label doesn't rescue it either (`c shut` still lands at
  * 45). So: NEITHER key is added to NARROW_KEYS, following the exact
- * discipline that already dropped `v` from this set — `x`/close is common
- * and reversible but still a destructive-ADJACENT action, and `X`/archive
+ * discipline that already dropped `v` from this set — `c`/close is common
+ * and reversible but still a destructive-ADJACENT action, and `a`/archive
  * is rare and genuinely destructive; neither is in the same "no picker
  * should ever be caught without this" tier as enter/q, and both stay fully
  * documented in the `?` help overlay (HelpOverlay.tsx) exactly like `v`

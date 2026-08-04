@@ -229,7 +229,7 @@ function errorMessage(err: unknown): string {
 }
 
 /**
- * Handles `x` (open the close confirm) and `X` (open the archive confirm,
+ * Handles `c` (open the close confirm) and `a` (open the archive confirm,
  * stage 'confirm') — extracted from the main useInput callback for the same
  * cognitive-complexity reason as handleViewKey/handleNewWorkspaceKey above.
  * Operates on the currently-highlighted row, exactly like `n` operates on
@@ -237,9 +237,10 @@ function errorMessage(err: unknown): string {
  * (empty list / filtered-empty), same defensive shape as
  * handleNewWorkspaceKey's `selectedProject == null` guard.
  *
- * `input === 'X'` is checked in App.tsx's useInput BEFORE this function is
- * even reached for the lowercase `x` branch — see useInput's own ordering
- * comment for why the capital check must come first.
+ * Reached from two unshifted keys — `c` (close) and `a` (archive) — which
+ * are deliberately distinct letters rather than a shifted pair; see
+ * useInput's own comment for why a phone-first keymap can't put the
+ * reversible and the permanent action one shift apart.
  */
 function handleCloseArchiveKey(
   mode: 'close' | 'archive',
@@ -411,7 +412,7 @@ export function App({
   // wizard is open.
   const [wizardProject, setWizardProject] = useState<WizardProject | null>(null)
 
-  // The close/archive confirm overlay (`x`/`X`) — null means closed. Same
+  // The close/archive confirm overlay (`c`/`a`) — null means closed. Same
   // not-persisted-across-mounts rationale as `helpVisible`/`wizardProject`
   // above: a detach/reattach should never silently resurrect an in-progress
   // destructive confirm the user may have forgotten about.
@@ -607,7 +608,7 @@ export function App({
     // short-circuit immediately below it. The close/archive confirm gets
     // the exact same treatment, checked right after: while it's open, every
     // key goes through handleConfirmInput and NOTHING else in this callback
-    // may run (including j/k/enter/x/X on the row underneath).
+    // may run (including j/k/enter/c/a on the row underneath).
     if (wizardProject != null) return
     if (closeArchive != null) {
       handleConfirmInput(closeArchive, input, key)
@@ -629,15 +630,20 @@ export function App({
       handleNewWorkspaceKey(selectedProject, setWizardProject)
       return
     }
-    // Capital `X` (archive) MUST be checked before any lowercase/
-    // case-insensitive handling so `x`/`X` can never collide — Ink's
-    // useInput reports a capital as input === 'X' with no separate
-    // shift-modifier flag to disambiguate otherwise.
-    if (input === 'X') {
+    // `a` (archive) and `c` (close) are BOTH unshifted, and deliberately not
+    // a shifted/unshifted pair of the same letter. This UI's primary client
+    // is a phone (Termius) where shift is a keyboard mode switch, not a
+    // chord: the previous `x`/`X` binding made archive awkward to reach AND
+    // put the reversible and the permanently-destructive action one missed
+    // shift apart from each other. Two physically distinct letters mean a
+    // slip can't silently cross that boundary in either direction. `a`
+    // staying unshifted is safe because the protection is the multi-step
+    // confirm (a -> d -> enter), never the shift key.
+    if (input === 'a') {
       handleCloseArchiveKey('archive', selectedRow, setCloseArchive)
       return
     }
-    if (input === 'x') {
+    if (input === 'c') {
       handleCloseArchiveKey('close', selectedRow, setCloseArchive)
       return
     }
@@ -764,7 +770,7 @@ interface PickerScreenProps extends PickerBodyProps {
 
 /**
  * Resolves what goes where the Footer's keymap normally sits: the help
- * overlay (`?`), the close/archive confirm (`x`/`X`), or the ordinary
+ * overlay (`?`), the close/archive confirm (`c`/`a`), or the ordinary
  * Footer — carrying its transient close notice when there is one. Extracted
  * from PickerScreen for the same cognitive-complexity reason everything
  * else in this file gets extracted: a 3-way ternary inline would have

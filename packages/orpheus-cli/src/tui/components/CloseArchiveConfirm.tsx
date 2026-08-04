@@ -1,6 +1,6 @@
 /**
  * tui/components/CloseArchiveConfirm.tsx — the compact confirm overlays for
- * `x` (close, reversible) and `X` (archive, PERMANENT DELETE) on the
+ * `c` (close, reversible) and `a` (archive, PERMANENT DELETE) on the
  * currently-highlighted workspace row in the picker (App.tsx).
  *
  * ONE FILE, TWO MODES — not two files, per the task brief's "1 vs 2 files"
@@ -32,7 +32,7 @@
  * reasoning; the short version: typing an exact workspace name on a phone
  * soft keyboard is real friction for a flow this codebase explicitly
  * designs around (see NewWorkspaceWizard.tsx's file header), while a
- * two-keystroke deliberate sequence (`X` opens the confirm, `d` executes)
+ * two-keystroke deliberate sequence (`a` opens the confirm, `d` executes)
  * is friction-free to type but still categorically un-triggerable by a
  * single keypress or a stuck/bouncing key repeating the SAME key.
  *
@@ -64,14 +64,14 @@ export type CloseArchiveMode = 'close' | 'archive'
  * reversible via workspace.reopen.
  *
  * 'archive' has two stages, entered in order and never skippable:
- *   'confirm' — shown the instant `X` is pressed on a row. Explains the
+ *   'confirm' — shown the instant `a` is pressed on a row. Explains the
  *     action is PERMANENT and removes the worktree, shows the workspace
  *     name (+ branch, if any). `d` advances to 'execute'; `esc` cancels
  *     the whole flow with no action taken.
  *   'execute' — a SEPARATE screen requiring a SEPARATE deliberate key
  *     (`enter`) to actually call workspace.archive. This is the "press a
  *     DIFFERENT key to execute" shape the task brief steers toward over a
- *     same-key double-press, which a stuck/bouncing `X` key could satisfy
+ *     same-key double-press, which a stuck/bouncing `a` key could satisfy
  *     by accident. `esc` at this stage cancels back to the picker
  *     entirely (not back to 'confirm') — once you've already cleared the
  *     first speed bump, "esc = abort the whole thing" reads more honestly
