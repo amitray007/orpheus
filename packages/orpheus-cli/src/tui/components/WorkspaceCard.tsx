@@ -58,7 +58,6 @@ import {
   CARD_GUTTER_WIDTH,
   CARD_PAD_GUTTER,
   CARD_PAD_RIGHT,
-  CARD_SEPARATOR_ROWS,
   CARD_DIVIDER_CHAR
 } from '../theme.js'
 import type { Palette } from '../theme.js'
@@ -98,8 +97,21 @@ export interface WorkspaceCardProps {
    *  `gitBranch` field for the full precedence rationale. */
   gitBranch: string | null
   selected: boolean
-  /** False for the first card in a project group — its separator row stays
-   *  blank because the project header's own rule already sits above it. */
+  /** Rows to reserve ABOVE the card's 3 content lines for a leading rule —
+   *  `CARD_SEPARATOR_ROWS` for every card except the first in a project
+   *  group, which gets 0: that card has no previous CARD to rule off (the
+   *  project header sits directly above it, drawn as a bare name with no
+   *  rule of its own — see ProjectGroupHeader.tsx), so it reserves no row at
+   *  all rather than reserving one and leaving it blank. Driven by the
+   *  caller from the same `Block.height` that fed blocks.ts's windowing sum
+   *  (see App.tsx's PickerBody), so the rendered row count here always
+   *  matches what windowing already counted for this card. */
+  separatorRows: number
+  /** Whether to draw the dotted rule INSIDE the separator row(s) reserved by
+   *  `separatorRows` above. Only meaningful when `separatorRows > 0` — see
+   *  App.tsx's PickerBody for the visible-window edge cases (top of the
+   *  scrolled window, predecessor is a header) that can suppress the rule
+   *  even when a row is reserved for it. */
   showDivider: boolean
   /** Full width available INCLUDING the 1-col gutter. */
   width: number
@@ -113,6 +125,7 @@ export function WorkspaceCard({
   providerId,
   gitBranch,
   selected,
+  separatorRows,
   showDivider,
   width,
   palette
@@ -185,17 +198,17 @@ export function WorkspaceCard({
     <Box flexDirection="column" flexShrink={0}>
       {/* Dotted rule ABOVE the card, not below — a trailing rule under the
           LAST card in a group has nothing beneath it and reads as an
-          unfinished edge. Drawn for every card except the first in its group
-          (which sits directly under the project header's own rule), so every
-          rule always separates two things. UNTINTED even when the card below
-          is selected, so the highlight starts with the card's own content.
-          Counted in App.tsx's CARD_HEIGHT, so blocks.ts windows it with the
-          card it belongs to. */}
-      <Box
-        height={CARD_SEPARATOR_ROWS}
-        flexShrink={0}
-        paddingLeft={CARD_GUTTER_WIDTH + CARD_PAD_GUTTER}
-      >
+          unfinished edge. Drawn for every card except the first in its group,
+          which reserves NO row here at all (separatorRows === 0) rather than
+          reserving one it would only ever leave blank — that reserved-but-
+          blank row was the dead gap under every project name this component
+          used to render. UNTINTED even when the card below is selected, so
+          the highlight starts with the card's own content. `separatorRows`
+          comes from the same Block.height blocks.ts already windows this
+          card by, so this Box's rendered height can never drift from what
+          the windowing sum counted for it — see this file's `separatorRows`
+          prop doc comment. */}
+      <Box height={separatorRows} flexShrink={0} paddingLeft={CARD_GUTTER_WIDTH + CARD_PAD_GUTTER}>
         {showDivider ? (
           <Text color={palette.border}>{CARD_DIVIDER_CHAR.repeat(Math.max(0, innerWidth))}</Text>
         ) : null}

@@ -127,15 +127,21 @@ const FRAME_PAD_X = 1
 /** Every workspace card is exactly this many terminal rows — see
  *  blocks.ts's file header for why this is a caller-supplied parameter
  *  rather than a constant baked into that module. */
-/** Card rows: 3 lines of content + 1 blank separator BELOW each card.
+/** Card rows: 3 lines of content + 1 leading separator ABOVE each card that
+ *  rules it off from the PREVIOUS card.
  *
  *  Without the separator, consecutive cards butt directly against each other
  *  and a list of four reads as one unbroken 12-line block — the selection
  *  rail marks which card is current, but nothing marks where any OTHER card
- *  starts or ends. The blank row is part of the card's own height (rather
- *  than a gap the list inserts between siblings) so blocks.ts's windowing
+ *  starts or ends. The row is part of the card's own height (rather than a
+ *  gap the list inserts between siblings) so blocks.ts's windowing
  *  arithmetic stays a simple sum and a partially-scrolled card can never
- *  strand its separator on its own. */
+ *  strand its separator on its own. `CARD_HEIGHT` is what every card gets
+ *  EXCEPT the first in its project group — that card has no previous card to
+ *  rule off (the project header sits above it instead), so buildBlocks()
+ *  gives it `CARD_HEIGHT - CARD_SEPARATOR_ROWS` rows instead of reserving a
+ *  row it would only ever render blank. See blocks.ts's own doc comment on
+ *  `firstCardHeightDelta`. */
 const CARD_CONTENT_ROWS = 3
 const CARD_HEIGHT = CARD_CONTENT_ROWS + CARD_SEPARATOR_ROWS
 /** Master/detail split engages at this width — one more than
@@ -320,6 +326,15 @@ function PickerBody({
               )
             }
             const workspace = workspaceById.get(block.row.workspaceId)
+            // Separator row count comes straight from the BLOCK's own height,
+            // not recomputed from the card's position in the visible window —
+            // buildBlocks() already shrank the first card of each group by
+            // CARD_SEPARATOR_ROWS (it has no previous card to rule off; the
+            // project header sits above it with no rule of its own instead),
+            // so deriving the rendered row count from `block.height` here is
+            // what keeps the rendered rows and the windowing sum mechanically
+            // equal — see blocks.ts's `firstCardHeightDelta` doc comment.
+            const separatorRows = Math.max(0, block.height - CARD_CONTENT_ROWS)
             return (
               <WorkspaceCard
                 key={block.row.workspaceId}
@@ -329,12 +344,16 @@ function PickerBody({
                 providerId={workspace?.providerId ?? null}
                 gitBranch={workspace?.gitBranch ?? null}
                 selected={block.row.workspaceId === selectedWorkspaceId}
-                // A card draws its own leading rule unless the thing directly
-                // above it is a project header (which already ends in a rule).
-                // Index 0 of the visible window counts as "no divider" too:
-                // its predecessor is scrolled off, so a rule there would hang
-                // under the scroll affordance with nothing above it.
+                separatorRows={separatorRows}
+                // A card with a separator row draws a rule in it unless the
+                // thing directly above it in the VISIBLE window is a project
+                // header (nothing to rule off from) or it's the first visible
+                // block overall (its predecessor is scrolled off, so a rule
+                // there would hang under the scroll affordance with nothing
+                // above it). A card with NO separator row (the first in its
+                // group) ignores this — there's no row to draw into.
                 showDivider={
+                  separatorRows > 0 &&
                   blockIndex > 0 &&
                   windowedBlocks.visible[blockIndex - 1]?.kind !== 'project-header'
                 }
@@ -729,7 +748,10 @@ export function App({
     ? Math.max(20, contentWidth - DETAIL_PANE_WIDTH - VRULE_WIDTH)
     : contentWidth
 
-  const blocks = useMemo((): Block[] => buildBlocks(flattened.rows, CARD_HEIGHT), [flattened])
+  const blocks = useMemo(
+    (): Block[] => buildBlocks(flattened.rows, CARD_HEIGHT, CARD_SEPARATOR_ROWS),
+    [flattened]
+  )
 
   // STICKY WINDOW START — see file header's "SOLID -> REACT TRANSLATION"
   // note. `windowStart` is state, not a ref: React's documented "adjust

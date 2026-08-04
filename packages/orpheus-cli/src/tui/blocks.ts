@@ -30,12 +30,14 @@ type WorkspaceRow = Extract<DisplayRow, { kind: 'workspace' }>
 
 /**
  * One renderable unit of the scrolling body, with a KNOWN terminal-row
- * height. Every workspace — including idle ones — renders as a uniform
- * `card` block; there is no separate collapsed/compact block kind for any
- * particular status. `project-header` height is 1 for the very first
- * rendered group and 2 for every subsequent one (a leading blank line
- * separates groups after the first) — `buildBlocks` computes this, callers
- * never need to.
+ * height. `project-header` is always 1 row (just the project name — see
+ * `buildBlocks`'s doc comment for why no rule or blank line lives here).
+ * `card` blocks are `cardHeight` rows for every card EXCEPT the first one in
+ * a group, which is `cardHeight - firstCardHeightDelta` — that card has no
+ * leading separator to draw (it sits directly under the header, which has
+ * nothing above it to separate from), so its block simply doesn't reserve
+ * the row instead of reserving-then-blanking it. `buildBlocks` computes
+ * both, callers never need to.
  */
 export type Block =
   | { kind: 'project-header'; projectId: string; projectName: string; height: number }
@@ -52,8 +54,23 @@ export type Block =
  * project's own header+body into a pending group and only committing it to
  * the output once at least one workspace row actually survives for that
  * project. An empty project contributes NOTHING to the returned list.
+ *
+ * FIRST-CARD HEIGHT REDUCTION: a card's separator row exists to rule off
+ * consecutive cards from EACH OTHER. The first card in a group has no
+ * predecessor card — the project header sits above it instead, drawn as a
+ * single bare-name row with no rule of its own (see ProjectGroupHeader.tsx) —
+ * so that card's separator row used to reserve a row and render nothing in
+ * it, leaving a dead blank line under every project name. Rather than special-
+ * casing the RENDER while the block still claims the old uniform height (which
+ * would desync the windowing sum from what's actually drawn), the first
+ * card's block itself is `firstCardHeightDelta` rows shorter. Every other
+ * card in the group is unaffected and stays exactly `cardHeight`.
  */
-export function buildBlocks(rows: DisplayRow[], cardHeight: number): Block[] {
+export function buildBlocks(
+  rows: DisplayRow[],
+  cardHeight: number,
+  firstCardHeightDelta = 0
+): Block[] {
   const out: Block[] = []
 
   let pendingHeader: { projectId: string; projectName: string } | null = null
@@ -65,10 +82,9 @@ export function buildBlocks(rows: DisplayRow[], cardHeight: number): Block[] {
         kind: 'project-header',
         projectId: pendingHeader.projectId,
         projectName: pendingHeader.projectName,
-        // Just the project name. The rule beneath it belongs to the first
-        // CARD's own leading-divider row, not to the header — that way every
-        // card renders an identical 4-row block (3 content + 1 divider) and
-        // none has to leave a blank spacer where a divider was suppressed.
+        // Just the project name — no rule, no blank line. See this
+        // function's own doc comment for where the row that used to sit
+        // beneath it (once reserved, then blanked, by the first card) went.
         height: 1
       })
       out.push(...pendingBody)
@@ -83,7 +99,11 @@ export function buildBlocks(rows: DisplayRow[], cardHeight: number): Block[] {
       pendingHeader = { projectId: row.projectId, projectName: row.projectName }
       continue
     }
-    pendingBody.push({ kind: 'card', row, height: cardHeight })
+    // First card of the (still-pending) group -> shorter block, no reserved
+    // separator row. Every subsequent card in the same group -> full height.
+    const isFirstInGroup = pendingBody.length === 0
+    const height = isFirstInGroup ? Math.max(1, cardHeight - firstCardHeightDelta) : cardHeight
+    pendingBody.push({ kind: 'card', row, height })
   }
   commitPendingGroup()
   return out
