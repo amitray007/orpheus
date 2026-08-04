@@ -3507,7 +3507,15 @@ if (!app.requestSingleInstanceLock()) {
         // the batch listener is always needed for file-based status updates.
         onActivityBatch((updates) => {
           const win = getMainWindow()
-          if (!win) return
+          // Guard webContents itself, not just the BrowserWindow: a renderer
+          // reload (HMR in dev, or a real crash-recovery reload) can leave
+          // win non-null with a destroyed webContents for one tick. This
+          // send was previously unguarded while the canInject loop below it
+          // already checked isDestroyed() — an inconsistency that meant a
+          // batch landing in that window threw here, and since activitySink's
+          // flush already cleared pendingBatch before invoking this listener,
+          // the update was gone for good rather than retried on the next tick.
+          if (!win || win.webContents.isDestroyed()) return
           win.webContents.send(PUSH_CHANNELS.workspaceActivityBatch, updates)
           // Push canInject state for each workspace that changed activity so the
           // renderer chips don't need to poll terminal:canInject every second.

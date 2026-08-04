@@ -636,6 +636,18 @@ export class WorkspaceOrchestrationService {
       await this.authorize(state, workspace.projectId, [workspace.workspaceId])
       if (workspace.closedAt == null) {
         await this.teardownRuntime(workspace, effects)
+      } else {
+        // Already closed in the DB — store.close() below is skipped (it
+        // would just re-stamp closed_at for no reason), which ALSO used to
+        // skip its embedded tmux-kill as a side effect. But workspace.host
+        // can attach a brand-new tmux session to a workspace that is
+        // already closed (the TUI's "reattach to a closed workspace" flow),
+        // so a repeat close on it must still guarantee no tmux session
+        // survives. Call the standalone unhost step directly — it's the
+        // same best-effort kill store.close() runs internally, just not
+        // gated on a DB write happening. See mainAdapter.ts's `unhost` port
+        // doc comment for the full reasoning.
+        await this.ports.store.unhost(workspace.workspaceId)
       }
       const updated =
         workspace.closedAt == null

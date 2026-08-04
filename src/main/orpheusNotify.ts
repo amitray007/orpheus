@@ -3,7 +3,7 @@ import * as http from 'node:http'
 import * as nodePath from 'node:path'
 import * as os from 'node:os'
 import { app } from 'electron'
-import { setWorkspaceStatus } from './workspaces'
+import { setWorkspaceStatus, broadcastWorkspaceChanged } from './workspaces'
 import { notifyForTransition } from './osNotifications'
 import { getAppUiState } from './uiState'
 import type { WorkspaceStatus, WorkspaceActivityDetail, WorkspaceRecord } from '../shared/types'
@@ -217,9 +217,11 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   }
   const cachedOldStatus = activityMap.get(workspaceId)
   let persistedOldStatus: WorkspaceStatus | null = null
+  let persistedWorkspace: WorkspaceRecord | null = null
   try {
     setWorkspaceStatus(workspaceId, status, (oldStatus, workspace) => {
       persistedOldStatus = oldStatus
+      persistedWorkspace = workspace
       persistingStatusObservers.forEach((observer) => {
         observer(workspaceId, oldStatus, status, workspace)
       })
@@ -251,6 +253,17 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
         console.error('[orpheusNotify] committed status observer error:', redactErrorForLog(err))
       }
     })
+    // Keep the renderer's persisted-record cache (workspacesByProject in
+    // Dashboard.tsx) in sync too — every OTHER field mutation in
+    // workspaces.ts (close/reopen/rename/convertToLocal) already broadcasts
+    // workspacesChanged on write; status was the one persisted field that
+    // silently went stale in that cache until the next full re-fetch. Gated
+    // on the authoritative (persisted) transition, not the in-memory
+    // activityMap cache below, and fires independently of it — this is a
+    // different consumer (the record cache) than statusObservers/
+    // broadcastDetailIfChanged (the live activityStore glyph), which must
+    // keep its own separate cachedOldStatus gate.
+    if (persistedWorkspace != null) broadcastWorkspaceChanged(persistedWorkspace)
   }
 
   // Renderer/runtime observers follow the in-memory cache transition. This is

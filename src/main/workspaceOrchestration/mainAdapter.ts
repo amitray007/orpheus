@@ -124,6 +124,26 @@ function unchanged(workspaceId: string, revision: string): boolean {
   return workspaceSnapshot(workspaceId)?.revision === revision
 }
 
+// Best-effort tmux session kill for a workspace, looked up by id at call
+// time (not the id's DB-closed state — this must work whether the row is
+// open, already closed, or mid-close). Shared by the `close` port's
+// DB-write branch and the standalone `unhost` port method below, so both
+// close() call in service.ts (closedAt == null) and the always-run step
+// (closedAt already set) go through identical kill logic. Catches for the
+// same reason every other unhostWorkspace call site in this file does:
+// it re-throws only when the tmux binary itself is missing, and that must
+// never surface as an unhandled rejection out of an already-succeeded close.
+function unhostByWorkspaceId(workspaceId: string): void {
+  const name = workspaceSnapshot(workspaceId)?.name
+  if (name == null) return
+  void unhostWorkspace({ workspaceId, workspaceName: name }).catch((err: unknown) => {
+    console.warn(
+      `[workspaceOrchestration] tmux teardown failed on close for workspaceId=${workspaceId}:`,
+      err
+    )
+  })
+}
+
 function createStorePort(
   takeLastTitle: (workspaceId: string) => string | null
 ): WorkspaceStorePort {
@@ -159,10 +179,9 @@ function createStorePort(
     },
     close: (workspaceId, expectedRevision) => {
       if (!unchanged(workspaceId, expectedRevision)) return null
-      // Read the name BEFORE closing so the tmux session name can still be
-      // computed, then best-effort kill the session — exactly like the
-      // `remove` (archive) port below, and for the same reason: close's
-      // declared effects include 'process.terminate' (service.ts's
+      // Best-effort kill the tmux session as part of the DB write — exactly
+      // like the `remove` (archive) port below, and for the same reason:
+      // close's declared effects include 'process.terminate' (service.ts's
       // CLOSE_EFFECTS), which was a lie for tmux-hosted workspaces. The
       // desktop's surface teardown only destroys a libghostty surface, and a
       // tmux-hosted workspace never had one, so nothing was stopping the
@@ -170,26 +189,25 @@ function createStorePort(
       // closed_at in the dev DB still had live sessions and live shell pids
       // days later.
       //
+      // NOTE: this branch only runs when the row was still open (service.ts
+      // gates the call to `close` on `closedAt == null`). A workspace that
+      // is ALREADY closed skips this port entirely and relies on the
+      // standalone `unhost` port method below — see its doc comment for why
+      // that second path exists (workspace.host can attach a fresh tmux
+      // session to an already-closed workspace).
+      //
       // This is the SECOND close entry point — index.ts's performClose
       // (used by the desktop IPC handler and the inactivity auto-close
       // watchdog) gets the equivalent fix directly there, since it calls the
       // legacy closeWorkspace() rather than this port. Both must guarantee
       // teardown; neither routes through the other without a larger refactor
       // than this fix's scope. Same split the archive paths already have.
-      const name = workspaceSnapshot(workspaceId)?.name
       closeWorkspace(workspaceId, takeLastTitle(workspaceId))
-      if (name != null) {
-        // Catch here for the same reason the remove port does: unhostWorkspace
-        // re-throws when the tmux binary itself is missing, and that must not
-        // surface as an unhandled rejection out of an already-succeeded close.
-        void unhostWorkspace({ workspaceId, workspaceName: name }).catch((err: unknown) => {
-          console.warn(
-            `[workspaceOrchestration] tmux teardown failed on close for workspaceId=${workspaceId}:`,
-            err
-          )
-        })
-      }
+      unhostByWorkspaceId(workspaceId)
       return workspaceSnapshot(workspaceId)
+    },
+    unhost: (workspaceId) => {
+      unhostByWorkspaceId(workspaceId)
     },
     reopen: (workspaceId, expectedRevision) => {
       if (!unchanged(workspaceId, expectedRevision)) return null

@@ -99,7 +99,15 @@ export class CommandTransportError extends Error {
   }
 }
 
-export type SubscriptionErrorKind = 'auth' | 'http' | 'transport'
+// 'unavailable' is distinct from the generic 'transport' kind: it means the
+// socket itself could not be reached at all (ENOENT/ECONNREFUSED — same
+// signal rawPost()'s isUnavailableSocketCode() uses to decide AppNotRunningError
+// for the /cmd path), as opposed to a transport failure on an otherwise-live
+// socket (a response aborting mid-stream, a read error, etc). tui/entry.ts's
+// reconnect loop uses this to tell "the app was never reachable in the first
+// place" apart from "an established connection dropped" — see its own doc
+// comment on attemptReconnect() for why that distinction matters.
+export type SubscriptionErrorKind = 'auth' | 'http' | 'transport' | 'unavailable'
 
 /**
  * A failure of the /subscribe HTTP stream itself, rather than a workspace wait
@@ -702,7 +710,7 @@ export function subscribe(
     req.on('error', (err: NodeJS.ErrnoException) => {
       teardown(
         new SubscriptionError(
-          'transport',
+          isUnavailableSocketCode(err.code) ? 'unavailable' : 'transport',
           `cannot open Orpheus subscription${err.code != null ? `: ${err.code}` : ''}`
         )
       )

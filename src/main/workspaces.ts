@@ -165,7 +165,13 @@ function broadcastWorkspaceCreated(workspace: WorkspaceRecord): void {
   }
 }
 
-function broadcastWorkspaceChanged(workspace: WorkspaceRecord): void {
+// Exported so orpheusNotify.ts's dispatch() can broadcast a workspace's
+// persisted `status` field the same way every other field-mutating function
+// in this file already does (close/reopen/rename/convertToLocal, below) —
+// setWorkspaceStatus() itself does NOT call this (it would fire on every
+// hook-driven re-assertion of the same status, not just real transitions;
+// the caller gates on an actual old-status/new-status change instead).
+export function broadcastWorkspaceChanged(workspace: WorkspaceRecord): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send(PUSH_CHANNELS.workspacesChanged, { workspace })

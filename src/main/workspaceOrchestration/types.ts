@@ -223,6 +223,17 @@ export type WorkspaceStorePort = {
     expectedRevision: string
   ) => WorkspaceSnapshot | null | Promise<WorkspaceSnapshot | null>
   remove: (workspaceId: string, expectedRevision: string) => boolean | Promise<boolean>
+  // Best-effort tmux session teardown, independent of the DB write. `close`
+  // only mutates the row (and tears down tmux as a side effect of that
+  // mutation) when the workspace is CURRENTLY open — it correctly no-ops the
+  // write for an already-closed workspace to avoid clobbering `closed_at`.
+  // But `workspace.host` can attach a brand-new tmux session to a workspace
+  // that is ALREADY closed in the DB (the TUI's "reattach to review/resume a
+  // closed workspace" flow) — so a second `close` call on it must still be
+  // able to kill that session even though there is no DB write to hang the
+  // teardown off of. Callers invoke this unconditionally, every close,
+  // regardless of the row's prior closed_at state.
+  unhost: (workspaceId: string) => void | Promise<void>
 }
 
 export type WorkspaceRuntimePort = {

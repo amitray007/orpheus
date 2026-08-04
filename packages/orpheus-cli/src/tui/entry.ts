@@ -50,12 +50,33 @@
  * the first subscribe of a loop iteration — see attemptReconnect() below for
  * why that matters. Reconnect state is shown via connectionStore.ts, reusing
  * the same "Connecting to Orpheus…" text spot App.tsx already had.
+ *
+ * NO CAP — BUT ONLY ONCE A CONNECTION HAS ACTUALLY BEEN UP (`hasReceivedFrame`)
+ * -------------------------------------------------------------
+ * The lack of an attempt cap above is deliberately for an ESTABLISHED
+ * subscription that then drops — not for a first attempt that never
+ * connected at all. Starting `orpheus tui` while the app isn't running (a
+ * stale cmd.token on disk from a previous run, socket ENOENT/ECONNREFUSED)
+ * used to be indistinguishable from a live link dropping, so it fell into
+ * the same uncapped loop and spun on "Reconnecting…" forever with nothing on
+ * the other end to ever reconnect TO. `handleUnexpectedEnd` carves this one
+ * case out: a failure on the FIRST subscribe of a runPickerOnce() call
+ * (`!hasReceivedFrame`) whose SubscriptionError kind is 'unavailable' (the
+ * app-not-reachable signal socket-client.ts's `subscribe()` now tags
+ * separately from a generic transport hiccup) settles the picker with an
+ * `'unreachable'` outcome instead of looping — runTui() turns that into a
+ * thrown AppNotRunningError, which flows through the exact same
+ * autoLaunch + single-retry + printNotice path every other command already
+ * uses (see commands/tui.ts's own header). Every OTHER unexpected-end case —
+ * including a resubscribe INSIDE attemptReconnect() failing the same way,
+ * once a frame has already landed once this session — keeps retrying
+ * forever, unchanged.
  */
 
 import { spawn } from 'node:child_process'
 import * as React from 'react'
 import { render, type Instance } from 'ink'
-import { subscribe, sendCommand } from '../socket-client.js'
+import { subscribe, sendCommand, AppNotRunningError, SubscriptionError } from '../socket-client.js'
 import { App } from './App.js'
 import { applyFrame, resetFrame } from './frameStore.js'
 import { setConnectionNotice } from './connectionStore.js'
@@ -68,7 +89,18 @@ export interface RunTuiOptions {
   scope?: ProjectScope
 }
 
-type PickerOutcome = { type: 'open'; workspaceId: string } | { type: 'quit' }
+type PickerOutcome =
+  | { type: 'open'; workspaceId: string }
+  | { type: 'quit' }
+  // The FIRST connection attempt of this runPickerOnce() call failed before
+  // the picker ever painted a real frame, and it looks like the app simply
+  // isn't running (ENOENT/ECONNREFUSED — SubscriptionError's 'unavailable'
+  // kind) rather than some other transport hiccup. Distinguished from
+  // 'quit'/'open' so runTui() can throw AppNotRunningError and let it flow
+  // through cli.ts's existing autoLaunch + single-retry + printNotice path —
+  // the same one every other command already uses — instead of the picker
+  // spinning in attemptReconnect() forever for a link that was never up.
+  | { type: 'unreachable'; error: unknown }
 
 /**
  * PICKER STATE ACROSS LOOP ITERATIONS — process-lifetime only, never disk.
@@ -112,6 +144,14 @@ function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
   // pre-reconnect shape) would go stale after the first resubscribe.
   let currentSubscription: Subscription | null = null
 
+  // Flips true the first time a real tree frame lands — i.e. a connection to
+  // Orpheus was genuinely established at least once this runPickerOnce()
+  // call. Read by handleUnexpectedEnd() to draw the FIRST-EVER-attempt vs
+  // ALREADY-CONNECTED distinction the reconnect loop needs (see its doc
+  // comment): failing before this ever flips true means the app was never
+  // reachable, not that a live session dropped.
+  let hasReceivedFrame = false
+
   // STUCK-CONNECTING GAP — HANDLED IN socket-client.ts, NOT HERE (companion
   // bug to the 300s server-side kill this whole fix addresses): before this
   // fix, "connecting…" had no timeout at all — if the first frame simply
@@ -133,6 +173,7 @@ function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
   // separate App.tsx-level timer needed.
   const onEvent = (evt: unknown): void => {
     if (!isTreeFrame(evt)) return
+    hasReceivedFrame = true
     applyFrame(evt)
   }
 
@@ -164,9 +205,20 @@ function runPickerOnce(options: RunTuiOptions): Promise<PickerOutcome> {
   /**
    * The connection ended WITHOUT us asking for it (see the two cases
    * documented at the original call site below). Instead of settling
-   * immediately, kick off the backoff-paced reconnect loop.
+   * immediately, kick off the backoff-paced reconnect loop — UNLESS this is
+   * the very first attempt (no frame has ever landed) and the failure looks
+   * like the app just isn't running, in which case looping forever would
+   * only ever produce a permanently frozen "Reconnecting…" spinner with
+   * nothing on the other end. See the file header's "RECONNECT WITH BACKOFF"
+   * note for the general no-cap policy this deliberately carves an exception
+   * out of — a phone regaining signal in a tunnel is a real connection that
+   * WAS up and dropped; a first attempt that never connected at all is not.
    */
   function handleUnexpectedEnd(err: unknown): void {
+    if (!hasReceivedFrame && err instanceof SubscriptionError && err.kind === 'unavailable') {
+      settleOnce({ type: 'unreachable', error: err })
+      return
+    }
     if (err == null) {
       process.stderr.write('orpheus: connection to Orpheus closed; attempting to reconnect…\n')
     } else {
@@ -487,6 +539,20 @@ export async function runTui(options: RunTuiOptions = {}): Promise<void> {
     // detach, re-show the picker) — there is nothing to parallelize.
     const outcome = await runPickerOnce(options)
     if (outcome.type === 'quit') return
+    if (outcome.type === 'unreachable') {
+      // Rethrow as AppNotRunningError (not the raw SubscriptionError stashed
+      // on the outcome) so this crosses the dist/tui.mjs -> dist/cli.cjs
+      // bundle boundary the same way the file header's "CONNECTION REUSE"
+      // note describes for a synchronous first-subscribe failure: caught by
+      // commands/tui.ts's rethrowAcrossBundleBoundary (matched by `.name`,
+      // not `instanceof` — a plain AppNotRunningError here already has the
+      // right name), then routed through cli.ts's ordinary autoLaunch +
+      // single-retry + printNotice flow like any other command. If autoLaunch
+      // brings the app up, the retry calls runTui() fresh and this loop
+      // starts over with a real connection; if not, the user sees the same
+      // calm "Orpheus isn't running" notice every other command prints.
+      throw new AppNotRunningError(errorMessage(outcome.error))
+    }
     await hostAndAttach(outcome.workspaceId)
   }
 }
