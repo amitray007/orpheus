@@ -59,7 +59,6 @@ import { Box, Text, useInput, useWindowSize } from 'ink'
 import {
   displayTitleFor,
   flattenTree,
-  truncate,
   type Breakpoint,
   type DisplayRow,
   type Filter,
@@ -317,10 +316,22 @@ function PickerBody({
         <Box flexDirection="column">
           {windowedBlocks.visible.map((block, blockIndex) => {
             if (block.kind === 'project-header') {
+              // Raw (untruncated) name — ProjectGroupHeader now owns its own
+              // truncation via projectHeaderLayout.ts's
+              // buildProjectGroupHeaderLine, which needs the FULL name to
+              // decide how much of it fits alongside the rule and count; a
+              // pre-truncated name here would double-truncate and could
+              // leave the rule with budget it shouldn't have. `blankAbove`
+              // is read straight off the block (never recomputed) so the
+              // rendered row count can't drift from `block.height` — same
+              // discipline as `separatorRows` below.
               return (
                 <ProjectGroupHeader
                   key={`project-${block.projectId}`}
-                  name={truncate(block.projectName, cardAreaWidth)}
+                  name={block.projectName}
+                  visibleCount={block.visibleCount}
+                  width={cardAreaWidth}
+                  blankAbove={block.blankAbove}
                   palette={palette}
                 />
               )

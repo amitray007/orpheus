@@ -97,15 +97,18 @@ export interface WorkspaceCardProps {
    *  `gitBranch` field for the full precedence rationale. */
   gitBranch: string | null
   selected: boolean
-  /** Rows to reserve ABOVE the card's 3 content lines for a leading rule —
-   *  `CARD_SEPARATOR_ROWS` for every card except the first in a project
-   *  group, which gets 0: that card has no previous CARD to rule off (the
-   *  project header sits directly above it, drawn as a bare name with no
-   *  rule of its own — see ProjectGroupHeader.tsx), so it reserves no row at
-   *  all rather than reserving one and leaving it blank. Driven by the
-   *  caller from the same `Block.height` that fed blocks.ts's windowing sum
-   *  (see App.tsx's PickerBody), so the rendered row count here always
-   *  matches what windowing already counted for this card. */
+  /** Rows to reserve ABOVE the card's 3 content lines for a leading DOTTED
+   *  card-separator rule (CARD_DIVIDER_CHAR) — `CARD_SEPARATOR_ROWS` for
+   *  every card except the first in a project group, which gets 0: that
+   *  card has no previous CARD to rule off. (The project header sits
+   *  directly above it instead, with its own SOLID name-rule + count line
+   *  and its own blank breather rows — a different rule, on a different
+   *  block, unrelated to this one — see ProjectGroupHeader.tsx.) The first
+   *  card reserves no row at all rather than reserving one and leaving it
+   *  blank. Driven by the caller from the same `Block.height` that fed
+   *  blocks.ts's windowing sum (see App.tsx's PickerBody), so the rendered
+   *  row count here always matches what windowing already counted for this
+   *  card. */
   separatorRows: number
   /** Whether to draw the dotted rule INSIDE the separator row(s) reserved by
    *  `separatorRows` above. Only meaningful when `separatorRows > 0` — see

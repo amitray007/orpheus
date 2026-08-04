@@ -179,6 +179,19 @@ export type DisplayRow =
       projectId: string
       projectName: string
       cwd: string
+      /**
+       * Workspace rows that SURVIVE the active filter for THIS project,
+       * right now — not the project's total workspace count and not a
+       * visible/total pair. Under the default `all` filter this is simply
+       * the project's workspace count (every row survives); under `active`
+       * it's the subset actually passing isActiveStatus(). Populated by
+       * flattenTree() below from the SAME per-project counter that decides
+       * whether each workspace row is pushed at all, so this can never
+       * disagree with the rows the header actually groups. Consumed by
+       * ProjectGroupHeader.tsx's right-aligned count (see that component
+       * and blocks.ts/App.tsx for how it reaches the render).
+       */
+      visibleCount: number
     }
   | {
       kind: 'workspace'
@@ -293,6 +306,16 @@ function buildForest(workspaces: TreeWorkspace[]): ForestNode[] {
   return sortSiblings(roots).map(build)
 }
 
+/** Narrows a DisplayRow to its `workspace` variant — used to count
+ *  per-project surviving rows for the `project-header` variant's
+ *  `visibleCount` field (see flattenTree below). App.tsx keeps its own
+ *  copy of this same narrowing (`isWorkspaceRow`) scoped to its component
+ *  tree; this one stays module-private to layout.ts since nothing outside
+ *  this file needs it. */
+function isWorkspaceDisplayRow(row: DisplayRow): row is Extract<DisplayRow, { kind: 'workspace' }> {
+  return row.kind === 'workspace'
+}
+
 /** Mutable counters threaded through the recursive flatten pass. */
 interface FlattenCounters {
   nextIndex: number
@@ -354,6 +377,14 @@ export function flattenTree(frame: TreeFrame, filter: Filter, scope?: ProjectSco
     const projectRows: DisplayRow[] = []
     flattenForest(forest, project.id, filter, 0, counters, projectRows)
 
+    // Per-project visible count: workspace rows that survived the filter
+    // for THIS project specifically, read straight off the rows just
+    // produced for it (not re-derived from the global counters, which
+    // accumulate across every project in scope) — see DisplayRow's
+    // `visibleCount` field doc comment for why this must come from the
+    // exact same rows the header groups.
+    const projectVisibleCount = projectRows.filter(isWorkspaceDisplayRow).length
+
     // Single-project mode (--project) suppresses the header: there's only
     // ever one project on screen, so the row is wasted vertical space.
     if (scope == null) {
@@ -361,7 +392,8 @@ export function flattenTree(frame: TreeFrame, filter: Filter, scope?: ProjectSco
         kind: 'project-header',
         projectId: project.id,
         projectName: project.name,
-        cwd: project.cwd
+        cwd: project.cwd,
+        visibleCount: projectVisibleCount
       })
     }
     rows.push(...projectRows)
