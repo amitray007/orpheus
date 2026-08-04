@@ -3,37 +3,50 @@
 //
 // Assertion harness for the PURE block-construction + variable-height
 // windowing module (packages/orpheus-cli/src/tui/blocks.ts), covering both
-// the Ink card picker (tui/App.tsx) and any future reuse of the same logic.
+// the Ink card picker (tui/App.tsx) and any future reuse of the same logic,
+// plus the project group header's pure width-computation module
+// (packages/orpheus-cli/src/tui/projectHeaderLayout.ts).
 //
 // MUST PASS FULLY OFFLINE, ON LINUX, WITH NO TTY — mirrors
-// scripts/verify-tui-layout.ts's own constraint. blocks.ts imports nothing
-// from solid-js/@opentui/react/ink/electron/better-sqlite3; this script
-// exercises buildBlocks/windowBlocks directly over plain DisplayRow[]
-// fixtures built with flattenTree(), with no actual rendering involved.
+// scripts/verify-tui-layout.ts's own constraint. blocks.ts and
+// projectHeaderLayout.ts import nothing from solid-js/@opentui/react/ink/
+// electron/better-sqlite3; this script exercises buildBlocks/windowBlocks/
+// buildProjectGroupHeaderLine directly over plain fixtures, with no actual
+// rendering involved.
 //
 // Covers:
-//   1. buildBlocks: project-header is always 1 row (just the name —
-//      ProjectGroupHeader.tsx renders exactly one <Text> line, no rule, no
-//      blank line — asserted here as an explicit constant-equality check so
-//      a future edit to either side alone fails this harness, per this
-//      file's REGRESSION GUARD block below), one `card` block per workspace
-//      row regardless of status (including idle), the first card in each
-//      group getting a REDUCED height (no reserved separator row — see
-//      blocks.ts's `firstCardHeightDelta` param), every other card getting
-//      the full height, and empty-project suppression (a project whose
-//      workspaces are all filtered out contributes zero blocks, including
-//      its own header).
+//   1. buildBlocks: project-header height is 2 rows for the FIRST header in
+//      the list (name+rule line + a blank breather below, no blank above —
+//      nothing to separate from at the very top) and 3 rows for every
+//      header after it (+ a blank breather ABOVE, separating consecutive
+//      project groups) — asserted as an explicit constant-equality check
+//      against ProjectGroupHeader.tsx's OWN rendered row count (the
+//      REGRESSION GUARD block below), one `card` block per workspace row
+//      regardless of status (including idle), the first card in each group
+//      getting a REDUCED height (no reserved separator row — see blocks.ts's
+//      `firstCardHeightDelta` param), every other card getting the full
+//      height, and empty-project suppression (a project whose workspaces
+//      are all filtered out contributes zero blocks, including its own
+//      header, AND does not count as "a header already rendered" for the
+//      next surviving project's blankAbove decision).
 //   2. windowBlocks: passthrough when total height fits, sticky window
 //      start (no spurious recenter when the newly-selected block is
 //      already fully visible — adjacent-selection case), forward/backward
 //      nudge when selection falls outside the window, the "pull back if
 //      there's slack" clawback, and the fixed AFFORDANCE_ROWS_WHEN_WINDOWED
 //      budget once windowed — re-run against the new variable-height first
-//      card at the top, middle, and bottom of a multi-project list.
+//      card AND variable-height headers at the top, middle, and bottom of a
+//      multi-project list.
 //   3. Group total height: the sum of a project's own blocks (header + every
-//      card) must equal `HEADER_HEIGHT + (CARD_HEIGHT - SEPARATOR_ROWS) +
-//      CARD_HEIGHT * (workspaceCount - 1)` — the exact arithmetic App.tsx's
-//      windowing relies on.
+//      card) must equal the exact arithmetic App.tsx's windowing relies on.
+//   4. buildProjectGroupHeaderLine / joinHeaderLine (projectHeaderLayout.ts):
+//      the composed line is EXACTLY the requested width at 38 columns for a
+//      short name, a long name, and a name long enough to leave no room for
+//      a rule; the count is always present and never truncated; a 3-digit
+//      count still fits at 38 columns.
+//   5. layout.ts's flattenTree: the project-header row's `visibleCount`
+//      matches the actual surviving workspace-row count for that project,
+//      under both view:all and view:active, across multiple projects.
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert'
@@ -44,6 +57,11 @@ import {
   AFFORDANCE_ROWS_WHEN_WINDOWED,
   type Block
 } from '../packages/orpheus-cli/src/tui/blocks.ts'
+import {
+  buildProjectGroupHeaderLine,
+  joinHeaderLine
+} from '../packages/orpheus-cli/src/tui/projectHeaderLayout.ts'
+import { NAV_DIVIDER_CHAR } from '../packages/orpheus-cli/src/tui/theme.ts'
 import type {
   TreeFrame,
   TreeProject,
@@ -60,12 +78,21 @@ import type {
 const CARD_CONTENT_ROWS = 3
 const SEPARATOR_ROWS = 1
 const CARD_HEIGHT = CARD_CONTENT_ROWS + SEPARATOR_ROWS
-// ProjectGroupHeader.tsx renders exactly one <Text> line (the bare project
-// name — no rule, no blank line). This constant is the harness's stand-in
-// for "rows ProjectGroupHeader actually renders" — see the REGRESSION GUARD
-// block below for why this can't just be a bare `1` inlined at each call
-// site.
-const HEADER_RENDERED_ROWS = 1
+
+// ProjectGroupHeader.tsx's OWN rendered row count for a header, mirroring
+// its exact structure: [blank-above?] + name+rule+count line + blank-below.
+// This is the harness's stand-in for "rows ProjectGroupHeader.tsx actually
+// renders" — see the REGRESSION GUARD block below for why this can't just
+// be inlined at each call site (a future edit to either side alone, without
+// mirroring the other, must fail this harness).
+const HEADER_NAME_LINE_ROWS = 1
+const HEADER_BLANK_BELOW_ROWS = 1
+const HEADER_BLANK_ABOVE_ROWS = 1
+function headerRenderedRows(blankAbove: boolean): number {
+  return (
+    HEADER_NAME_LINE_ROWS + HEADER_BLANK_BELOW_ROWS + (blankAbove ? HEADER_BLANK_ABOVE_ROWS : 0)
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Fixture helpers — mirrors verify-tui-layout.ts's own ws()/project()/frame()
@@ -101,13 +128,19 @@ function cardBlocks(blocks: Block[]): Array<Extract<Block, { kind: 'card' }>> {
   return blocks.filter((b): b is Extract<Block, { kind: 'card' }> => b.kind === 'card')
 }
 
+function headerBlocks(blocks: Block[]): Array<Extract<Block, { kind: 'project-header' }>> {
+  return blocks.filter(
+    (b): b is Extract<Block, { kind: 'project-header' }> => b.kind === 'project-header'
+  )
+}
+
 function rowsFor(f: TreeFrame, filter: 'active' | 'all' = 'all'): DisplayRow[] {
   return flattenTree(f, filter).rows
 }
 
 // ---------------------------------------------------------------------------
-// 1. buildBlocks — header height, first-card height reduction, empty-project
-//    suppression
+// 1. buildBlocks — header height (first vs. subsequent), first-card height
+//    reduction, empty-project suppression
 // ---------------------------------------------------------------------------
 
 {
@@ -130,18 +163,29 @@ function rowsFor(f: TreeFrame, filter: 'active' | 'all' = 'all'): DisplayRow[] {
   ])
 
   const blocks = buildBlocks(rowsFor(f, 'all'), CARD_HEIGHT, SEPARATOR_ROWS)
-  const headers = blocks.filter((b) => b.kind === 'project-header')
+  const headers = headerBlocks(blocks)
   assert.equal(headers.length, 2, 'both projects have surviving workspaces -> both headers emitted')
-  // A header block is the project NAME only — no rule, no blank line. See the
-  // REGRESSION GUARD block below for why this is pinned against
-  // HEADER_RENDERED_ROWS (ProjectGroupHeader.tsx's actual render) rather than
-  // a bare literal here.
-  assert.equal(headers[0]!.height, HEADER_RENDERED_ROWS, 'a project header is 1 row: the name')
+
+  assert.equal(
+    headers[0]!.blankAbove,
+    false,
+    'the FIRST header in the whole list gets no blank above'
+  )
+  assert.equal(
+    headers[0]!.height,
+    headerRenderedRows(false),
+    'first header: name+rule line + blank below only (2 rows) — no blank above'
+  )
+  assert.equal(headers[1]!.blankAbove, true, 'every header after the first gets a blank above')
   assert.equal(
     headers[1]!.height,
-    HEADER_RENDERED_ROWS,
-    'every project header is 1 row, first or not — no inter-project blank line lives here'
+    headerRenderedRows(true),
+    'second header: blank above + name+rule line + blank below (3 rows)'
   )
+
+  // visibleCount threads straight from flattenTree's per-project count.
+  assert.equal(headers[0]!.visibleCount, 4, 'p1 header carries its own 4 surviving workspaces')
+  assert.equal(headers[1]!.visibleCount, 1, 'p2 header carries its own 1 surviving workspace')
 
   const cards = cardBlocks(blocks)
   assert.equal(cards.length, 5, 'one card block per workspace row, regardless of status')
@@ -190,45 +234,55 @@ function rowsFor(f: TreeFrame, filter: 'active' | 'all' = 'all'): DisplayRow[] {
   }
 
   console.log(
-    '✓ buildBlocks: header is always 1 row, first card per group is reduced height, every workspace status -> a card block'
+    '✓ buildBlocks: first header has no blank above (2 rows), later headers do (3 rows), first card per group is reduced height, every workspace status -> a card block'
   )
 }
 
 // ---------------------------------------------------------------------------
 // REGRESSION GUARD — the rendered header row count and blocks.ts's reported
 // project-header block height must be the SAME NUMBER, asserted as a
-// constant-equality check (not just "both equal HEADER_RENDERED_ROWS" in
-// isolation) so a future edit to ProjectGroupHeader.tsx's JSX (e.g.
-// reintroducing a rule or a blank line) that isn't mirrored in blocks.ts's
-// `height: 1` — or vice versa — fails HERE instead of silently desyncing the
-// windowing sum from what the terminal actually draws. See this file's
-// mutation-test note in the task history: flipping either side alone without
-// the other must fail this assertion.
+// constant-equality check (not just "both equal headerRenderedRows(...)" in
+// isolation) so a future edit to ProjectGroupHeader.tsx's JSX (e.g. adding a
+// second blank row, or dropping the rule) that isn't mirrored in blocks.ts's
+// `headerHeight()` — or vice versa — fails HERE instead of silently
+// desyncing the windowing sum from what the terminal actually draws.
+//
+// Both the FIRST-header case (blankAbove=false, 2 rows) and the SUBSEQUENT-
+// header case (blankAbove=true, 3 rows) are asserted — this task folded in
+// the blank-above gap on top of the original blank-below regression guard,
+// and both must hold independently: flipping either side of EITHER case
+// alone must fail this harness (see this file's mutation-test note in the
+// task history).
 // ---------------------------------------------------------------------------
 
 {
   const f = frame(1, [
-    project({ id: 'p1', name: 'proj-one', workspaces: [ws({ id: 'w1', name: 'w1' })] })
+    project({ id: 'p1', name: 'proj-one', workspaces: [ws({ id: 'w1', name: 'w1' })] }),
+    project({ id: 'p2', name: 'proj-two', workspaces: [ws({ id: 'w2', name: 'w2' })] })
   ])
   const blocks = buildBlocks(rowsFor(f, 'all'), CARD_HEIGHT, SEPARATOR_ROWS)
-  const header = blocks.find((b) => b.kind === 'project-header')
-  assert.ok(header != null)
+  const headers = headerBlocks(blocks)
+  assert.equal(headers.length, 2)
+
   assert.equal(
-    header!.height,
-    HEADER_RENDERED_ROWS,
-    'project-header block height must equal the row count ProjectGroupHeader.tsx actually renders (one <Text> line, no rule, no blank line)'
+    headers[0]!.height,
+    headerRenderedRows(headers[0]!.blankAbove),
+    "FIRST project-header block height must equal ProjectGroupHeader.tsx's rendered row count for blankAbove=false (name+rule line + blank below, no blank above)"
+  )
+  assert.equal(
+    headers[1]!.height,
+    headerRenderedRows(headers[1]!.blankAbove),
+    "SUBSEQUENT project-header block height must equal ProjectGroupHeader.tsx's rendered row count for blankAbove=true (blank above + name+rule line + blank below)"
   )
 
   console.log(
-    "✓ REGRESSION GUARD: project-header block height matches ProjectGroupHeader.tsx's rendered row count"
+    "✓ REGRESSION GUARD: both first-header (2 rows) and subsequent-header (3 rows) block heights match ProjectGroupHeader.tsx's rendered row count"
   )
 }
 
 // ---------------------------------------------------------------------------
 // Group total height — the sum of a project's own blocks (header + every
-// card) must equal the exact arithmetic App.tsx's windowing relies on:
-// HEADER_RENDERED_ROWS + (CARD_HEIGHT - SEPARATOR_ROWS) for the first card +
-// CARD_HEIGHT for every other card.
+// card) must equal the exact arithmetic App.tsx's windowing relies on.
 // ---------------------------------------------------------------------------
 
 {
@@ -241,8 +295,10 @@ function rowsFor(f: TreeFrame, filter: 'active' | 'all' = 'all'): DisplayRow[] {
     const f = frame(1, [project({ id: 'p1', name: 'proj-one', workspaces })])
     const blocks = buildBlocks(rowsFor(f, 'all'), CARD_HEIGHT, SEPARATOR_ROWS)
     const actualTotal = blocks.reduce((sum, b) => sum + b.height, 0)
+    // Sole project in the list -> its header is the FIRST header -> no blank
+    // above (headerRenderedRows(false)).
     const expectedTotal =
-      HEADER_RENDERED_ROWS + (CARD_HEIGHT - SEPARATOR_ROWS) + CARD_HEIGHT * (count - 1)
+      headerRenderedRows(false) + (CARD_HEIGHT - SEPARATOR_ROWS) + CARD_HEIGHT * (count - 1)
     assert.equal(
       actualTotal,
       expectedTotal,
@@ -251,14 +307,16 @@ function rowsFor(f: TreeFrame, filter: 'active' | 'all' = 'all'): DisplayRow[] {
   }
 
   console.log(
-    '✓ group total height matches HEADER_RENDERED_ROWS + reduced-first-card + full-height-rest for 1, 2, and 5 workspaces'
+    '✓ group total height matches first-header rows + reduced-first-card + full-height-rest for 1, 2, and 5 workspaces'
   )
 }
 
 {
   // Empty-project suppression: a project with zero workspaces, and a
   // project whose only workspace is filtered out under view:active, both
-  // contribute NOTHING (not even a bare header).
+  // contribute NOTHING (not even a bare header) — AND a suppressed header
+  // must not count toward "a header was already rendered" for the NEXT
+  // surviving project's blankAbove decision.
   const f = frame(1, [
     project({ id: 'empty', name: 'empty-project', workspaces: [] }),
     project({
@@ -274,13 +332,16 @@ function rowsFor(f: TreeFrame, filter: 'active' | 'all' = 'all'): DisplayRow[] {
   ])
 
   const blocksActiveView = buildBlocks(rowsFor(f, 'active'), CARD_HEIGHT, SEPARATOR_ROWS)
-  const headerProjectIds = blocksActiveView
-    .filter((b) => b.kind === 'project-header')
-    .map((b) => b.projectId)
+  const headersActive = headerBlocks(blocksActiveView)
   assert.deepEqual(
-    headerProjectIds,
+    headersActive.map((h) => h.projectId),
     ['has-active'],
     'under view:active, only the project with a surviving active workspace gets a header'
+  )
+  assert.equal(
+    headersActive[0]!.blankAbove,
+    false,
+    'the ONLY surviving header, despite two projects ahead of it in the raw list, is still the FIRST rendered header -> no blank above'
   )
   assert.equal(
     cardBlocks(blocksActiveView).length,
@@ -289,16 +350,26 @@ function rowsFor(f: TreeFrame, filter: 'active' | 'all' = 'all'): DisplayRow[] {
   )
 
   const blocksAllView = buildBlocks(rowsFor(f, 'all'), CARD_HEIGHT, SEPARATOR_ROWS)
-  const headerProjectIdsAll = blocksAllView
-    .filter((b) => b.kind === 'project-header')
-    .map((b) => b.projectId)
+  const headersAll = headerBlocks(blocksAllView)
   assert.deepEqual(
-    headerProjectIdsAll,
+    headersAll.map((h) => h.projectId),
     ['all-idle', 'has-active'],
     'under view:all, the idle-only project now has a surviving row and gets a header; the truly empty project still does not'
   )
+  assert.equal(
+    headersAll[0]!.blankAbove,
+    false,
+    'all-idle-project is the first SURVIVING header (empty-project contributed nothing) -> no blank above'
+  )
+  assert.equal(
+    headersAll[1]!.blankAbove,
+    true,
+    'has-active-project is the second surviving header -> blank above'
+  )
 
-  console.log('✓ buildBlocks: empty-project suppression holds under both view:active and view:all')
+  console.log(
+    "✓ buildBlocks: empty-project suppression holds under both view:active and view:all, and a suppressed header never counts toward the next header's blankAbove"
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -325,9 +396,10 @@ function manyWorkspaceBlocks(count: number): Block[] {
 }
 
 {
-  // 10 workspaces: first card is (CARD_HEIGHT - SEPARATOR_ROWS) = 3 rows, the
-  // other 9 are CARD_HEIGHT = 4 rows each, plus 1 header row = 1 + 3 + 9*4 =
-  // 40 total. availableRows = 13 -> engages windowing.
+  // 10 workspaces: first (and only, and therefore FIRST-IN-LIST) header is
+  // 2 rows (no blank above), first card is (CARD_HEIGHT - SEPARATOR_ROWS) =
+  // 3 rows, the other 9 are CARD_HEIGHT = 4 rows each: 2 + 3 + 9*4 = 41
+  // total. availableRows = 13 -> engages windowing.
   const blocks = manyWorkspaceBlocks(10)
   const totalHeight = blocks.reduce((s, b) => s + b.height, 0)
   assert.ok(totalHeight > 13, 'fixture must exceed the availableRows budget to engage windowing')
@@ -445,12 +517,13 @@ function manyWorkspaceBlocks(count: number): Block[] {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-project windowing with the new variable first-card height — keeps
-// the selected card fully visible at the top, middle, and bottom of a list
-// spanning several project groups, each with its own reduced-height first
-// card. This is the exact shape App.tsx renders (several ProjectGroupHeader
-// + WorkspaceCard runs back to back), unlike manyWorkspaceBlocks()'s
-// single-project fixture above.
+// Multi-project windowing with the new variable first-card height AND
+// variable header height (blankAbove) — keeps the selected card fully
+// visible at the top, middle, and bottom of a list spanning several project
+// groups, each with its own reduced-height first card and its own
+// first-vs-subsequent header height. This is the exact shape App.tsx
+// renders (several ProjectGroupHeader + WorkspaceCard runs back to back),
+// unlike manyWorkspaceBlocks()'s single-project fixture above.
 // ---------------------------------------------------------------------------
 
 function multiProjectBlocks(projectCount: number, workspacesPerProject: number): Block[] {
@@ -471,13 +544,23 @@ function selectedCardFullyVisible(window: ReturnType<typeof windowBlocks>, id: s
 }
 
 {
-  // 4 projects * 3 workspaces each = 12 cards. Group height = 1 header + 3
-  // (reduced first card) + 4 + 4 (two full cards) = 12 rows/group, 48 total.
-  // Budget of 15 forces windowing well before the whole list fits.
+  // 4 projects * 3 workspaces each = 12 cards. Group height: first group is
+  // 1 header (2 rows, no blank above) + 3 (reduced first card) + 4 + 4 = 13
+  // rows; each of the other 3 groups is 1 header (3 rows, blank above) + 3 +
+  // 4 + 4 = 14 rows. Total = 13 + 14*3 = 55 rows. Budget of 15 forces
+  // windowing well before the whole list fits.
   const blocks = multiProjectBlocks(4, 3)
   const budget = 15
   const totalHeight = blocks.reduce((s, b) => s + b.height, 0)
   assert.ok(totalHeight > budget, 'fixture must exceed the budget to engage windowing')
+
+  const headers = headerBlocks(blocks)
+  assert.equal(headers.length, 4)
+  assert.equal(headers[0]!.blankAbove, false, 'sanity: first of 4 groups has no blank above')
+  assert.ok(
+    headers.slice(1).every((h) => h.blankAbove),
+    'sanity: every group after the first has a blank above'
+  )
 
   // TOP: select the very first workspace of the very first project.
   const atTop = windowBlocks(blocks, 'p0-w0', budget, 0)
@@ -490,7 +573,7 @@ function selectedCardFullyVisible(window: ReturnType<typeof windowBlocks>, id: s
 
   // MIDDLE: select a workspace roughly in the middle of the flattened list —
   // the first workspace of the third project (p2-w0), itself a reduced-
-  // height first-in-group card.
+  // height first-in-group card sitting under a blankAbove=true header.
   const atMiddle = windowBlocks(blocks, 'p2-w0', budget, atTop.start)
   assert.ok(
     selectedCardFullyVisible(atMiddle, 'p2-w0'),
@@ -506,7 +589,7 @@ function selectedCardFullyVisible(window: ReturnType<typeof windowBlocks>, id: s
   assert.equal(atBottom.belowCount, 0, 'scrolled to the very last card -> nothing left below')
 
   console.log(
-    '✓ windowBlocks: multi-project list with variable first-card heights keeps the selection fully visible at top, middle, and bottom'
+    '✓ windowBlocks: multi-project list with variable first-card AND variable header heights keeps the selection fully visible at top, middle, and bottom'
   )
 }
 
@@ -524,6 +607,155 @@ function selectedCardFullyVisible(window: ReturnType<typeof windowBlocks>, id: s
   assert.equal(emptyBlocks.aboveCount, 0)
 
   console.log('✓ windowBlocks: degenerate zero-room and empty-list cases handled without throwing')
+}
+
+// ---------------------------------------------------------------------------
+// 4. buildProjectGroupHeaderLine / joinHeaderLine — exact width at 38
+//    columns, count never truncated, rule dropped (not truncated) when it
+//    doesn't fit.
+// ---------------------------------------------------------------------------
+
+const PHONE_WIDTH = 38
+
+{
+  const shortName = joinHeaderLine(
+    buildProjectGroupHeaderLine('orpheus', 3, PHONE_WIDTH, NAV_DIVIDER_CHAR)
+  )
+  assert.equal(shortName.length, PHONE_WIDTH, 'short name: joined line is EXACTLY 38 columns')
+  assert.ok(shortName.startsWith('orpheus'), 'short name: name renders in full, untruncated')
+  assert.ok(shortName.endsWith('3'), 'short name: count renders at the exact right edge')
+  assert.ok(shortName.includes(NAV_DIVIDER_CHAR), 'short name: a rule is drawn when there is room')
+
+  const longName = joinHeaderLine(
+    buildProjectGroupHeaderLine(
+      'a-genuinely-long-monorepo-project-name-that-keeps-going',
+      3,
+      PHONE_WIDTH,
+      NAV_DIVIDER_CHAR
+    )
+  )
+  assert.equal(longName.length, PHONE_WIDTH, 'long name: joined line is still EXACTLY 38 columns')
+  assert.ok(
+    longName.endsWith('3'),
+    'long name: count still renders at the exact right edge, never truncated'
+  )
+
+  // A name long enough that NO room is left for even one rule character —
+  // reserving the count + its gap + the name's own truncated form + its gap
+  // consumes the entire budget. Constructed by forcing the width down to
+  // where minRuleSlice can't be satisfied (mirrors
+  // projectHeaderLayout.ts's own "drop the rule entirely" branch).
+  const noRuleParts = buildProjectGroupHeaderLine('x'.repeat(200), 3, 4, NAV_DIVIDER_CHAR)
+  assert.equal(
+    noRuleParts.rule,
+    '',
+    'name long enough to starve the rule -> rule is dropped, not truncated'
+  )
+  assert.equal(noRuleParts.count, '3', 'count still renders in full even when the rule is dropped')
+  const noRuleJoined = joinHeaderLine(noRuleParts)
+  assert.equal(
+    noRuleJoined.length,
+    4,
+    'no-rule case: joined line is still EXACTLY the requested width'
+  )
+
+  console.log(
+    '✓ buildProjectGroupHeaderLine: exact 38-column width for a short name, a long name, and a name that starves the rule'
+  )
+}
+
+{
+  // 3-digit count still fits at 38 columns, count never truncated at any
+  // width down to the count's own length.
+  const threeDigit = joinHeaderLine(
+    buildProjectGroupHeaderLine('orpheus', 999, PHONE_WIDTH, NAV_DIVIDER_CHAR)
+  )
+  assert.equal(threeDigit.length, PHONE_WIDTH)
+  assert.ok(threeDigit.endsWith('999'), '3-digit count renders in full at 38 columns')
+
+  // Sweep every width from 0 to 38 with a long name and a 3-digit count —
+  // the count segment must NEVER be shorter than its own full text unless
+  // the width itself is smaller than the count's length (in which case the
+  // count itself right-truncates, per buildProjectGroupHeaderLine's own
+  // documented degenerate branch).
+  for (let w = 0; w <= PHONE_WIDTH; w++) {
+    const parts = buildProjectGroupHeaderLine('a-long-project-name-here', 999, w, NAV_DIVIDER_CHAR)
+    const joined = joinHeaderLine(parts)
+    assert.equal(joined.length, w, `width ${w}: joined line is always EXACTLY the requested width`)
+    if (w >= 3) {
+      assert.equal(
+        parts.count,
+        '999',
+        `width ${w}: 3-digit count is never truncated once width >= 3`
+      )
+    }
+  }
+
+  console.log(
+    '✓ buildProjectGroupHeaderLine: 3-digit count fits at 38 columns and is never truncated across the full 0..38 width sweep'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 5. flattenTree's per-project visibleCount — matches the actual surviving
+//    workspace-row count for each project, under both filters.
+// ---------------------------------------------------------------------------
+
+{
+  const f = frame(1, [
+    project({
+      id: 'p1',
+      name: 'proj-one',
+      workspaces: [
+        ws({ id: 'w1', name: 'active-one', status: 'in_progress' }),
+        ws({ id: 'w2', name: 'idle-one', status: 'idle' }),
+        ws({ id: 'w3', name: 'attn-one', status: 'attention' })
+      ]
+    }),
+    project({
+      id: 'p2',
+      name: 'proj-two',
+      workspaces: [ws({ id: 'w4', name: 'idle-two', status: 'idle' })]
+    })
+  ])
+
+  const allRows = rowsFor(f, 'all')
+  const p1HeaderAll = allRows.find((r) => r.kind === 'project-header' && r.projectId === 'p1')
+  const p2HeaderAll = allRows.find((r) => r.kind === 'project-header' && r.projectId === 'p2')
+  assert.ok(p1HeaderAll?.kind === 'project-header')
+  assert.ok(p2HeaderAll?.kind === 'project-header')
+  assert.equal(
+    p1HeaderAll.visibleCount,
+    3,
+    'view:all — p1 header count matches all 3 of its workspaces'
+  )
+  assert.equal(p2HeaderAll.visibleCount, 1, 'view:all — p2 header count matches its 1 workspace')
+
+  const activeRows = rowsFor(f, 'active')
+  const p1HeaderActive = activeRows.find((r) => r.kind === 'project-header' && r.projectId === 'p1')
+  assert.ok(p1HeaderActive?.kind === 'project-header')
+  assert.equal(
+    p1HeaderActive.visibleCount,
+    2,
+    'view:active — p1 header count matches only its 2 active/attention workspaces, not all 3'
+  )
+  // p2 has zero active workspaces. flattenTree() itself still emits a
+  // header row for p2 (row-level empty-project SUPPRESSION is buildBlocks()'s
+  // job, not flattenTree's — see blocks.ts's own "EMPTY-PROJECT SUPPRESSION"
+  // doc comment) — but that row's own visibleCount must correctly read 0,
+  // not something stale or undefined, since buildBlocks() below discards it
+  // precisely BECAUSE it reads 0 surviving workspace rows.
+  const p2HeaderActive = activeRows.find((r) => r.kind === 'project-header' && r.projectId === 'p2')
+  assert.ok(p2HeaderActive?.kind === 'project-header')
+  assert.equal(
+    p2HeaderActive.visibleCount,
+    0,
+    'view:active — p2 header row still exists (flattenTree does not suppress it) but its visibleCount correctly reads 0'
+  )
+
+  console.log(
+    "✓ flattenTree: project-header visibleCount matches each project's own surviving workspace-row count under view:all and view:active"
+  )
 }
 
 console.log('\nAll tui-blocks assertions passed.')
