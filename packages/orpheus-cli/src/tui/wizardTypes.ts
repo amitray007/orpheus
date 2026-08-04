@@ -12,17 +12,30 @@
  * -----------------------------------------------------------------------
  * The wizard is a single piece of state, `WizardState | null` in App.tsx —
  * null means closed. `WizardState.step` is the step MACHINE: 'model-provider'
- * and 'model-detail' are two sub-screens of "Step 1" from the task brief (a
- * provider list drilling into a model list), 'name' is Step 2, 'mode' is
- * Step 3 (conditionally skipped — see NewWorkspaceWizard.tsx's
- * `modeStepNeeded`), and 'confirm' is Step 4. Every other field
- * (selectedModel, name, mode, projectId/cwd) persists across step changes so
- * `esc` going backward never loses what the user already entered — see the
- * task brief's "esc on later steps goes back ONE step, preserving state"
- * requirement.
+ * and 'model-detail' are two sub-screens of "Step 1" (a provider list
+ * drilling into a model list), 'mode' is Step 2 (conditionally skipped — see
+ * NewWorkspaceWizard.tsx's `modeStepNeeded`), and 'confirm' is Step 3. Every
+ * other field (selectedModel, mode, projectId/cwd) persists across step
+ * changes so `esc` going backward never loses what the user already chose —
+ * see "esc on later steps goes back ONE step, preserving state" below.
+ *
+ * A NAME STEP EXISTED HERE AND WAS DELIBERATELY REMOVED — DO NOT RE-ADD IT
+ * -----------------------------------------------------------------------
+ * This wizard used to have a fourth step, 'name', between 'model-detail' and
+ * 'mode' — a hand-rolled text input for the workspace name. It was removed
+ * because the typed value was thrown away almost immediately:
+ * `displayTitleFor()` in layout.ts prefers Claude's own terminal title
+ * (`lastTitle`, set once Claude starts) over `name`, so whatever the user
+ * typed was overwritten within seconds of the workspace opening. That made
+ * it the only text-entry step in a UI whose primary client is a phone
+ * keyboard — pure cost, no benefit. The wizard still always sends a name
+ * (never omits it — an omitted name would make every workspace created back
+ * to back default to the literal string 'New workspace', indistinguishable
+ * in the picker until Claude emits a title); it's just generated instead of
+ * typed. See `buildCreateArgs` in wizardStepMachine.ts for that logic.
  */
 
-export type WizardStep = 'model-provider' | 'model-detail' | 'name' | 'mode' | 'confirm'
+export type WizardStep = 'model-provider' | 'model-detail' | 'mode' | 'confirm'
 
 /**
  * Mirrors src/shared/types.ts's `SelectableModel` (see this file's header on
@@ -109,11 +122,6 @@ export interface WizardState {
   providerIndex: number
   modelIndex: number
   selectedModel: SelectableModel | null
-  name: string
-  /** Cursor position within `name`, in code points — see NameStep.tsx for
-   *  why a hand-rolled buffer needs to track this explicitly rather than
-   *  always appending/removing at the end. */
-  namePos: number
   modeIndex: number
   mode: WorkspaceMode | null
   /** Set once `workspace.create` is in flight, to disable double-submission
