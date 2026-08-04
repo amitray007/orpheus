@@ -425,7 +425,7 @@ async function hostAndAttach(workspaceId: string): Promise<void> {
         'tmux',
         // Attach to the TUI's GROUPED session, not the primary: same window
         // and pane, but its own session options — which is what gives the TUI
-        // the `^\ Back` footer while the desktop client attached to the
+        // the `^_ Back` footer while the desktop client attached to the
         // primary gets no status row at all. Falls back to the primary if an
         // older server did not send a tuiSessionName.
         [

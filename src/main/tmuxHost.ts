@@ -180,7 +180,7 @@ export function tmuxSessionName(workspaceName: string, workspaceId: string): str
  * The TUI's grouped-session name for a workspace.
  *
  * WHY A SECOND SESSION EXISTS AT ALL: the desktop and the TUI attach to the
- * same terminal, but only the TUI needs the `^\ Back` footer — on the
+ * same terminal, but only the TUI needs the `^_ Back` footer — on the
  * desktop that status row is a stolen line, since the app's own UI already
  * provides navigation. tmux has NO per-client options (`set-option -c` does
  * not exist) and `status` accepts only on/off, never a format, so the row
@@ -1024,10 +1024,15 @@ export async function applyManagedSessionOptions(
     await runTmux(socketName, ['set-option', '-t', sessionName, key, value])
   }
 
-  // Prefix-free detach: `C-\` returns straight to the picker. `-n` binds it
+  // Prefix-free detach: `C-_` returns straight to the picker. `-n` binds it
   // in the ROOT table (no prefix), which is the whole point — an escape that
   // depends on a prefix the inner app might eat is not an escape.
-  await runTmux(socketName, ['bind-key', '-n', 'C-\\', 'detach-client'])
+  //
+  // Was `C-\` originally. Keep this key and the status-line label in
+  // applyManagedTuiSessionOptions() in lockstep — the footer is the only
+  // place the binding is advertised, so a mismatch strands the user inside a
+  // workspace with no documented way out.
+  await runTmux(socketName, ['bind-key', '-n', 'C-_', 'detach-client'])
 }
 
 /**
@@ -1089,7 +1094,7 @@ export async function applyManagedTuiSessionOptions(
       'status-format[0]',
       ' #[fg=colour44]\u258c#[fg=colour252] ' +
         '#{=-#{e|-|:#{client_width},18}:#{pane_title}}' +
-        '#[align=right]#[fg=colour108]^\\#[fg=colour245] Back '
+        '#[align=right]#[fg=colour108]^_#[fg=colour245] Back '
     ],
     // Session options, NOT inherited from the primary — set here too.
     ['mouse', 'on'],
