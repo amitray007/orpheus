@@ -7,7 +7,7 @@ import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 import { getWorkspace, listChildWorkspaces, listWorkspacesForProject } from './workspaces'
 import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
-import { getProject, listProjects, addProject } from './projects'
+import { getProject, listProjects, addProject, reorderProjectsByActivity } from './projects'
 import { resolveOfferedModesForProject } from './orpheusConfig'
 import { resolveProjectAddPath } from './projectPathResolve'
 import { withReconciledEffort } from './effortReconciliation'
@@ -1082,6 +1082,24 @@ function makeDispatchTable(
     //   path (required) — a filesystem path, absolute or relative to the
     //                      calling CLI process's cwd, or `~`/`~/...`-prefixed.
     'project.add': (args) => addProject(resolveProjectAddPath(args)),
+
+    // Re-sort projects by activity — the command-socket counterpart to the
+    // desktop's projects:reorderByActivity IPC handler (src/main/ipc/
+    // projects.ts), both of which are thin passthroughs to the SAME
+    // reorderProjectsByActivity() (projects.ts): rank each project by its
+    // best non-archived workspace status, push zero-workspace projects to
+    // the bottom, persist via sort_order. No ranking logic lives here or in
+    // the IPC handler — projects.ts is the single source of truth for it,
+    // exactly like 'project.add' above defers entirely to addProject().
+    // Takes no args — this sorts the WHOLE list, there is no per-project
+    // variant. reorderProjectsByActivity() itself broadcasts projects:changed
+    // for every reordered project (see its own comment for why this needed
+    // adding, not just reusing), so the TUI needs no separate push here: the
+    // desktop's open windows pick up the new order live, and the TUI's own
+    // /subscribe tree frame picks it up on its next poll tick (listProjects()
+    // is called fresh every TREE_POLL_MS) — no explicit
+    // scheduleTreeFrameEmit() call needed either, same as project.add above.
+    'project.reorderByActivity': () => reorderProjectsByActivity(),
 
     // Selectable-model list for a TUI/CLI model picker (new-workspace
     // creation flow) — the SAME list + gating the renderer's

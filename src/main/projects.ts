@@ -156,6 +156,35 @@ export function reorderProjectsByActivity(): string[] {
   const newOrder = [...sortByRank(pinned), ...sortByRank(unpinned)]
   const orderedIds = newOrder.map((p) => p.id)
   reorderProjects(orderedIds)
+
+  // BROADCAST — this is the ONLY caller of reorderProjects() that fans out
+  // projects:changed at all (the plain drag-to-reorder desktop path,
+  // handleReorderProjects in Dashboard.tsx, applies its own optimistic
+  // reorder locally and doesn't need one). reorderProjectsByActivity()
+  // specifically needs it because it now has a SECOND caller besides the
+  // desktop's own sort button: the TUI's `o` key, via the
+  // 'project.reorderByActivity' command-socket action
+  // (commandServer.ts) — which calls this exact function so the ranking
+  // logic is never duplicated, but has no renderer-side optimistic state of
+  // its own to apply the new order to. Without this broadcast, a sort
+  // triggered from the TUI would silently persist to SQLite (sort_order)
+  // but never reach any OPEN desktop window until some unrelated refetch
+  // happened to reload projects.list() — the exact gap addProject() already
+  // closed for its own mutation (see this function's own file-header
+  // pointer and addProject's "BOTH PATHS BROADCAST" comment). Mirrors
+  // addProject's pattern: broadcast from the DOMAIN function so every
+  // caller (IPC, command-socket, a future third caller) gets it for free
+  // rather than each caller remembering to do it themselves.
+  //
+  // Broadcasts every project in `newOrder`, not just the ones whose rank
+  // actually moved — sort_order was just persisted for ALL of them
+  // (reorderProjects() above writes every index unconditionally), so a
+  // partial broadcast would leave some windows holding a stale sort_order
+  // for projects that in fact didn't visibly move, which is harmless but
+  // inconsistent; broadcasting the full new order keeps every open window's
+  // copy byte-for-byte in sync with what SQLite now holds.
+  newOrder.forEach((p, idx) => broadcastProjectChanged({ ...p, sortOrder: idx }))
+
   return orderedIds
 }
 

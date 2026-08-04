@@ -165,7 +165,18 @@ export function truncate(name: string, width: number): string {
 // flattenTree — tree frame -> ordered, numbered, filtered display rows
 // ---------------------------------------------------------------------------
 
-export type Filter = 'active' | 'all'
+/**
+ * `all` — every project, every workspace (unchanged default). `active` —
+ * only workspaces whose status is attention/in_progress, per isActiveStatus
+ * above (unchanged). `used` — every workspace regardless of status (idle
+ * included, same survivor set as `all`), but projects with ZERO workspaces
+ * are hidden entirely — see flattenTree()'s per-project empty-suppression
+ * for how this differs from `all`, which always keeps an empty project's
+ * header (see blocks.ts's "EMPTY GROUPS RENDER THEIR HEADER" note for why
+ * that suppression must stay opt-in per filter, not a blanket rule). Cycle
+ * order (`v`, App.tsx's handleViewKey): all -> active -> used -> all.
+ */
+export type Filter = 'active' | 'all' | 'used'
 
 /** `--project` scoping: narrows to one project and suppresses its header row. */
 export interface ProjectScope {
@@ -333,7 +344,11 @@ function flattenForest(
 ): void {
   for (const node of forest) {
     counters.total++
-    const visible = filter === 'all' || isActiveStatus(node.ws.status)
+    // `used` shares `all`'s per-workspace survivor set (idle included) — the
+    // two filters differ only in whether an EMPTY project's header survives,
+    // which flattenTree() below decides from the per-project visibleCount,
+    // not here. Only `active` actually narrows which workspace rows pass.
+    const visible = filter !== 'active' || isActiveStatus(node.ws.status)
     if (visible) {
       out.push({
         kind: 'workspace',
@@ -387,7 +402,19 @@ export function flattenTree(frame: TreeFrame, filter: Filter, scope?: ProjectSco
 
     // Single-project mode (--project) suppresses the header: there's only
     // ever one project on screen, so the row is wasted vertical space.
-    if (scope == null) {
+    //
+    // `used` ALSO suppresses the header, but for a completely different
+    // reason: dropping empty projects entirely is the one thing `used`
+    // exists to do (it otherwise shows exactly what `all` shows — every
+    // status, idle included). This is deliberately scoped to `filter ===
+    // 'used'` alone — blocks.ts's buildBlocks() still unconditionally
+    // commits a header for every project-header row it's HANDED (see its
+    // "EMPTY GROUPS RENDER THEIR HEADER" note), so `all`/`active` must keep
+    // pushing the row here or a freshly-added empty project goes back to
+    // being invisible/untargetable-by-`n` under those filters, exactly the
+    // bug that note describes fixing.
+    const suppressEmptyForUsed = filter === 'used' && projectVisibleCount === 0
+    if (scope == null && !suppressEmptyForUsed) {
       rows.push({
         kind: 'project-header',
         projectId: project.id,

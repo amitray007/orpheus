@@ -11,10 +11,15 @@
  * and is listed right after `n`, since both open a full-screen creation
  * overlay. `c` (close) and `a` (archive) are ALSO wired — see App.tsx's
  * `handleCloseArchiveKey` and components/CloseArchiveConfirm.tsx — and are
- * listed right after `v`, since both act on the currently-highlighted row
+ * listed right after `o`, since both act on the currently-highlighted row
  * exactly like `enter`/`v` do, just further down the destructiveness scale.
+ * `o` (sort projects by activity) is wired to the `project.reorderByActivity`
+ * command-socket action (see App.tsx's `handleSortKey`) — listed right after
+ * `v` since both reorder/refilter the list rather than act on one row.
  *
- * RENAME: `f` (filter) -> `v` (view) — card redesign.
+ * RENAME: `f` (filter) -> `v` (view) — card redesign. Cycle order extended
+ * from active<->all to all -> active -> used -> all when the `used` filter
+ * (idle included, empty projects hidden) was added.
  *
  * This is the ONE place a border is used regardless of breakpoint — it's a
  * transient overlay replacing the footer, not permanent chrome competing for
@@ -32,7 +37,8 @@ const ROWS: Array<[string, string]> = [
   ['n', "new workspace, in the highlighted row's project"],
   ['p', 'add a project by filesystem path'],
   ['j/k', 'move the highlighted row'],
-  ['v', 'cycle view: active -> all'],
+  ['v', 'cycle view: all -> active -> used -> all'],
+  ['o', 'sort projects by activity (syncs with the desktop)'],
   ['c', 'close the highlighted workspace (reversible)'],
   ['a', 'archive the highlighted workspace (PERMANENT — deletes files/worktree)'],
   ['?', 'toggle this help'],
