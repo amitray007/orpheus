@@ -289,7 +289,18 @@ export function buildCreateArgs(state: WizardState): Record<string, unknown> {
   const args: Record<string, unknown> = {
     projectId: state.project.id,
     cwd: state.project.cwd,
-    mode: state.mode ?? 'local'
+    mode: state.mode ?? 'local',
+    // focus:false — workspace.create defaults `focus` to TRUE, which makes
+    // the DESKTOP app raise and foreground the new workspace
+    // (activateLegacyCreatedWorkspace -> requestOpenWorkspace(id, focus) in
+    // commandServer.ts). That's right for the GUI's own create flow and
+    // wrong for this one: the TUI's primary client is a phone over SSH, and
+    // creating a workspace from there must not yank the user's Mac to the
+    // front of whatever they were doing on it. The TUI attaches to the new
+    // workspace itself (see the wizard's onDone(workspaceId) -> App's
+    // onOpen -> entry.ts's hostAndAttach), so it needs no help from the
+    // desktop to get there.
+    focus: false
   }
   if (state.name.length > 0) args.name = state.name
   if (state.selectedModel != null) args.model = state.selectedModel.id

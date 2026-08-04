@@ -80,18 +80,45 @@ export interface NewWorkspaceWizardProps {
   project: WizardProject
   width: number
   palette: Palette
-  /** Called once the wizard is done, one way or another — success (a new
-   *  workspace was created, no payload needed: App.tsx trusts the existing
-   *  /subscribe tree frame to update frameStore, per the task brief) or
-   *  cancellation. Both cases just close the wizard from App.tsx's side; the
-   *  distinction only matters for what THIS component does before calling
-   *  it (nothing further on cancel, vs. having already awaited a successful
-   *  workspace.create on success). */
-  onDone: () => void
+  /** Called once the wizard is done, one way or another.
+   *
+   *  On CANCEL: `null` — just close the wizard, nothing else happened.
+   *
+   *  On SUCCESS: the new workspace's id, so App.tsx can hand it straight to
+   *  `onOpen` and attach to it (entry.ts's runTui loop -> hostAndAttach).
+   *  Creating a workspace is intent to work in it; bouncing back to the
+   *  list and making the user find and select the thing they just named is
+   *  busywork, and worse on a phone. The id comes from workspace.create's
+   *  own `{ workspace, seedWarning }` response rather than from waiting for
+   *  the row to show up in a tree frame — that response is authoritative
+   *  and immediate, whereas the frame is asynchronous and would race.
+   *
+   *  Null-on-success is tolerated (see submit()): if the response ever
+   *  arrives in an unexpected shape, the wizard still closes cleanly and
+   *  falls back to the old behaviour rather than throwing away a workspace
+   *  that WAS created. */
+  onDone: (createdWorkspaceId: string | null) => void
 }
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * Dig the new workspace's id out of workspace.create's `{ workspace,
+ * seedWarning }` response. Written defensively (every hop re-checked) rather
+ * than cast: sendCommand returns untyped JSON off a socket, and the failure
+ * we care about is silent — a shape change here must degrade to "close the
+ * wizard, stay in the list", never throw away a workspace that was actually
+ * created on the server. Returning null is the caller's documented
+ * fall-back path, not an error.
+ */
+function createdWorkspaceIdFrom(result: unknown): string | null {
+  if (result == null || typeof result !== 'object') return null
+  const workspace = (result as { workspace?: unknown }).workspace
+  if (workspace == null || typeof workspace !== 'object') return null
+  const id = (workspace as { id?: unknown }).id
+  return typeof id === 'string' && id !== '' ? id : null
 }
 
 /**
@@ -179,8 +206,8 @@ export function NewWorkspaceWizard({
   async function submit(): Promise<void> {
     setState((s) => ({ ...s, submitting: true, submitError: null }))
     try {
-      await sendCommand('workspace.create', buildCreateArgs(state))
-      onDone()
+      const result = await sendCommand('workspace.create', buildCreateArgs(state))
+      onDone(createdWorkspaceIdFrom(result))
     } catch (err) {
       setState((s) => ({ ...s, submitting: false, submitError: errorMessage(err) }))
     }
@@ -188,7 +215,10 @@ export function NewWorkspaceWizard({
 
   useInput((input, key) => {
     if (state.step === STEP_MODEL_PROVIDER || state.step === 'model-detail') {
-      handleModelStepKey(input, key, state, setState, onDone)
+      // Cancel path only — the model step can never CREATE anything, so it
+      // always reports "no workspace" rather than forwarding onDone's
+      // create-id argument (which handleModelStepKey has no way to supply).
+      handleModelStepKey(input, key, state, setState, () => onDone(null))
       return
     }
     if (state.step === 'name') {

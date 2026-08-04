@@ -45,6 +45,7 @@ import {
   WIZARD_PAD_RIGHT
 } from '../packages/orpheus-cli/src/tui/wizardLayout.ts'
 import { CARD_NARROW_MAX } from '../packages/orpheus-cli/src/tui/cardBreakpoints.ts'
+import { buildCreateArgs } from '../packages/orpheus-cli/src/tui/wizardStepMachine.ts'
 
 // Phone-portrait target column count (Termius on an iPhone in portrait,
 // per the task brief). Named so every assertion below reads as "at phone
@@ -242,9 +243,56 @@ function testBuildClosePromptLine(): void {
   )
 }
 
+/**
+ * buildCreateArgs — the workspace.create payload. The load-bearing
+ * assertion here is `focus: false`: workspace.create defaults `focus` to
+ * TRUE server-side, which makes the DESKTOP app raise and foreground the
+ * new workspace. That's right for the GUI's own create flow and wrong for
+ * the TUI's, whose primary client is a phone over SSH — creating a
+ * workspace from there must not yank the user's Mac to the front. Nothing
+ * in the type system enforces it (the payload is Record<string, unknown>),
+ * so it's asserted here instead.
+ */
+function testBuildCreateArgs(): void {
+  const project = { id: 'p1', name: 'orpheus', cwd: '/tmp/orpheus' }
+  const base = {
+    project,
+    name: '',
+    mode: null,
+    selectedModel: null
+  } as unknown as Parameters<typeof buildCreateArgs>[0]
+
+  const args = buildCreateArgs(base)
+  assert.equal(args.focus, false, 'create never foregrounds the desktop app')
+  assert.equal(args.projectId, 'p1', 'project id is threaded through')
+  assert.equal(args.cwd, '/tmp/orpheus', 'project cwd is threaded through')
+  assert.equal(args.mode, 'local', 'absent mode falls back to local')
+  assert.ok(!('name' in args), 'an empty name is OMITTED so the server can default it')
+  assert.ok(!('model' in args), 'no model selected means no model key')
+
+  // A named/worktree/model-bearing create carries all three through, and
+  // still never foregrounds.
+  const full = buildCreateArgs({
+    ...base,
+    name: 'my-ws',
+    mode: 'worktree',
+    selectedModel: { id: 'claude-opus-5' }
+  } as unknown as Parameters<typeof buildCreateArgs>[0])
+  assert.equal(full.focus, false, 'focus stays false regardless of the other fields')
+  assert.equal(full.name, 'my-ws', 'a non-empty name is sent')
+  assert.equal(full.mode, 'worktree', 'worktree mode is sent')
+  assert.equal(full.model, 'claude-opus-5', 'the selected model id is sent')
+
+  console.log(
+    '✓ buildCreateArgs: always sends focus:false (never foregrounds the desktop from a phone), ' +
+      'omits an empty name so the server defaults it, and threads mode/model/cwd through'
+  )
+}
+
 testListRowInnerWidth()
 testBuildListRowText()
 testBuildSummaryLine()
 testBuildClosePromptLine()
+testBuildCreateArgs()
 
 console.log('\nAll tui-wizard assertions passed.')

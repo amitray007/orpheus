@@ -762,7 +762,21 @@ export function App({
           project={wizardProject}
           width={contentWidth}
           palette={palette}
-          onDone={() => setWizardProject(null)}
+          onDone={(createdWorkspaceId) => {
+            setWizardProject(null)
+            // Creating a workspace is intent to WORK in it, so a successful
+            // create attaches straight through to its tmux session instead
+            // of returning to the list and making the user hunt for the row
+            // they just named. `onOpen` is the same path `enter` takes
+            // (entry.ts's runTui loop -> hostAndAttach), so this reuses the
+            // whole hosting/attach/detach cycle rather than duplicating it.
+            //
+            // A null id means either a cancel or a create whose response
+            // didn't carry one (see createdWorkspaceIdFrom) — both fall back
+            // to simply closing the wizard, which is the pre-existing
+            // behaviour and always safe.
+            if (createdWorkspaceId != null) onOpen(createdWorkspaceId)
+          }}
         />
       ) : (
         <PickerScreen
