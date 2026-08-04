@@ -30,6 +30,10 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { rm, mkdtemp, writeFile, readdir, readFile } from 'node:fs/promises'
+// Sync variants: used only by the missing-tmux-binary case below, which
+// mutates process.env around a single awaited call and is far easier to
+// reason about without interleaving more awaits into that window.
+import { mkdtempSync, rmSync } from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import {
@@ -1233,7 +1237,19 @@ async function runRealTmuxChecks(): Promise<void> {
     // -------------------------------------------------------------------
     {
       const originalPath = process.env.PATH
-      process.env.PATH = ''
+      // An EMPTY PATH is NOT portable enough to mean "tmux is unreachable".
+      // On Linux, execvp falls back to a confstr default search path
+      // (`/bin:/usr/bin`) when PATH is empty or unset — so on a CI runner
+      // with tmux at /usr/bin/tmux the spawn SUCCEEDS and this case silently
+      // stopped testing anything, failing only on the missing rejection.
+      // (macOS does not apply that fallback, which is why it passed locally
+      // and failed the moment this harness was first gated in CI.)
+      //
+      // Point PATH at a real, empty directory instead: an explicit
+      // single-entry search path with nothing in it is unambiguous on both
+      // platforms, and does not depend on any libc default.
+      const emptyBinDir = mkdtempSync(path.join(os.tmpdir(), 'orpheus-no-tmux-'))
+      process.env.PATH = emptyBinDir
       // tmuxHost appends known package-manager bin dirs as a cold-start
       // safety net (see tmuxSpawnEnv) — which would find the real tmux and
       // make "not installed" unreachable. Opt out so this genuinely tests
@@ -1252,6 +1268,7 @@ async function runRealTmuxChecks(): Promise<void> {
       } finally {
         process.env.PATH = originalPath
         delete process.env.ORPHEUS_TMUX_NO_PATH_FALLBACK
+        rmSync(emptyBinDir, { recursive: true, force: true })
       }
       console.log(
         '✓ unhostWorkspace() surfaces a missing tmux binary as a typed TmuxNotAvailableError ' +
