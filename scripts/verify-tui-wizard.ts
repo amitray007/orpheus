@@ -39,6 +39,8 @@ import {
   listRowInnerWidth,
   buildListRowText,
   buildSummaryLine,
+  buildClosePromptLine,
+  CLOSE_PROMPT_LITERAL_COLUMNS,
   WIZARD_GUTTER_COLUMNS,
   WIZARD_PAD_RIGHT
 } from '../packages/orpheus-cli/src/tui/wizardLayout.ts'
@@ -200,8 +202,49 @@ function testBuildSummaryLine(): void {
   )
 }
 
+function testBuildClosePromptLine(): void {
+  // Short name at phone width: renders unchanged, well under the budget.
+  const short = buildClosePromptLine('my-workspace', PHONE_COLUMNS)
+  assert.equal(short, 'close "my-workspace"?', 'short name renders unchanged at phone width')
+  assert.ok(short.length <= PHONE_COLUMNS, 'short-name prompt fits within phone width')
+
+  // Long name at phone width: truncates the NAME only, literal wrapper
+  // (`close "` / `"?`) is always fully preserved — the whole point of
+  // reserving CLOSE_PROMPT_LITERAL_COLUMNS up front.
+  const longName = 'my-super-long-workspace-name-here'
+  const truncated = buildClosePromptLine(longName, PHONE_COLUMNS)
+  assert.ok(
+    truncated.length <= PHONE_COLUMNS,
+    'close-prompt line never exceeds the requested content width'
+  )
+  assert.ok(truncated.startsWith('close "'), 'literal prefix is always preserved')
+  assert.ok(truncated.endsWith('"?'), 'literal suffix is always preserved')
+  assert.ok(truncated.includes('...'), 'over-long name is ellipsis-truncated')
+
+  // Sanity: the reserved-literal-columns constant matches `close "` (7) +
+  // `"?` (2) — if this ever drifts from the actual literal text, this
+  // assertion (not just eyeballing the source) catches it.
+  assert.equal(
+    CLOSE_PROMPT_LITERAL_COLUMNS,
+    'close "'.length + '"?'.length,
+    'CLOSE_PROMPT_LITERAL_COLUMNS matches the actual literal wrapper length'
+  )
+
+  // Degenerate width floors the name budget at 1 rather than going
+  // negative/zero into `truncate`.
+  const degenerate = buildClosePromptLine('anything', 0)
+  assert.ok(degenerate.length >= 1, 'degenerate width still produces output, never throws')
+
+  console.log(
+    '✓ buildClosePromptLine: unchanged at phone width for a short name, truncates only the ' +
+      'variable name portion (never the literal wrapper) for an over-long name, reserved-columns ' +
+      'constant matches the actual literal text, degenerate width never throws'
+  )
+}
+
 testListRowInnerWidth()
 testBuildListRowText()
 testBuildSummaryLine()
+testBuildClosePromptLine()
 
 console.log('\nAll tui-wizard assertions passed.')

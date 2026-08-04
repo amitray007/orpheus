@@ -82,3 +82,22 @@ export function buildSummaryLine(label: string, value: string, contentWidth: num
   const raw = `${label}: ${value}`
   return truncate(raw, Math.max(1, contentWidth))
 }
+
+/** Literal characters `buildClosePromptLine` wraps the (possibly-truncated)
+ *  workspace name in: `close "` (7) + `"?` (2) = 9. Named/exported so the
+ *  harness can assert the exact budget rather than re-deriving 9 by hand. */
+export const CLOSE_PROMPT_LITERAL_COLUMNS = 9
+
+/**
+ * Build the close-confirm overlay's one-line prompt (`close "name"?`),
+ * reserving `CLOSE_PROMPT_LITERAL_COLUMNS` for the surrounding literal text
+ * and truncating the workspace name into whatever's left — same
+ * "budget the literal text, truncate the variable part" discipline as
+ * `buildSummaryLine` above, used by tui/components/CloseArchiveConfirm.tsx.
+ * Floors the name budget at 1 so a pathologically narrow terminal never
+ * calls `truncate` with a non-positive width.
+ */
+export function buildClosePromptLine(workspaceName: string, contentWidth: number): string {
+  const nameWidth = Math.max(1, contentWidth - CLOSE_PROMPT_LITERAL_COLUMNS)
+  return `close "${truncate(workspaceName, nameWidth)}"?`
+}

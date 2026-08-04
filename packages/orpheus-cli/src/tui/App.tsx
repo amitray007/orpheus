@@ -54,9 +54,10 @@
  */
 
 import * as React from 'react'
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Box, Text, useInput, useWindowSize } from 'ink'
 import {
+  displayTitleFor,
   flattenTree,
   truncate,
   type Breakpoint,
@@ -68,6 +69,7 @@ import { CARD_MEDIUM_MAX, resolveCardBreakpoint } from './cardBreakpoints.js'
 import { buildBlocks, windowBlocks, type Block } from './blocks.js'
 import { frameStore } from './frameStore.js'
 import { connectionStore } from './connectionStore.js'
+import { sendCommand } from '../socket-client.js'
 import { TitleBar } from './components/TitleBar.js'
 import { Footer } from './components/Footer.js'
 import { HelpOverlay } from './components/HelpOverlay.js'
@@ -76,6 +78,7 @@ import { WorkspaceCard } from './components/WorkspaceCard.js'
 import { ScrollAffordance } from './components/ScrollAffordance.js'
 import { DetailPane } from './components/DetailPane.js'
 import { NewWorkspaceWizard } from './components/NewWorkspaceWizard.js'
+import { CloseArchiveConfirm, type ArchiveStage } from './components/CloseArchiveConfirm.js'
 import { activePalette, VRULE_PAD_X, CARD_SEPARATOR_ROWS } from './theme.js'
 import type { Palette } from './theme.js'
 import type { TreeProject, TreeWorkspace } from './types.js'
@@ -141,6 +144,11 @@ const CARD_HEIGHT = CARD_CONTENT_ROWS + CARD_SEPARATOR_ROWS
  *  hardcoded 120 previously could (see cardBreakpoints.ts's file header for
  *  the bug that caused). */
 const WIDE_MIN_COLUMNS = CARD_MEDIUM_MAX + 1
+/** How long the Footer's transient close notice (`closed <name>`) stays up
+ *  before auto-clearing — see the `closeNotice` state's own doc comment for
+ *  why this exists at all. Long enough to read on a phone-width terminal,
+ *  short enough that it doesn't linger and get mistaken for permanent chrome. */
+const CLOSE_NOTICE_MS = 3000
 
 type WorkspaceDisplayRow = Extract<DisplayRow, { kind: 'workspace' }>
 
@@ -191,6 +199,63 @@ function handleNewWorkspaceKey(
   if (selectedProject == null) return
   const { id, name, cwd } = selectedProject
   setWizardProject({ id, name, cwd })
+}
+
+/**
+ * State for the close/archive confirm overlay (App.tsx-owned, not the new
+ * component's own — mirrors `wizardProject` above: a single nullable slot,
+ * flipped null<->non-null by App.tsx, with the confirm component itself
+ * owning no persistent state of its own beyond what's threaded in as props).
+ *
+ * `mode`/`archiveStage` together resolve which of CloseArchiveConfirm's
+ * three screens (close / archive-confirm / archive-execute) is showing —
+ * see that component's file header for the full stage-machine rationale.
+ * `submitting`/`submitError` mirror ConfirmStep's own submit-state fields
+ * (wizard/ConfirmStep.tsx) so the async sendCommand + inline-error UX is the
+ * same shape as the wizard's already-established pattern.
+ */
+interface CloseArchiveState {
+  workspaceId: string
+  workspaceName: string
+  worktreeBranch: string | null
+  mode: 'close' | 'archive'
+  archiveStage: ArchiveStage
+  submitting: boolean
+  submitError: string | null
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * Handles `x` (open the close confirm) and `X` (open the archive confirm,
+ * stage 'confirm') — extracted from the main useInput callback for the same
+ * cognitive-complexity reason as handleViewKey/handleNewWorkspaceKey above.
+ * Operates on the currently-highlighted row, exactly like `n` operates on
+ * the currently-highlighted row's project. A no-op with nothing selected
+ * (empty list / filtered-empty), same defensive shape as
+ * handleNewWorkspaceKey's `selectedProject == null` guard.
+ *
+ * `input === 'X'` is checked in App.tsx's useInput BEFORE this function is
+ * even reached for the lowercase `x` branch — see useInput's own ordering
+ * comment for why the capital check must come first.
+ */
+function handleCloseArchiveKey(
+  mode: 'close' | 'archive',
+  selectedRow: WorkspaceDisplayRow | null,
+  setCloseArchive: React.Dispatch<React.SetStateAction<CloseArchiveState | null>>
+): void {
+  if (selectedRow == null) return
+  setCloseArchive({
+    workspaceId: selectedRow.workspaceId,
+    workspaceName: displayTitleFor(selectedRow),
+    worktreeBranch: selectedRow.worktreeBranch,
+    mode,
+    archiveStage: 'confirm',
+    submitting: false,
+    submitError: null
+  })
 }
 
 interface PickerBodyProps {
@@ -346,6 +411,44 @@ export function App({
   // wizard is open.
   const [wizardProject, setWizardProject] = useState<WizardProject | null>(null)
 
+  // The close/archive confirm overlay (`x`/`X`) — null means closed. Same
+  // not-persisted-across-mounts rationale as `helpVisible`/`wizardProject`
+  // above: a detach/reattach should never silently resurrect an in-progress
+  // destructive confirm the user may have forgotten about.
+  const [closeArchive, setCloseArchive] = useState<CloseArchiveState | null>(null)
+
+  // TRANSIENT close notice — see the file header's "THE CRITICAL UX GAP"
+  // note (task brief): workspace.close destroys the surface/process but the
+  // tree frame's own archivedAt-only filter means the row never disappears,
+  // so this is the ONLY visible confirmation a close actually happened.
+  // Threaded into Footer's existing (previously always-null) `notice` prop.
+  // Cleared automatically after CLOSE_NOTICE_MS via the ref-tracked timeout
+  // below — a NEWER notice (or unmount) always clears whatever timer is
+  // currently pending first, so a stale timeout can never clobber a fresher
+  // notice that arrived before the old one's 3s elapsed.
+  const [closeNotice, setCloseNotice] = useState<string | null>(null)
+  const closeNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function showCloseNotice(text: string): void {
+    if (closeNoticeTimer.current != null) clearTimeout(closeNoticeTimer.current)
+    setCloseNotice(text)
+    closeNoticeTimer.current = setTimeout(() => {
+      closeNoticeTimer.current = null
+      setCloseNotice(null)
+    }, CLOSE_NOTICE_MS)
+  }
+
+  // Unmount-only cleanup — clearing on every render (e.g. via a dep array
+  // keyed on closeNotice) would fight showCloseNotice's own clear-then-set
+  // above; this effect exists solely so a still-pending timer doesn't fire
+  // setState after the whole picker has unmounted (workspace opened, app
+  // quitting, etc).
+  useEffect(() => {
+    return () => {
+      if (closeNoticeTimer.current != null) clearTimeout(closeNoticeTimer.current)
+    }
+  }, [])
+
   const palette = activePalette
 
   const flattened = useMemo(
@@ -423,6 +526,77 @@ export function App({
     setSelectedWorkspaceIdRaw(workspaceRows[next]?.workspaceId ?? null)
   }
 
+  // Submit workspace.close — on success, close the overlay and arm the
+  // Footer notice (see the file header's "THE CRITICAL UX GAP" note); on
+  // failure, keep the overlay open and surface the error inline (mirrors
+  // ConfirmStep.tsx's submitError pattern exactly — the self-action-refusal
+  // case, "cannot close/archive the workspace running this command", reads
+  // clearly here rather than as a generic failure).
+  async function submitClose(state: CloseArchiveState): Promise<void> {
+    setCloseArchive((s) => (s == null ? s : { ...s, submitting: true, submitError: null }))
+    try {
+      await sendCommand('workspace.close', { id: state.workspaceId })
+      setCloseArchive(null)
+      showCloseNotice(`closed ${state.workspaceName}`)
+    } catch (err) {
+      setCloseArchive((s) =>
+        s == null ? s : { ...s, submitting: false, submitError: errorMessage(err) }
+      )
+    }
+  }
+
+  // Submit workspace.archive — deliberately omits `recursive` (single-
+  // workspace archive only; the task brief has no real reason to pass it
+  // here). No notice needed on success: the row disappearing from the next
+  // /subscribe tree frame (groupActiveWorkspacesByProject filters archived
+  // rows out) IS the confirmation, per the task brief.
+  async function submitArchive(state: CloseArchiveState): Promise<void> {
+    setCloseArchive((s) => (s == null ? s : { ...s, submitting: true, submitError: null }))
+    try {
+      await sendCommand('workspace.archive', { id: state.workspaceId })
+      setCloseArchive(null)
+    } catch (err) {
+      setCloseArchive((s) =>
+        s == null ? s : { ...s, submitting: false, submitError: errorMessage(err) }
+      )
+    }
+  }
+
+  // Key handling while the close/archive confirm is open — mirrors
+  // NewWorkspaceWizard.tsx's own useInput dispatch shape (per-step branches,
+  // ignore further presses mid-submit). `esc` always cancels back to the
+  // picker with no action taken, at ANY stage, per the task brief.
+  function handleConfirmInput(
+    state: CloseArchiveState,
+    input: string,
+    key: { escape: boolean; return: boolean }
+  ): void {
+    if (state.submitting) return // ignore further presses mid-request — no double-submit
+    if (key.escape) {
+      setCloseArchive(null)
+      return
+    }
+    if (state.mode === 'close') {
+      if (key.return) void submitClose(state)
+      return
+    }
+    // 'archive'
+    if (state.archiveStage === 'confirm') {
+      // `d` is the deliberate, DIFFERENT-key advance to the execute stage —
+      // see CloseArchiveConfirm.tsx's file header for why this can't be a
+      // same-key double-press. Clears any stale submitError from a previous
+      // attempt so re-entering 'confirm' (there's no path back to it once
+      // past — esc from 'execute' cancels the whole flow — but defensive
+      // regardless) never shows a leftover error.
+      if (input === 'd') {
+        setCloseArchive({ ...state, archiveStage: 'execute', submitError: null })
+      }
+      return
+    }
+    // 'execute'
+    if (key.return) void submitArchive(state)
+  }
+
   useInput((input, key) => {
     // The wizard owns its OWN useInput while open (NewWorkspaceWizard.tsx)
     // and this component's body isn't even mounted then (see the render
@@ -430,8 +604,15 @@ export function App({
     // regardless of what's rendered, so this early return is what actually
     // stops j/k/v/q/?/enter from leaking through to the picker's own
     // handlers while the wizard is up, exactly mirroring the `helpVisible`
-    // short-circuit immediately below it.
+    // short-circuit immediately below it. The close/archive confirm gets
+    // the exact same treatment, checked right after: while it's open, every
+    // key goes through handleConfirmInput and NOTHING else in this callback
+    // may run (including j/k/enter/x/X on the row underneath).
     if (wizardProject != null) return
+    if (closeArchive != null) {
+      handleConfirmInput(closeArchive, input, key)
+      return
+    }
     if (helpVisible) {
       setHelpVisible(false)
       return
@@ -446,6 +627,18 @@ export function App({
     }
     if (input === 'n') {
       handleNewWorkspaceKey(selectedProject, setWizardProject)
+      return
+    }
+    // Capital `X` (archive) MUST be checked before any lowercase/
+    // case-insensitive handling so `x`/`X` can never collide — Ink's
+    // useInput reports a capital as input === 'X' with no separate
+    // shift-modifier flag to disambiguate otherwise.
+    if (input === 'X') {
+      handleCloseArchiveKey('archive', selectedRow, setCloseArchive)
+      return
+    }
+    if (input === 'x') {
+      handleCloseArchiveKey('close', selectedRow, setCloseArchive)
       return
     }
     if (key.return) {
@@ -548,6 +741,9 @@ export function App({
           palette={palette}
           helpVisible={helpVisible}
           breakpoint={breakpoint}
+          closeArchive={closeArchive}
+          closeNotice={closeNotice}
+          contentWidth={contentWidth}
         />
       )}
     </Box>
@@ -561,6 +757,53 @@ interface PickerScreenProps extends PickerBodyProps {
   filteredEmpty: boolean
   helpVisible: boolean
   breakpoint: Breakpoint
+  closeArchive: CloseArchiveState | null
+  closeNotice: string | null
+  contentWidth: number
+}
+
+/**
+ * Resolves what goes where the Footer's keymap normally sits: the help
+ * overlay (`?`), the close/archive confirm (`x`/`X`), or the ordinary
+ * Footer — carrying its transient close notice when there is one. Extracted
+ * from PickerScreen for the same cognitive-complexity reason everything
+ * else in this file gets extracted: a 3-way ternary inline would have
+ * pushed PickerScreen itself over budget once the confirm branch joined
+ * the pre-existing help<->footer swap.
+ */
+function FooterArea({
+  helpVisible,
+  closeArchive,
+  closeNotice,
+  breakpoint,
+  contentWidth,
+  palette
+}: {
+  helpVisible: boolean
+  closeArchive: CloseArchiveState | null
+  closeNotice: string | null
+  breakpoint: Breakpoint
+  contentWidth: number
+  palette: Palette
+}): React.JSX.Element {
+  if (helpVisible) {
+    return <HelpOverlay breakpoint={breakpoint} palette={palette} />
+  }
+  if (closeArchive != null) {
+    return (
+      <CloseArchiveConfirm
+        mode={closeArchive.mode}
+        archiveStage={closeArchive.archiveStage}
+        workspaceName={closeArchive.workspaceName}
+        worktreeBranch={closeArchive.worktreeBranch}
+        submitting={closeArchive.submitting}
+        submitError={closeArchive.submitError}
+        width={contentWidth}
+        palette={palette}
+      />
+    )
+  }
+  return <Footer notice={closeNotice} palette={palette} breakpoint={breakpoint} />
 }
 
 /**
@@ -579,6 +822,9 @@ function PickerScreen({
   filteredEmpty,
   helpVisible,
   breakpoint,
+  closeArchive,
+  closeNotice,
+  contentWidth,
   palette,
   ...pickerBodyProps
 }: PickerScreenProps): React.JSX.Element {
@@ -609,11 +855,14 @@ function PickerScreen({
           <PickerBody palette={palette} {...pickerBodyProps} />
         )}
       </Box>
-      {helpVisible ? (
-        <HelpOverlay breakpoint={breakpoint} palette={palette} />
-      ) : (
-        <Footer notice={null} palette={palette} breakpoint={breakpoint} />
-      )}
+      <FooterArea
+        helpVisible={helpVisible}
+        closeArchive={closeArchive}
+        closeNotice={closeNotice}
+        breakpoint={breakpoint}
+        contentWidth={contentWidth}
+        palette={palette}
+      />
     </>
   )
 }

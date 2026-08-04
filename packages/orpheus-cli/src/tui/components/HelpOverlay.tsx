@@ -1,12 +1,16 @@
 /**
  * tui/components/HelpOverlay.tsx — full keymap reference, shown on `?`.
  *
- * ONLY LISTS IMPLEMENTED KEYS — x/a/r are omitted entirely (not listed as
+ * ONLY LISTS IMPLEMENTED KEYS — `a`/`r` are omitted entirely (not listed as
  * "not yet wired"), matching the card redesign's smaller keymap: those
- * require server actions beyond workspace.host/unhost/create that aren't
- * wired in this build. `n` (new workspace) IS wired — see
+ * require server actions beyond workspace.host/unhost/create/close/archive
+ * that aren't wired in this build. `n` (new workspace) IS wired — see
  * NewWorkspaceWizard.tsx — and is listed here right after `enter`, the row
- * it's most often reached for alongside.
+ * it's most often reached for alongside. `x` (close) and `X` (archive) are
+ * ALSO wired — see App.tsx's `handleCloseArchiveKey` and
+ * components/CloseArchiveConfirm.tsx — and are listed right after `v`,
+ * since both act on the currently-highlighted row exactly like `enter`/`v`
+ * do, just further down the destructiveness scale.
  *
  * RENAME: `f` (filter) -> `v` (view) — card redesign.
  *
@@ -26,6 +30,8 @@ const ROWS: Array<[string, string]> = [
   ['n', "new workspace, in the highlighted row's project"],
   ['j/k', 'move the highlighted row'],
   ['v', 'cycle view: active -> all'],
+  ['x', 'close the highlighted workspace (reversible)'],
+  ['X', 'archive the highlighted workspace (PERMANENT — deletes files/worktree)'],
   ['?', 'toggle this help'],
   ['q', 'quit']
 ]
