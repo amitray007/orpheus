@@ -2,10 +2,14 @@
  * tui/components/Footer.tsx — keymap hint line, or a transient notice in its
  * place.
  *
- * KEYMAP: enter/j-k/v/n/p/c/a/?/q are implemented — `n` (new workspace) is
+ * KEYMAP: enter/j-k/v/n/p/o/c/a/?/q are implemented — `n` (new workspace) is
  * wired to NewWorkspaceWizard.tsx (see App.tsx's `wizardProject` state);
  * `p` (add project) is wired to AddProjectPrompt.tsx (see App.tsx's
- * `addProjectOpen` state and `handleAddProjectKey`); `c` (close, reversible)
+ * `addProjectOpen` state and `handleAddProjectKey`); `o` (sort projects by
+ * activity) is wired to the `project.reorderByActivity` command-socket
+ * action via App.tsx's `handleSortKey` — the same ranking the desktop's own
+ * sort button uses (src/main/projects.ts's reorderProjectsByActivity()),
+ * kept in sync because both call that one function; `c` (close, reversible)
  * and `a` (archive, PERMANENT DELETE) are wired to workspace.close/
  * workspace.archive via App.tsx's `handleCloseArchiveKey` and
  * components/CloseArchiveConfirm.tsx. `c`/`a` are UNSHIFTED and are not a
@@ -38,7 +42,9 @@ import type { Palette } from '../theme.js'
  * (>=104 col) terminal, which is exactly why this set doesn't need the same
  * character-budget discipline NARROW_KEYS below does. `p` (add project) adds
  * another `p project` (9 chars) + separator (3) = 12 more (78 + 12 = 90) —
- * still comfortably inside medium/wide.
+ * still comfortably inside medium/wide. `o` (sort) adds `o sort` (6 chars) +
+ * separator (3) = 9 more (90 + 9 = 99) — still comfortably inside medium
+ * (>=52) or wide (>=104), same rationale as every other entry in this set.
  */
 const ALL_KEYS: Array<[string, string]> = [
   ['enter', 'open'],
@@ -46,6 +52,7 @@ const ALL_KEYS: Array<[string, string]> = [
   ['n', 'new'],
   ['p', 'project'],
   ['v', 'view'],
+  ['o', 'sort'],
   ['c', 'close'],
   ['a', 'archive'],
   ['?', 'keys'],
@@ -105,6 +112,22 @@ const ALL_KEYS: Array<[string, string]> = [
  * ever be caught without this" bar `enter`/`n`/`?`/`q` do. Kept out of
  * NARROW_KEYS for both reasons; fully documented in the `?` help overlay
  * (HelpOverlay.tsx), same as `v`/`c`/`a` today.
+ *
+ * o (sort projects by activity) EVALUATED AND DELIBERATELY KEPT OUT —
+ * CHARACTER MATH
+ * -----------------------------------------------------------------------
+ * `o sort` (1+1+4 = 6 chars) plus one more KEYMAP_SEPARATOR (3) costs 9:
+ * 36 + 9 = 45 — 1 OVER the ~44 budget this set already targets, and over the
+ * hard 38-column phone-first width this task is scoped to (see the repo's
+ * house rules) by 7. A shorter label doesn't rescue it either (`o srt`
+ * still costs 8, landing at 44 — right back at p's "zero headroom" problem
+ * above). Sorting is also a re-triggerable, non-urgent action — unlike `n`
+ * (the very next thing most sessions do) it's something you reach for
+ * occasionally to tidy the list, not something the picker is broken without
+ * if it's one keypress away behind `?` instead of zero. Kept out of
+ * NARROW_KEYS for the same two-part reasoning as `p`/`c`/`a`: budget
+ * overflow AND below the "no picker screen should ever be caught without
+ * this" bar. Fully documented in the `?` help overlay (HelpOverlay.tsx).
  */
 const NARROW_KEYS: Array<[string, string]> = [
   ['enter', 'open'],

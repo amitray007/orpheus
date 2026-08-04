@@ -150,11 +150,12 @@ const CARD_HEIGHT = CARD_CONTENT_ROWS + CARD_SEPARATOR_ROWS
  *  hardcoded 120 previously could (see cardBreakpoints.ts's file header for
  *  the bug that caused). */
 const WIDE_MIN_COLUMNS = CARD_MEDIUM_MAX + 1
-/** How long the Footer's transient close notice (`closed <name>`) stays up
- *  before auto-clearing — see the `closeNotice` state's own doc comment for
- *  why this exists at all. Long enough to read on a phone-width terminal,
- *  short enough that it doesn't linger and get mistaken for permanent chrome. */
-const CLOSE_NOTICE_MS = 3000
+/** How long the Footer's transient notice (`closed <name>`, or a failed `o`
+ *  sort's error text) stays up before auto-clearing — see the
+ *  `footerNotice` state's own doc comment for why this exists at all. Long
+ *  enough to read on a phone-width terminal, short enough that it doesn't
+ *  linger and get mistaken for permanent chrome. */
+const FOOTER_NOTICE_MS = 3000
 /** How often the picker repaints purely to advance the rendered ages — see
  *  the age-ticker effect in App() for why a local timer (rather than a
  *  server-side frame) is the right place to fix a frozen age.
@@ -238,6 +239,15 @@ function headerReservedFor(): number {
   return 2
 }
 
+/** `v`'s cycle order: all -> active -> used -> all. Kept as an explicit
+ *  lookup rather than a chain of ternaries so a future 4th filter is a
+ *  one-line addition here instead of a re-derivation of the whole chain. */
+const VIEW_CYCLE: Record<Filter, Filter> = {
+  all: 'active',
+  active: 'used',
+  used: 'all'
+}
+
 /**
  * Handles a single non-navigation, non-quit, non-help keypress: view
  * cycling. Extracted from the main useInput callback to keep its cognitive
@@ -245,7 +255,7 @@ function headerReservedFor(): number {
  */
 function handleViewKey(input: string, setView: React.Dispatch<React.SetStateAction<Filter>>): void {
   if (input === 'v') {
-    setView((f) => (f === 'active' ? 'all' : 'active'))
+    setView((f) => VIEW_CYCLE[f])
   }
 }
 
@@ -288,6 +298,39 @@ function handleAddProjectKey(
   setAddProjectOpen: React.Dispatch<React.SetStateAction<boolean>>
 ): void {
   setAddProjectOpen(true)
+}
+
+/**
+ * Handles `o` (re-sort projects by activity) — extracted for the same
+ * cognitive-complexity reason as the handlers above. Unlike `n`/`c`/`a`, this
+ * needs no currently-selected row: it re-sorts the WHOLE project list, not
+ * one project, mirroring the desktop's own sort button (Dashboard.tsx's
+ * handleReorderProjectsByActivity), which also takes no per-row context.
+ *
+ * Fires 'project.reorderByActivity' — the command-socket action added
+ * alongside this handler (see commandServer.ts) that calls the exact same
+ * reorderProjectsByActivity() (src/main/projects.ts) the desktop's sort
+ * button calls, so the ranking logic (best non-active workspace status wins,
+ * projects with none rank last, pinned/unpinned tiers never merge) can never
+ * drift between the two surfaces. No local optimistic reorder here (unlike
+ * Dashboard.tsx's handleReorderProjectsByActivity, which patches its own
+ * `projects` state from the response) — App.tsx never held its own copy of
+ * project order to begin with; flattenTree() already re-derives row order
+ * from `frame.projects` fresh on every frame, and reorderProjectsByActivity()
+ * itself broadcasts projects:changed per project (see that function's own
+ * comment), so the NEXT /subscribe tree frame (at most one TREE_POLL_MS poll
+ * tick away) carries the new sort_order with no client-side merge needed.
+ *
+ * On failure, surfaces the error via the Footer's transient notice slot
+ * (showFooterNotice — see that state's own doc comment) rather than
+ * swallowing it: a sort that silently no-ops would look identical to one
+ * that ran and found nothing to reorder, which is indistinguishable from
+ * "did this even do anything?" without an explicit signal either way.
+ */
+function handleSortKey(showFooterNotice: (text: string) => void): void {
+  sendCommand('project.reorderByActivity', {}).catch((err: unknown) => {
+    showFooterNotice(`sort failed: ${errorMessage(err)}`)
+  })
 }
 
 /**
@@ -564,35 +607,39 @@ export function App({
   // destructive confirm the user may have forgotten about.
   const [closeArchive, setCloseArchive] = useState<CloseArchiveState | null>(null)
 
-  // TRANSIENT close notice — see the file header's "THE CRITICAL UX GAP"
-  // note (task brief): workspace.close destroys the surface/process but the
-  // tree frame's own archivedAt-only filter means the row never disappears,
-  // so this is the ONLY visible confirmation a close actually happened.
-  // Threaded into Footer's existing (previously always-null) `notice` prop.
-  // Cleared automatically after CLOSE_NOTICE_MS via the ref-tracked timeout
-  // below — a NEWER notice (or unmount) always clears whatever timer is
-  // currently pending first, so a stale timeout can never clobber a fresher
-  // notice that arrived before the old one's 3s elapsed.
-  const [closeNotice, setCloseNotice] = useState<string | null>(null)
-  const closeNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // TRANSIENT footer notice — originally just the close-confirmation text
+  // (see the file header's "THE CRITICAL UX GAP" note: workspace.close
+  // destroys the surface/process but the tree frame's own archivedAt-only
+  // filter means the row never disappears, so this was the ONLY visible
+  // confirmation a close actually happened), now GENERALIZED to any
+  // transient one-line message that needs Footer's existing (previously
+  // always-null) `notice` prop — `o` (handleSortKey below) reuses it
+  // verbatim for a failed project.reorderByActivity call, since a silently-
+  // swallowed sort failure is exactly the kind of gap this slot exists to
+  // close. Cleared automatically after FOOTER_NOTICE_MS via the ref-tracked
+  // timeout below — a NEWER notice (or unmount) always clears whatever timer
+  // is currently pending first, so a stale timeout can never clobber a
+  // fresher notice that arrived before the old one's 3s elapsed.
+  const [footerNotice, setFooterNotice] = useState<string | null>(null)
+  const footerNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  function showCloseNotice(text: string): void {
-    if (closeNoticeTimer.current != null) clearTimeout(closeNoticeTimer.current)
-    setCloseNotice(text)
-    closeNoticeTimer.current = setTimeout(() => {
-      closeNoticeTimer.current = null
-      setCloseNotice(null)
-    }, CLOSE_NOTICE_MS)
+  function showFooterNotice(text: string): void {
+    if (footerNoticeTimer.current != null) clearTimeout(footerNoticeTimer.current)
+    setFooterNotice(text)
+    footerNoticeTimer.current = setTimeout(() => {
+      footerNoticeTimer.current = null
+      setFooterNotice(null)
+    }, FOOTER_NOTICE_MS)
   }
 
   // Unmount-only cleanup — clearing on every render (e.g. via a dep array
-  // keyed on closeNotice) would fight showCloseNotice's own clear-then-set
+  // keyed on footerNotice) would fight showFooterNotice's own clear-then-set
   // above; this effect exists solely so a still-pending timer doesn't fire
   // setState after the whole picker has unmounted (workspace opened, app
   // quitting, etc).
   useEffect(() => {
     return () => {
-      if (closeNoticeTimer.current != null) clearTimeout(closeNoticeTimer.current)
+      if (footerNoticeTimer.current != null) clearTimeout(footerNoticeTimer.current)
     }
   }, [])
 
@@ -756,7 +803,7 @@ export function App({
     try {
       await sendCommand('workspace.close', { id: state.workspaceId })
       setCloseArchive(null)
-      showCloseNotice(`closed ${state.workspaceName}`)
+      showFooterNotice(`closed ${state.workspaceName}`)
     } catch (err) {
       setCloseArchive((s) =>
         s == null ? s : { ...s, submitting: false, submitError: errorMessage(err) }
@@ -854,6 +901,10 @@ export function App({
       handleAddProjectKey(setAddProjectOpen)
       return
     }
+    if (input === 'o') {
+      handleSortKey(showFooterNotice)
+      return
+    }
     // `a` (archive) and `c` (close) are BOTH unshifted, and deliberately not
     // a shifted/unshifted pair of the same letter. This UI's primary client
     // is a phone (Termius) where shift is a keyboard mode switch, not a
@@ -939,6 +990,7 @@ export function App({
         scope={scope}
         connected={frame != null && connectionNotice == null}
         disconnected={connectionNotice != null}
+        view={view}
         // Hide the hidden-count hint while the wizard or add-project overlay
         // is open: "N hidden (v)" advertises a picker key (`v`) that does
         // nothing right now — both overlays swallow the whole keymap (see
@@ -1001,7 +1053,7 @@ export function App({
           helpVisible={helpVisible}
           breakpoint={breakpoint}
           closeArchive={closeArchive}
-          closeNotice={closeNotice}
+          footerNotice={footerNotice}
           contentWidth={contentWidth}
         />
       )}
@@ -1017,30 +1069,30 @@ interface PickerScreenProps extends PickerBodyProps {
   helpVisible: boolean
   breakpoint: Breakpoint
   closeArchive: CloseArchiveState | null
-  closeNotice: string | null
+  footerNotice: string | null
   contentWidth: number
 }
 
 /**
  * Resolves what goes where the Footer's keymap normally sits: the help
  * overlay (`?`), the close/archive confirm (`c`/`a`), or the ordinary
- * Footer — carrying its transient close notice when there is one. Extracted
- * from PickerScreen for the same cognitive-complexity reason everything
- * else in this file gets extracted: a 3-way ternary inline would have
- * pushed PickerScreen itself over budget once the confirm branch joined
- * the pre-existing help<->footer swap.
+ * Footer — carrying its transient notice (close confirmation, or a failed
+ * `o` sort) when there is one. Extracted from PickerScreen for the same
+ * cognitive-complexity reason everything else in this file gets extracted: a
+ * 3-way ternary inline would have pushed PickerScreen itself over budget once
+ * the confirm branch joined the pre-existing help<->footer swap.
  */
 function FooterArea({
   helpVisible,
   closeArchive,
-  closeNotice,
+  footerNotice,
   breakpoint,
   contentWidth,
   palette
 }: {
   helpVisible: boolean
   closeArchive: CloseArchiveState | null
-  closeNotice: string | null
+  footerNotice: string | null
   breakpoint: Breakpoint
   contentWidth: number
   palette: Palette
@@ -1062,7 +1114,7 @@ function FooterArea({
       />
     )
   }
-  return <Footer notice={closeNotice} palette={palette} breakpoint={breakpoint} />
+  return <Footer notice={footerNotice} palette={palette} breakpoint={breakpoint} />
 }
 
 /**
@@ -1082,7 +1134,7 @@ function PickerScreen({
   helpVisible,
   breakpoint,
   closeArchive,
-  closeNotice,
+  footerNotice,
   contentWidth,
   palette,
   ...pickerBodyProps
@@ -1117,7 +1169,7 @@ function PickerScreen({
       <FooterArea
         helpVisible={helpVisible}
         closeArchive={closeArchive}
-        closeNotice={closeNotice}
+        footerNotice={footerNotice}
         breakpoint={breakpoint}
         contentWidth={contentWidth}
         palette={palette}
