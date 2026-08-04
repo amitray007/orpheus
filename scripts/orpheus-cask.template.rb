@@ -13,6 +13,13 @@ cask "orpheus" do
 
   app "Orpheus.app"
 
+  # Symlinks the in-bundle CLI shim onto PATH (brew manages the link: created on
+  # install, re-pointed on upgrade, removed on uninstall — no privilege prompt).
+  # Path must match electron-builder.yml's extraResources mapping for
+  # resources/bin/orpheus -> Contents/Resources/bin/orpheus; if that mapping ever
+  # moves, update this line too or the symlink dangles.
+  binary "#{appdir}/Orpheus.app/Contents/Resources/bin/orpheus"
+
   # Strip quarantine + re-sign ad-hoc after install so macOS 15+ accepts the bundle.
   # electron-builder leaves inner frameworks with mismatched Team IDs;
   # a unified ad-hoc re-sign normalises them.

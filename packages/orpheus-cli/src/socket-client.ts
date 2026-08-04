@@ -59,11 +59,20 @@ import { getCmdSockPath, getCmdTokenPath, ambientTokenOverrideIsTrusted } from '
  * Thrown when the Orpheus app is not running (socket absent or refused) or
  * when the auth token cannot be resolved. The CLI's auto-launch logic (U6)
  * catches this error class to trigger a fresh app launch.
+ *
+ * `timedOutAfterLaunch` distinguishes the two cases output.ts's notice needs
+ * to word differently: false/absent (default) means the socket/token was
+ * never found — the app was simply never running. true means the CLI DID
+ * launch the app (autoLaunch() in cli.ts) but the socket never came up
+ * within the timeout — set only at that one throw site.
  */
 export class AppNotRunningError extends Error {
-  constructor(reason?: string) {
+  readonly timedOutAfterLaunch: boolean
+
+  constructor(reason?: string, opts?: { timedOutAfterLaunch?: boolean }) {
     super(reason ?? 'Orpheus is not running (socket not found or token unavailable)')
     this.name = 'AppNotRunningError'
+    this.timedOutAfterLaunch = opts?.timedOutAfterLaunch ?? false
   }
 }
 

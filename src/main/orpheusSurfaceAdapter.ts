@@ -167,7 +167,10 @@ export function buildMountEnv(
     ...(cachedUserPath ? { ORPHEUS_USER_PATH: cachedUserPath } : {}),
     ORPHEUS_GHOSTTY_CONFIG: ghosttyConfigPath,
     // CLI plumbing: prepend orpheusBinDir to PATH so `orpheus` resolves inside
-    // every workspace terminal without a global symlink (deferred to Phase 2).
+    // every workspace terminal. The production cask also symlinks the shim
+    // onto the global PATH (scripts/orpheus-cask.template.rb's `binary`
+    // stanza), so plain shells / SSH sessions can reach it too — this env
+    // var only covers the in-app terminal case.
     // PATH is assembled as: orpheusBinDir : cachedUserPath (if any) : existing PATH.
     // The orpheus-claude.sh wrapper already splices ORPHEUS_USER_PATH into PATH,
     // so we set ORPHEUS_BIN_DIR separately and let the wrapper prepend it.
