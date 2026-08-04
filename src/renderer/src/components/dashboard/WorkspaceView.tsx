@@ -5,7 +5,7 @@ import type { GhPullRequest, WorkspaceRecord, WorkspaceActivityDetail } from '@s
 import { logDiag } from '@/lib/diag'
 import { DIAG_EVENTS } from '@shared/diagEvents'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
-import { WorkspaceFooter } from './footer/WorkspaceFooter'
+import { WorkspaceFooter, WORKSPACE_FOOTER_HEIGHT_PX } from './footer/WorkspaceFooter'
 import { WorkspaceTerminalOverlays } from './WorkspaceTerminalOverlays'
 import { WorkbenchPanel } from '../workbench/WorkbenchPanel'
 import { WorkbenchProvider } from '../workbench/WorkbenchProvider'
@@ -35,6 +35,18 @@ export interface WorktreeError {
   kind: WorktreeErrorKind
   message: string
   conflictPath?: string
+}
+
+// terminal:mount's `tmuxFallback` case (docs/TUI_SPEC.md D1: universal tmux
+// hosting) — this specific mount fell back to running `claude` natively
+// because tmux is missing or too old on this machine. Must be a VISIBLE,
+// non-silent notice (not a quiet degrade) — the user loses tmux's benefits
+// (survives app restart, reachable from `orpheus tui`) without this.
+function formatTmuxFallbackNotice(tmuxFallback: {
+  reason: 'not-installed' | 'version-too-old'
+  detail: string
+}): string {
+  return tmuxFallback.detail
 }
 
 interface WorkspaceViewProps {
@@ -129,6 +141,92 @@ export function WorkspaceView({
   // Sleep state — true when the macOS window is occluded/backgrounded and the
   // native terminal render loop is paused.
   const sleeping = useTerminalSleeping(workspace.id)
+
+  // Ghostty's resolved cell-row height (physical px), used to quantize the
+  // terminal host div to an exact whole-cell-row height so the footer absorbs
+  // the 0–22px sub-cell leftover instead of the native surface's old snap
+  // leaving a dead band. null until the first mount resolves it (see the
+  // ResizeObserver effect below, which falls back to plain flex-1 while null).
+  const [cellHeightPx, setCellHeightPx] = useState<number | null>(null)
+  const cellHeightPxRef = useRef<number | null>(null)
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation, same pattern as activeRef above
+  cellHeightPxRef.current = cellHeightPx
+
+  useEffect(() => {
+    return window.api.terminal.onCellSizeChanged(({ workspaceId, cellHeightPx: px }) => {
+      if (workspaceId !== workspace.id) return
+      setCellHeightPx(px)
+    })
+  }, [workspace.id])
+
+  // Ghostty's resolved terminal background colour (hex), used to paint the
+  // quantization top-spacer (below) so that band reads as the terminal's own
+  // top padding rather than mismatched app chrome. Process-wide (not
+  // per-workspace) — the addon has exactly one resolved config/theme for the
+  // whole process (see refreshGapFillColorFromConfig's doc comment in
+  // addon.mm), so unlike onCellSizeChanged this push carries no workspaceId
+  // to filter on.
+  const [termBg, setTermBg] = useState<string | null>(null)
+
+  useEffect(() => {
+    return window.api.terminal.onBackgroundColorChanged(({ color }) => {
+      setTermBg(color)
+    })
+  }, [])
+
+  // Column wrapper ref (the `flex flex-col` div holding terminal host +
+  // footer) — observed instead of the terminal host itself so the
+  // quantization computation never depends on the value it produces
+  // (observing the host would create a measurement feedback loop once its
+  // height is pinned via the `style` below).
+  const columnRef = useRef<HTMLDivElement>(null)
+  // Quantization result — null means "not yet quantized" (cellHeightPx
+  // unknown, or no measurement yet), in which case the host keeps its plain
+  // flex-1 behaviour and the footer keeps its natural height with no
+  // absorbing wrapper/spacer. Once known:
+  //   - terminalHostHeight: CSS px height for the terminal host div —
+  //     floor(available column height, in physical px, to a whole multiple
+  //     of cellHeightPx) then back to CSS px.
+  //   - slackTop: CSS px height for the top spacer above the terminal host —
+  //     half (floored) of the leftover (available - terminalHostHeight) that
+  //     the floor() above didn't consume. The rest of the leftover is
+  //     absorbed by the footer wrapper's flex-1 below the terminal host.
+  // A single state object (not two separate useState calls) so a recompute
+  // that changes both values only triggers one re-render.
+  const [quantized, setQuantized] = useState<{ height: number; slackTop: number } | null>(null)
+
+  useEffect(() => {
+    const columnEl = columnRef.current
+    if (!columnEl) return
+
+    const recompute = (): void => {
+      const px = cellHeightPxRef.current
+      if (px == null || px <= 0) {
+        setQuantized(null)
+        return
+      }
+      const columnHeight = columnEl.getBoundingClientRect().height
+      const available = columnHeight - WORKSPACE_FOOTER_HEIGHT_PX
+      if (available <= 0) {
+        setQuantized(null)
+        return
+      }
+      const dpr = window.devicePixelRatio || 1
+      const snappedPhysH = Math.floor((available * dpr) / px) * px
+      const snappedCss = snappedPhysH / dpr
+      const slack = available - snappedCss
+      const slackTop = Math.floor(slack / 2)
+      setQuantized({ height: snappedCss, slackTop })
+    }
+
+    recompute()
+    const ro = new ResizeObserver(recompute)
+    ro.observe(columnEl)
+    return () => ro.disconnect()
+    // Re-run whenever cellHeightPx resolves/changes — the ResizeObserver alone
+    // won't fire for that (the column's own size didn't change).
+  }, [cellHeightPx])
+
   const isClosed = workspace.closedAt !== null
   const isClosedRef = useRef(isClosed)
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation
@@ -435,6 +533,21 @@ export function WorkspaceView({
         if (result.notice) {
           setNotice(result.notice)
         }
+        // tmux-missing/too-old fallback (docs/TUI_SPEC.md D1: universal tmux
+        // hosting) — this mount ran natively instead of tmux-hosted. This is
+        // a VISIBLE, non-silent notice by design (the owner's explicit
+        // requirement): a quiet degrade here would leave the user unaware
+        // they've lost tmux's benefits (survives app restart, reachable
+        // from `orpheus tui`) until they go looking for a session that was
+        // never created. Takes priority display-wise over a plain reconcile
+        // notice on the rare mount where both fire (setNotice only shows one
+        // at a time) since it's the more actionable of the two.
+        if (result.tmuxFallback) {
+          console.warn('[WorkspaceView] tmux fallback:', result.tmuxFallback)
+          setNotice(formatTmuxFallbackNotice(result.tmuxFallback))
+        }
+        if (result.cellHeightPx != null) setCellHeightPx(result.cellHeightPx)
+        if (result.backgroundColor != null) setTermBg(result.backgroundColor)
         surfaceCreatedRef.current = true
         // Guard: if the user navigated away while mount was resolving, hide
         // immediately so the surface doesn't draw while inactive.
@@ -776,6 +889,14 @@ export function WorkspaceView({
             if (result.notice) {
               setNotice(result.notice)
             }
+            // See the first-mount path above — tmux-missing/too-old fallback
+            // must be a visible, non-silent notice.
+            if (result.tmuxFallback) {
+              console.warn('[WorkspaceView] tmux fallback (re-mount):', result.tmuxFallback)
+              setNotice(formatTmuxFallbackNotice(result.tmuxFallback))
+            }
+            if (result.cellHeightPx != null) setCellHeightPx(result.cellHeightPx)
+            if (result.backgroundColor != null) setTermBg(result.backgroundColor)
             surfaceCreatedRef.current = true
             // Guard: if the user navigated away while re-mount was resolving, hide
             // immediately so the surface doesn't draw while inactive.
@@ -844,16 +965,45 @@ export function WorkspaceView({
 
       {/* Content row: terminal host + Workbench frame */}
       <div className="flex h-full min-h-0">
-        {/* Terminal column: terminal host + footer strip */}
-        <div data-workbench-claude-column className="flex-1 min-w-0 flex flex-col">
+        {/* Terminal column: top spacer + terminal host + footer strip.
+            Observed (not the terminal host itself) by the quantization
+            ResizeObserver above — its own size never depends on `quantized`,
+            so there's no measurement feedback loop. */}
+        <div ref={columnRef} data-workbench-claude-column className="flex-1 min-w-0 flex flex-col">
+          {/* Quantization top-spacer: only rendered once `quantized` is known.
+              Splits the sub-cell-row slack between the top (here, half via
+              slackTop) and the bottom (the footer wrapper's flex-1 below)
+              instead of piling the whole ~22px leftover onto the footer
+              alone. Sits BELOW TopBar.tsx's full-width border-b (that border
+              stays exactly where it is — it's shared with the sidebar, not
+              scoped to this column, so it can't be relocated here without a
+              two-line compromise). Painted in the terminal's own resolved
+              background (termBg) so it reads as the terminal's own top
+              padding, invisible against its content — falls back to
+              bg-surface-raised (title-bar chrome family) so it's never
+              unpainted before termBg resolves. No border of its own. */}
+          {quantized && (
+            <div
+              className={termBg == null ? 'flex-shrink-0 bg-surface-raised' : 'flex-shrink-0'}
+              style={{ height: quantized.slackTop, backgroundColor: termBg ?? undefined }}
+            />
+          )}
+
           {/* Terminal area — the libghostty NSView is the TOPMOST sibling of
               contentView (NSWindowAbove relativeTo:nil, isOpaque=YES). This div
               is transparent so the opaque terminal NSView paints through.
-              ResizeObserver fires when the footer height changes the container. */}
+              ResizeObserver fires when the footer height changes the container.
+              Height is quantized to an exact whole-cell-row multiple
+              (quantized.height) once cellHeightPx is known, so the native
+              surface fills it exactly with no snap remainder; the top spacer
+              above and the footer wrapper below split the leftover instead.
+              Falls back to plain flex-1 (today's behaviour) until the first
+              mount resolves cellHeightPx. */}
           <div
             ref={containerRef}
             data-workbench-claude-terminal-host
-            className="flex-1 min-w-0 relative"
+            className={quantized == null ? 'flex-1 min-w-0 relative' : 'min-w-0 relative'}
+            style={quantized == null ? undefined : { height: quantized.height, flexShrink: 0 }}
           >
             {active && (
               <WorkspaceTerminalOverlays
@@ -873,16 +1023,50 @@ export function WorkspaceView({
                 anchored to this container). */}
           </div>
 
-          <WorkspaceFooter
-            workspaceId={workspace.id}
-            sessionId={workspace.claudeSessionId}
-            cwd={workspace.cwd}
-            projectId={workspace.projectId}
-            workspaceName={workspace.name}
-            onSelectWorkspace={onSelectWorkspace}
-            activityDetail={detail}
-            onRestart={handleRestart}
-          />
+          {/* Footer-absorb wrapper: only takes over (flex-1, vertically
+              centered content, footer's own background painted across the
+              whole wrapper) once the terminal host above has a quantized
+              height — otherwise the footer keeps its own natural
+              flex-shrink-0 sizing, unchanged from before this quantization
+              scheme existed. justify-center splits ITS share of the leftover
+              (slack - slackTop, since slackTop already went to the top
+              spacer above) evenly above and below the footer content instead
+              of piling it all up below as a dead ledge at the window's
+              bottom edge. Painting the wrapper in bg-surface-raised (the
+              footer's own background — see WorkspaceFooter.tsx) makes the
+              leftover band read as footer chrome rather than a mismatched
+              gap. The seam border (border-t) is relocated here too, off the
+              footer's own root (seamBorder={false} below) — WorkspaceFooter's
+              root no longer sits at the terminal/footer boundary once its
+              content is vertically centered inside this wrapper, so its
+              border would float mid-wrapper with slack above it instead of
+              marking the actual seam. */}
+          {quantized == null ? (
+            <WorkspaceFooter
+              workspaceId={workspace.id}
+              sessionId={workspace.claudeSessionId}
+              cwd={workspace.cwd}
+              projectId={workspace.projectId}
+              workspaceName={workspace.name}
+              onSelectWorkspace={onSelectWorkspace}
+              activityDetail={detail}
+              onRestart={handleRestart}
+            />
+          ) : (
+            <div className="flex-1 min-h-0 flex flex-col justify-center bg-surface-raised border-t border-border-default/60">
+              <WorkspaceFooter
+                workspaceId={workspace.id}
+                sessionId={workspace.claudeSessionId}
+                cwd={workspace.cwd}
+                projectId={workspace.projectId}
+                workspaceName={workspace.name}
+                onSelectWorkspace={onSelectWorkspace}
+                activityDetail={detail}
+                onRestart={handleRestart}
+                seamBorder={false}
+              />
+            </div>
+          )}
         </div>
 
         {/* Workbench frame — dormant/open/expanded geometry driving the tab

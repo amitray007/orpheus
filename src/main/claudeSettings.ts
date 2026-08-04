@@ -20,6 +20,7 @@ import { encodePathToClaudeDir } from './claudeProjectDir'
 import { FLAG_DELIMITER, mergeFlagScopes, parseFlagEntry } from '../shared/cliFlags'
 import { validateCustomCliFlagsValue, validateCustomEnvVarsValue } from './overridesStore'
 import { shouldEmitFallbackModel } from './modelRouting'
+import { resolveProviderIdForModel } from './models/selectable'
 
 // One-way-true cache for session JSONL existence checks.
 // Key: `${cwd}:${sessionId}`. Once a JSONL is confirmed to exist (true), it
@@ -1273,6 +1274,39 @@ export function composeClaudeLaunch(
   const env = composeLaunchEnv(s, global, projectEnvVars, workspaceEnvVars)
 
   return { flags, settingsJson, env, model: s.model }
+}
+
+/**
+ * Cheap, read-only resolution of the EFFECTIVE (global -> project ->
+ * workspace layered) model/effort for one workspace — used by the TUI's
+ * `tree` frame (docs/TUI_SPEC.md D5), which polls every workspace on a 1s
+ * interval (src/main/commandServer.ts's TREE_POLL_MS) while any subscriber
+ * is connected. Deliberately does NOT call composeClaudeLaunch: that
+ * function also tokenizes CLI flags, composes settingsJson, and merges
+ * launch env (including secrets via claudeAuth.ts) — none of which the TUI
+ * card needs, and doing that work per-workspace per-tick would be a real
+ * perf regression for a card that only prints `model effort`. Reuses the
+ * existing mergeProjectOverrides/mergeWorkspaceOverrides layering helpers
+ * (kept module-private) rather than duplicating their logic.
+ *
+ * Also resolves `providerId` — which provider (`'claude'`, `'codex'`,
+ * `'xai'`, `'antigravity'`, ...) owns the resolved model, via
+ * models/selectable.ts's resolveProviderIdForModel. That resolution is
+ * itself cheap/synchronous (a table lookup or an in-memory cache read, no
+ * I/O), so it's safe to call at the same per-workspace-per-tick frequency as
+ * the model/effort resolution above. `providerId` is `undefined` when the
+ * model isn't recognized as Claude and isn't (yet) in the cliproxy model
+ * cache — callers must treat that as "no attribution", never a placeholder.
+ */
+export function resolveEffectiveModelAndEffort(
+  projectId: string,
+  workspaceId: string
+): { model: string; effort: ClaudeEffort; providerId?: string } {
+  const global = getClaudeGlobalSettings()
+  const projectScope = mergeProjectOverrides(global, projectId)
+  const workspaceScope = mergeWorkspaceOverrides(projectScope.s, workspaceId)
+  const { model, effort } = workspaceScope.s
+  return { model, effort, providerId: resolveProviderIdForModel(model) }
 }
 
 // ---------------------------------------------------------------------------

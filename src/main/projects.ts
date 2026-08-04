@@ -156,6 +156,38 @@ export function reorderProjectsByActivity(): string[] {
   const newOrder = [...sortByRank(pinned), ...sortByRank(unpinned)]
   const orderedIds = newOrder.map((p) => p.id)
   reorderProjects(orderedIds)
+
+  // BROADCAST — this is the ONLY caller of reorderProjects() that fans out
+  // projects:changed at all (the plain drag-to-reorder desktop path,
+  // handleReorderProjects in Dashboard.tsx, applies its own optimistic
+  // reorder locally and doesn't need one). reorderProjectsByActivity()
+  // specifically needs it because it now has a SECOND caller besides the
+  // desktop's own sort button: the TUI's `o` key, via the
+  // 'project.reorderByActivity' command-socket action
+  // (commandServer.ts) — which calls this exact function so the ranking
+  // logic is never duplicated, but has no renderer-side optimistic state of
+  // its own to apply the new order to. Without this broadcast, a sort
+  // triggered from the TUI would silently persist to SQLite (sort_order)
+  // but never reach any OPEN desktop window until some unrelated refetch
+  // happened to reload projects.list() — the exact gap addProject() already
+  // closed for its own mutation (see this function's own file-header
+  // pointer and addProject's "BOTH PATHS BROADCAST" comment). Mirrors
+  // addProject's pattern: broadcast from the DOMAIN function so every
+  // caller (IPC, command-socket, a future third caller) gets it for free
+  // rather than each caller remembering to do it themselves.
+  //
+  // Sends the ORDER, not per-project records. A 'projects:changed' fan-out
+  // was tried first and does NOT work: Dashboard.tsx's handler patches a
+  // record in place (`prev.map(...)`), which updates each project's
+  // sortOrder FIELD but never moves it within the array — and Sidebar.tsx
+  // renders `projects.map(...)` in plain array order, never re-sorting by
+  // sortOrder. So a field-only update is completely invisible, which is
+  // exactly the bug this replaces. The desktop's own sort button never hit
+  // this because it applies the returned id order itself
+  // (handleReorderProjectsByActivity -> reorderWithTail); a TUI-triggered
+  // sort has no such local step, so the order has to travel over the wire.
+  broadcastProjectsReordered(orderedIds)
+
   return orderedIds
 }
 
@@ -170,8 +202,18 @@ export function addProject(path: string): ProjectRecord {
 
   if (existing) {
     db.prepare('UPDATE projects SET last_opened_at = ? WHERE id = ?').run(Date.now(), existing.id)
-    const updated = db.prepare(SELECT_PROJECT_BY_ID).get(existing.id) as ProjectRow
-    return rowToRecord(updated)
+    const updated = rowToRecord(db.prepare(SELECT_PROJECT_BY_ID).get(existing.id) as ProjectRow)
+    // Broadcast even on the dedup path: addProject is reachable from the
+    // CLI/TUI socket bridge and from a second desktop window, neither of
+    // which is the renderer that owns *this* window's local `projects`
+    // state. Without this, re-adding an already-known project from another
+    // surface bumps last_opened_at in SQLite with nothing telling any
+    // renderer — the sidebar's activity-sort position silently goes stale
+    // until some unrelated refresh catches up. See this function's own
+    // "BOTH PATHS BROADCAST" note below for why the fresh-insert path needs
+    // the identical call.
+    broadcastProjectChanged(updated)
+    return updated
   }
 
   const id = crypto.randomUUID()
@@ -213,6 +255,20 @@ export function addProject(path: string): ProjectRecord {
   })
 
   const project = insertProject()
+
+  // BOTH PATHS BROADCAST: this mirrors the dedup branch's own
+  // broadcastProjectChanged call above — see that comment for why the event
+  // is needed at all. Fired AFTER insertProject() returns, i.e. after the
+  // whole transaction (project row + createWorkspace's default-workspace
+  // row) has committed, and therefore after createWorkspace's OWN
+  // broadcastWorkspaceCreated has already fired from inside that
+  // transaction. Ordering matters: a renderer reacting to projects:changed
+  // by fetching that project's workspace list must find the Default
+  // workspace already there, and a renderer reacting to workspaces:created
+  // for a project it doesn't know about yet (this event) is a narrower,
+  // pre-existing gap this change doesn't need to fix — projects:changed
+  // firing second is what closes it going forward.
+  broadcastProjectChanged(project)
 
   // Import sessions async so the main thread isn't blocked on N file reads
   // during project addition. Fire-and-forget; errors are non-fatal.
@@ -333,18 +389,70 @@ export function setProjectPinned(id: string, pinned: boolean): ProjectRecord {
   return rowToRecord(row)
 }
 
-// Broadcast helper — fan out a projects:changed event to all renderer windows
-// so any component holding its own copy of the projects list (e.g. Dashboard's
-// sidebar-driving state) can patch the record in place, mirroring
-// broadcastWorkspaceChanged in workspaces.ts. Settings → Privacy already
-// patches its own local list from the returned ProjectRecord; this covers
-// every OTHER subscriber.
-function broadcastProjectChanged(project: ProjectRecord): void {
+// TEST SEAM — addProject()'s two broadcast call sites (dedup path, fresh-
+// insert path) are the actual behavior scripts/verify-project-add.ts needs
+// to assert (see that script's "addProject broadcast" section): that
+// projects:changed fires on BOTH paths, not just one. This module is
+// otherwise hard to exercise from a plain script without pulling in the
+// real Electron `app`/BrowserWindow AND a real better-sqlite3-backed
+// getDb() (see db/index.ts's getDbPath(), which calls
+// `app.getPath('userData')`) — a disproportionate amount of module-graph
+// mocking for two call sites. Rather than leave the broadcast untested, or
+// grep addProject's source text (the exact anti-pattern
+// verify-project-add.ts's own header already rejects, with the
+// neutered-guard example to prove why), the fan-out itself is swapped
+// behind this tiny injectable hook: production always uses the real
+// BrowserWindow-based sender installed below; a test calls
+// `setProjectChangedSender()` to install a spy instead (paired with
+// mocking `./db` and the other Electron-coupled imports addProject() pulls
+// in — see verify-project-add.ts's own comment for the full mocking
+// approach it uses), which is what makes the CALL COUNT and payload of
+// every addProject() broadcast directly assertable. Exported (not
+// file-private) so that harness can install a spy without needing
+// Electron.
+type ProjectChangedSender = (project: ProjectRecord) => void
+
+let projectChangedSender: ProjectChangedSender = (project) => {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send(PUSH_CHANNELS.projectsChanged, { project })
     }
   }
+}
+
+/** Test-only seam — swap the projects:changed fan-out for a spy. Returns the
+ *  PREVIOUS sender so a test can restore it in a `finally`. Never called from
+ *  production code (which always uses the default BrowserWindow-based
+ *  sender installed above). */
+export function setProjectChangedSender(sender: ProjectChangedSender): ProjectChangedSender {
+  const previous = projectChangedSender
+  projectChangedSender = sender
+  return previous
+}
+
+// Broadcast helper — fan out a projects:changed event to all renderer windows
+// so any component holding its own copy of the projects list (e.g. Dashboard's
+// sidebar-driving state) can patch the record in place, mirroring
+// broadcastWorkspaceChanged in workspaces.ts. Settings → Privacy already
+// patches its own local list from the returned ProjectRecord; this covers
+// every OTHER subscriber. Delegates to the swappable `projectChangedSender`
+// (see the TEST SEAM note above) rather than calling BrowserWindow directly,
+// so every call site below stays exactly as it was.
+/** Fan out a projects:reordered event — the new project id ORDER, for
+ *  consumers that render projects in array order (every one of them today).
+ *  Separate from broadcastProjectChanged because a per-record patch cannot
+ *  express "these moved relative to each other" — see the call site in
+ *  reorderProjectsByActivity for the bug that distinction fixes. */
+function broadcastProjectsReordered(orderedIds: string[]): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(PUSH_CHANNELS.projectsReordered, { orderedIds })
+    }
+  }
+}
+
+function broadcastProjectChanged(project: ProjectRecord): void {
+  projectChangedSender(project)
 }
 
 export function setProjectClassified(id: string, classified: boolean): ProjectRecord {

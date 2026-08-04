@@ -390,9 +390,27 @@ export type TerminalRect = { x: number; y: number; w: number; h: number }
 /**
  * Return type of `terminal:mount`.
  *
- * Success: `{ workspaceId, created, notice? }` — surface is mounted; if a
- * worktree was recreated with a new branch the optional `notice` carries a
- * one-time human-readable message the renderer should surface.
+ * Universal tmux hosting (docs/TUI_SPEC.md D1, rewritten from "two disjoint
+ * hosts, first-opener wins"): every NEW mount is tmux-hosted by default —
+ * the desktop's native surface attaches to the same tmux session the TUI
+ * would attach to, rather than running `claude` directly. This is a staged
+ * rollout, not a live migration: a workspace whose surface is ALREADY
+ * mounted natively (from before this change, or from an earlier
+ * tmux-missing fallback) is left running exactly as-is and converts on its
+ * NEXT natural mount from a cold surface (app relaunch, or the workspace
+ * being closed and reopened) — see willMountCreateSurface() in index.ts.
+ *
+ * Success: `{ workspaceId, created, notice?, tmuxFallback? }` — surface is
+ * mounted (tmux-hosted, OR natively if tmux is unavailable — see
+ * `tmuxFallback` below). `notice` carries a one-time human-readable message
+ * unrelated to hosting (e.g. a worktree was recreated with a new branch).
+ * `tmuxFallback` is present ONLY when this specific mount fell back to
+ * native hosting because tmux is missing or too old on this machine —
+ * `{ reason: 'not-installed' | 'version-too-old', detail: string }`, where
+ * `detail` is an actionable, human-readable explanation (mentions
+ * `brew install tmux` / `brew upgrade tmux` as appropriate). The renderer
+ * MUST surface this visibly (a notice banner, not a silent degrade) — see
+ * WorkspaceView.tsx's formatTmuxFallbackNotice.
  *
  * Aborted: `{ workspaceId, aborted: 'gone' }` — the workspace was archived
  * or removed while the mount was in flight (e.g. mid worktree-reconcile or
@@ -402,9 +420,32 @@ export type TerminalRect = { x: number; y: number; w: number; h: number }
  * Failure: `{ workspaceId, worktreeError }` — reconcile determined the mount
  * cannot proceed (bad state that needs user intervention). The surface is NOT
  * mounted; the renderer should show an error card instead.
+ *
+ * `cellHeightPx` (success branch only) is ghostty's resolved cell row height
+ * in physical pixels, or `null` if the native addon hasn't resolved it yet
+ * (0 mapped to null at the main-process boundary). Only the claude-workspace
+ * `terminal:mount` handler populates it — the renderer uses it to size the
+ * terminal host div to an exact whole-cell-row height so the footer absorbs
+ * the sub-cell leftover instead of the native surface snapping and leaving a
+ * dead band. `pane:mount` reuses this same result shape but never sets it
+ * (undefined), since Workbench panes don't participate in that quantization.
+ *
+ * `backgroundColor` (success branch only) is ghostty's resolved terminal
+ * background as a lowercase "#rrggbb" hex string, or `null`/undefined if not
+ * yet resolved. Same optionality rationale as `cellHeightPx` — only
+ * `terminal:mount` populates it; the renderer paints its quantization
+ * top-spacer with this colour so that band reads as the terminal's own top
+ * padding instead of mismatched app chrome.
  */
 export type TerminalMountResult =
-  | { workspaceId: string; created: boolean; notice?: string }
+  | {
+      workspaceId: string
+      created: boolean
+      notice?: string
+      tmuxFallback?: { reason: 'not-installed' | 'version-too-old'; detail: string }
+      cellHeightPx?: number | null
+      backgroundColor?: string | null
+    }
   | { workspaceId: string; aborted: 'gone' }
   | {
       workspaceId: string
@@ -419,6 +460,150 @@ export type TerminalMountResult =
 export type PinnedItem = {
   workspace: WorkspaceRecord
   project: ProjectRecord
+}
+
+// ---------------------------------------------------------------------------
+// tmux hosting (TUI + Tailscale streaming — see docs/TUI_SPEC.md)
+//
+// `workspace.host`/`workspace.unhost` are command-socket actions (`/cmd`,
+// see src/main/commandServer.ts) implemented by src/main/tmuxHost.ts. The
+// `tree` frame is a NEW frame type streamed alongside the existing
+// status-resolution frames over `/subscribe` (docs/TUI_SPEC.md D5) — a
+// full snapshot with a monotonic `revision`, debounced ~50ms, so a dropped
+// frame on a flaky link self-heals and reconnect is free.
+//
+// NOTE: packages/orpheus-cli/src/tui/types.ts keeps its OWN local copy of
+// these shapes deliberately (see that file's header) rather than importing
+// this module, so the CLI package stays decoupled from src/shared/types.ts.
+// Keep the two in sync by hand if the wire shape changes.
+// ---------------------------------------------------------------------------
+
+/**
+ * Response shape of the `workspace.host` command-socket action.
+ *
+ * `refused` (added for universal tmux hosting — docs/TUI_SPEC.md D1) is the
+ * MIRROR of the desktop mount path's own pre-create guard
+ * (willMountCreateSurface() in index.ts, which prevents the desktop from
+ * spawning a tmux session onto a workspace whose native surface is already
+ * live). This field protects the SAME invariant from the opposite
+ * direction: the TUI/CLI calling `workspace.host` on a workspace that is
+ * CURRENTLY OPEN NATIVELY on the desktop (pre-conversion, or the
+ * tmux-missing-fallback case) must not create a tmux session running a
+ * SECOND `claude --resume <sessionId>` against the same transcript the
+ * live native process is already writing to. When present, no tmux session
+ * was created or touched — `sessionName`/`socketName` are still populated
+ * (what a session WOULD be named) for display purposes only,
+ * `created`/`alreadyRunning` are both false. The CLI's own copy of this
+ * type (packages/orpheus-cli/src/tui/types.ts, kept in sync by hand per
+ * that file's header) needs the same field added to render this state —
+ * flagged as a follow-up, not included in this change (packages/orpheus-cli
+ * is owned by a different concurrent work stream).
+ */
+export type WorkspaceHostResult = {
+  sessionName: string
+  /** The TUI's own grouped session (tmuxHost.ts's tmuxTuiSessionName). The
+   *  TUI attaches HERE, not to `sessionName`: grouped sessions share the
+   *  window and pane but keep independent session options, which is the only
+   *  way to give the TUI a status-bar footer while the desktop client — same
+   *  terminal, same pane — gets no status row at all. The server computes it
+   *  so the CLI never re-derives a session name and can never drift from the
+   *  naming rules in tmuxHost.ts. */
+  tuiSessionName: string
+  socketName: string
+  created: boolean
+  alreadyRunning: boolean
+  refused?: { reason: 'open-on-desktop'; message: string }
+}
+
+/** Response shape of the `workspace.unhost` command-socket action. */
+export type WorkspaceUnhostResult = {
+  killed: boolean
+}
+
+/** A single workspace row inside a `tree` frame's per-project `workspaces`
+ *  array. Siblings are carried FLAT (parent/child nesting is reconstructed
+ *  client-side from `parentWorkspaceId`), matching how the TUI's own
+ *  flattenTree() already expects the wire shape. */
+export type TreeWorkspaceFrame = {
+  id: string
+  name: string
+  status: WorkspaceStatus
+  waitingFor?: string
+  parentWorkspaceId: string | null
+  /** The branch a worktree-backed workspace is checked out to (from
+   *  WorkspaceRecord's own persisted `worktreeBranch` column) — null for
+   *  every ordinary (non-worktree) workspace, by design; it is NOT a
+   *  general-purpose "current branch" field. */
+  worktreeBranch: string | null
+  /** The workspace cwd's actual current git branch, resolved independently
+   *  server-side (src/main/git.ts's getCurrentBranch, cached — see
+   *  commandServer.ts's getCachedCurrentBranch) on every tree frame. Null
+   *  when cwd isn't a git repo, HEAD is detached, or the branch hasn't been
+   *  resolved yet — never the literal string "HEAD" or a commit SHA.
+   *  Populated for EVERY git-backed workspace, worktree or not — for a
+   *  worktree workspace this will typically equal `worktreeBranch`, but the
+   *  two are resolved independently and must be kept as separate fields:
+   *  `worktreeBranch` answers "is this a worktree, and if so checked out to
+   *  what", `gitBranch` answers "what branch is this cwd on right now".
+   *
+   *  DISPLAY PRECEDENCE (card's single branch line, e.g. WorkspaceCard.tsx):
+   *  prefer `worktreeBranch` when non-null, else fall back to `gitBranch`.
+   *  Rationale — for a worktree workspace the two values coincide in the
+   *  common case (a worktree usually stays checked out to the branch it was
+   *  created for), but `worktreeBranch` is the more authoritative signal of
+   *  *intent* (what this worktree exists for) whereas `gitBranch` is a
+   *  point-in-time observation that would otherwise still show something
+   *  reasonable if a worktree's HEAD were ever moved independently. For an
+   *  ordinary (non-worktree) workspace `worktreeBranch` is always null, so
+   *  the fallback to `gitBranch` is what actually populates the line for
+   *  the common case this feature exists for. This precedence is a
+   *  display-layer decision, deliberately NOT collapsed into one
+   *  server-computed field — the renderer is expected to implement exactly
+   *  this `worktreeBranch ?? gitBranch` order. */
+  gitBranch: string | null
+  sortOrder: number | null
+  tmuxHosted: boolean
+  lastActivityAt: number | null
+  /** Live OSC terminal title Claude Code sets while working (e.g. "Understand
+   *  codebase structure"), mirrored from `WorkspaceRecord.lastTitle`. Null
+   *  until a session has emitted one; the TUI falls back to `name` when
+   *  null/empty. */
+  lastTitle: string | null
+  /** Effective (global -> project -> workspace layered) Claude model for
+   *  this workspace, resolved server-side via
+   *  claudeSettings.ts's resolveEffectiveModelAndEffort (see
+   *  src/main/tmuxHost.ts's toTreeWorkspaceFrame). Used by the card-based
+   *  tui picker's `model effort` line — see docs/TUI_SPEC.md. */
+  model: string
+  /** Effective effort for this workspace, same resolution ladder as `model`. */
+  effort: ClaudeEffort
+  /** The effective model's owning provider id (`'claude'`, `'codex'`,
+   *  `'xai'`, `'antigravity'`), resolved server-side alongside `model`/
+   *  `effort` via claudeSettings.ts's resolveEffectiveModelAndEffort (see
+   *  src/main/models/selectable.ts's resolveProviderIdForModel). Used by the
+   *  TUI card to show a short agent/provider label next to `model effort`.
+   *  Optional/absent when the model's provider couldn't be resolved (e.g. an
+   *  unknown routed model id not yet reported by the cliproxy cache) — the
+   *  card must render nothing for the agent label in that case, never a
+   *  placeholder like "unknown". */
+  providerId?: string
+}
+
+/** A single project group inside a `tree` frame. */
+export type TreeProjectFrame = {
+  id: string
+  name: string
+  cwd: string
+  sortOrder: number | null
+  workspaces: TreeWorkspaceFrame[]
+}
+
+/** The full-snapshot `tree` frame streamed over `/subscribe` (see
+ *  docs/TUI_SPEC.md D5 for the exact ordering/debounce contract). */
+export type TreeFrame = {
+  type: 'tree'
+  revision: number
+  projects: TreeProjectFrame[]
 }
 
 // ---------------------------------------------------------------------------

@@ -143,6 +143,14 @@ struct GhosttySurfaceEntry {
     uint64_t lastTitlePushMs{0}; // per-workspace title throttle stamp (plain, not atomic — read/written on main thread only)
     bool desiredVisible{false};  // true when this workspace should be shown+focused
     uint64_t generation{0}; // bumped on each create; deferred free compares against this
+    // Reported by GHOSTTY_ACTION_CELL_SIZE (see action_cb). Physical pixels —
+    // ghostty's renderer/size.zig documents that all pixel values it emits are
+    // already scaled to the surface's content scale, matching the physW/physH
+    // units ghostty_surface_set_size expects. 0 until the first action fires
+    // (surface creation emits it once synchronously; font-size changes re-fire
+    // it). Reported to the renderer (mount result + setCellSizeCallback) so it
+    // can size the terminal host div to an exact whole-cell-row height.
+    uint32_t cellHeightPx{0};
 };
 
 // workspaceId → entry
@@ -1514,6 +1522,19 @@ static void installWebContentsRoutingSwizzles(NSView* contentView) {
 // instead of the O(n) linear scan over g_surfaces.
 static std::map<ghostty_surface_t, std::string> g_surfaceToWorkspaceId;
 
+// GHOSTTY_ACTION_CELL_SIZE fires SYNCHRONOUSLY from inside ghostty_surface_new
+// (see vendor/ghostty/src/Surface.zig's init — it reports cell size once right
+// after the surface is constructed, before ghostty_surface_new returns to us).
+// At that point neither g_surfaces nor g_surfaceToWorkspaceId know about this
+// surface yet (Mount only inserts them afterward), so action_cb's normal
+// workspaceId lookup would silently drop this one-time value — and since the
+// action otherwise only re-fires on a runtime font-size change, it could be
+// lost for the surface's entire lifetime. Cache it here by raw surface
+// pointer; Mount drains it into the new GhosttySurfaceEntry right after
+// insertion, then erases it — this map should never hold more than one entry
+// per in-flight surface_new call in practice.
+static std::map<ghostty_surface_t, uint32_t> g_pendingCellHeightPx;
+
 // Per-workspaceId freeing registry.
 //
 // g_freeingGeneration[workspaceId] = gen means a deferred ghostty_surface_free
@@ -1912,6 +1933,14 @@ static Napi::ThreadSafeFunction g_titleTSFN;
 static bool g_titleTSFNActive = false;
 static Napi::ThreadSafeFunction g_livenessTSFN;
 
+// Cell-size ThreadSafeFunction — forwards GHOSTTY_ACTION_CELL_SIZE re-fires
+// (runtime font-size changes) to JS as (workspaceId, cellHeightPx). The
+// synchronous creation-time fire is instead returned from Mount directly
+// (see g_pendingCellHeightPx drain) since no workspaceId is attributable yet
+// at that point.
+static Napi::ThreadSafeFunction g_cellSizeTSFN;
+static bool g_cellSizeTSFNActive = false;
+
 // Diagnostic: when set, every action_cb invocation forwards its tag value
 // (integer) to JS. Used to debug the title flow.
 static Napi::ThreadSafeFunction g_actionTraceTSFN;
@@ -1965,6 +1994,27 @@ static Napi::Value SetTitleCallback(const Napi::CallbackInfo& info) {
         1    // single thread
     );
     g_titleTSFNActive = true;
+    return env.Undefined();
+}
+
+static Napi::Value SetCellSizeCallback(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsFunction()) {
+        Napi::TypeError::New(env, "setCellSizeCallback requires a function").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (g_cellSizeTSFNActive) {
+        g_cellSizeTSFN.Release();
+        g_cellSizeTSFNActive = false;
+    }
+    g_cellSizeTSFN = Napi::ThreadSafeFunction::New(
+        env,
+        info[0].As<Napi::Function>(),
+        "ghostty-cell-size-callback",
+        64,  // bounded queue
+        1    // single thread
+    );
+    g_cellSizeTSFNActive = true;
     return env.Undefined();
 }
 
@@ -2292,6 +2342,58 @@ static bool action_cb(ghostty_app_t /*app*/,
         }
     }
 
+    if (action.tag == GHOSTTY_ACTION_CELL_SIZE && target.tag == GHOSTTY_TARGET_SURFACE) {
+        // Fired once synchronously at surface creation, and again whenever the
+        // font size changes at runtime. Payload is in PHYSICAL pixels — see
+        // vendor/ghostty/src/renderer/size.zig's Size doc comment ("any pixel
+        // values should already be scaled to the current DPI of the screen"),
+        // which is the same unit ghostty_surface_set_size expects. Stash it so
+        // the renderer can size the terminal host div to an exact whole-cell-row
+        // height (mount result covers the synchronous creation-time fire; the
+        // runtime re-fire on font-size change is forwarded via
+        // setCellSizeCallback below).
+        ghostty_surface_t surf = target.target.surface;
+        std::string workspaceId;
+        auto rmIt = g_surfaceToWorkspaceId.find(surf);
+        if (rmIt != g_surfaceToWorkspaceId.end()) {
+            workspaceId = rmIt->second;
+        } else {
+            for (auto& [id, entry] : g_surfaces) {
+                if (entry.surface == surf) { workspaceId = id; break; }
+            }
+        }
+        if (!workspaceId.empty()) {
+            auto cellEntryIt = g_surfaces.find(workspaceId);
+            if (cellEntryIt != g_surfaces.end()) {
+                cellEntryIt->second.cellHeightPx = action.action.cell_size.height;
+                NSLog(@"[ghostty-surface] cell_size workspaceId=%s w=%u h=%u (physical px)",
+                      workspaceId.c_str(), action.action.cell_size.width, action.action.cell_size.height);
+                if (g_cellSizeTSFNActive) {
+                    auto* cellSizeData = new std::pair<std::string, uint32_t>(
+                        workspaceId, action.action.cell_size.height);
+                    napi_status cellSizeSt = g_cellSizeTSFN.NonBlockingCall(
+                        cellSizeData,
+                        [](Napi::Env env, Napi::Function jsCb, std::pair<std::string, uint32_t>* data) {
+                            jsCb.Call({
+                                Napi::String::New(env, data->first),
+                                Napi::Number::New(env, (double)data->second)
+                            });
+                            delete data;
+                        }
+                    );
+                    if (cellSizeSt != napi_ok) { delete cellSizeData; }
+                }
+            }
+        } else {
+            // Fires from inside ghostty_surface_new, before Mount has recorded
+            // this surface anywhere — stash by raw pointer; Mount drains this
+            // right after insertion (see g_pendingCellHeightPx doc comment).
+            g_pendingCellHeightPx[surf] = action.action.cell_size.height;
+            NSLog(@"[ghostty-surface] cell_size (pending, pre-mount) w=%u h=%u (physical px)",
+                  action.action.cell_size.width, action.action.cell_size.height);
+        }
+    }
+
     // Note: GHOSTTY_ACTION_RENDER is NOT handled here.
     //
     // For the embedded apprt (Orpheus), must_draw_from_app_thread is false
@@ -2474,6 +2576,12 @@ static void close_surface_cb(void* /*userdata*/, bool process_alive) {
 static ghostty_config_t g_config = nullptr;
 static const char* g_resDir = nullptr;  // set once in ensureApp, used by reloadGhosttyConfig
 
+// Forward-declared so ensureApp() (defined just below, before the gap-fill
+// colour section further down the file) can call it. Definition + full doc
+// comment lives with orpheusGapFillColor()/g_gapFillColor near their other
+// callers (~line 2712).
+static void refreshGapFillColorFromConfig(ghostty_config_t config);
+
 // ---------------------------------------------------------------------------
 // Build, load, and finalise a ghostty config using the standard Orpheus
 // load order:  default files → bundled overrides → user config → recursive
@@ -2579,6 +2687,12 @@ static bool ensureApp() {
     g_config = buildGhosttyConfig(resDir);
     if (!g_config) return false;
 
+    // Resolve the gap-fill colour from the just-built config's "background"
+    // (see refreshGapFillColorFromConfig's doc comment) so the addon's
+    // backstop/pre-paint fill matches the terminal's actual theme instead of
+    // the hardcoded midnight-theme fallback.
+    refreshGapFillColorFromConfig(g_config);
+
     ghostty_runtime_config_s rt = {};
     rt.userdata = nullptr;
     rt.supports_selection_clipboard = false;  // macOS has no separate X11-style selection clipboard
@@ -2607,7 +2721,7 @@ static bool ensureApp() {
 
 // ---------------------------------------------------------------------------
 // NAPI: mount(handleBuffer, { workspaceId, rect, scaleFactor, cwd? })
-//       → { workspaceId, created: bool }
+//       → { workspaceId, created: bool, cellHeightPx: uint32 }
 //
 // If an entry already exists for this workspaceId:
 //   • isAttached == NO → re-attach (wake up surface, add to superview).
@@ -2615,11 +2729,12 @@ static bool ensureApp() {
 // If no entry exists → create surface from scratch.
 // ---------------------------------------------------------------------------
 
-// Returns the CGColor used to fill the terminal view's layer background before
-// ghostty's GPU layer renders its first frame. Midnight theme surface-base
-// (#0b0b0c) hardcoded as gap-fill fallback. A sub-second flash; threading the
-// active theme into native is not worth it.
-static CGColorRef orpheusGapFillColor() {
+// Fallback gap-fill colour (Orpheus's midnight theme surface-base, #0b0b0c),
+// used only before g_config exists or if ghostty_config_get ever fails to
+// resolve "background" — never guessed beyond that, matching the discipline
+// used for reporting cellHeightPx == 0 when it isn't known yet (pass through
+// rather than invent a value).
+static CGColorRef orpheusFallbackGapFillColor() {
     static CGColorRef color = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -2631,6 +2746,93 @@ static CGColorRef orpheusGapFillColor() {
         );
     });
     return color;
+}
+
+// Current gap-fill colour. Starts as the fallback above; ensureApp() and
+// ReloadGhosttyConfig() both call refreshGapFillColorFromConfig() once
+// g_config exists, replacing this with ghostty's actual RESOLVED terminal
+// background — including the user's own ghostty theme/config file, since
+// g_config is already the fully-layered (defaults → bundled overrides → user
+// config → theme) config object built by buildGhosttyConfig(). Retained for
+// process lifetime; refreshed in place, never left stale after a reload.
+//
+// PROCESS-WIDE, NOT PER-SURFACE: there is exactly one g_config/g_app for the
+// whole addon (see ensureApp()), so there is only one true "resolved
+// background" to track today. This matches the rest of the codebase — the
+// ghostty config path (ORPHEUS_GHOSTTY_CONFIG) is written once per app
+// instance by writeGhosttyConfigFile() (src/main/orpheusSurfaceAdapter.ts),
+// not per workspace — so no workspace can currently run a different ghostty
+// theme than another. If per-workspace ghostty themes are ever introduced,
+// this single global will need to become per-entry (like cellHeightPx) and
+// ensureBackstopView's single shared view would need to become per-surface
+// too; until then a shared value is correct, not a shortcut.
+static CGColorRef g_gapFillColor = nil;
+
+// Plain RGB byte mirror of g_gapFillColor's resolved theme background, kept
+// alongside it so GetResolvedBackground() can hand the renderer a hex string
+// without round-tripping through CGColor component extraction. Set together
+// with g_gapFillColor in refreshGapFillColorFromConfig(); g_bgResolved stays
+// false until the first successful resolve, so callers can tell "not yet
+// known" apart from "resolved to black".
+static uint8_t g_resolvedBgR = 0;
+static uint8_t g_resolvedBgG = 0;
+static uint8_t g_resolvedBgB = 0;
+static bool g_bgResolved = false;
+
+// The persistent backstop NSView created by ensureBackstopView(). File-scope
+// (not function-local) so refreshGapFillColorFromConfig() can re-paint its
+// layer once the resolved theme background is known or changes — the backstop
+// is installed at window-open time, before g_config/g_gapFillColor exist, so
+// its creation-time fill is only ever the hardcoded fallback until this global
+// lets a later refresh reach it. Retained for process lifetime (ARC).
+static __strong NSView* g_backstopView = nil;
+
+// Returns the CGColor used to fill the terminal view's layer background
+// before ghostty's GPU layer renders its first frame, and the colour the
+// addon's own backstop paints. Falls back to the hardcoded default if the
+// config hasn't resolved a background yet.
+static CGColorRef orpheusGapFillColor() {
+    return g_gapFillColor ? g_gapFillColor : orpheusFallbackGapFillColor();
+}
+
+// Reads ghostty's resolved "background" config value (config.Color, exposed
+// via ghostty_config_get + ghostty_config_color_s — see
+// vendor/ghostty/src/config/c_get.zig's own "ghostty_config_get: struct cval
+// conversion" test for the exact shape) and replaces g_gapFillColor with it.
+// Called once g_config is known-good in ensureApp(), and again in
+// ReloadGhosttyConfig() so a live theme change doesn't leave a stale colour
+// cached. Leaves g_gapFillColor untouched (falls back to the hardcoded
+// default via orpheusGapFillColor() above) if the read ever fails — a failed
+// read should not paint something worse than the previous state.
+static void refreshGapFillColorFromConfig(ghostty_config_t config) {
+    if (!config) return;
+    ghostty_config_color_s bg{};
+    static const char* kKey = "background";
+    if (!ghostty_config_get(config, &bg, kKey, strlen(kKey))) {
+        NSLog(@"[ghostty-surface] refreshGapFillColorFromConfig: ghostty_config_get(\"background\") failed; keeping prior gap-fill colour");
+        return;
+    }
+    CGColorRef newColor = CGColorRetain(
+        [NSColor colorWithSRGBRed:bg.r / 255.0
+                            green:bg.g / 255.0
+                             blue:bg.b / 255.0
+                            alpha:1.0].CGColor
+    );
+    if (g_gapFillColor) CGColorRelease(g_gapFillColor);
+    g_gapFillColor = newColor;
+    g_resolvedBgR = bg.r;
+    g_resolvedBgG = bg.g;
+    g_resolvedBgB = bg.b;
+    g_bgResolved = true;
+    // The backstop is created (with the fallback colour baked in) before
+    // g_config exists, so it must be re-painted here too — otherwise it stays
+    // on the fallback forever while surfaces pick up the resolved colour.
+    // Both call sites (ensureApp(), ReloadGhosttyConfig()) run on the Electron
+    // main thread, the same thread that created the view, so a direct
+    // assignment is safe without a dispatch hop.
+    if (g_backstopView) g_backstopView.layer.backgroundColor = newColor;
+    NSLog(@"[ghostty-surface] gap-fill colour resolved from config background: r=%u g=%u b=%u",
+          bg.r, bg.g, bg.b);
 }
 
 // Decorative-only backstop: a full-bounds opaque dark fill pinned at the bottom
@@ -2656,20 +2858,22 @@ static CGColorRef orpheusGapFillColor() {
 // mount ABOVE it; WebContents stays above both (it was already above terminals
 // when terminals were at the bottom — moving the backstop below them preserves
 // that invariant). Plain NSView has no backgroundColor property, so we must
-// make it layer-backed and set layer.backgroundColor.
+// make it layer-backed and set layer.backgroundColor. Installed at window-open
+// time — before g_config/g_gapFillColor resolve — so its initial fill is the
+// fallback colour; refreshGapFillColorFromConfig() re-paints g_backstopView's
+// layer once the real theme background is known via the file-scope global.
 static NSView* ensureBackstopView(NSView* contentView) {
     static dispatch_once_t once;
-    static __strong NSView* backstop = nil;  // retained for process lifetime (ARC)
     dispatch_once(&once, ^{
-        backstop = [[OrpheusBackstopView alloc] initWithFrame:contentView.bounds];
-        backstop.wantsLayer = YES;
-        backstop.layer.backgroundColor = orpheusGapFillColor();
-        backstop.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        g_backstopView = [[OrpheusBackstopView alloc] initWithFrame:contentView.bounds];
+        g_backstopView.wantsLayer = YES;
+        g_backstopView.layer.backgroundColor = orpheusGapFillColor();
+        g_backstopView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         // Insert at the very bottom (index 0). NSWindowBelow relativeTo:nil
         // is AppKit's canonical way to request "insert at subview index 0."
-        [contentView addSubview:backstop positioned:NSWindowBelow relativeTo:nil];
+        [contentView addSubview:g_backstopView positioned:NSWindowBelow relativeTo:nil];
     });
-    return backstop;
+    return g_backstopView;
 }
 
 // ---------------------------------------------------------------------------
@@ -3243,10 +3447,10 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             NSLog(@"[ghostty-surface] mount workspaceId=%s: already attached (defensive resize)",
                   workspaceId.c_str());
             double parentH = contentView.bounds.size.height;
-            NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
-            [entry.view setFrame:newFrame];
             uint32_t physW = (uint32_t)(rw * scaleFactor);
             uint32_t physH = (uint32_t)(rh * scaleFactor);
+            NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
+            [entry.view setFrame:newFrame];
             ghostty_surface_set_size(entry.surface, physW, physH);
             ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
             setVisibleWorkspace(workspaceId, contentView, false);
@@ -3257,6 +3461,12 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             entry.view.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
 
             double parentH = contentView.bounds.size.height;
+            uint32_t physW = (uint32_t)(rw * scaleFactor);
+            uint32_t physH = (uint32_t)(rh * scaleFactor);
+            // The view frame must reflect the current rect on every re-attach
+            // (not just when set_size below is actually called) — the NSView is
+            // layer-hosting, so its OWN frame is what bounds ghostty's Metal
+            // layer, regardless of whether set_size ran this call.
             NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
             [entry.view setFrame:newFrame];
 
@@ -3266,8 +3476,6 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             // on a plain switch-and-back where nothing actually changed.
             // The surface persists across hide/mount, so when size and scale are
             // identical we skip the resize and ghostty keeps the prior scroll position.
-            uint32_t physW = (uint32_t)(rw * scaleFactor);
-            uint32_t physH = (uint32_t)(rh * scaleFactor);
             const bool sizeChanged =
                 entry.lastRect.size.width != rw ||
                 entry.lastRect.size.height != rh ||
@@ -3293,6 +3501,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         Napi::Object result = Napi::Object::New(env);
         result.Set("workspaceId", Napi::String::New(env, workspaceId));
         result.Set("created", Napi::Boolean::New(env, false));
+        result.Set("cellHeightPx", Napi::Number::New(env, (double)entry.cellHeightPx));
         return result;
     }
 
@@ -3448,7 +3657,26 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     // Wire the surface pointer back into the view so keyDown:/keyUp: can forward events.
     termView.surface = surface;
 
-    // Set initial size (physical pixels).
+    // ghostty_surface_new (above) fires GHOSTTY_ACTION_CELL_SIZE synchronously
+    // (see vendor/ghostty/src/Surface.zig's init) — before this surface was
+    // known to g_surfaces/g_surfaceToWorkspaceId, so action_cb couldn't
+    // attribute it to a workspace and stashed it in g_pendingCellHeightPx by
+    // raw pointer instead. Drain it now, BEFORE the initial set_size below —
+    // the cell height is already known at this point, so the very first
+    // mount of a workspace must snap too, not just its first resize.
+    uint32_t initialCellHeightPx = 0;
+    {
+        auto pendingIt = g_pendingCellHeightPx.find(surface);
+        if (pendingIt != g_pendingCellHeightPx.end()) {
+            initialCellHeightPx = pendingIt->second;
+            g_pendingCellHeightPx.erase(pendingIt);
+        }
+    }
+
+    // Set initial size (physical pixels) from the raw rect. The renderer now
+    // sizes the terminal host div to an exact whole-cell-row height before
+    // mount, so no native-side snap is needed here — the raw rect is already
+    // cell-aligned by the time it reaches us.
     uint32_t physW = (uint32_t)(rw * scaleFactor);
     uint32_t physH = (uint32_t)(rh * scaleFactor);
     ghostty_surface_set_size(surface, physW, physH);
@@ -3466,6 +3694,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     entry.lastRect      = CGRectMake(rx, ry, rw, rh);
     entry.lastScale     = scaleFactor;
     entry.generation    = createGen;
+    entry.cellHeightPx  = initialCellHeightPx;
     // A surface id may be reused after deferred teardown. Never let the new
     // surface inherit even the previous entry's sub-500ms text snapshot.
     g_screenTailCache.erase(workspaceId);
@@ -3487,12 +3716,13 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     // the watchdog or Focus() will kick it with forceWake=true.
     reconcileSurface(workspaceId, contentView, false);
 
-    NSLog(@"[ghostty-surface] mount workspaceId=%s created (physPx %ux%u)",
-          workspaceId.c_str(), physW, physH);
+    NSLog(@"[ghostty-surface] mount workspaceId=%s created (physPx %ux%u, cellH=%u)",
+          workspaceId.c_str(), physW, physH, initialCellHeightPx);
 
     Napi::Object result = Napi::Object::New(env);
     result.Set("workspaceId", Napi::String::New(env, workspaceId));
     result.Set("created", Napi::Boolean::New(env, true));
+    result.Set("cellHeightPx", Napi::Number::New(env, (double)initialCellHeightPx));
     return result;
 }
 
@@ -3580,15 +3810,18 @@ static Napi::Value Resize(const Napi::CallbackInfo& info) {
     entry.lastScale = scaleFactor;
 
     if (entry.isAttached) {
-        // Update NSView frame (with coordinate flip).
+        // Update NSView frame (with coordinate flip). The renderer sizes the
+        // terminal host div to an exact whole-cell-row height, so the raw
+        // rect is already cell-aligned by the time it reaches us — no native
+        // snap needed.
         NSView* parentView = [entry.view superview];
         double parentH = parentView ? parentView.bounds.size.height : rh;
+        uint32_t physW = (uint32_t)(rw * scaleFactor);
+        uint32_t physH = (uint32_t)(rh * scaleFactor);
         NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
         [entry.view setFrame:newFrame];
 
         // Update Ghostty surface size.
-        uint32_t physW = (uint32_t)(rw * scaleFactor);
-        uint32_t physH = (uint32_t)(rh * scaleFactor);
         ghostty_surface_set_size(entry.surface, physW, physH);
         ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
     }
@@ -3943,6 +4176,10 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     }
     if (doomed.surface) {
         g_surfaceToWorkspaceId.erase(doomed.surface);
+        // Defensive: Mount drains this synchronously right after surface_new,
+        // so there should be nothing left here by the time an entry exists to
+        // destroy — but erase it anyway rather than leak a stale pointer key.
+        g_pendingCellHeightPx.erase(doomed.surface);
     }
 
     // Detach the view so the workspace appears gone right away.
@@ -4165,8 +4402,34 @@ static Napi::Value ReloadGhosttyConfig(const Napi::CallbackInfo& info) {
     ghostty_config_free(g_config);
     g_config = newConfig;
 
+    // Re-resolve the gap-fill colour too — a live theme reload must not leave
+    // the backstop/pre-paint fill pointing at the PREVIOUS theme's background.
+    refreshGapFillColorFromConfig(g_config);
+
     NSLog(@"[ghostty-surface] config reloaded successfully");
     return Napi::Boolean::New(env, true);
+}
+
+// ---------------------------------------------------------------------------
+// NAPI: getResolvedBackground() → hex string like "#0d1117" | null
+//
+// Read-only truth query — returns ghostty's resolved terminal background
+// colour (see refreshGapFillColorFromConfig() above), the same colour the
+// gap-fill/backstop paint, as a lowercase "#rrggbb" hex string. Returns null
+// if the config hasn't resolved a background yet (g_bgResolved false). Lets
+// the renderer paint its own top-spacer div (the quantization slack above the
+// terminal host) to match the terminal's own background, so that band reads
+// as the terminal's top padding instead of a mismatched app-chrome gap.
+// ---------------------------------------------------------------------------
+
+static Napi::Value GetResolvedBackground(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (!g_bgResolved) {
+        return env.Null();
+    }
+    char hex[8];
+    snprintf(hex, sizeof(hex), "#%02x%02x%02x", g_resolvedBgR, g_resolvedBgG, g_resolvedBgB);
+    return Napi::String::New(env, hex);
 }
 
 // ---------------------------------------------------------------------------
@@ -4236,6 +4499,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("getSurfacePhase",   Napi::Function::New(env, GetSurfacePhase));
     exports.Set("readScreenTail",    Napi::Function::New(env, ReadScreenTail));
     exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
+    exports.Set("setCellSizeCallback",      Napi::Function::New(env, SetCellSizeCallback));
     exports.Set("setOcclusionCallback",     Napi::Function::New(env, SetOcclusionCallback));
     exports.Set("setActionTraceCallback",   Napi::Function::New(env, SetActionTraceCallback));
     exports.Set("setLivenessCallback",       Napi::Function::New(env, SetLivenessCallback));
@@ -4245,6 +4509,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("sendInput",                Napi::Function::New(env, SendInput));
     exports.Set("sendKeys",                 Napi::Function::New(env, SendKeys));
     exports.Set("reloadGhosttyConfig",      Napi::Function::New(env, ReloadGhosttyConfig));
+    exports.Set("getResolvedBackground",    Napi::Function::New(env, GetResolvedBackground));
     exports.Set("setOverlayFocusSuppressed",  Napi::Function::New(env, SetOverlayFocusSuppressed));
     exports.Set("saveOverlayFirstResponder",  Napi::Function::New(env, SaveOverlayFirstResponder));
     exports.Set("restoreOverlayFirstResponder", Napi::Function::New(env, RestoreOverlayFirstResponder));

@@ -55,6 +55,12 @@ extraResources:
   # after claude exits so the terminal stays alive for further use.
   - from: resources/orpheus-claude.sh
     to: orpheus-claude.sh
+  # Universal tmux hosting: attaches the desktop native surface to the
+  # tmux session hostWorkspace() (src/main/tmuxHost.ts) already created —
+  # same stay-alive rationale as orpheus-claude.sh above, applied to the
+  # attach path instead of the create path.
+  - from: resources/orpheus-attach.sh
+    to: orpheus-attach.sh
   # Workbench Panes tab (U12) wrapper: runs a pane's declared command in a
   # login zsh, then exec's interactive zsh after it exits — same
   # stay-alive rationale as orpheus-claude.sh above.
@@ -72,6 +78,16 @@ extraResources:
   # Lives at Contents/Resources/cli/cli.cjs; executed by the bin/orpheus shim.
   - from: packages/orpheus-cli/dist/cli.cjs
     to: cli/cli.cjs
+  # TUI bundle (`orpheus tui`) — separate ESM bundle, lazy dynamic-import()'d
+  # by cli.cjs at runtime (see commands/tui.ts's file header). Ships alongside
+  # cli.cjs at Contents/Resources/cli/tui.mjs since it's resolved via
+  # __dirname relative to cli.cjs. `--splitting` emits content-hashed sibling
+  # chunks (chunk-*.mjs, devtools-*.mjs) whose names change between builds, so
+  # this globs the whole dist dir for *.mjs rather than naming files.
+  - from: packages/orpheus-cli/dist
+    to: cli
+    filter:
+      - '*.mjs'
   # Standalone MCP stdio bridge. It is intentionally separate from the CLI
   # registry so stdout remains reserved for MCP JSON-RPC frames.
   - from: resources/bin/orpheus-mcp

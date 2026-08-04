@@ -26,6 +26,7 @@ import {
   composeClaudeLaunch
 } from '../claudeSettings'
 import { getClaudeAuthEnv } from '../claudeAuth'
+import { currentEffectiveHostingPolicy } from '../tmuxHost'
 import { isLiveApplicableModelChange } from '../modelRouting'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from '../claudeProjectSettings'
 import {
@@ -73,6 +74,14 @@ function launchEquals(a: LaunchSnapshot, b: LaunchSnapshot): boolean {
   // compared separately — this is the fix for auth changes not marking the
   // workspace dirty. NEVER log these values.
   if (!envEquals(a.authEnv, b.authEnv)) return false
+  // hostingMode is compared here too (not just in recomputeHostingModeDirty
+  // below) so an ordinary SETTINGS-driven recompute — triggered by an
+  // unrelated model/effort/flag change — never accidentally "launders" a
+  // real hosting-mode drift back to clean. `b` here is always freshly
+  // composed with today's `fresh.hostingMode` set to the CURRENT effective
+  // policy (see the recomputeDirty call site below), so this comparison
+  // stays correct even outside the dedicated hosting-mode recompute path.
+  if (a.hostingMode !== b.hostingMode) return false
   return true
 }
 
@@ -82,6 +91,15 @@ function launchEquals(a: LaunchSnapshot, b: LaunchSnapshot): boolean {
 // Exported so registerClaudeAuthIpc (a separate IPC domain — auth changes
 // alter the env layer merged downstream of composeClaudeLaunch, see
 // LaunchSnapshot) can trigger the same drift recheck.
+//
+// hostingMode participates in this comparison via currentEffectiveHostingPolicy()
+// (tmuxHost.ts) — see that function's doc comment for why it's a SYNCHRONOUS
+// last-known-result read rather than a fresh probe. 'unknown' (tmux
+// availability not yet resolved this app run — true before the very first
+// mount/host call) compares as EQUAL to whatever the snapshot already
+// recorded, so a workspace never flips dirty purely because nothing has
+// asked tmux anything yet; recomputeHostingModeDirty() below is the
+// dedicated one-time recheck that runs once availability actually resolves.
 export function recomputeDirty(): void {
   if (launchSnapshotCount() === 0) return
   // Fetch global settings once — shared across all workspaces in the loop.
@@ -90,6 +108,7 @@ export function recomputeDirty(): void {
   // getClaudeAuthEnv is cached (invalidated on updateClaudeAuth) and identical
   // for every workspace (auth is global, not per-workspace), so read once.
   const authEnv = getClaudeAuthEnv()
+  const effectivePolicy = currentEffectiveHostingPolicy()
   for (const [workspaceId, snap] of launchSnapshotEntries()) {
     const ws = getWorkspace(workspaceId)
     if (!ws) {
@@ -101,8 +120,27 @@ export function recomputeDirty(): void {
       continue
     }
     const fresh = composeClaudeLaunch(ws.projectId, workspaceId, globalSettings)
-    setDirty(workspaceId, !launchEquals(snap, { ...fresh, authEnv }))
+    const effectiveHostingMode = effectivePolicy === 'unknown' ? snap.hostingMode : effectivePolicy
+    setDirty(
+      workspaceId,
+      !launchEquals(snap, { ...fresh, authEnv, hostingMode: effectiveHostingMode })
+    )
   }
+}
+
+// Dedicated hosting-mode-only recheck (Gap-2 fix for the staged tmux
+// rollout): run this ONCE, right after tmux availability first resolves in
+// this app session (see terminal:mount in index.ts — the first call to
+// resolveTmuxMountAvailability), so a workspace that's running NATIVE from
+// before this change (or from before tmux became available on this
+// machine) gets flagged dirty as soon as the app learns tmux is now the
+// effective policy — without waiting for an unrelated settings change to
+// trigger the ordinary recomputeDirty() path above. Safe to call more than
+// once (idempotent — recomputeDirty() itself is the actual comparison,
+// this just guarantees it runs at the right moment); callers don't need to
+// worry about double-firing.
+export function recomputeHostingModeDirty(): void {
+  recomputeDirty()
 }
 
 // Splits a composed `flags` string (0x1F-delimited argv tokens — see

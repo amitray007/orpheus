@@ -1,10 +1,14 @@
 #!/bin/bash
 # Orpheus CLI shim — runs the bundled CLI under Electron-as-Node.
 #
-# This script ships at Contents/Resources/bin/orpheus and is prepended to
-# PATH in every workspace terminal (ORPHEUS_USER_PATH injection). It resolves
-# the Electron binary and the CLI bundle relative to its own location so the
-# paths are correct in both packaged and dev builds.
+# This script ships at Contents/Resources/bin/orpheus. Two ways it ends up on
+# PATH: (1) prepended in every workspace terminal (ORPHEUS_USER_PATH
+# injection), and (2) for the production cask, a Homebrew `binary` symlink at
+# e.g. /opt/homebrew/bin/orpheus so plain shells / SSH sessions can reach it
+# too (see scripts/orpheus-cask.template.rb). It resolves the Electron binary
+# and the CLI bundle relative to its own REAL location (symlinks fully
+# resolved — see below) so paths are correct in packaged, dev, and
+# brew-symlinked invocations alike.
 #
 # Layout (packaged):
 #   Contents/
@@ -17,7 +21,8 @@
 #       bin/
 #         orpheus           ← this script
 #       cli/
-#         cli.cjs            ← bundled CLI
+#         cli.cjs           ← bundled CLI
+#         tui.mjs           ← Ink `orpheus tui` runtime
 #
 # Layout (dev, after bun run build:dev installs Orpheus Dev.app):
 #   Contents/
@@ -30,8 +35,68 @@
 #       bin/
 #         orpheus           ← this script
 #       cli/
-#         cli.cjs            ← bundled CLI
+#         cli.cjs           ← bundled CLI
+#         tui.mjs
+
+set -eu
+
+# ORPHEUS_INVOKED_VARIANT — which app variant THIS SHIM belongs to
+# ------------------------------------------------------------------
+# Resolved ONCE, early, from the same WT > Dev > Nightly > prod cascade the
+# Electron-as-Node path below already uses to pick ELECTRON_BIN — computed
+# here first so it can be exported before handing off to the CLI.
 #
+# WHY THIS EXISTS: packages/orpheus-cli/src/paths.ts resolves which app's
+# data dir / command socket / token to use from environment signals. Every
+# workspace-hosted terminal ALSO has ORPHEUS_DATA_VARIANT/ORPHEUS_CMD_SOCK/
+# ORPHEUS_CMD_TOKEN injected by whichever app instance owns that workspace
+# (src/main/orpheusSurfaceAdapter.ts) — correct for a terminal driven by that
+# app, but if a shell already carrying those vars invokes a DIFFERENT
+# variant's `orpheus` binary, the CLI would otherwise silently cross-talk
+# with the wrong app (this is exactly what caused a confusing HTTP 400 on
+# /subscribe during TUI development — see paths.ts's "CROSS-VARIANT TALK
+# GUARD" for the full story). ORPHEUS_INVOKED_VARIANT reflects the
+# PHYSICALLY-INVOKED binary — trustworthy in a way inherited env vars are
+# not — so paths.ts can prefer it and refuse to silently use a foreign
+# socket/token.
+#
+# Symlink resolution: the production cask installs this script's path as a
+# Homebrew `binary` symlink at e.g. /opt/homebrew/bin/orpheus. A plain
+# `dirname "${BASH_SOURCE[0]}"` would then resolve to /opt/homebrew/bin
+# instead of Contents/Resources/bin, breaking every path derived below. Walk
+# the symlink chain by hand (readlink has no portable -f on macOS's bash 3.2)
+# so SCRIPT_DIR always lands on this script's real location inside the bundle.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in
+    /*) ;;
+    *) SOURCE="$DIR/$SOURCE" ;;
+  esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+RESOURCES_DIR="$(dirname "$SCRIPT_DIR")"
+MACOS_DIR="$(dirname "$RESOURCES_DIR")/MacOS"
+
+if [ -x "$MACOS_DIR/Orpheus WT" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus WT"
+  export ORPHEUS_INVOKED_VARIANT=wt
+elif [ -x "$MACOS_DIR/Orpheus Dev" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus Dev"
+  export ORPHEUS_INVOKED_VARIANT=dev
+elif [ -x "$MACOS_DIR/Orpheus Nightly" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus Nightly"
+  export ORPHEUS_INVOKED_VARIANT=nightly
+elif [ -x "$MACOS_DIR/Orpheus" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus"
+  export ORPHEUS_INVOKED_VARIANT=prod
+else
+  echo "orpheus: error: cannot find Electron binary in $MACOS_DIR" >&2
+  echo "  Expected 'Orpheus WT', 'Orpheus Dev', 'Orpheus Nightly', or 'Orpheus' — is the app bundle intact?" >&2
+  exit 1
+fi
+
 # NODE_PATH for better-sqlite3
 # ----------------------------
 # The CLI bundle externalizes better-sqlite3 so the native .node addon can be
@@ -46,17 +111,11 @@
 # We try that path first, then fall back to a sibling Resources/node_modules/
 # in case a future layout change moves things. NODE_PATH is additive — we
 # prepend so our path is searched first, with any existing NODE_PATH appended.
-
-set -eu
-
-# Resolve the directory containing this script, following symlinks.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-
-# The Resources dir is one level up from bin/.
-RESOURCES_DIR="$(dirname "$SCRIPT_DIR")"
-
-# The MacOS dir is a sibling of Resources/.
-MACOS_DIR="$(dirname "$RESOURCES_DIR")/MacOS"
+#
+# SCRIPT_DIR/RESOURCES_DIR/MACOS_DIR/ELECTRON_BIN were already resolved above
+# (see the ORPHEUS_INVOKED_VARIANT block) — reused here rather than
+# re-derived, so there is exactly one WT > Dev > Nightly > prod cascade in
+# this file.
 
 # The bundled CLI lives at Resources/cli/cli.cjs.
 CLI_BUNDLE="$RESOURCES_DIR/cli/cli.cjs"
@@ -78,19 +137,6 @@ fi
 # Prepend to existing NODE_PATH (may be unset — guard with :- default).
 if [ -n "$ORPHEUS_NODE_PATH" ]; then
   export NODE_PATH="$ORPHEUS_NODE_PATH${NODE_PATH:+:${NODE_PATH}}"
-fi
-
-# Find the Electron binary for worktree, development, or production builds.
-if [ -x "$MACOS_DIR/Orpheus WT" ]; then
-  ELECTRON_BIN="$MACOS_DIR/Orpheus WT"
-elif [ -x "$MACOS_DIR/Orpheus Dev" ]; then
-  ELECTRON_BIN="$MACOS_DIR/Orpheus Dev"
-elif [ -x "$MACOS_DIR/Orpheus" ]; then
-  ELECTRON_BIN="$MACOS_DIR/Orpheus"
-else
-  echo "orpheus: error: cannot find Electron binary in $MACOS_DIR" >&2
-  echo "  Expected 'Orpheus WT', 'Orpheus Dev', or 'Orpheus' — is the app bundle intact?" >&2
-  exit 1
 fi
 
 if [ ! -f "$CLI_BUNDLE" ]; then

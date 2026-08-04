@@ -17,7 +17,20 @@
  * dir) so it is allowed WITHOUT the prod guard.
  */
 import { execFileSync, execSync } from 'node:child_process'
-import { closeSync, existsSync, openSync, readdirSync, rmSync, statSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  unlinkSync
+} from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -92,6 +105,68 @@ if (!appBundle) {
 const appName = appBundle.split('/').pop()
 const target = `/Applications/${appName}`
 
+// Symlink dir for the local-only (non-brew) CLI links created below. Chosen
+// over /opt/homebrew/bin deliberately: that dir is Homebrew-owned (it holds
+// the `orpheus`/`orpheus-nightly` links Homebrew's `binary` stanza manages
+// for the casks — see scripts/orpheus-cask.template.rb) and may not even be
+// writable without sudo on an Intel Mac (/usr/local/bin). ~/.local/bin is
+// user-owned, needs no sudo, and is the conventional per-user bin dir many
+// shells (and tools like `pipx`/`cargo`) already add to PATH.
+const LOCAL_BIN_DIR = resolve(homedir(), '.local/bin')
+
+/**
+ * Symlink `resources/bin/orpheus` (this bundle's copy) into LOCAL_BIN_DIR
+ * under `linkName`, so it can be invoked without going through the
+ * per-workspace-terminal PATH injection. The shim itself needs no
+ * variant-specific logic — it resolves ORPHEUS_INVOKED_VARIANT from which
+ * Electron binary is physically next to it inside `appTarget`, regardless of
+ * what this symlink is named (see resources/bin/orpheus's header comment and
+ * packages/orpheus-cli/src/paths.ts's "CROSS-VARIANT TALK GUARD").
+ *
+ * Idempotent: re-points the link on every install so a rebuild self-heals
+ * it. Never touches a `orpheus` link — brew owns that name exclusively for
+ * the prod cask; this function is only ever called with `orpheus-dev` /
+ * `orpheus-wt`. Failures (read-only dir, permissions) are warnings, not
+ * install failures — a missing CLI shortcut should never block a build.
+ */
+function linkCliShim(appTarget, linkName, logTag) {
+  const shimSource = resolve(appTarget, 'Contents/Resources/bin/orpheus')
+  const linkPath = resolve(LOCAL_BIN_DIR, linkName)
+
+  if (!existsSync(shimSource)) {
+    console.warn(`${logTag} skipping ${linkName} symlink: shim not found at ${shimSource}`)
+    return
+  }
+
+  try {
+    if (!existsSync(LOCAL_BIN_DIR)) {
+      mkdirSync(LOCAL_BIN_DIR, { recursive: true })
+    }
+
+    // Re-point unconditionally so a stale link (e.g. left over from a moved
+    // dist dir) is corrected rather than silently kept.
+    if (lstatSync(linkPath, { throwIfNoEntry: false })) {
+      if (readlinkSync(linkPath) === shimSource) {
+        console.log(`${logTag} ${linkName} already points at ${shimSource}`)
+        return
+      }
+      unlinkSync(linkPath)
+    }
+    symlinkSync(shimSource, linkPath)
+    console.log(`${logTag} linked ${linkPath} -> ${shimSource}`)
+
+    const pathDirs = (process.env.PATH ?? '').split(':')
+    if (!pathDirs.includes(LOCAL_BIN_DIR)) {
+      console.log(
+        `${logTag} ${LOCAL_BIN_DIR} is not on PATH — add ` +
+          `'export PATH="${LOCAL_BIN_DIR}:$PATH"' to your shell profile to use \`${linkName}\`.`
+      )
+    }
+  } catch (err) {
+    console.warn(`${logTag} could not create ${linkName} symlink: ${err.message}`)
+  }
+}
+
 const isAppRunning = () => {
   try {
     execFileSync('pgrep', ['-fl', `/Applications/${appName}/Contents/MacOS/`], { stdio: 'pipe' })
@@ -127,6 +202,16 @@ try {
   rmSync(distDir, { recursive: true, force: true })
 
   console.log(`${tag} done. Open with: open "${target}"`)
+
+  // Dev and WT are local-only variants (never shipped via the Homebrew cask,
+  // which is how prod/nightly get their `orpheus`/`orpheus-nightly` PATH
+  // links — see scripts/orpheus-cask.template.rb and
+  // orpheus-nightly-cask.template.rb). Without a brew-managed link, `orpheus
+  // tui` from a dev shell or `docs/REMOTE_ACCESS.md`'s Termius setup has no
+  // way to reach them, so give each its own symlink here, refreshed on every
+  // install so a rebuild self-heals it.
+  if (isDev) linkCliShim(target, 'orpheus-dev', tag)
+  if (isWt) linkCliShim(target, 'orpheus-wt', tag)
 } catch (err) {
   console.error(`${tag} failed: ${err.message}`)
   process.exit(1)

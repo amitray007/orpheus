@@ -27,6 +27,7 @@ import {
 } from '../worktrees'
 import { getTitle, withInjectLock } from '../workspaceResources'
 import { reconcileSessionStateFresh } from '../sessionState'
+import { renameHostedSession, unhostWorkspace } from '../tmuxHost'
 import { WorkspaceOrchestrationService } from './service'
 import { WorkspaceRuntimeCoordinator } from './runtimeCoordinator'
 import { MainWorkspaceWaitEngine } from './waitEngine'
@@ -158,7 +159,36 @@ function createStorePort(
     },
     close: (workspaceId, expectedRevision) => {
       if (!unchanged(workspaceId, expectedRevision)) return null
+      // Read the name BEFORE closing so the tmux session name can still be
+      // computed, then best-effort kill the session — exactly like the
+      // `remove` (archive) port below, and for the same reason: close's
+      // declared effects include 'process.terminate' (service.ts's
+      // CLOSE_EFFECTS), which was a lie for tmux-hosted workspaces. The
+      // desktop's surface teardown only destroys a libghostty surface, and a
+      // tmux-hosted workspace never had one, so nothing was stopping the
+      // `claude` inside the session. Verified empirically: workspaces marked
+      // closed_at in the dev DB still had live sessions and live shell pids
+      // days later.
+      //
+      // This is the SECOND close entry point — index.ts's performClose
+      // (used by the desktop IPC handler and the inactivity auto-close
+      // watchdog) gets the equivalent fix directly there, since it calls the
+      // legacy closeWorkspace() rather than this port. Both must guarantee
+      // teardown; neither routes through the other without a larger refactor
+      // than this fix's scope. Same split the archive paths already have.
+      const name = workspaceSnapshot(workspaceId)?.name
       closeWorkspace(workspaceId, takeLastTitle(workspaceId))
+      if (name != null) {
+        // Catch here for the same reason the remove port does: unhostWorkspace
+        // re-throws when the tmux binary itself is missing, and that must not
+        // surface as an unhandled rejection out of an already-succeeded close.
+        void unhostWorkspace({ workspaceId, workspaceName: name }).catch((err: unknown) => {
+          console.warn(
+            `[workspaceOrchestration] tmux teardown failed on close for workspaceId=${workspaceId}:`,
+            err
+          )
+        })
+      }
       return workspaceSnapshot(workspaceId)
     },
     reopen: (workspaceId, expectedRevision) => {
@@ -168,13 +198,63 @@ function createStorePort(
     },
     rename: (workspaceId, name, expectedRevision) => {
       if (!unchanged(workspaceId, expectedRevision)) return null
+      // Read the OLD name BEFORE renameWorkspace() overwrites it — this is
+      // the one call site both the desktop IPC rename (workspaces:rename)
+      // and the CLI/TUI rename (`workspace.rename` over the command
+      // socket) funnel through, so hooking the tmux rename-session fix
+      // here covers both callers without duplicating it. Best-effort and
+      // fire-and-forget: a workspace rename must complete regardless of
+      // tmux's state, and renameHostedSession() never throws (see its own
+      // doc comment in tmuxHost.ts) — void is safe here.
+      const oldName = workspaceSnapshot(workspaceId)?.name
       renameWorkspace(workspaceId, name)
-      return workspaceSnapshot(workspaceId)
+      // Use the SANITIZED name renameWorkspace() actually persisted (it
+      // strips control chars / collapses whitespace / caps length — see
+      // sanitizeWorkspaceName in workspaces.ts), not the raw `name` param,
+      // so the computed session name matches what tmuxSessionName() will
+      // derive from the DB on every future lookup.
+      const newSnapshot = workspaceSnapshot(workspaceId)
+      const newName = newSnapshot?.name
+      if (oldName != null && newName != null && oldName !== newName) {
+        void renameHostedSession({
+          workspaceId,
+          oldWorkspaceName: oldName,
+          newWorkspaceName: newName
+        })
+      }
+      return newSnapshot
     },
     remove: (workspaceId, expectedRevision) => {
       if (!unchanged(workspaceId, expectedRevision)) return false
+      // Archive is terminal (docs/TUI_SPEC.md D2: "an orphaned session is a
+      // leak") — read the workspace's name BEFORE the row is deleted so the
+      // tmux session name can still be computed, then best-effort kill it
+      // AFTER the DB row is confirmed removed. This is the archive path the
+      // primary (non-forced) desktop/CLI `workspaces.archive` control action
+      // takes (WorkspaceOrchestrationService.archive() -> ports.store.remove);
+      // the OTHER archive entry point — index.ts's performArchive/
+      // performForcedArchive, used for the forced-after-dirty-worktree-
+      // confirmation leg — gets the equivalent fix directly in index.ts,
+      // since it calls the legacy archiveWorkspace() in workspaces.ts instead
+      // of this port. Both must guarantee teardown; neither can be routed
+      // through the other without a larger refactor than this fix's scope.
+      const name = workspaceSnapshot(workspaceId)?.name
       takeLastTitle(workspaceId)
-      return removeWorkspaceRecord(workspaceId)
+      const removed = removeWorkspaceRecord(workspaceId)
+      if (removed && name != null) {
+        // unhostWorkspace() re-throws when tmux itself is missing (see its
+        // TmuxNotAvailableError doc comment) — catch here so an unavailable
+        // tmux binary can never surface as an unhandled rejection out of an
+        // already-succeeded archive. Every OTHER failure mode (no session,
+        // already gone) is already tolerated inside unhostWorkspace itself.
+        void unhostWorkspace({ workspaceId, workspaceName: name }).catch((err: unknown) => {
+          console.warn(
+            `[workspaceOrchestration] tmux teardown failed for workspaceId=${workspaceId}:`,
+            err
+          )
+        })
+      }
+      return removed
     }
   }
 }
