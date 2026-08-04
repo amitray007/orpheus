@@ -85,6 +85,10 @@ type TuiModule = { runTui: (options?: RunTuiOptions) => Promise<void> }
  */
 function rethrowAcrossBundleBoundary(err: unknown): never {
   if (err instanceof Error && err.name === 'AppNotRunningError') {
+    // timedOutAfterLaunch intentionally defaults to false here (not carried
+    // across the boundary): the TUI bundle never calls cli.ts's autoLaunch(),
+    // so any AppNotRunningError raised inside tui.mjs is always the "socket
+    // absent" case, never "launched but didn't come up in time".
     throw new AppNotRunningError(err.message)
   }
   if (err instanceof Error && err.name === 'CommandError') {

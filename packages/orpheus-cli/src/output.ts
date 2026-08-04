@@ -5,7 +5,11 @@
  *   --json  : print stable JSON.stringify of the result object to stdout.
  *   default : human-readable output using the helpers below.
  *
- * Errors always go to stderr with a non-zero exit code.
+ * Errors (and the app-not-running notice — see printNotice) always go to
+ * stderr with a non-zero exit code. printNotice is the one exception to the
+ * "error:"-prefixed styling below: the app simply not being open yet isn't a
+ * user-caused failure, so it's worded as a calm notice instead — but the
+ * exit code is still non-zero, same as every other failure to complete.
  *
  * EXIT CODES
  * ----------
@@ -18,6 +22,7 @@
  */
 
 import { AppNotRunningError, CommandError } from './socket-client.js'
+import { resolveAppName } from './paths.js'
 
 // ---------------------------------------------------------------------------
 // Internal state: json mode toggled once at startup by cli.ts
@@ -199,10 +204,58 @@ function emitError(msg: string, exitCode: number, prefix: string): void {
 }
 
 /**
+ * Print an informational notice — a situation that isn't a failure the user
+ * caused, so it's worded calmly with no "error:" prefix and no scary
+ * styling. Still sets a non-zero exit code: the command didn't do its work,
+ * and scripts/agents driving `orpheus` must be able to tell.
+ *
+ * Stream/JSON behavior deliberately mirrors emitError (same stderr/stdout
+ * split, same --json envelope shape, reuses its exact writer) so tooling
+ * that already parses CLI output doesn't need a second code path — only the
+ * plain-mode TEXT differs (no prefix, multi-line rather than single-line).
+ */
+function emitNotice(lines: string[], exitCode: number): void {
+  const msg = lines.join('\n')
+  if (isJsonMode()) {
+    emitError(msg, exitCode, '')
+  } else {
+    process.stderr.write(msg + '\n')
+    process.exitCode = exitCode
+  }
+}
+
+/**
+ * Print the "Orpheus isn't running" notice. Not routed through printError:
+ * the app simply isn't open yet, which isn't something the user did wrong,
+ * so it gets calm phrasing instead of error styling. Exit code stays
+ * non-zero — the command still didn't complete.
+ *
+ * Distinguishes the two real cases via AppNotRunningError#timedOutAfterLaunch:
+ * - false (default): socket/token absent — the app was never running, and
+ *   the CLI never attempted to launch it (read commands skip auto-launch).
+ * - true: the CLI DID launch the app (autoLaunch() in cli.ts) but the
+ *   socket never came up within the timeout.
+ * Both point at the same fix — open the app — via the exact `open -a`
+ * command for the invoked variant (resolveAppName(), never hardcoded).
+ */
+export function printNotice(err: AppNotRunningError, opts?: { exitCode?: number }): void {
+  const exitCode = opts?.exitCode ?? 1
+  const appName = resolveAppName()
+  const openCmd = `open -a "${appName}"`
+
+  const lines = err.timedOutAfterLaunch
+    ? [`Orpheus was launched but didn't come up in time. Try opening it directly:`, `  ${openCmd}`]
+    : [`Orpheus isn't running. Start it with:`, `  ${openCmd}`]
+
+  emitNotice(lines, exitCode)
+}
+
+/**
  * Print an error message and set an appropriate exit code. Respects --json
  * mode (see emitError).
  *
- * - AppNotRunningError → exit 1, message with hint to launch the app.
+ * - AppNotRunningError → delegated to printNotice (not a user-caused error;
+ *   see its doc comment) rather than handled here.
  * - CommandError       → exit 1, server error message.
  * - Usage errors       → exit 2.
  * - Data-not-found     → exit 3 (detected by message heuristic; callers can
@@ -210,13 +263,16 @@ function emitError(msg: string, exitCode: number, prefix: string): void {
  * - Everything else    → exit 1.
  */
 export function printError(err: unknown, opts?: { exitCode?: number; prefix?: string }): void {
+  if (err instanceof AppNotRunningError) {
+    printNotice(err, { exitCode: opts?.exitCode })
+    return
+  }
+
   const prefix = opts?.prefix ?? 'error'
   let msg: string
   const exitCode = opts?.exitCode ?? 1
 
-  if (err instanceof AppNotRunningError) {
-    msg = err.message + '\n  Tip: open Orpheus and try again, or let the CLI launch it for you.'
-  } else if (err instanceof CommandError) {
+  if (err instanceof CommandError) {
     msg = err.message
   } else if (err instanceof Error) {
     msg = err.message

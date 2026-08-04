@@ -1,10 +1,14 @@
 #!/bin/bash
 # Orpheus CLI shim — runs the bundled CLI under Electron-as-Node.
 #
-# This script ships at Contents/Resources/bin/orpheus and is prepended to
-# PATH in every workspace terminal (ORPHEUS_USER_PATH injection). It resolves
-# the Electron binary and the CLI bundle relative to its own location so the
-# paths are correct in both packaged and dev builds.
+# This script ships at Contents/Resources/bin/orpheus. Two ways it ends up on
+# PATH: (1) prepended in every workspace terminal (ORPHEUS_USER_PATH
+# injection), and (2) for the production cask, a Homebrew `binary` symlink at
+# e.g. /opt/homebrew/bin/orpheus so plain shells / SSH sessions can reach it
+# too (see scripts/orpheus-cask.template.rb). It resolves the Electron binary
+# and the CLI bundle relative to its own REAL location (symlinks fully
+# resolved — see below) so paths are correct in packaged, dev, and
+# brew-symlinked invocations alike.
 #
 # Layout (packaged):
 #   Contents/
@@ -55,7 +59,23 @@ set -eu
 # PHYSICALLY-INVOKED binary — trustworthy in a way inherited env vars are
 # not — so paths.ts can prefer it and refuse to silently use a foreign
 # socket/token.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+#
+# Symlink resolution: the production cask installs this script's path as a
+# Homebrew `binary` symlink at e.g. /opt/homebrew/bin/orpheus. A plain
+# `dirname "${BASH_SOURCE[0]}"` would then resolve to /opt/homebrew/bin
+# instead of Contents/Resources/bin, breaking every path derived below. Walk
+# the symlink chain by hand (readlink has no portable -f on macOS's bash 3.2)
+# so SCRIPT_DIR always lands on this script's real location inside the bundle.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in
+    /*) ;;
+    *) SOURCE="$DIR/$SOURCE" ;;
+  esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 RESOURCES_DIR="$(dirname "$SCRIPT_DIR")"
 MACOS_DIR="$(dirname "$RESOURCES_DIR")/MacOS"
 

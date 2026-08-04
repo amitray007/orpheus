@@ -511,7 +511,8 @@ async function autoLaunch(totalTimeoutMs = 15_000): Promise<void> {
   }
 
   throw new AppNotRunningError(
-    `could not reach Orpheus after launching "${appName}" (timed out after ${totalTimeoutMs / 1000}s)`
+    `launched "${appName}" but it didn't come up within ${totalTimeoutMs / 1000}s`,
+    { timedOutAfterLaunch: true }
   )
 }
 

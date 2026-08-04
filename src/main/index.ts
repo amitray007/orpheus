@@ -1162,6 +1162,38 @@ async function checkClaude(): Promise<{
 }
 
 // ---------------------------------------------------------------------------
+// orpheus CLI on PATH — quiet fallback hint (prod cask only)
+//
+// scripts/orpheus-cask.template.rb carries a `binary` stanza so `brew install
+// --cask orpheus` symlinks Contents/Resources/bin/orpheus onto the user's
+// PATH (Homebrew creates/re-points/removes it on install/upgrade/uninstall —
+// no app-side code needed for the happy path). This is the fallback for the
+// rare case that symlink is missing anyway — a stale install predating the
+// `binary` stanza, a user who copied the .app manually instead of using
+// brew, etc. Best-effort, log-only, never blocks or dialogs: mirrors the
+// other boot-time checks in this file (loadTerminalAddon, startPowerAwake,
+// autoStartFlaggedLayouts — see the app.whenReady callback below).
+function checkOrpheusOnPath(): void {
+  if (APP_NAME !== 'Orpheus') return // dev/WT/nightly builds aren't cask-distributed; skip
+
+  const expectedShim = join(process.resourcesPath, 'bin', 'orpheus')
+  try {
+    const resolved = childProcess
+      .execFileSync('which', ['orpheus'], {
+        encoding: 'utf-8',
+        timeout: 3000
+      })
+      .trim()
+    if (resolved && fs.realpathSync(resolved) === fs.realpathSync(expectedShim)) return
+  } catch {
+    // `which` failing (exit 1, not found) is the expected "not on PATH" case — fall through to the hint.
+  }
+  console.log(
+    `[cli-path] 'orpheus' isn't on PATH. Run: brew install --cask orpheus (or, if already installed, brew reinstall --cask orpheus)`
+  )
+}
+
+// ---------------------------------------------------------------------------
 // IPC handlers
 // ---------------------------------------------------------------------------
 
@@ -3800,6 +3832,12 @@ if (!app.requestSingleInstanceLock()) {
           autoStartFlaggedLayouts()
         } catch (err) {
           console.error('[panes] auto-start: unexpected failure:', redactErrorForLog(err))
+        }
+
+        try {
+          checkOrpheusOnPath()
+        } catch (err) {
+          console.error('[cli-path] on-PATH check failed:', redactErrorForLog(err))
         }
 
         app.on('activate', function () {
