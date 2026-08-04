@@ -155,3 +155,47 @@ export function insertText(buffer: PathBuffer, input: string): PathBuffer {
     buffer.value.slice(0, buffer.cursorPos) + input + buffer.value.slice(buffer.cursorPos)
   return { value, cursorPos: buffer.cursorPos + input.length }
 }
+
+/**
+ * Longest string every candidate starts with. Tab-completing to the common
+ * stem (rather than jumping straight to the first match) is what makes
+ * repeated Tab presses feel like a shell: each press commits only what is
+ * unambiguous, so the user can type one more disambiguating character and
+ * press again. Returns '' when the candidates share nothing.
+ */
+export function commonPrefix(candidates: string[]): string {
+  if (candidates.length === 0) return ''
+  let prefix = candidates[0] ?? ''
+  for (const c of candidates.slice(1)) {
+    let i = 0
+    while (i < prefix.length && i < c.length && prefix[i] === c[i]) i++
+    prefix = prefix.slice(0, i)
+    if (prefix === '') break
+  }
+  return prefix
+}
+
+/**
+ * Split a partially-typed path into the directory to list and the fragment
+ * to match within it — the two things a completion pass needs.
+ *
+ * A trailing slash means "list this directory, match everything", NOT "match
+ * the directory's own name": `~/code/` should offer what is INSIDE `code`,
+ * which is the behaviour every shell has and the one users' fingers expect.
+ */
+export function splitForCompletion(value: string): { dir: string; fragment: string } {
+  const lastSlash = value.lastIndexOf('/')
+  if (lastSlash === -1) return { dir: '.', fragment: value }
+  return { dir: value.slice(0, lastSlash + 1) || '/', fragment: value.slice(lastSlash + 1) }
+}
+
+/**
+ * Apply a completion result to the buffer: replace the fragment after the
+ * final slash with `completed`, leaving everything before it untouched, and
+ * park the cursor at the end (the only place further typing makes sense).
+ */
+export function applyCompletion(buffer: PathBuffer, dir: string, completed: string): PathBuffer {
+  const base = dir === '.' ? '' : dir
+  const value = base + completed
+  return { value, cursorPos: value.length }
+}

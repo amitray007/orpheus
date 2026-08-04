@@ -36,12 +36,18 @@ import * as React from 'react'
 import { useState } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { sendCommand } from '../../socket-client.js'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as nodePath from 'node:path'
 import {
+  applyCompletion,
   backspace,
   buildPathFieldWindow,
+  commonPrefix,
   insertText,
   moveCursor,
   pathFieldInnerWidth,
+  splitForCompletion,
   type PathBuffer
 } from '../addProjectLayout.js'
 import type { Palette } from '../theme.js'
@@ -166,6 +172,10 @@ function handlePathInputKey(
     setBuffer((b) => backspace(b))
     return
   }
+  if (key.tab) {
+    setBuffer((b) => completePath(b))
+    return
+  }
   // Printable character — same input.length>0 gate the removed NameStep's
   // handleNameKey used (wizardStepMachine.ts, commit d5ceebe5^): Ink reports
   // control/navigation keys via `key` with `input` empty or non-printable,
@@ -176,12 +186,62 @@ function handlePathInputKey(
   }
 }
 
+/**
+ * Tab-completion over DIRECTORIES ONLY — project.add rejects anything that
+ * isn't a directory (see src/main/projectPathResolve.ts), so offering files
+ * would only ever complete to a value the server refuses.
+ *
+ * Best-effort by construction: an unreadable or nonexistent parent returns
+ * the buffer unchanged rather than throwing or reporting an error. A failed
+ * Tab should feel like "nothing to complete", which is exactly how a shell
+ * behaves — the real feedback for a bad path is the submit error, which
+ * already exists.
+ *
+ * Completes to the COMMON PREFIX of all matches, not the first match, so
+ * repeated presses converge the way a shell does. A sole match gets a
+ * trailing slash so the next Tab descends into it without the user typing
+ * the separator.
+ */
+function completePath(buffer: PathBuffer): PathBuffer {
+  const { dir, fragment } = splitForCompletion(buffer.value)
+  // Expand `~` for the FILESYSTEM read only — the buffer keeps whatever the
+  // user typed, since the server expands it too and rewriting their text
+  // under them mid-edit is surprising.
+  const readDir = dir.startsWith('~') ? nodePath.join(os.homedir(), dir.slice(1)) : dir
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(readDir, { withFileTypes: true })
+  } catch {
+    return buffer
+  }
+  const matches = entries
+    .filter((e) => e.isDirectory() && e.name.startsWith(fragment))
+    // Hidden directories are offered only once the user has typed the dot
+    // themselves — otherwise `~/` on a home directory buries real projects
+    // under dozens of dotfiles.
+    .filter((e) => fragment.startsWith('.') || !e.name.startsWith('.'))
+    .map((e) => e.name)
+  if (matches.length === 0) return buffer
+  const completed = matches.length === 1 ? `${matches[0]}/` : commonPrefix(matches)
+  if (completed.length <= fragment.length) return buffer
+  return applyCompletion(buffer, dir, completed)
+}
+
 export function AddProjectPrompt({
   width,
   palette,
   onDone
 }: AddProjectPromptProps): React.JSX.Element {
-  const [buffer, setBuffer] = useState<PathBuffer>({ value: '', cursorPos: 0 })
+  // PREFILLED WITH THE CWD, not empty. `orpheus tui` is almost always
+  // launched from inside the project being added, so this turns the common
+  // case into `p`, `enter` — no typing at all. When it's the wrong path it
+  // is still a better start than a blank field: backspacing back up a real
+  // path beats typing one from scratch on a phone keyboard. Cursor parks at
+  // the end so typing continues the path rather than inserting at its head.
+  const [buffer, setBuffer] = useState<PathBuffer>(() => {
+    const cwd = process.cwd()
+    return { value: cwd, cursorPos: cwd.length }
+  })
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
@@ -223,7 +283,7 @@ export function AddProjectPrompt({
       </Box>
       <Box marginTop={1}>
         <Text color={palette.secondary} wrap="truncate-end">
-          {submitError != null ? 'enter retry   esc cancel' : 'enter add   esc cancel'}
+          {submitError != null ? 'enter retry   esc cancel' : 'enter add  tab complete  esc cancel'}
         </Text>
       </Box>
       {submitting || submitError != null ? (
