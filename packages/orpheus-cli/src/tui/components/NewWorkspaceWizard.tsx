@@ -23,7 +23,7 @@
  * TRANSITION LOGIC (wizardStepMachine.ts's pure handleXStepKey functions,
  * which this component only dispatches to by current step) or its SCREEN
  * RENDERING (wizard/WizardScreens.tsx's WizardBody, which turns `state`
- * into whichever of the five step screens should show). The split mirrors
+ * into whichever of the three step screens should show). The split mirrors
  * layout.ts/blocks.ts vs. App.tsx's own component-vs-pure-logic boundary
  * elsewhere in this package, and exists because the combined file, before
  * being split, was pushing well past this codebase's usual ~100-250
@@ -31,24 +31,24 @@
  *
  * ESC ASYMMETRY (do not "fix" this into one uniform rule)
  * -----------------------------------------------------------------------
- * esc at 'model-provider' (the FIRST screen) cancels the whole wizard — model
- * selection is mandatory and there is nothing "before" it to go back to. esc
- * at every later step goes back exactly one step, preserving every field
- * already filled in (nothing is ever reset on a backward navigation — only
- * `onCancel` at the very first step discards state, by virtue of App.tsx
- * setting `wizardProject` back to null and this whole component unmounting).
- * 'model-detail' (drilled into a provider's own model list) is NOT "later"
- * for this purpose even though it comes chronologically after
- * 'model-provider' — esc there returns to 'model-provider', not to the
- * picker, because it's the SAME logical step (Step 1) — 'model-detail' going
- * back to 'model-provider' IS one step back within Step 1.
+ * esc at 'model' (the FIRST screen, Step 1's single accordion) cancels the
+ * whole wizard — model selection is mandatory and there is nothing "before"
+ * it to go back to. This used to be more subtle when Step 1 was two screens
+ * (esc from the drilled-in model list went back to the provider list rather
+ * than cancelling); now that both are one accordion screen, esc there is
+ * unconditionally "cancel the wizard", the same as the FIRST screen always
+ * was. esc at every later step goes back exactly one step, preserving every
+ * field already filled in (nothing is ever reset on a backward navigation —
+ * only `onCancel` at the very first step discards state, by virtue of
+ * App.tsx setting `wizardProject` back to null and this whole component
+ * unmounting).
  *
- * The wizard is a 3-step flow — model (Step 1, two screens) -> mode (Step 2,
- * conditionally skipped) -> confirm (Step 3). It used to have a fourth,
- * name-entry step between model-detail and mode; that step was removed (see
- * wizardTypes.ts's header for why) and every esc/confirm-skip target that
- * used to point at 'name' now points at 'model-detail' instead, since that's
- * the step immediately before mode in the shortened chain.
+ * The wizard is a 3-step flow — model (Step 1, one accordion screen) -> mode
+ * (Step 2, conditionally skipped) -> confirm (Step 3). It used to have a
+ * fourth, name-entry step between the model step and mode; that step was
+ * removed (see wizardTypes.ts's header for why) and every esc/confirm-skip
+ * target that used to point at 'name' now points at 'model' instead, since
+ * that's the step immediately before mode in the shortened chain.
  *
  * WHY BOTH ASYNC CALLS FIRE IMMEDIATELY ON OPEN, NOT LAZILY PER STEP
  * -----------------------------------------------------------------------
@@ -77,13 +77,23 @@ import {
   initialWizardState,
   modeStepNeeded,
   resolveDefaultMode,
-  STEP_MODEL_PROVIDER
+  STEP_MODEL
 } from '../wizardStepMachine.js'
 import type { OfferedModes, SelectableModel, WizardProject, WizardState } from '../wizardTypes.js'
 
 export interface NewWorkspaceWizardProps {
   project: WizardProject
   width: number
+  /** Row budget for the wizard's own body, mirroring App.tsx's own
+   *  `availableRows` (terminal rows minus the title bar and footer chrome)
+   *  — threaded down to WizardBody -> ListStep so the Step 1 accordion can
+   *  window itself instead of silently overflowing a short terminal (see
+   *  wizardLayout.ts's `windowListRows` and ListStep.tsx's WINDOWING note).
+   *  Only the accordion and mode screens actually consume it (ConfirmStep
+   *  is a handful of fixed lines that always fit); it's threaded through
+   *  every screen anyway so WizardBody's dispatch doesn't need a
+   *  step-by-step "does this one need it" branch. */
+  availableRows: number
   palette: Palette
   /** Called once the wizard is done, one way or another.
    *
@@ -174,22 +184,26 @@ function useWizardData(
 
 /**
  * Resolve the confirm screen's esc target: 'mode' if Step 2 was actually
- * shown (both modes offered), else 'model-detail' — mirrors the auto-skip
- * effect's own "was mode really a choice" check so backing out of confirm
- * always lands on whichever step the user actually saw. 'model-detail' (not
- * 'model-provider') is the fallback because it's the step immediately before
- * mode in the current chain — going back further would skip past the user's
- * already-drilled-in model list.
+ * shown (both modes offered), else 'model' — mirrors the auto-skip effect's
+ * own "was mode really a choice" check so backing out of confirm always
+ * lands on whichever step the user actually saw. 'model' is the fallback
+ * because it's the step immediately before mode in the current chain (Step
+ * 1 is now a single accordion screen, not a provider/detail pair — see
+ * wizardTypes.ts's STEP MODEL section — so there is no drilled-in sub-screen
+ * to preserve here any more; landing back on 'model' also naturally keeps
+ * the accordion in whatever expand state the user left it in, since
+ * `expandedProviderId` isn't reset by this transition).
  */
-function confirmEscapeTarget(state: WizardState): 'mode' | 'model-detail' {
+function confirmEscapeTarget(state: WizardState): 'mode' | 'model' {
   return state.offeredModes.kind === 'ready' && modeStepNeeded(state.offeredModes.value)
     ? 'mode'
-    : 'model-detail'
+    : STEP_MODEL
 }
 
 export function NewWorkspaceWizard({
   project,
   width,
+  availableRows,
   palette,
   onDone
 }: NewWorkspaceWizardProps): React.JSX.Element {
@@ -201,9 +215,9 @@ export function NewWorkspaceWizard({
   // jump straight to 'confirm' if the project doesn't offer a real choice.
   // Lives in an effect (not inline in the key handler) because it must also
   // fire if offeredModes finishes loading WHILE the user is already sitting
-  // on the model-detail step and then presses enter — the transition into
-  // 'mode' can happen before or after the data resolves, and either ordering
-  // must reach the same outcome.
+  // on the model accordion and then presses enter on a model — the
+  // transition into 'mode' can happen before or after the data resolves,
+  // and either ordering must reach the same outcome.
   useEffect(() => {
     if (state.step !== 'mode') return
     if (state.offeredModes.kind === 'loading') return
@@ -222,7 +236,7 @@ export function NewWorkspaceWizard({
   }
 
   useInput((input, key) => {
-    if (state.step === STEP_MODEL_PROVIDER || state.step === 'model-detail') {
+    if (state.step === STEP_MODEL) {
       // Cancel path only — the model step can never CREATE anything, so it
       // always reports "no workspace" rather than forwarding onDone's
       // create-id argument (which handleModelStepKey has no way to supply).
@@ -246,7 +260,7 @@ export function NewWorkspaceWizard({
 
   return (
     <Box flexDirection="column" flexGrow={1}>
-      <WizardBody state={state} width={width} palette={palette} />
+      <WizardBody state={state} width={width} availableRows={availableRows} palette={palette} />
     </Box>
   )
 }

@@ -1,13 +1,14 @@
 // ---------------------------------------------------------------------------
 // scripts/verify-tui-wizard.ts
 //
-// Assertion harness for the PURE width-computation module backing the
-// new-workspace wizard (packages/orpheus-cli/src/tui/wizardLayout.ts) —
+// Assertion harness for the PURE width-computation + accordion-flattening
+// modules backing the new-workspace wizard
+// (packages/orpheus-cli/src/tui/wizardLayout.ts, wizardStepMachine.ts) —
 // mirrors scripts/verify-tui-layout.ts's/verify-tui-blocks.ts's own
-// no-Ink/no-TTY/no-socket constraint. wizardLayout.ts imports nothing from
-// react/ink, so this exercises exactly the same functions
-// NewWorkspaceWizard.tsx and its step components (ListStep/ConfirmStep)
-// consume, with no component mounted and no terminal involved.
+// no-Ink/no-TTY/no-socket constraint. Neither module imports react/ink, so
+// this exercises exactly the same functions NewWorkspaceWizard.tsx and its
+// step components (ListStep/ConfirmStep/WizardScreens) consume, with no
+// component mounted and no terminal involved.
 //
 // WHY THIS SCRIPT EXISTS AT ALL (see wizardLayout.ts's own file header):
 // the wizard is a phone-first, full-screen flow whose entire reason to exist
@@ -32,6 +33,32 @@
 //      suffix stops fitting at 38 columns.
 //   3. buildSummaryLine: truncates a "label: value" confirm-screen line to
 //      the given content width, at 38 columns and at 59/60.
+//   4. buildCreateArgs: focus:false always sent, name always generated and
+//      project-scoped.
+//   5. buildModelAccordionRows (Step 1's single-screen accordion, replacing
+//      the old two-screen provider/model-detail split): N providers
+//      collapsed -> exactly N rows; expanding one provider adds exactly its
+//      own model count, interleaved directly after its header row; only the
+//      passed provider's models ever appear (never two providers' models at
+//      once — the accordion has no representable "two expanded" state).
+//      Exercised against the LIVE 4-provider/45-model shape (Claude 10,
+//      Codex 10, Grok 13, Antigravity 12) reported from the running app,
+//      not a toy fixture — that's the dataset that actually overflows a
+//      phone viewport once one provider expands.
+//   6. Cursor repositioning on expand/collapse (handleModelStepKey /
+//      handleModelStepEnter): toggling a provider whose header shifted
+//      position (because a DIFFERENT provider above it just collapsed as a
+//      side effect) keeps the cursor on the just-toggled provider's row —
+//      regression coverage for a real bug caught while building this
+//      harness (a stale numeric cursor landed on the wrong row after the
+//      list reflowed).
+//   7. windowListRows (the accordion's viewport windowing — REQUIRED
+//      because ListStep.tsx has no windowing of its own otherwise): the
+//      highlighted row stays inside the returned window at the top, middle,
+//      and bottom of a 17-row expanded accordion, swept across every cursor
+//      position; the window never exceeds the available-rows budget; a list
+//      that already fits passes through unwindowed. Checked at 38 columns'
+//      row math and a ~12-row phone-viewport budget, per the task brief.
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert'
@@ -40,12 +67,24 @@ import {
   buildListRowText,
   buildSummaryLine,
   buildClosePromptLine,
+  windowListRows,
   CLOSE_PROMPT_LITERAL_COLUMNS,
   WIZARD_GUTTER_COLUMNS,
   WIZARD_PAD_RIGHT
 } from '../packages/orpheus-cli/src/tui/wizardLayout.ts'
 import { CARD_NARROW_MAX } from '../packages/orpheus-cli/src/tui/cardBreakpoints.ts'
-import { buildCreateArgs } from '../packages/orpheus-cli/src/tui/wizardStepMachine.ts'
+import {
+  buildCreateArgs,
+  buildModelAccordionRows,
+  handleModelStepKey,
+  initialWizardState
+} from '../packages/orpheus-cli/src/tui/wizardStepMachine.ts'
+import type {
+  ProviderGroup,
+  SelectableModel,
+  WizardState
+} from '../packages/orpheus-cli/src/tui/wizardTypes.ts'
+import type { Key } from 'ink'
 
 // Phone-portrait target column count (Termius on an iPhone in portrait,
 // per the task brief). Named so every assertion below reads as "at phone
@@ -321,10 +360,328 @@ function testBuildCreateArgs(): void {
   )
 }
 
+/**
+ * buildModelAccordionRows — Step 1's accordion flattening (see
+ * wizardStepMachine.ts's own doc comment). Built against the LIVE provider/
+ * model shape reported from the running app at the time this harness was
+ * written (4 providers: Claude 10, Codex 10, Grok 13, Antigravity 12 models —
+ * 45 models total) rather than a toy 2-provider/2-model fixture, because the
+ * whole reason this function (and the windowing below) exists is that this
+ * real dataset is what makes an unwindowed accordion overflow a phone
+ * viewport — a small fixture wouldn't exercise the case that matters.
+ */
+function buildLiveProviderGroups(): ProviderGroup[] {
+  const counts: Record<string, number> = { claude: 10, codex: 10, xai: 13, antigravity: 12 }
+  const labels: Record<string, string> = {
+    claude: 'Claude',
+    codex: 'Codex (OpenAI)',
+    xai: 'Grok (xAI)',
+    antigravity: 'Antigravity'
+  }
+  return Object.entries(counts).map(([providerId, count]) => {
+    const models: SelectableModel[] = Array.from({ length: count }, (_, i) => ({
+      id: `${providerId}-model-${i}`,
+      label: `${providerId} model ${i}`,
+      providerId,
+      providerLabel: labels[providerId] ?? providerId,
+      isClaude: providerId === 'claude',
+      available: true,
+      contextWindow: null,
+      effortLevels: null,
+      provisional: false
+    }))
+    return { providerId, providerLabel: labels[providerId] ?? providerId, models }
+  })
+}
+
+function testBuildModelAccordionRows(): void {
+  const groups = buildLiveProviderGroups()
+  const providerCount = groups.length
+  assert.equal(providerCount, 4, 'sanity: live fixture has 4 providers')
+
+  // Every provider collapsed (expandedProviderId: null) -> exactly one row
+  // per provider, nothing else. This is the "N providers collapsed -> N
+  // rows" case the task brief calls out explicitly.
+  const collapsed = buildModelAccordionRows(groups, null)
+  assert.equal(collapsed.length, providerCount, 'all collapsed: exactly one row per provider')
+  assert.ok(
+    collapsed.every((row) => row.kind === 'provider'),
+    'all collapsed: every row is a provider header, no model rows leak in'
+  )
+  assert.ok(
+    collapsed.every((row) => row.kind === 'provider' && !row.expanded),
+    'all collapsed: every provider row reports expanded:false'
+  )
+
+  // Expanding the LARGEST group (Grok/xai, 13 models) -> N provider rows +
+  // exactly that provider's model count, interleaved directly after its own
+  // header row (not appended at the end, not interleaved with another
+  // provider's rows).
+  const grok = groups.find((g) => g.providerId === 'xai')
+  assert.ok(grok != null, 'sanity: xai group exists in the fixture')
+  const expanded = buildModelAccordionRows(groups, 'xai')
+  assert.equal(
+    expanded.length,
+    providerCount + grok!.models.length,
+    "one expanded: row count is N providers + that provider's own model count (4 + 13 = 17)"
+  )
+  const grokHeaderIndex = expanded.findIndex(
+    (row) => row.kind === 'provider' && row.group.providerId === 'xai'
+  )
+  assert.ok(grokHeaderIndex >= 0, 'expanded provider still has its own header row')
+  assert.ok(
+    expanded[grokHeaderIndex]!.kind === 'provider' &&
+      (expanded[grokHeaderIndex] as { expanded: boolean }).expanded,
+    "the expanded provider's own row reports expanded:true"
+  )
+  for (let i = 0; i < grok!.models.length; i++) {
+    const row = expanded[grokHeaderIndex + 1 + i]
+    assert.ok(
+      row != null && row.kind === 'model' && row.providerId === 'xai',
+      `model row ${i} is interleaved immediately after its provider's header row, not appended elsewhere`
+    )
+  }
+  // Every OTHER provider stays a single collapsed row — expanding one never
+  // implicitly expands or removes any other.
+  const otherProviderRows = expanded.filter(
+    (row) => row.kind === 'provider' && row.group.providerId !== 'xai'
+  )
+  assert.equal(
+    otherProviderRows.length,
+    providerCount - 1,
+    'every non-expanded provider still contributes exactly one row'
+  )
+  assert.ok(
+    otherProviderRows.every((row) => row.kind === 'provider' && !row.expanded),
+    'every non-expanded provider row reports expanded:false'
+  )
+
+  // ONLY ONE PROVIDER EXPANDABLE AT A TIME: buildModelAccordionRows takes a
+  // single expandedProviderId (not a set), so asking it to expand provider B
+  // while STILL passing provider B (simulating "the user already had A open,
+  // pressed enter on B, and the caller correctly replaced expandedProviderId
+  // rather than adding to it") must show B's models and NOT A's — there is
+  // no representable state with two providers expanded simultaneously; this
+  // assertion documents that by checking a second provider's rows never
+  // appear alongside the first's.
+  const claudeExpanded = buildModelAccordionRows(groups, 'claude')
+  const claudeModelRows = claudeExpanded.filter((row) => row.kind === 'model')
+  assert.equal(
+    claudeModelRows.length,
+    groups.find((g) => g.providerId === 'claude')!.models.length,
+    "expanding claude shows exactly claude's own model rows"
+  )
+  assert.ok(
+    claudeModelRows.every((row) => row.kind === 'model' && row.providerId === 'claude'),
+    "expanding claude never mixes in another provider's model rows (single expandedProviderId, not a set)"
+  )
+
+  console.log(
+    '✓ buildModelAccordionRows: N providers collapsed -> exactly N rows, expanding one provider adds ' +
+      'exactly its own model count interleaved after its header, every other provider stays one collapsed ' +
+      "row, and only the passed provider's models ever appear (never two providers' models at once)"
+  )
+}
+
+/** Minimal ink Key stub — handleModelStepKey only reads escape/downArrow/
+ *  upArrow/return off it, so a full Key isn't needed; every other field is
+ *  irrelevant to the code under test. Kept file-local rather than exported
+ *  from anywhere real since this is purely a test fixture. */
+function keyStub(overrides: Partial<Key>): Key {
+  return {
+    upArrow: false,
+    downArrow: false,
+    leftArrow: false,
+    rightArrow: false,
+    pageDown: false,
+    pageUp: false,
+    return: false,
+    escape: false,
+    ctrl: false,
+    shift: false,
+    tab: false,
+    backspace: false,
+    delete: false,
+    meta: false,
+    ...overrides
+  }
+}
+
+/**
+ * CURSOR REPOSITIONING ON EXPAND/COLLAPSE — regression coverage for a real
+ * bug caught while building this harness (see wizardStepMachine.ts's own
+ * "CURSOR REPOSITIONING ON TOGGLE" doc comment on handleModelStepEnter for
+ * the full mechanism). Reproduction: expand provider A, move the cursor down
+ * onto provider B's header (now sitting one or more rows lower because A's
+ * models are interleaved above it), press enter to expand B (which
+ * implicitly collapses A). If the cursor is left at its old NUMERIC index,
+ * the list reflow (A's model rows disappearing) leaves the highlight sitting
+ * on the WRONG row — verified below by asserting the row actually under the
+ * cursor after the toggle is still a 'provider' row for the provider that
+ * was just toggled, never a model row that happened to shift into that slot.
+ */
+function testCursorRepositioningOnToggle(): void {
+  const groups = buildLiveProviderGroups() // claude(10), codex(10), xai(13), antigravity(12)
+  let state: WizardState = {
+    ...initialWizardState({ id: 'p1', name: 'orpheus', cwd: '/tmp/orpheus' }),
+    models: { kind: 'ready', value: groups }
+  }
+  const setState = (updater: (s: WizardState) => WizardState): void => {
+    state = updater(state)
+  }
+
+  // Expand 'claude' (cursor starts at 0, the claude header — enter expands it).
+  handleModelStepKey('', keyStub({ return: true }), state, setState, () => {})
+  assert.equal(state.expandedProviderId, 'claude', 'claude is now expanded')
+  assert.equal(state.cursor, 0, 'cursor stays on the just-toggled claude header (index 0)')
+
+  // Move the cursor down past all 10 of claude's models to land on codex's
+  // header: claude(0), 10 models(1-10), codex header(11).
+  for (let i = 0; i < 11; i++) {
+    handleModelStepKey('j', keyStub({ downArrow: false }), state, setState, () => {})
+  }
+  const rowsWithClaudeExpanded = buildModelAccordionRows(groups, 'claude')
+  assert.equal(state.cursor, 11, 'sanity: cursor walked down 11 rows via j')
+  assert.ok(
+    rowsWithClaudeExpanded[state.cursor]!.kind === 'provider' &&
+      (rowsWithClaudeExpanded[state.cursor] as { group: ProviderGroup }).group.providerId ===
+        'codex',
+    "sanity: cursor is sitting on codex's own header row before the toggle"
+  )
+
+  // Enter on codex's header: expands codex, implicitly collapses claude
+  // (removing claude's 10 model rows from ABOVE codex's position). Without
+  // the cursor-repositioning fix, cursor would stay at 11 — which, after
+  // claude's 10 rows disappear, points at a totally different row.
+  handleModelStepKey('', keyStub({ return: true }), state, setState, () => {})
+  assert.equal(
+    state.expandedProviderId,
+    'codex',
+    'codex is now expanded (claude implicitly collapsed)'
+  )
+  const rowsAfterToggle = buildModelAccordionRows(groups, 'codex')
+  const rowAtCursor = rowsAfterToggle[state.cursor]
+  assert.ok(
+    rowAtCursor != null && rowAtCursor.kind === 'provider',
+    'after the toggle, the cursor still lands on A provider header row (not a model row that shifted into its slot)'
+  )
+  assert.equal(
+    rowAtCursor!.kind === 'provider' ? rowAtCursor.group.providerId : null,
+    'codex',
+    'after the toggle, the cursor lands on THE SAME provider (codex) that was just toggled, not wherever the old numeric index now points'
+  )
+
+  console.log(
+    '✓ cursor repositioning on expand/collapse: toggling a provider whose header shifted position ' +
+      '(because a previously-expanded provider above it just collapsed) keeps the cursor ON the ' +
+      'just-toggled provider row, never left at a stale numeric index pointing at the wrong row'
+  )
+}
+
+/**
+ * windowListRows — the accordion's viewport windowing (see wizardLayout.ts's
+ * own "WHY THIS ISN'T blocks.ts's windowBlocks REUSED" section). Exercised
+ * against the SAME live 45-model fixture, expanded to its worst case (Grok,
+ * 13 models -> 17 total rows), at phone width's row budget (~12 rows, per
+ * the task brief) — the exact scenario that would silently push the
+ * highlighted row and hint line off-screen without this function.
+ */
+function testWindowListRows(): void {
+  const PHONE_ROWS = 12
+  const groups = buildLiveProviderGroups()
+  const rows = buildModelAccordionRows(groups, 'xai') // 17 rows, the worst case
+  assert.equal(rows.length, 17, 'sanity: expanded-Grok fixture is 17 rows')
+
+  // TOP: highlighting the very first row must keep it visible and never
+  // scroll the window past the start.
+  const atTop = windowListRows(rows, 0, PHONE_ROWS)
+  assert.ok(atTop.windowed, 'a 17-row list at a 12-row budget engages windowing')
+  assert.ok(
+    atTop.visibleHighlightedIndex >= 0 && atTop.visibleHighlightedIndex < atTop.visible.length,
+    'top: highlighted row is inside the returned window'
+  )
+  assert.equal(atTop.aboveCount, 0, 'top: nothing scrolled off above the very first row')
+  assert.ok(
+    atTop.visible.length <= PHONE_ROWS,
+    'top: visible window never exceeds the available-rows budget'
+  )
+
+  // MIDDLE: highlighting a row in the middle of the list.
+  const middleIndex = Math.floor(rows.length / 2)
+  const atMiddle = windowListRows(rows, middleIndex, PHONE_ROWS)
+  assert.ok(
+    atMiddle.visibleHighlightedIndex >= 0 &&
+      atMiddle.visibleHighlightedIndex < atMiddle.visible.length,
+    'middle: highlighted row is inside the returned window'
+  )
+  assert.equal(
+    atMiddle.visible[atMiddle.visibleHighlightedIndex],
+    rows[middleIndex],
+    'middle: the windowed highlighted row is actually the SAME row object the caller highlighted'
+  )
+  assert.ok(
+    atMiddle.visible.length <= PHONE_ROWS,
+    'middle: visible window never exceeds the available-rows budget'
+  )
+
+  // BOTTOM: highlighting the very last row must keep it visible and never
+  // report anything scrolled off below it.
+  const lastIndex = rows.length - 1
+  const atBottom = windowListRows(rows, lastIndex, PHONE_ROWS)
+  assert.ok(
+    atBottom.visibleHighlightedIndex >= 0 &&
+      atBottom.visibleHighlightedIndex < atBottom.visible.length,
+    'bottom: highlighted row is inside the returned window'
+  )
+  assert.equal(atBottom.belowCount, 0, 'bottom: nothing scrolled off below the very last row')
+  assert.ok(
+    atBottom.visible.length <= PHONE_ROWS,
+    'bottom: visible window never exceeds the available-rows budget'
+  )
+
+  // The window is NEVER allowed to exceed the availableRows budget at ANY
+  // cursor position — sweep every index, not just the three checkpoints
+  // above, since an off-by-one in the affordance-row accounting could slip
+  // through a coarser sweep.
+  for (let i = 0; i < rows.length; i++) {
+    const w = windowListRows(rows, i, PHONE_ROWS)
+    assert.ok(
+      w.visible.length <= PHONE_ROWS,
+      `cursor ${i}: window never exceeds the ${PHONE_ROWS}-row budget`
+    )
+    assert.ok(
+      w.visibleHighlightedIndex >= 0 && w.visibleHighlightedIndex < w.visible.length,
+      `cursor ${i}: highlighted row is always inside the returned window`
+    )
+  }
+
+  // Collapsed (4 rows) at the same 12-row budget comfortably fits -> no
+  // windowing engaged at all, matching layout.ts's own scrollWindowFor
+  // passthrough contract.
+  const collapsedRows = buildModelAccordionRows(groups, null)
+  const collapsedWindow = windowListRows(collapsedRows, 0, PHONE_ROWS)
+  assert.ok(!collapsedWindow.windowed, 'collapsed 4-row list at a 12-row budget needs no windowing')
+  assert.equal(
+    collapsedWindow.visible.length,
+    collapsedRows.length,
+    'collapsed list passes through unchanged when it fits'
+  )
+
+  console.log(
+    '✓ windowListRows: at 38 columns / ~12-row phone budget, the highlighted row stays inside the ' +
+      'returned window at the top, middle, and bottom of a 17-row expanded accordion, the window never ' +
+      'exceeds the available-rows budget at any cursor position, and a list that already fits passes ' +
+      'through unwindowed'
+  )
+}
+
 testListRowInnerWidth()
 testBuildListRowText()
 testBuildSummaryLine()
 testBuildClosePromptLine()
 testBuildCreateArgs()
+testBuildModelAccordionRows()
+testCursorRepositioningOnToggle()
+testWindowListRows()
 
 console.log('\nAll tui-wizard assertions passed.')

@@ -775,6 +775,7 @@ export function App({
         <NewWorkspaceWizard
           project={wizardProject}
           width={contentWidth}
+          availableRows={availableRows}
           palette={palette}
           onDone={(createdWorkspaceId) => {
             setWizardProject(null)

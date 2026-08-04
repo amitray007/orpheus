@@ -11,17 +11,25 @@
  * STEP MODEL
  * -----------------------------------------------------------------------
  * The wizard is a single piece of state, `WizardState | null` in App.tsx —
- * null means closed. `WizardState.step` is the step MACHINE: 'model-provider'
- * and 'model-detail' are two sub-screens of "Step 1" (a provider list
- * drilling into a model list), 'mode' is Step 2 (conditionally skipped — see
- * NewWorkspaceWizard.tsx's `modeStepNeeded`), and 'confirm' is Step 3. Every
- * other field (selectedModel, mode, projectId/cwd) persists across step
- * changes so `esc` going backward never loses what the user already chose —
- * see "esc on later steps goes back ONE step, preserving state" below.
+ * null means closed. `WizardState.step` is the step MACHINE: 'model' is
+ * Step 1 — ONE screen, an accordion list of providers where `enter` on a
+ * collapsed provider expands it inline (its models appear indented beneath
+ * it, every other provider stays visible but collapsed) and `enter` on a
+ * model selects it and advances. This used to be two screens
+ * ('model-provider' listing providers, 'model-detail' drilling into one) —
+ * merged into a single accordion screen because a drill-in/back-out cycle is
+ * two extra keypresses for a decision that fits on one screen once the list
+ * is windowed (see `expandedProviderId`/`cursor` below, and
+ * wizardLayout.ts's `windowListRows`). 'mode' is Step 2 (conditionally
+ * skipped — see NewWorkspaceWizard.tsx's `modeStepNeeded`), and 'confirm' is
+ * Step 3. Every other field (selectedModel, mode, projectId/cwd) persists
+ * across step changes so `esc` going backward never loses what the user
+ * already chose — see "esc on later steps goes back ONE step, preserving
+ * state" below.
  *
  * A NAME STEP EXISTED HERE AND WAS DELIBERATELY REMOVED — DO NOT RE-ADD IT
  * -----------------------------------------------------------------------
- * This wizard used to have a fourth step, 'name', between 'model-detail' and
+ * This wizard used to have a fourth step, 'name', between the model step and
  * 'mode' — a hand-rolled text input for the workspace name. It was removed
  * because the typed value was thrown away almost immediately:
  * `displayTitleFor()` in layout.ts prefers Claude's own terminal title
@@ -35,7 +43,7 @@
  * typed. See `buildCreateArgs` in wizardStepMachine.ts for that logic.
  */
 
-export type WizardStep = 'model-provider' | 'model-detail' | 'mode' | 'confirm'
+type WizardStep = 'model' | 'mode' | 'confirm'
 
 /**
  * Mirrors src/shared/types.ts's `SelectableModel` (see this file's header on
@@ -114,13 +122,24 @@ export interface WizardState {
   project: WizardProject
   models: AsyncSlot<ProviderGroup[]>
   offeredModes: AsyncSlot<OfferedModes>
-  /** Index into the provider-group list (model-provider step) or, once
-   *  drilled in, index into `models[providerIndex].models` (model-detail
-   *  step) — kept as two separate cursors rather than one shared index so
-   *  drilling in/backing out never has to remember-and-restore a stale
-   *  position in the OTHER list. */
-  providerIndex: number
-  modelIndex: number
+  /** Which provider's models are currently shown inline, or null when every
+   *  provider is collapsed. At most ONE provider is ever expanded at a time —
+   *  opening a second collapses the first (see wizardStepMachine.ts's
+   *  `handleModelStepKey`) — so the flattened row list can't grow unbounded
+   *  and the windowing budget (wizardLayout.ts's `windowListRows`) stays
+   *  predictable regardless of which provider the user opens. Keyed by
+   *  providerId (not an index) so it survives the models list re-resolving
+   *  (loading -> ready) without needing to be re-derived. */
+  expandedProviderId: string | null
+  /** Cursor into the FLATTENED accordion row list (every collapsed provider
+   *  is one row; the expanded provider's models are additional rows
+   *  interleaved after it) — see wizardStepMachine.ts's
+   *  `buildModelAccordionRows`. One shared index, not two, because the
+   *  provider and model rows now live in a single list the user scans
+   *  top-to-bottom with one cursor; expanding/collapsing a provider inserts
+   *  or removes rows AROUND the cursor rather than switching between two
+   *  separate lists. */
+  cursor: number
   selectedModel: SelectableModel | null
   modeIndex: number
   mode: WorkspaceMode | null
