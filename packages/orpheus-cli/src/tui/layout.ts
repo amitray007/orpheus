@@ -308,10 +308,10 @@ function buildForest(workspaces: TreeWorkspace[]): ForestNode[] {
 
 /** Narrows a DisplayRow to its `workspace` variant — used to count
  *  per-project surviving rows for the `project-header` variant's
- *  `visibleCount` field (see flattenTree below). App.tsx keeps its own
- *  copy of this same narrowing (`isWorkspaceRow`) scoped to its component
- *  tree; this one stays module-private to layout.ts since nothing outside
- *  this file needs it. */
+ *  `visibleCount` field (see flattenTree below). Module-private to
+ *  layout.ts since nothing outside this file needs it — App.tsx's own
+ *  row-kind narrowing is inlined directly into its `selectableRows` build
+ *  (a switch on `row.kind`), not a standalone copy of this helper. */
 function isWorkspaceDisplayRow(row: DisplayRow): row is Extract<DisplayRow, { kind: 'workspace' }> {
   return row.kind === 'workspace'
 }

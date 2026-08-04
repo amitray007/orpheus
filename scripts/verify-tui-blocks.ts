@@ -55,7 +55,8 @@ import {
   buildBlocks,
   windowBlocks,
   AFFORDANCE_ROWS_WHEN_WINDOWED,
-  type Block
+  type Block,
+  type SelectedBlockId
 } from '../packages/orpheus-cli/src/tui/blocks.ts'
 import {
   buildProjectGroupHeaderLine,
@@ -138,9 +139,20 @@ function rowsFor(f: TreeFrame, filter: 'active' | 'all' = 'all'): DisplayRow[] {
   return flattenTree(f, filter).rows
 }
 
+// SelectedBlockId constructors — mirrors App.tsx's own `selectableRowId()`
+// (tui/App.tsx), which windowBlocks() now expects instead of a bare
+// workspace-id string, so a selection can also rest on an empty project's
+// header (see blocks.ts's `SelectedBlockId` doc comment).
+function wsSel(workspaceId: string): SelectedBlockId {
+  return { kind: 'workspace', workspaceId }
+}
+function headerSel(projectId: string): SelectedBlockId {
+  return { kind: 'project-header', projectId }
+}
+
 // ---------------------------------------------------------------------------
 // 1. buildBlocks — header height (first vs. subsequent), first-card height
-//    reduction, empty-project suppression
+//    reduction, empty-group rendering
 // ---------------------------------------------------------------------------
 
 {
@@ -312,11 +324,16 @@ function rowsFor(f: TreeFrame, filter: 'active' | 'all' = 'all'): DisplayRow[] {
 }
 
 {
-  // Empty-project suppression: a project with zero workspaces, and a
-  // project whose only workspace is filtered out under view:active, both
-  // contribute NOTHING (not even a bare header) — AND a suppressed header
-  // must not count toward "a header was already rendered" for the NEXT
-  // surviving project's blankAbove decision.
+  // EMPTY-GROUP RENDERING (the bug fix): a project with zero workspaces, and
+  // a project whose only workspace is filtered out under view:active, both
+  // now still produce a HEADER block — an earlier revision of buildBlocks()
+  // suppressed it entirely, which meant a freshly `project.add`-ed project
+  // with no workspaces yet rendered NOTHING: invisible, unhighlightable, and
+  // therefore impossible to target with `n` (see blocks.ts's "EMPTY GROUPS
+  // RENDER THEIR HEADER" note for the full story). The header must still
+  // carry isEmpty=true, contribute ZERO card blocks, and — critically for
+  // blankAbove bookkeeping — still count as "a header was already rendered"
+  // for whichever header comes after it, since it now actually IS rendered.
   const f = frame(1, [
     project({ id: 'empty', name: 'empty-project', workspaces: [] }),
     project({
@@ -335,40 +352,86 @@ function rowsFor(f: TreeFrame, filter: 'active' | 'all' = 'all'): DisplayRow[] {
   const headersActive = headerBlocks(blocksActiveView)
   assert.deepEqual(
     headersActive.map((h) => h.projectId),
-    ['has-active'],
-    'under view:active, only the project with a surviving active workspace gets a header'
+    ['empty', 'all-idle', 'has-active'],
+    'under view:active, EVERY project gets a header, even ones with zero surviving workspace rows'
   )
-  assert.equal(
-    headersActive[0]!.blankAbove,
-    false,
-    'the ONLY surviving header, despite two projects ahead of it in the raw list, is still the FIRST rendered header -> no blank above'
+  assert.deepEqual(
+    headersActive.map((h) => h.isEmpty),
+    [true, true, false],
+    'isEmpty is true for both zero-workspace and all-filtered-out projects, false for the one with a surviving card'
+  )
+  assert.deepEqual(
+    headersActive.map((h) => h.blankAbove),
+    [false, true, true],
+    'blankAbove is a straight positional sequence now that nothing is suppressed: false only for the very first header in the list'
   )
   assert.equal(
     cardBlocks(blocksActiveView).length,
     1,
-    'only the one active workspace becomes a card under view:active'
+    'only the one active workspace becomes a card under view:active — the two empty headers contribute zero cards'
   )
 
   const blocksAllView = buildBlocks(rowsFor(f, 'all'), CARD_HEIGHT, SEPARATOR_ROWS)
   const headersAll = headerBlocks(blocksAllView)
   assert.deepEqual(
     headersAll.map((h) => h.projectId),
-    ['all-idle', 'has-active'],
-    'under view:all, the idle-only project now has a surviving row and gets a header; the truly empty project still does not'
+    ['empty', 'all-idle', 'has-active'],
+    'under view:all, every project still gets a header, including the genuinely empty one'
+  )
+  assert.deepEqual(
+    headersAll.map((h) => h.isEmpty),
+    [true, false, false],
+    'view:all: only the truly empty project (zero workspaces at all) is isEmpty — all-idle now has a surviving idle row'
   )
   assert.equal(
     headersAll[0]!.blankAbove,
     false,
-    'all-idle-project is the first SURVIVING header (empty-project contributed nothing) -> no blank above'
+    'empty-project is the FIRST header in the whole list -> no blank above'
   )
   assert.equal(
     headersAll[1]!.blankAbove,
     true,
-    'has-active-project is the second surviving header -> blank above'
+    'all-idle-project is the SECOND header -> blank above, because the empty header ahead of it now genuinely rendered and counts'
+  )
+  assert.equal(
+    headersAll[2]!.blankAbove,
+    true,
+    'has-active-project is the third header -> blank above'
   )
 
   console.log(
-    "✓ buildBlocks: empty-project suppression holds under both view:active and view:all, and a suppressed header never counts toward the next header's blankAbove"
+    "✓ buildBlocks: every project renders its header (isEmpty for those with zero surviving cards), and an empty header still counts toward the next header's blankAbove"
+  )
+}
+
+{
+  // A project whose header committed empty must not itself receive the
+  // first-card height reduction or otherwise leak card-shaped arithmetic —
+  // its OWN height is exactly headerHeight(blankAbove), nothing added for
+  // the placeholder text (ProjectGroupHeader.tsx repurposes the existing
+  // blank-below row rather than reserving a new one — see that file's
+  // header). Also: total block height for a solo empty project must equal
+  // just the header, with zero contribution from cards.
+  const f = frame(1, [project({ id: 'p1', name: 'solo-empty', workspaces: [] })])
+  const blocks = buildBlocks(rowsFor(f, 'all'), CARD_HEIGHT, SEPARATOR_ROWS)
+  assert.equal(blocks.length, 1, 'a solo empty project contributes exactly one block: its header')
+  const header = blocks[0]!
+  assert.equal(header.kind, 'project-header')
+  assert.ok(header.kind === 'project-header' && header.isEmpty)
+  assert.equal(
+    header.height,
+    headerRenderedRows(false),
+    'an empty header (first in the list) is exactly the ordinary first-header height — no extra rows for the placeholder text'
+  )
+  const totalHeight = blocks.reduce((s, b) => s + b.height, 0)
+  assert.equal(
+    totalHeight,
+    headerRenderedRows(false),
+    'a solo empty project group: total block height is JUST the header, zero card contribution'
+  )
+
+  console.log(
+    "✓ buildBlocks: an empty project's own header height carries no extra rows for its placeholder text, and contributes zero card height to the group total"
   )
 }
 
@@ -387,7 +450,7 @@ function manyWorkspaceBlocks(count: number): Block[] {
 
 {
   const blocks = manyWorkspaceBlocks(3)
-  const result = windowBlocks(blocks, 'w0', 100, 0)
+  const result = windowBlocks(blocks, wsSel('w0'), 100, 0)
   assert.equal(result.windowed, false, 'everything fits -> not windowed')
   assert.equal(result.visible.length, blocks.length)
   assert.equal(result.aboveCount, 0)
@@ -404,7 +467,7 @@ function manyWorkspaceBlocks(count: number): Block[] {
   const totalHeight = blocks.reduce((s, b) => s + b.height, 0)
   assert.ok(totalHeight > 13, 'fixture must exceed the availableRows budget to engage windowing')
 
-  const first = windowBlocks(blocks, 'w0', 13, 0)
+  const first = windowBlocks(blocks, wsSel('w0'), 13, 0)
   assert.equal(first.windowed, true)
   assert.equal(
     first.start,
@@ -416,7 +479,7 @@ function manyWorkspaceBlocks(count: number): Block[] {
   // the current window — must NOT recenter (this is the exact regression
   // caught live via tui-mcp's adjacent-selection diff, per blocks.ts's own
   // doc comment).
-  const second = windowBlocks(blocks, 'w1', 13, first.start)
+  const second = windowBlocks(blocks, wsSel('w1'), 13, first.start)
   assert.equal(
     second.start,
     first.start,
@@ -434,8 +497,8 @@ function manyWorkspaceBlocks(count: number): Block[] {
   // window must nudge forward just enough to reveal it, engaging the fixed
   // affordance budget.
   const budget = 13
-  const atTop = windowBlocks(blocks, 'w0', budget, 0)
-  const selectedLast = windowBlocks(blocks, 'w9', budget, atTop.start)
+  const atTop = windowBlocks(blocks, wsSel('w0'), budget, 0)
+  const selectedLast = windowBlocks(blocks, wsSel('w9'), budget, atTop.start)
   assert.ok(
     selectedLast.start > atTop.start,
     'selection past the visible window must nudge start forward'
@@ -452,7 +515,7 @@ function manyWorkspaceBlocks(count: number): Block[] {
 
   // Now walk back up to the FIRST workspace again — must nudge (or clamp)
   // back down to 0, not stay stuck scrolled down.
-  const backToTop = windowBlocks(blocks, 'w0', budget, selectedLast.start)
+  const backToTop = windowBlocks(blocks, wsSel('w0'), budget, selectedLast.start)
   assert.equal(
     backToTop.start,
     0,
@@ -471,15 +534,15 @@ function manyWorkspaceBlocks(count: number): Block[] {
   const blocks = manyWorkspaceBlocks(10)
   const budget = 13
   // Get to the bottom first.
-  const atTop = windowBlocks(blocks, 'w0', budget, 0)
-  const atBottom = windowBlocks(blocks, 'w9', budget, atTop.start)
+  const atTop = windowBlocks(blocks, wsSel('w0'), budget, 0)
+  const atBottom = windowBlocks(blocks, wsSel('w9'), budget, atTop.start)
   // Now select something in the middle that's already visible in the
   // bottom-anchored window — per the sticky-start contract this should NOT
   // move at all (already visible), which is itself evidence the clawback
   // isn't firing needlessly. Then force a case with real slack: select the
   // second-to-last workspace after being scrolled all the way to the end;
   // any slack should be reclaimed without losing the selection.
-  const nearBottomSelected = windowBlocks(blocks, 'w8', budget, atBottom.start)
+  const nearBottomSelected = windowBlocks(blocks, wsSel('w8'), budget, atBottom.start)
   const w8Visible = nearBottomSelected.visible.some(
     (b) => b.kind === 'card' && b.row.workspaceId === 'w8'
   )
@@ -500,14 +563,14 @@ function manyWorkspaceBlocks(count: number): Block[] {
   const blocks = manyWorkspaceBlocks(10)
   const budget = 13
   const contentBudget = budget - AFFORDANCE_ROWS_WHEN_WINDOWED
-  const atTop = windowBlocks(blocks, 'w0', budget, 0)
+  const atTop = windowBlocks(blocks, wsSel('w0'), budget, 0)
   const visibleHeightTop = atTop.visible.reduce((s, b) => s + b.height, 0)
   assert.ok(
     visibleHeightTop <= contentBudget,
     'visible content height must never exceed the fixed content budget once windowed'
   )
 
-  const atBottom = windowBlocks(blocks, 'w9', budget, atTop.start)
+  const atBottom = windowBlocks(blocks, wsSel('w9'), budget, atTop.start)
   const visibleHeightBottom = atBottom.visible.reduce((s, b) => s + b.height, 0)
   assert.ok(visibleHeightBottom <= contentBudget)
 
@@ -563,7 +626,7 @@ function selectedCardFullyVisible(window: ReturnType<typeof windowBlocks>, id: s
   )
 
   // TOP: select the very first workspace of the very first project.
-  const atTop = windowBlocks(blocks, 'p0-w0', budget, 0)
+  const atTop = windowBlocks(blocks, wsSel('p0-w0'), budget, 0)
   assert.equal(atTop.windowed, true)
   assert.equal(atTop.start, 0, 'selecting the first workspace overall pins the window at the top')
   assert.ok(
@@ -574,14 +637,14 @@ function selectedCardFullyVisible(window: ReturnType<typeof windowBlocks>, id: s
   // MIDDLE: select a workspace roughly in the middle of the flattened list —
   // the first workspace of the third project (p2-w0), itself a reduced-
   // height first-in-group card sitting under a blankAbove=true header.
-  const atMiddle = windowBlocks(blocks, 'p2-w0', budget, atTop.start)
+  const atMiddle = windowBlocks(blocks, wsSel('p2-w0'), budget, atTop.start)
   assert.ok(
     selectedCardFullyVisible(atMiddle, 'p2-w0'),
     'middle: selected first-in-group card of an interior project must be fully visible'
   )
 
   // BOTTOM: select the very last workspace of the very last project.
-  const atBottom = windowBlocks(blocks, 'p3-w2', budget, atMiddle.start)
+  const atBottom = windowBlocks(blocks, wsSel('p3-w2'), budget, atMiddle.start)
   assert.ok(
     selectedCardFullyVisible(atBottom, 'p3-w2'),
     'bottom: selected last card of the last group must be fully visible'
@@ -593,10 +656,101 @@ function selectedCardFullyVisible(window: ReturnType<typeof windowBlocks>, id: s
   )
 }
 
+// ---------------------------------------------------------------------------
+// EMPTY GROUPS INTERLEAVED AMONG POPULATED ONES — the actual shape the bug
+// fix has to survive: a mix of empty and non-empty projects in the SAME
+// list, windowed tightly enough that scrolling is engaged, with selection
+// exercised on BOTH an ordinary card AND an empty project's own header (the
+// new selection target — see blocks.ts's `SelectedBlockId`).
+// ---------------------------------------------------------------------------
+
+{
+  const f = frame(1, [
+    project({ id: 'e1', name: 'empty-one', workspaces: [] }),
+    project({
+      id: 'p1',
+      name: 'populated-one',
+      workspaces: [
+        ws({ id: 'p1-w0', name: 'p1-workspace-0' }),
+        ws({ id: 'p1-w1', name: 'p1-workspace-1' }),
+        ws({ id: 'p1-w2', name: 'p1-workspace-2' })
+      ]
+    }),
+    project({ id: 'e2', name: 'empty-two', workspaces: [] }),
+    project({
+      id: 'p2',
+      name: 'populated-two',
+      workspaces: [
+        ws({ id: 'p2-w0', name: 'p2-workspace-0' }),
+        ws({ id: 'p2-w1', name: 'p2-workspace-1' })
+      ]
+    }),
+    project({ id: 'e3', name: 'empty-three', workspaces: [] })
+  ])
+  const blocks = buildBlocks(rowsFor(f, 'all'), CARD_HEIGHT, SEPARATOR_ROWS)
+
+  // Sanity: every project's header is present (the bug fix), in list order,
+  // interleaved with the populated groups' cards.
+  const headers = headerBlocks(blocks)
+  assert.deepEqual(
+    headers.map((h) => h.projectId),
+    ['e1', 'p1', 'e2', 'p2', 'e3'],
+    'all five projects render a header, empty and populated interleaved in list order'
+  )
+  assert.deepEqual(
+    headers.map((h) => h.isEmpty),
+    [true, false, true, false, true],
+    'isEmpty tracks each project correctly through the interleaving'
+  )
+
+  const budget = 15
+  const totalHeight = blocks.reduce((s, b) => s + b.height, 0)
+  assert.ok(totalHeight > budget, 'fixture must exceed the budget to engage windowing')
+
+  // Select the empty header at the very TOP of the list.
+  const atE1 = windowBlocks(blocks, headerSel('e1'), budget, 0)
+  assert.equal(atE1.windowed, true)
+  assert.equal(atE1.start, 0, 'selecting the first block overall (an empty header) pins to the top')
+  assert.ok(
+    atE1.visible.some((b) => b.kind === 'project-header' && b.projectId === 'e1'),
+    'the selected empty header must itself be inside the visible slice'
+  )
+
+  // Walk selection down onto an ordinary card in the first populated group —
+  // must nudge the window forward and keep that card fully visible.
+  const atP1Card = windowBlocks(blocks, wsSel('p1-w2'), budget, atE1.start)
+  assert.ok(
+    selectedCardFullyVisible(atP1Card, 'p1-w2'),
+    'selecting an ordinary card past the empty header keeps it fully visible'
+  )
+
+  // Walk selection onto the SECOND empty group's header (e2), sitting
+  // between two populated groups — must remain reachable and fully visible,
+  // exactly like an ordinary card would be.
+  const atE2 = windowBlocks(blocks, headerSel('e2'), budget, atP1Card.start)
+  assert.ok(
+    atE2.visible.some((b) => b.kind === 'project-header' && b.projectId === 'e2'),
+    'an empty header sandwiched between two populated groups is reachable and fully visible when selected'
+  )
+
+  // Walk all the way down to the LAST project's header (e3, itself empty and
+  // the final block in the whole list) — nothing should be left below.
+  const atE3 = windowBlocks(blocks, headerSel('e3'), budget, atE2.start)
+  assert.ok(
+    atE3.visible.some((b) => b.kind === 'project-header' && b.projectId === 'e3'),
+    'the final block in the list (an empty header) is reachable by selection'
+  )
+  assert.equal(atE3.belowCount, 0, 'scrolled to the very last block -> nothing left below')
+
+  console.log(
+    '✓ windowBlocks: empty groups interleaved among populated ones stay individually selectable and fully visible while scrolling, at the top, middle, and bottom of the list'
+  )
+}
+
 {
   // Degenerate cases: zero availableRows, empty blocks list.
   const blocks = manyWorkspaceBlocks(3)
-  const zeroRoom = windowBlocks(blocks, 'w0', 0, 0)
+  const zeroRoom = windowBlocks(blocks, wsSel('w0'), 0, 0)
   assert.equal(zeroRoom.visible.length, 0)
   assert.equal(zeroRoom.windowed, true)
   assert.equal(zeroRoom.aboveCount, blocks.length)

@@ -14,7 +14,14 @@
  * TWO DELIBERATE BLANK ROWS, NEITHER THE SAME AS THE OTHER
  * -----------------------------------------------------------------------
  * 1. BELOW the name+rule line, ALWAYS: breathing room before the first card
- *    beneath it, so it isn't flush against the header.
+ *    beneath it, so it isn't flush against the header. When the group is
+ *    EMPTY (`isEmpty`, blocks.ts's `Block.isEmpty`), this row carries a
+ *    quiet "no workspaces" placeholder instead of staying blank — an empty
+ *    group has no card beneath it to breathe before, so the row is repointed
+ *    at making the emptiness read as deliberate content rather than a
+ *    rendering glitch (see blocks.ts's "EMPTY GROUPS RENDER THEIR HEADER"
+ *    note for why this project is visible here at all). Still exactly one
+ *    row either way — the height blocks.ts already budgeted doesn't change.
  * 2. ABOVE the name+rule line, ONLY when `blankAbove` is true (every
  *    project group after the first in the whole list): breathing room
  *    separating this group from the PREVIOUS group's last card, so
@@ -38,15 +45,32 @@
  * never recompute" discipline (mirrors how card `separatorRows` is derived
  * from `block.height`) for why the two can never desync.
  *
- * NO GUTTER COLUMN on this row — unlike a WorkspaceCard, a project header is
- * never itself selectable, so it doesn't reserve the 1-col gutter slot
- * workspace cards do. It renders flush left (after the shared indent below).
+ * SELECTABLE ONLY WHEN EMPTY — a project header with workspaces beneath it
+ * is still never itself selectable (the cards are); but an EMPTY group has
+ * no card to select instead, so App.tsx's selection model lets the caret
+ * land on the header itself for exactly that case (see App.tsx's
+ * `selectableRows`) — otherwise an empty project could never be highlighted,
+ * and `n` (new workspace, which infers its project from the highlighted
+ * row) would have no way to target it. `selected` reuses the same rail +
+ * background-tint language WorkspaceCard uses for its own selection, so a
+ * highlighted empty header reads as "the same kind of selected thing", not
+ * a different affordance the user has to learn. Reserves the 1-col gutter
+ * slot (CARD_GUTTER_WIDTH + CARD_PAD_GUTTER) unconditionally — same discipline
+ * as WorkspaceCard's rail: the slot exists whether or not this particular
+ * header is selectable, so selecting it can never shift the header text by a
+ * column relative to a sibling header that isn't selected right now.
  */
 
 import * as React from 'react'
 import { Box, Text } from 'ink'
 import type { Palette } from '../theme.js'
-import { CARD_GUTTER_WIDTH, CARD_PAD_GUTTER, CARD_PAD_RIGHT, NAV_DIVIDER_CHAR } from '../theme.js'
+import {
+  CARD_GUTTER_WIDTH,
+  CARD_PAD_GUTTER,
+  CARD_PAD_RIGHT,
+  NAV_DIVIDER_CHAR,
+  cardGutterFor
+} from '../theme.js'
 import { buildProjectGroupHeaderLine, HEADER_GAP_COLUMNS } from '../projectHeaderLayout.js'
 
 export interface ProjectGroupHeaderProps {
@@ -63,6 +87,15 @@ export interface ProjectGroupHeaderProps {
    *  this file's header. Comes straight from the block's own `blankAbove`
    *  (blocks.ts), never recomputed here. */
   blankAbove: boolean
+  /** True when this project has zero surviving workspace rows — comes
+   *  straight from the block's own `isEmpty` (blocks.ts), never recomputed
+   *  here. Swaps the blank-below breather for a "no workspaces" placeholder
+   *  — see this file's header. */
+  isEmpty: boolean
+  /** True when App.tsx's selection currently rests on THIS header (only
+   *  possible when `isEmpty` — see this file's header's "SELECTABLE ONLY
+   *  WHEN EMPTY" note). Drives the same rail + tint WorkspaceCard uses. */
+  selected: boolean
   palette: Palette
 }
 
@@ -75,6 +108,8 @@ function ProjectGroupHeaderImpl({
   visibleCount,
   width,
   blankAbove,
+  isEmpty,
+  selected,
   palette
 }: ProjectGroupHeaderProps): React.JSX.Element {
   // The name+rule+count line's own budget is the caller's width minus the
@@ -84,6 +119,8 @@ function ProjectGroupHeaderImpl({
   const lineWidth = Math.max(0, width - HEADER_INDENT - CARD_PAD_RIGHT)
   const parts = buildProjectGroupHeaderLine(name, visibleCount, lineWidth, NAV_DIVIDER_CHAR)
   const gap = ' '.repeat(HEADER_GAP_COLUMNS)
+  const bg = selected ? palette.selectedBg : undefined
+  const gutter = cardGutterFor(selected)
 
   return (
     <Box flexDirection="column" flexShrink={0}>
@@ -93,29 +130,48 @@ function ProjectGroupHeaderImpl({
           WorkspaceCard's separator row is a whole extra <Text> line rather
           than a variable top margin. */}
       {blankAbove ? <Text> </Text> : null}
-      {/* Indented by the card's rail + spacer so the project name starts in
-          the same column as the card text beneath it, rather than hanging one
-          rail-width to the left of every workspace it groups. */}
-      <Box paddingLeft={HEADER_INDENT} flexShrink={0}>
+      {/* Rail + name line, row-aligned exactly like WorkspaceCard's own rail:
+          a fixed-width gutter Box (never a padded-string glyph — see
+          theme.ts's CARD_GUTTER_SELECTED note on why an Ambiguous-width rune
+          must live in a clipping Box) followed by the indented name+rule+
+          count text. Unselected headers render an empty gutter, so a
+          non-empty project's header — which is never itself selectable —
+          looks identical to how it always has. */}
+      <Box flexDirection="row" flexShrink={0}>
+        <Box width={CARD_GUTTER_WIDTH} flexShrink={0}>
+          <Text color={palette.accent} backgroundColor={bg}>
+            {gutter}
+          </Text>
+        </Box>
+        <Box width={CARD_PAD_GUTTER} flexShrink={0}>
+          <Text backgroundColor={bg}> </Text>
+        </Box>
         <Text wrap="truncate-end">
-          <Text bold color={palette.groupLabel}>
+          <Text bold color={palette.groupLabel} backgroundColor={bg}>
             {parts.name}
           </Text>
           {parts.rule.length > 0 ? (
-            <Text color={palette.border}>
+            <Text color={palette.border} backgroundColor={bg}>
               {gap}
               {parts.rule}
             </Text>
           ) : null}
-          <Text color={palette.secondary}>
+          <Text color={palette.secondary} backgroundColor={bg}>
             {parts.countGap ? gap : ''}
             {parts.count}
           </Text>
         </Text>
       </Box>
-      {/* Blank breather below the header, before the first card — owned by
-          this block, not by the first card (see this file's header). */}
-      <Text> </Text>
+      {/* Breather below the header, before the first card — owned by this
+          block, not by the first card (see this file's header). An empty
+          group has no first card, so this row instead carries a quiet
+          placeholder confirming the project really does have zero
+          workspaces right now (rather than reading as a blank glitch). */}
+      <Box paddingLeft={HEADER_INDENT} flexShrink={0}>
+        <Text color={palette.secondary} wrap="truncate-end">
+          {isEmpty ? 'no workspaces' : ' '}
+        </Text>
+      </Box>
     </Box>
   )
 }

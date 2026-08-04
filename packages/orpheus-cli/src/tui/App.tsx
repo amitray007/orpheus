@@ -65,7 +65,7 @@ import {
   type ProjectScope
 } from './layout.js'
 import { CARD_MEDIUM_MAX, resolveCardBreakpoint } from './cardBreakpoints.js'
-import { buildBlocks, windowBlocks, type Block } from './blocks.js'
+import { buildBlocks, windowBlocks, type Block, type SelectedBlockId } from './blocks.js'
 import { frameStore } from './frameStore.js'
 import { connectionStore } from './connectionStore.js'
 import { sendCommand } from '../socket-client.js'
@@ -171,9 +171,61 @@ const CLOSE_NOTICE_MS = 3000
 const AGE_TICK_MS = 1_000
 
 type WorkspaceDisplayRow = Extract<DisplayRow, { kind: 'workspace' }>
+type ProjectHeaderDisplayRow = Extract<DisplayRow, { kind: 'project-header' }>
 
-function isWorkspaceRow(row: DisplayRow): row is WorkspaceDisplayRow {
+/** Shared discriminant literal for the 'project-header' row/block/selection
+ *  kind — hoisted so the several runtime comparisons against it below read
+ *  as one shared constant rather than sonarjs/no-duplicate-string's 5+
+ *  independently-typed repeats of the same string. `as const` preserves the
+ *  literal type so it still narrows a discriminated union exactly like the
+ *  inline string it replaces. */
+const PROJECT_HEADER_KIND = 'project-header' as const
+
+/**
+ * SELECTABLE ROWS — the caret's actual traversal order.
+ *
+ * Historically this was just `workspaceRows` (every 'workspace' DisplayRow,
+ * in flattened order) — a project header was never itself a stop, since
+ * every project always had at least one card under it to land on instead.
+ * That stopped holding once blocks.ts started rendering EMPTY groups (see
+ * its "EMPTY GROUPS RENDER THEIR HEADER" note): a project with zero
+ * surviving workspace rows contributes a header and nothing else, so if the
+ * caret still only ever visited 'workspace' rows, that project's header
+ * would render but could never be highlighted — reachable to the eye, not
+ * to `j`/`k`, and therefore still unusable as `n`'s inferred target.
+ *
+ * Fixed by widening the traversal to include project-header rows, but ONLY
+ * when that header's own project has zero visible workspace rows —
+ * `visibleCount === 0` mirrors blocks.ts's own `isEmpty` (both are derived
+ * from the identical flattenTree() per-project count, so they can never
+ * disagree about which projects qualify). A non-empty project's header is
+ * still never a stop; its cards are. This keeps the existing j/k rhythm over
+ * a normal, fully-populated list completely unchanged — the header only
+ * enters the traversal for the specific projects that would otherwise have
+ * no selectable row at all.
+ */
+type SelectableRow =
+  | { kind: 'workspace'; row: WorkspaceDisplayRow }
+  | { kind: 'project-header'; row: ProjectHeaderDisplayRow }
+
+function selectableRowId(row: SelectableRow): SelectedBlockId {
   return row.kind === 'workspace'
+    ? { kind: 'workspace', workspaceId: row.row.workspaceId }
+    : { kind: PROJECT_HEADER_KIND, projectId: row.row.projectId }
+}
+
+/** Structural equality for two `SelectedBlockId`s — used to find which
+ *  `selectableRows` entry (if any) a raw selection currently resolves to.
+ *  Plain `===` doesn't work since these are freshly-constructed objects, not
+ *  interned values. */
+function sameSelection(a: SelectedBlockId, b: SelectedBlockId): boolean {
+  if (a == null || b == null) return a === b
+  if (a.kind !== b.kind) return false
+  return a.kind === 'workspace' && b.kind === 'workspace'
+    ? a.workspaceId === b.workspaceId
+    : a.kind === PROJECT_HEADER_KIND && b.kind === PROJECT_HEADER_KIND
+      ? a.projectId === b.projectId
+      : false
 }
 
 /** Reserved rows above the scrolling body: TitleBar is 1 row at narrow, 2 at
@@ -205,12 +257,15 @@ function handleViewKey(input: string, setView: React.Dispatch<React.SetStateActi
  * open/close branch was added inline.
  *
  * Project is inferred from the currently-highlighted row — the task spec is
- * explicit that there's no project-picker step. When the list is empty (a
- * brand-new project with no workspaces yet, or the active filter hiding
- * everything), there's no row to infer from; rather than guess or crash,
- * `n` is simply a no-op here. This does leave a genuinely-empty project
- * unable to get its first workspace via the wizard — an acceptable narrow
- * gap given the spec's constraint, not a design goal.
+ * explicit that there's no project-picker step. `selectedProject` (App.tsx's
+ * memo) resolves this for BOTH a highlighted workspace card AND a
+ * highlighted empty-project header — see blocks.ts's "EMPTY GROUPS RENDER
+ * THEIR HEADER" note: a project with zero workspaces (freshly added via
+ * `project.add`, or every one filtered out under view:active) is now always
+ * reachable as a selectable header row, so this is no longer the dead end
+ * an earlier revision of this comment described. `selectedProject == null`
+ * only happens when the WHOLE list is empty (zero registered projects) —
+ * there is genuinely nothing to infer a project from, so `n` stays a no-op.
  */
 function handleNewWorkspaceKey(
   selectedProject: TreeProject | null,
@@ -297,7 +352,7 @@ function handleCloseArchiveKey(
 interface PickerBodyProps {
   windowedBlocks: ReturnType<typeof windowBlocks>
   cardAreaWidth: number
-  selectedWorkspaceId: string | null
+  selectedBlockId: SelectedBlockId
   selectedRow: WorkspaceDisplayRow | null
   selectedProjectName: string | null
   workspaceById: Map<string, TreeWorkspace>
@@ -314,7 +369,7 @@ interface PickerBodyProps {
 function PickerBody({
   windowedBlocks,
   cardAreaWidth,
-  selectedWorkspaceId,
+  selectedBlockId,
   selectedRow,
   selectedProjectName,
   workspaceById,
@@ -330,16 +385,19 @@ function PickerBody({
         ) : null}
         <Box flexDirection="column">
           {windowedBlocks.visible.map((block, blockIndex) => {
-            if (block.kind === 'project-header') {
+            if (block.kind === PROJECT_HEADER_KIND) {
               // Raw (untruncated) name — ProjectGroupHeader now owns its own
               // truncation via projectHeaderLayout.ts's
               // buildProjectGroupHeaderLine, which needs the FULL name to
               // decide how much of it fits alongside the rule and count; a
               // pre-truncated name here would double-truncate and could
-              // leave the rule with budget it shouldn't have. `blankAbove`
-              // is read straight off the block (never recomputed) so the
-              // rendered row count can't drift from `block.height` — same
-              // discipline as `separatorRows` below.
+              // leave the rule with budget it shouldn't have. `blankAbove`/
+              // `isEmpty` are read straight off the block (never recomputed)
+              // so the rendered row count can't drift from `block.height` —
+              // same discipline as `separatorRows` below. `selected` matches
+              // only when the header itself is App.tsx's current selection
+              // (only possible for an empty group — see
+              // ProjectGroupHeader.tsx's "SELECTABLE ONLY WHEN EMPTY" note).
               return (
                 <ProjectGroupHeader
                   key={`project-${block.projectId}`}
@@ -347,6 +405,11 @@ function PickerBody({
                   visibleCount={block.visibleCount}
                   width={cardAreaWidth}
                   blankAbove={block.blankAbove}
+                  isEmpty={block.isEmpty}
+                  selected={
+                    selectedBlockId?.kind === PROJECT_HEADER_KIND &&
+                    selectedBlockId.projectId === block.projectId
+                  }
                   palette={palette}
                 />
               )
@@ -369,7 +432,10 @@ function PickerBody({
                 effort={workspace?.effort ?? null}
                 providerId={workspace?.providerId ?? null}
                 gitBranch={workspace?.gitBranch ?? null}
-                selected={block.row.workspaceId === selectedWorkspaceId}
+                selected={
+                  selectedBlockId?.kind === 'workspace' &&
+                  selectedBlockId.workspaceId === block.row.workspaceId
+                }
                 separatorRows={separatorRows}
                 // A card with a separator row draws a rule in it unless the
                 // thing directly above it in the VISIBLE window is a project
@@ -381,7 +447,7 @@ function PickerBody({
                 showDivider={
                   separatorRows > 0 &&
                   blockIndex > 0 &&
-                  windowedBlocks.visible[blockIndex - 1]?.kind !== 'project-header'
+                  windowedBlocks.visible[blockIndex - 1]?.kind !== PROJECT_HEADER_KIND
                 }
                 width={cardAreaWidth}
                 palette={palette}
@@ -441,19 +507,30 @@ export function App({
   // resuming the picker after a detach (see AppProps' doc comment); the `v`
   // key (handleViewKey below) still cycles active<->all same as always.
   const [view, setView] = useState<Filter>(initialView ?? 'all')
-  // Selection is tracked by WORKSPACE ID, not raw row index — see tui-otui/
-  // App.tsx's identical note: a plain numeric index clamped into bounds
-  // across a materially different tree (reconnect, workspaces created/
-  // archived/reordered while disconnected) can silently point at a
-  // DIFFERENT workspace than the one actually highlighted. `null` means "no
-  // explicit selection yet"; resolved against the CURRENT frame into
-  // `selectedWorkspaceId` below (a derived value, not this raw state —
-  // everything else in this component reads THAT). `initialSelectedWorkspaceId`
-  // (entry.ts's memory of the last resolved selection from the PREVIOUS
-  // picker mount) flows in exactly like the `null` default it replaces — it
-  // gets the same stale-id fallback treatment below, no special-casing needed.
-  const [selectedWorkspaceIdRaw, setSelectedWorkspaceIdRaw] = useState<string | null>(
-    initialSelectedWorkspaceId ?? null
+  // Selection is tracked by STABLE ID (workspace id, or — new, for the
+  // empty-group fix — a project-header marker), not raw row index — see
+  // tui-otui/App.tsx's identical note on the workspace-id half of this: a
+  // plain numeric index clamped into bounds across a materially different
+  // tree (reconnect, workspaces created/archived/reordered while
+  // disconnected) can silently point at a DIFFERENT row than the one
+  // actually highlighted. `SelectedBlockId` (blocks.ts) is reused here
+  // rather than inventing a parallel type, since this state IS a
+  // `SelectedBlockId` in every way that matters — it's threaded straight
+  // into `windowBlocks()` below with no translation. `null` means "no
+  // explicit selection yet"; resolved against the CURRENT `selectableRows`
+  // into `selectedRowIndex`/`selectedEntry` below (derived values, not this
+  // raw state — everything else in this component reads THOSE, never this
+  // directly). `initialSelectedWorkspaceId` (entry.ts's memory of the last
+  // RESOLVED workspace selection from the PREVIOUS picker mount — see
+  // AppProps' doc comment: that external contract only ever remembers a
+  // workspace, never a header) flows in as the `{ kind: 'workspace', ... }`
+  // variant, exactly like the `null` default it replaces when absent — it
+  // gets the same stale-id fallback treatment below, no special-casing
+  // needed.
+  const [selectedWorkspaceIdRaw, setSelectedWorkspaceIdRaw] = useState<SelectedBlockId>(
+    initialSelectedWorkspaceId != null
+      ? { kind: 'workspace', workspaceId: initialSelectedWorkspaceId }
+      : null
   )
   // Deliberately NOT persisted across picker mounts (no initial-value prop,
   // no place in onSelectionChange) — the user just detached from a
@@ -563,11 +640,29 @@ export function App({
     [frame, view, scope]
   )
 
-  // Idle workspaces are selectable and openable, exactly like every other
-  // workspace — opening one is how you wake it up. Under view:active, idle
-  // rows are already absent from flattened.rows entirely (existing
-  // isActiveStatus/filter behavior in layout.ts).
-  const workspaceRows = useMemo(() => flattened.rows.filter(isWorkspaceRow), [flattened])
+  // The caret's actual traversal order — see `SelectableRow`'s doc comment
+  // for the full history (this used to be a bare `flattened.rows.filter(
+  // isWorkspaceRow)`; idle workspaces are still selectable and openable,
+  // exactly like every other workspace status — opening one is how you wake
+  // it up, and under view:active idle rows are already absent from
+  // flattened.rows entirely, per layout.ts's own isActiveStatus/filter
+  // behavior). Built in ONE pass over `flattened.rows` so the two row kinds
+  // interleave in exactly the order they're rendered.
+  const selectableRows = useMemo((): SelectableRow[] => {
+    const out: SelectableRow[] = []
+    for (const row of flattened.rows) {
+      if (row.kind === 'workspace') {
+        out.push({ kind: 'workspace', row })
+      } else if (row.visibleCount === 0) {
+        // Empty project (see blocks.ts's `isEmpty`, derived from this same
+        // per-project visibleCount) — its header is the only row it
+        // contributes, so it's the only row a caret visiting this project
+        // can land on.
+        out.push({ kind: PROJECT_HEADER_KIND, row })
+      }
+    }
+    return out
+  }, [flattened])
 
   // Flat workspaceId -> TreeWorkspace lookup, built directly from the raw
   // frame (NOT from DisplayRow, which doesn't carry model/effort/gitBranch)
@@ -582,19 +677,26 @@ export function App({
   }, [frame])
 
   // Derived, not synced-via-effect: re-resolved from `selectedWorkspaceIdRaw`
-  // against the CURRENT `workspaceRows` every render (see tui-otui/App.tsx's
+  // against the CURRENT `selectableRows` every render (see tui-otui/App.tsx's
   // identical `selectedRowIndex` memo for the full rationale). Falls back to
   // index 0 when there's no selection yet OR the previously-selected id is
-  // no longer present in this frame.
+  // no longer present in this frame — e.g. the project it pointed at gained
+  // its first workspace and is no longer in `selectableRows` as a header, or
+  // the raw selection is a project-header for a project that isn't in scope
+  // at all right now (e.g. `--project` narrowing changed).
   const selectedRowIndex = useMemo(() => {
-    if (workspaceRows.length === 0) return 0
+    if (selectableRows.length === 0) return 0
     if (selectedWorkspaceIdRaw == null) return 0
-    const idx = workspaceRows.findIndex((r) => r.workspaceId === selectedWorkspaceIdRaw)
+    const idx = selectableRows.findIndex((r) =>
+      sameSelection(selectableRowId(r), selectedWorkspaceIdRaw)
+    )
     return idx >= 0 ? idx : 0
-  }, [workspaceRows, selectedWorkspaceIdRaw])
+  }, [selectableRows, selectedWorkspaceIdRaw])
 
-  const selectedRow = workspaceRows[selectedRowIndex] ?? null
+  const selectedEntry = selectableRows[selectedRowIndex] ?? null
+  const selectedRow = selectedEntry?.kind === 'workspace' ? selectedEntry.row : null
   const selectedWorkspaceId = selectedRow?.workspaceId ?? null
+  const selectedBlockId = selectedEntry != null ? selectableRowId(selectedEntry) : null
 
   // Report the RESOLVED view/selection back to entry.ts (whichever picker
   // mount is live right now) so the NEXT `runPickerOnce()` call — after the
@@ -604,6 +706,11 @@ export function App({
   // directly: `selectedWorkspaceId` has already gone through the stale-id
   // fallback above, so a raw id that no longer resolves to anything never
   // gets echoed back and re-persisted as if it were still valid.
+  // `onSelectionChange`'s contract is workspace-id-only (entry.ts / the
+  // tmux-detach round trip has no concept of "selection was on a header") —
+  // when the caret is resting on an empty project's header this correctly
+  // reports `null`, same as "no selection", rather than widening that
+  // external contract to a union it doesn't need.
   useEffect(() => {
     onSelectionChange?.(view, selectedWorkspaceId)
   }, [view, selectedWorkspaceId, onSelectionChange])
@@ -612,22 +719,30 @@ export function App({
   // new-workspace wizard (opened by `n`, see `wizardProject` state above) can
   // read `cwd` — TreeProject.cwd (types.ts) is exactly the `cwd` arg
   // workspace.create needs, and this is the one place App.tsx already
-  // resolves "which project owns the highlighted row". `selectedProjectName`
-  // is derived from this rather than kept as a separate memo, so the two can
+  // resolves "which project owns the highlighted row". Resolves for BOTH a
+  // highlighted workspace card AND a highlighted empty-project header — the
+  // whole point of widening `selectableRows` above — by reading `projectId`
+  // off whichever kind `selectedEntry` actually is. `selectedProjectName` is
+  // derived from this rather than kept as a separate memo, so the two can
   // never disagree about which project is selected.
   const selectedProject = useMemo((): TreeProject | null => {
-    if (selectedRow == null || frame == null) return null
-    return frame.projects.find((p) => p.id === selectedRow.projectId) ?? null
-  }, [selectedRow, frame])
+    if (selectedEntry == null || frame == null) return null
+    return frame.projects.find((p) => p.id === selectedEntry.row.projectId) ?? null
+  }, [selectedEntry, frame])
   const selectedProjectName = selectedProject?.name ?? null
 
   function moveSelection(delta: number): void {
-    const count = workspaceRows.length
+    const count = selectableRows.length
     if (count === 0) return
     let next = selectedRowIndex + delta
     if (next < 0) next = 0
     if (next >= count) next = count - 1
-    setSelectedWorkspaceIdRaw(workspaceRows[next]?.workspaceId ?? null)
+    const nextEntry = selectableRows[next]
+    // selectableRowId(), not a bare workspaceId-or-null: a header entry must
+    // persist as a `project-header` selection, not collapse to `null` (which
+    // means "no selection yet" and would make the very next render's
+    // selectedRowIndex memo fall back to index 0 instead of staying put).
+    setSelectedWorkspaceIdRaw(nextEntry != null ? selectableRowId(nextEntry) : null)
   }
 
   // Submit workspace.close — on success, close the overlay and arm the
@@ -804,7 +919,7 @@ export function App({
   // calling it again next render with the corrected `windowStart` converges
   // in the same tick.
   const [windowStart, setWindowStart] = useState(0)
-  const windowedBlocks = windowBlocks(blocks, selectedWorkspaceId, availableRows, windowStart)
+  const windowedBlocks = windowBlocks(blocks, selectedBlockId, availableRows, windowStart)
   if (windowedBlocks.start !== windowStart) {
     setWindowStart(windowedBlocks.start)
   }
@@ -876,7 +991,7 @@ export function App({
           filteredEmpty={filteredEmpty}
           windowedBlocks={windowedBlocks}
           cardAreaWidth={cardAreaWidth}
-          selectedWorkspaceId={selectedWorkspaceId}
+          selectedBlockId={selectedBlockId}
           selectedRow={selectedRow}
           selectedProjectName={selectedProjectName}
           workspaceById={workspaceById}
