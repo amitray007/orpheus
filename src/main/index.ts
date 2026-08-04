@@ -620,7 +620,39 @@ function performClose(id: string): WorkspaceRecord | undefined {
   // Capture the live terminal title BEFORE teardownWorkspaceResources clears it,
   // so the closed workspace keeps its name in the sidebar.
   const lastTitle = getTitle(id) ?? null
+  const ws = getWorkspace(id)
   destroyWorkspaceRuntime(id)
+
+  // TEAR DOWN THE TMUX SESSION TOO — destroyWorkspaceRuntime above only
+  // destroys the libghostty surface, which is a NO-OP for a tmux-hosted
+  // workspace (the desktop never mounted a native surface for one — see
+  // performArchive's own note on the same asymmetry). Without this, closing
+  // a workspace left its tmux session — and the `claude` inside it — running
+  // forever, detached from the app and surviving app restarts. Verified
+  // empirically: four workspaces marked closed_at in the dev DB still had
+  // live sessions and live shell pids days later. That also made
+  // workspace.close's declared 'process.terminate' effect (service.ts's
+  // CLOSE_EFFECTS) a lie for exactly the workspaces tmux hosts.
+  //
+  // Fire-and-forget rather than awaited so performClose stays SYNCHRONOUS:
+  // its type is part of CommandServerDeps (commandServer.ts) and both call
+  // sites here ignore the return, so going async would ripple for no gain.
+  // unhostWorkspace() is idempotent/best-effort by construction (tolerates
+  // no session, no tmux binary, an already-dead session) and never throws,
+  // so it cannot turn a successful close into a failure.
+  //
+  // REVERSIBILITY: close is still undoable via workspace.reopen — but the
+  // reopened workspace starts a FRESH claude rather than reattaching to the
+  // old one, since hostWorkspace() is idempotent (has-session check, then
+  // reuse or create) and will simply create a new session. Losing in-flight
+  // scrollback is the deliberate trade: a "closed" workspace quietly holding
+  // a live agent is worse than a clean restart.
+  if (ws != null) {
+    void unhostWorkspace({ workspaceId: id, workspaceName: ws.name }).catch((err: unknown) => {
+      console.warn('[performClose] tmux teardown failed for workspaceId=%s:', id, err)
+    })
+  }
+
   return closeWorkspace(id, lastTitle)
 }
 

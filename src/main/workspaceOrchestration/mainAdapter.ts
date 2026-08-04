@@ -159,7 +159,36 @@ function createStorePort(
     },
     close: (workspaceId, expectedRevision) => {
       if (!unchanged(workspaceId, expectedRevision)) return null
+      // Read the name BEFORE closing so the tmux session name can still be
+      // computed, then best-effort kill the session — exactly like the
+      // `remove` (archive) port below, and for the same reason: close's
+      // declared effects include 'process.terminate' (service.ts's
+      // CLOSE_EFFECTS), which was a lie for tmux-hosted workspaces. The
+      // desktop's surface teardown only destroys a libghostty surface, and a
+      // tmux-hosted workspace never had one, so nothing was stopping the
+      // `claude` inside the session. Verified empirically: workspaces marked
+      // closed_at in the dev DB still had live sessions and live shell pids
+      // days later.
+      //
+      // This is the SECOND close entry point — index.ts's performClose
+      // (used by the desktop IPC handler and the inactivity auto-close
+      // watchdog) gets the equivalent fix directly there, since it calls the
+      // legacy closeWorkspace() rather than this port. Both must guarantee
+      // teardown; neither routes through the other without a larger refactor
+      // than this fix's scope. Same split the archive paths already have.
+      const name = workspaceSnapshot(workspaceId)?.name
       closeWorkspace(workspaceId, takeLastTitle(workspaceId))
+      if (name != null) {
+        // Catch here for the same reason the remove port does: unhostWorkspace
+        // re-throws when the tmux binary itself is missing, and that must not
+        // surface as an unhandled rejection out of an already-succeeded close.
+        void unhostWorkspace({ workspaceId, workspaceName: name }).catch((err: unknown) => {
+          console.warn(
+            `[workspaceOrchestration] tmux teardown failed on close for workspaceId=${workspaceId}:`,
+            err
+          )
+        })
+      }
       return workspaceSnapshot(workspaceId)
     },
     reopen: (workspaceId, expectedRevision) => {
