@@ -246,6 +246,11 @@ const api = {
     onSleepStateChanged: (
       cb: (data: { workspaceId: string; sleeping: boolean }) => void
     ): (() => void) => subscribe(PUSH_CHANNELS.terminalSleepStateChanged, cb),
+    onCellSizeChanged: (
+      cb: (data: { workspaceId: string; cellHeightPx: number }) => void
+    ): (() => void) => subscribe(PUSH_CHANNELS.terminalCellSizeChanged, cb),
+    onBackgroundColorChanged: (cb: (data: { color: string }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.terminalBackgroundColorChanged, cb),
     onLiveness: (
       cb: (data: {
         workspaceId: string

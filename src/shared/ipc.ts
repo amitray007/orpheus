@@ -982,6 +982,8 @@ export interface RendererPushMap {
     occluded: boolean
   }
   'terminal:activeWorkspaceChanged': { workspaceId: string | null }
+  'terminal:cellSizeChanged': { workspaceId: string; cellHeightPx: number }
+  'terminal:backgroundColorChanged': { color: string }
   'projects:githubDataUpdated': {
     projectId: string
     githubOwner: string | null
@@ -1084,6 +1086,8 @@ export const PUSH_CHANNELS = {
   terminalSleepStateChanged: 'terminal:sleepStateChanged',
   terminalLiveness: 'terminal:liveness',
   terminalActiveWorkspaceChanged: 'terminal:activeWorkspaceChanged',
+  terminalCellSizeChanged: 'terminal:cellSizeChanged',
+  terminalBackgroundColorChanged: 'terminal:backgroundColorChanged',
   projectsGithubDataUpdated: 'projects:githubDataUpdated',
   workspaceDirtyChanged: 'workspace:dirtyChanged',
   workspaceTitleChanged: 'workspace:titleChanged',

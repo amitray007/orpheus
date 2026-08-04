@@ -6,6 +6,12 @@ import { LiveChip } from './LiveChip'
 import { DropdownChip } from './DropdownChip'
 import { useUiState } from '@/lib/uiStateStore'
 
+// The footer's fixed root height (`h-9` below, in px) — exported so
+// WorkspaceView can derive how much of the terminal column's available height
+// to subtract when quantizing the terminal host div to a whole cell-row
+// multiple, without hardcoding a second copy of this constant.
+export const WORKSPACE_FOOTER_HEIGHT_PX = 36
+
 interface WorkspaceFooterProps {
   workspaceId: string
   /** Claude session id for placeholder expansion in terminal.sendInput params. */
@@ -27,6 +33,12 @@ interface WorkspaceFooterProps {
    *  involving a routed model — see isLiveApplicableModelChange) can trigger
    *  it directly instead of leaving the user to hunt for the chip. */
   onRestart?: () => void
+  /** Whether to render the root's top border. Defaults to true. WorkspaceView
+   *  passes false when this footer renders inside the footer-absorb wrapper
+   *  (the quantized-terminal layout) — that wrapper draws the seam border on
+   *  itself instead, so it sits exactly at the terminal/footer boundary
+   *  rather than floating mid-wrapper above vertically centered content. */
+  seamBorder?: boolean
 }
 
 // actionIds that render as a DropdownChip (opens a chipDropdown popover)
@@ -72,7 +84,8 @@ export function WorkspaceFooter({
   projectId,
   workspaceName = '',
   activityDetail,
-  onRestart
+  onRestart,
+  seamBorder = true
 }: WorkspaceFooterProps): React.JSX.Element | null {
   const uiState = useUiState()
   const { items, loading } = useFooterActions(workspaceId)
@@ -97,9 +110,11 @@ export function WorkspaceFooter({
         'flex items-center justify-between',
         'h-9 px-3 flex-shrink-0',
         'bg-surface-raised',
-        'border-t border-border-default/60',
+        seamBorder ? 'border-t border-border-default/60' : '',
         'gap-1'
-      ].join(' ')}
+      ]
+        .filter(Boolean)
+        .join(' ')}
       aria-label="Workspace footer actions"
     >
       {/* Left zone — mutator chips */}

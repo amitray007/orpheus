@@ -541,6 +541,15 @@ function ensureTerminalCallbackWiring(addon: GhosttySurfaceAddon): void {
       })
     }
   )
+  // Runtime cell-size re-fires (font-size changes at runtime). The initial
+  // creation-time resolve doesn't come through here — it's returned directly
+  // from terminal:mount's result instead (see cellHeightPx below).
+  addon.setCellSizeCallback((workspaceId: string, cellHeightPx: number) => {
+    getMainWindow()?.webContents.send(PUSH_CHANNELS.terminalCellSizeChanged, {
+      workspaceId,
+      cellHeightPx
+    })
+  })
   // Diagnostic: forward every action_cb tag to the renderer for visibility
   // via DevTools console. Gated on ORPHEUS_DEBUG_ACTION_TRACE=1 because this
   // fires at 60-120 Hz (every RENDER action) and is heavy in production.
@@ -1230,6 +1239,13 @@ handle('ghosttySettings:update', (_e, patch) => {
   try {
     const addon = loadTerminalAddon()
     addon.reloadGhosttyConfig()
+    // A theme change may have resolved a new terminal background — push it so
+    // already-mounted WorkspaceViews can repaint their quantization top-spacer
+    // to match instead of showing the previous theme's colour.
+    const color = addon.getResolvedBackground()
+    if (color) {
+      getMainWindow()?.webContents.send(PUSH_CHANNELS.terminalBackgroundColorChanged, { color })
+    }
   } catch (err) {
     console.warn(
       '[ghosttySettings] reloadGhosttyConfig failed (non-fatal):',
@@ -1541,7 +1557,7 @@ async function traceTerminalMount(
     authEnv?: ReturnType<typeof buildMountEnv>['authEnv']
   },
   precomposedLaunch: ReturnType<typeof composeLaunchForMount>
-): Promise<{ workspaceId: string; created: boolean }> {
+): Promise<{ workspaceId: string; created: boolean; cellHeightPx: number }> {
   const workspaceId = workspace.id
   const projectId = workspace.projectId
   const _mountStart = Date.now()
@@ -1588,7 +1604,7 @@ async function traceTerminalMount(
       Object.keys(surfaceEnv).sort().join(',')
     )
 
-    let mountResult: { workspaceId: string; created: boolean }
+    let mountResult: { workspaceId: string; created: boolean; cellHeightPx: number }
     try {
       mountResult = addon.mount(nativeHandle, {
         workspaceId,
@@ -1656,7 +1672,7 @@ async function traceTerminalMountForTmuxAttach(
   rect: TerminalRect,
   scaleFactor: number,
   attach: { command: string; env: Record<string, string> }
-): Promise<{ workspaceId: string; created: boolean }> {
+): Promise<{ workspaceId: string; created: boolean; cellHeightPx: number }> {
   const _mountStart = Date.now()
   return diag.trace('terminal.mount', { workspaceId, tmuxAttach: true }, (s) => {
     console.log(
@@ -1665,7 +1681,7 @@ async function traceTerminalMountForTmuxAttach(
       Object.keys(attach.env).sort().join(',')
     )
 
-    let mountResult: { workspaceId: string; created: boolean }
+    let mountResult: { workspaceId: string; created: boolean; cellHeightPx: number }
     try {
       mountResult = addon.mount(nativeHandle, {
         workspaceId,
@@ -2002,6 +2018,8 @@ async function finishTmuxAttachMount(
   const notice = [reconcileNotice].filter((n): n is string => n != null).join(' ')
   return {
     ...result,
+    cellHeightPx: result.cellHeightPx || null,
+    backgroundColor: addon.getResolvedBackground(),
     ...(notice ? { notice } : {}),
     ...(tmuxFallback ? { tmuxFallback } : {})
   }
@@ -2191,6 +2209,8 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
 
   return {
     ...result,
+    cellHeightPx: result.cellHeightPx || null,
+    backgroundColor: addon.getResolvedBackground(),
     ...(reconcileNotice != null ? { notice: reconcileNotice } : {}),
     ...(tmuxFallback ? { tmuxFallback } : {})
   }

@@ -71,7 +71,7 @@ export type GhosttySurfaceAddon = {
       /** Environment variables for the launched process. */
       env?: Record<string, string>
     }
-  ) => { workspaceId: string; created: boolean }
+  ) => { workspaceId: string; created: boolean; cellHeightPx: number }
 
   /**
    * Install a backstop NSView so the window background stays opaque while
@@ -96,6 +96,13 @@ export type GhosttySurfaceAddon = {
    * Fired per-surface; workspaceId identifies which surface changed.
    */
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
+
+  /**
+   * Register a callback fired whenever GHOSTTY_ACTION_CELL_SIZE resolves for
+   * an already-mounted surface (i.e. a runtime font-size change). The initial
+   * creation-time resolve is instead returned from `mount`'s `cellHeightPx`.
+   */
+  setCellSizeCallback: (cb: (workspaceId: string, cellHeightPx: number) => void) => void
 
   /**
    * Register a callback for window occlusion state changes.
@@ -158,6 +165,12 @@ export type GhosttySurfaceAddon = {
 
   /** Tell ghostty to re-read its config file (affects all surfaces). */
   reloadGhosttyConfig: () => boolean
+
+  /**
+   * Return ghostty's resolved terminal background colour as a lowercase
+   * "#rrggbb" hex string, or null if the config hasn't resolved one yet.
+   */
+  getResolvedBackground: () => string | null
 
   /**
    * Return the current surface phase string (e.g. "booting", "ready").

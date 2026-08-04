@@ -420,6 +420,22 @@ export type TerminalRect = { x: number; y: number; w: number; h: number }
  * Failure: `{ workspaceId, worktreeError }` — reconcile determined the mount
  * cannot proceed (bad state that needs user intervention). The surface is NOT
  * mounted; the renderer should show an error card instead.
+ *
+ * `cellHeightPx` (success branch only) is ghostty's resolved cell row height
+ * in physical pixels, or `null` if the native addon hasn't resolved it yet
+ * (0 mapped to null at the main-process boundary). Only the claude-workspace
+ * `terminal:mount` handler populates it — the renderer uses it to size the
+ * terminal host div to an exact whole-cell-row height so the footer absorbs
+ * the sub-cell leftover instead of the native surface snapping and leaving a
+ * dead band. `pane:mount` reuses this same result shape but never sets it
+ * (undefined), since Workbench panes don't participate in that quantization.
+ *
+ * `backgroundColor` (success branch only) is ghostty's resolved terminal
+ * background as a lowercase "#rrggbb" hex string, or `null`/undefined if not
+ * yet resolved. Same optionality rationale as `cellHeightPx` — only
+ * `terminal:mount` populates it; the renderer paints its quantization
+ * top-spacer with this colour so that band reads as the terminal's own top
+ * padding instead of mismatched app chrome.
  */
 export type TerminalMountResult =
   | {
@@ -427,6 +443,8 @@ export type TerminalMountResult =
       created: boolean
       notice?: string
       tmuxFallback?: { reason: 'not-installed' | 'version-too-old'; detail: string }
+      cellHeightPx?: number | null
+      backgroundColor?: string | null
     }
   | { workspaceId: string; aborted: 'gone' }
   | {
