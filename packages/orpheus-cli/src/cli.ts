@@ -150,6 +150,10 @@ import './commands/project.js'
 // only for readability (documentation commands after the "real" commands).
 import './commands/help.js'
 import './commands/ai.js'
+// 'tui' — see src/commands/tui.ts. Registration only: the handler itself
+// lazy-loads the Ink app (dist/tui.cjs), so importing this module here costs
+// one-shot commands nothing (no react/ink pulled into dist/cli.cjs).
+import './commands/tui.js'
 
 // ---------------------------------------------------------------------------
 // Arg parser
@@ -507,7 +511,8 @@ async function autoLaunch(totalTimeoutMs = 15_000): Promise<void> {
   }
 
   throw new AppNotRunningError(
-    `could not reach Orpheus after launching "${appName}" (timed out after ${totalTimeoutMs / 1000}s)`
+    `launched "${appName}" but it didn't come up within ${totalTimeoutMs / 1000}s`,
+    { timedOutAfterLaunch: true }
   )
 }
 
@@ -583,7 +588,8 @@ registerCommand('whoami', {
 // 'reviews list', 'reviews resolve', 'reviews unresolve' are registered by
 // src/commands/reviews.ts (imported at top of file)
 
-// 'project ls' and 'project show' are registered by src/commands/project.ts (imported at top of file)
+// 'project ls', 'project show', and 'project add' are registered by
+// src/commands/project.ts (imported at top of file)
 
 // ---------------------------------------------------------------------------
 // Usage / help
@@ -625,12 +631,16 @@ Commands:
   reviews unresolve   Mark a local review comment as unresolved
   project ls          List projects
   project show        Show project details
+  project add         Register a project by filesystem path
+  tui                 Launch the interactive terminal UI (mobile/SSH picker)
   help                Show full CLI reference (text/md/json)
   ai skill            Agent playbook for orchestrating via this CLI
   ai schema           Machine-readable CLI schema (JSON)
 
 Run 'orpheus <command> --help' for rich help on a specific command, or
 'orpheus help --format md' for the full agent-facing reference.
+Driving Orpheus from a phone over SSH? See 'orpheus tui --help' and
+docs/REMOTE_ACCESS.md.
 
 Exit codes:
   0   success

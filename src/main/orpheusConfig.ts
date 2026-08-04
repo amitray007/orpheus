@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import { parse, parseDocument } from 'yaml'
+import { resolveMainWorktree, NotAGitRepoError } from './worktrees'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -130,6 +131,35 @@ export async function resolveOfferedModes(
   }
 
   return { local: allowLocal, worktree: allowWorktree }
+}
+
+/**
+ * Is-git-repo detection + resolveOfferedModes, bundled into one call so
+ * every caller (renderer IPC via app:offeredModes, the command socket via
+ * project.offeredModes) computes "is this a git repo" the SAME way and can
+ * never drift apart. Originally inlined in the app:offeredModes IPC handler
+ * (src/main/ipc/misc.ts); extracted here so the command-socket action can
+ * reuse it verbatim rather than re-implementing the ENOENT/NotAGitRepoError
+ * handling — a second copy would risk the TUI offering a mode (e.g.
+ * 'worktree') that the backend then refuses because its own git-repo check
+ * disagreed with the renderer's.
+ *
+ * resolveMainWorktree throws NotAGitRepoError for a non-git cwd, which is
+ * caught and narrowed to `isGitRepo: false`; any other error propagates.
+ */
+export async function resolveOfferedModesForProject(projectCwd: string): Promise<OfferedModes> {
+  let isGitRepo = true
+  try {
+    await resolveMainWorktree(projectCwd)
+  } catch (err) {
+    if (err instanceof NotAGitRepoError) {
+      isGitRepo = false
+    } else {
+      throw err
+    }
+  }
+
+  return resolveOfferedModes(projectCwd, isGitRepo)
 }
 
 export async function writeProjectOverride(

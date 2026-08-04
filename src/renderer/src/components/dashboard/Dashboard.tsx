@@ -327,9 +327,46 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // That local update doesn't reach this component's projects state (the one
   // driving the Sidebar), so main also broadcasts the updated record — patch it
   // in-place here, mirroring the onGithubDataUpdated subscription above.
+  //
+  // ALSO covers a project this window didn't add itself — main's addProject
+  // now broadcasts projects:changed on every call (see src/main/projects.ts),
+  // including from the CLI/TUI socket bridge or a second desktop window. A
+  // bare `prev.map(...)` only patches a record ALREADY in `prev`; a project
+  // this window has never seen before would match nothing and be silently
+  // dropped, which defeats the whole point of the broadcast — the sidebar
+  // would still never show it. So: patch in place if known, otherwise APPEND
+  // it — using the exact same "after the pinned prefix, top of the unpinned
+  // tier" placement handleAddProject's own optimistic insert uses below, so
+  // a project that arrives via this broadcast lands in the same spot one
+  // added from this window would.
   useEffect(() => {
     return window.api.projects.onChanged((rec) => {
-      setProjects((prev) => prev.map((p) => (p.id === rec.id ? rec : p)))
+      setProjects((prev) => {
+        if (prev.some((p) => p.id === rec.id)) {
+          return prev.map((p) => (p.id === rec.id ? rec : p))
+        }
+        const firstUnpinnedIndex = prev.findIndex((p) => p.pinnedAt == null)
+        const insertAt = firstUnpinnedIndex === -1 ? prev.length : firstUnpinnedIndex
+        return [...prev.slice(0, insertAt), rec, ...prev.slice(insertAt)]
+      })
+    })
+  }, [])
+
+  // Projects were re-ordered as a SET (the activity sort), from a source that
+  // has no local optimistic step of its own — today the TUI's `o` key via the
+  // project.reorderByActivity command-socket action.
+  //
+  // This needs its own channel rather than riding on projects:changed above:
+  // that handler patches a record IN PLACE, which updates sortOrder as a
+  // field but never moves the project within `projects` — and Sidebar renders
+  // this array in plain order, never re-sorting by sortOrder. So a per-record
+  // broadcast is invisible for a reorder. reorderWithTail is the same helper
+  // handleReorderProjectsByActivity uses for the desktop button's own
+  // response, so both paths land on identical ordering logic (including its
+  // guard for a project added between main's snapshot and this arriving).
+  useEffect(() => {
+    return window.api.projects.onReordered((orderedIds) => {
+      setProjects((arr) => reorderWithTail(arr, orderedIds))
     })
   }, [])
 
@@ -458,11 +495,31 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
+  // Mirrors the projects:changed fix above (see its comment for the full
+  // shape of this bug class): a bare `list.map(...)` only patches a record
+  // ALREADY present in `prev[projectId]` — a workspace this window hasn't
+  // fetched into its cache yet (e.g. created and then immediately renamed or
+  // closed via the CLI/TUI socket bridge before this window's own
+  // fetchWorkspacesForProject call for that project ever resolved) matches
+  // nothing and is silently dropped, exactly like the addProject case. Patch
+  // in place if known; otherwise prepend, matching handleAddWorkspace's own
+  // "new workspace goes to the top" placement below so a workspace arriving
+  // via this broadcast lands where one created from this window would.
+  // (workspace:activityBatch — the separate, purpose-built activityStore
+  // channel used for the live status glyph — is unaffected by this gap;
+  // this only covers the persisted-record fields this broadcast carries,
+  // e.g. name/closedAt/pinnedAt.)
   useEffect(() => {
     return window.api.workspaces.onChanged(({ workspace }) => {
       setWorkspacesByProject((prev) => {
         const list = prev[workspace.projectId]
+        // Project not yet fetched into this window's cache — nothing to
+        // patch or append into; the eventual fetchWorkspacesForProject call
+        // will pick this workspace up as part of its full list.
         if (!list) return prev
+        if (!list.some((w) => w.id === workspace.id)) {
+          return { ...prev, [workspace.projectId]: [workspace, ...list] }
+        }
         return {
           ...prev,
           [workspace.projectId]: list.map((w) => (w.id === workspace.id ? workspace : w))

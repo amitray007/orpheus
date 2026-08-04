@@ -72,6 +72,48 @@ jobs:
         # automation harnesses. The aggregate builds CLI/MCP transports once.
         run: bun run test:agentic
 
+      - name: Install tmux
+        # ubuntu-latest ships without tmux. This step exists specifically to
+        # keep the two tmux harnesses below from becoming silent no-op gates.
+        # BOTH of them exit 0 when tmux is missing from PATH — verified
+        # empirically, not assumed: verify-tmux-integration.ts prints
+        # "tmux not found on PATH — skipping" and returns 0 (it's an
+        # optional-feature harness, see its header), and verify-tmux-host.ts
+        # likewise returns 0 because the real-tmux cases it drives (session
+        # teardown, concurrent create race, set-titles verification) degrade
+        # to skips. So a green run WITHOUT this install step proves nothing
+        # at all. Do not remove this step to "simplify" the job — doing so
+        # guts both gates while leaving the checkmark green, which is the
+        # exact failure mode these steps were added to close.
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: tmux version
+        # The repo requires tmux >= 3.1 (isTmuxVersionSufficient — the
+        # `window-size latest` / `-e` floor). Echoed on every run so a future
+        # runner-image downgrade is diagnosable from the log instead of
+        # surfacing as a mysterious harness failure.
+        run: tmux -V
+
+      - name: tmux host harness (pure functions + real tmux)
+        run: bun run test:tmux
+
+      - name: tmux integration harness (real tmux, throwaway socket)
+        run: bun run test:tmux:integration
+
+      - name: TUI layout harness
+        run: bun run test:tui
+
+      - name: TUI blocks harness
+        run: bun run test:tui-blocks
+
+      - name: TUI wizard harness
+        # Asserts the new-workspace wizard's width math at 38 columns (an
+        # iPhone-portrait Termius session — the primary target for this UI)
+        # and at the 59/60 narrow-tier boundary. Gated because a layout
+        # claimed phone-safe but only ever exercised at desktop width is
+        # exactly the regression these harnesses exist to catch.
+        run: bun run test:tui-wizard
+
       # Advisory: overlay-discipline guard currently has pre-existing findings
       # in the tree (src/renderer/src/overlay/kinds/ChipPrompt.tsx and
       # ChipTooltip.tsx trip the raw-primitive heuristic on comment text, not

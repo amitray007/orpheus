@@ -132,6 +132,14 @@ const ports: WorkspaceOrchestrationPorts = {
       return created
     },
     markOpened: (workspaceId, revision) => update(workspaceId, revision, {}),
+    // Standalone tmux teardown — service.close() calls this unconditionally,
+    // INCLUDING for a workspace whose row is already closed (workspace.host
+    // can attach a fresh session to a closed workspace, so a repeat close
+    // must still guarantee no session survives). Logged so a test can assert
+    // it ran; the real port kills the tmux session.
+    unhost: (workspaceId) => {
+      effectLog.push(`tmux.unhost:${workspaceId}`)
+    },
     close: (workspaceId, revision) => update(workspaceId, revision, { closedAt: now }),
     reopen: (workspaceId, revision) => update(workspaceId, revision, { closedAt: null }),
     rename: (workspaceId, name, revision) => update(workspaceId, revision, { name }),
@@ -916,6 +924,7 @@ const rendererActor: WorkspaceOperationActor = {
           lastOpenedAt: 9
         } as Partial<WorkspaceSnapshot>)
       },
+      unhost: () => {},
       close: (workspaceId, revision) => updateRaceRow(workspaceId, revision, { closedAt: 8 }),
       reopen: (workspaceId, revision) => updateRaceRow(workspaceId, revision, { closedAt: null }),
       remove: (workspaceId, revision) => {

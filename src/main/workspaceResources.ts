@@ -25,7 +25,22 @@ import type { ClaudeLaunch } from './claudeSettings'
 // comparison. Values here are the same plaintext auth env already merged into
 // the surface process's env at mount time — never logged (see terminal:mount's
 // envKeys-only log line) and never leaves this in-memory map.
-export type LaunchSnapshot = ClaudeLaunch & { authEnv: Record<string, string> }
+//
+// hostingMode ('tmux' | 'native') records which host actually ran the
+// currently-live process — set at session-CREATION time only (see
+// terminal:mount in index.ts: only when hostWorkspace() actually created a
+// new tmux session, or when the native-fallback path spawned orpheus-claude.sh
+// directly). This is what lets recomputeDirty() (claudeSettings.ts) flag an
+// existing NATIVE workspace as dirty once tmux becomes the effective policy
+// (universal tmux hosting, staged rollout) — without this field, a workspace
+// running native from before this change would never go dirty from hosting
+// mode alone, and would only ever convert silently on a full app relaunch
+// (when the in-memory snapshot map is empty anyway), defeating the
+// "user converts at a moment of their choosing via the Restart chip" intent.
+export type LaunchSnapshot = ClaudeLaunch & {
+  authEnv: Record<string, string>
+  hostingMode: 'tmux' | 'native'
+}
 
 type BroadcastFn = (channel: string, payload: unknown) => void
 

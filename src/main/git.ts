@@ -80,6 +80,28 @@ function parsePorcelainCounts(result: { stdout: string } | null): {
 }
 
 /**
+ * Read the current branch name for `cwd` via `git rev-parse --abbrev-ref
+ * HEAD`, the same subprocess {@link getGitStatus} has always used for its own
+ * `branch` field — extracted here so a caller that wants ONLY the branch
+ * (e.g. commandServer.ts's per-workspace tree-frame enrichment, which cannot
+ * afford the diff/porcelain subprocesses `getGitStatus` also runs) doesn't
+ * have to pay for or duplicate the rest of `getGitStatus`'s work.
+ *
+ * Returns null for: not a git repo, detached HEAD (the literal `"HEAD"`
+ * output), empty output, git binary missing, or any other subprocess
+ * failure — errors are swallowed, never thrown. Same contract as before this
+ * extraction; `getGitStatus` now delegates to this function so there is
+ * exactly one rev-parse-branch code path in the codebase.
+ */
+export async function getCurrentBranch(cwd: string): Promise<string | null> {
+  if (!cwd) return null
+  const result = await execFile('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], {
+    timeout: 1500
+  }).catch(() => null)
+  return parseBranchResult(result)
+}
+
+/**
  * Read working-tree git status for the given cwd.
  *
  * Returns null if cwd is not inside a git repository OR if git is unavailable.
@@ -101,17 +123,14 @@ export async function getGitStatus(cwd: string): Promise<GitStatus | null> {
   }
 
   // Run branch, diff, and porcelain queries in parallel.
-  const [branchResult, diffResult, porcelainResult] = await Promise.all([
-    execFile('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], {
-      timeout: 1500
-    }).catch(() => null),
+  const [branch, diffResult, porcelainResult] = await Promise.all([
+    getCurrentBranch(cwd),
     execFile('git', ['-C', cwd, 'diff', '--shortstat', 'HEAD'], {
       timeout: 2000
     }).catch(() => null),
     execFile('git', ['-C', cwd, 'status', '--porcelain'], { timeout: 2000 }).catch(() => null)
   ])
 
-  const branch = parseBranchResult(branchResult)
   const { insertions, deletions } = parseDiffShortstat(diffResult)
   const { newFiles, modifiedFiles, deletedFiles } = parsePorcelainCounts(porcelainResult)
 

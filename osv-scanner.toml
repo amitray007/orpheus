@@ -7,3 +7,38 @@ reason = "Legacy brace-expansion 1.x/2.x is required by current ESLint/electron-
 id = "GHSA-frvp-7c67-39w9"
 ignoreUntil = 2026-10-26
 reason = "@modelcontextprotocol/sdk 1.29.0 (latest stable) requires @hono/node-server 1.x. The advisory affects Windows serve-static routing; Orpheus is macOS-only and uses MCP over stdio, so this adapter path is unreachable. Re-evaluate before expiry or when the MCP SDK accepts @hono/node-server >=2.0.5."
+
+[[IgnoredVulns]]
+id = "GHSA-rgw5-rvv9-x895"
+ignoreUntil = 2026-11-05
+reason = "brace-expansion 1.x/2.x/5.0.8, reached only via minimatch under ESLint, electron-builder, and @electron/universal — all build-time tooling that never ships in the Electron runtime. Each parent pins its own major, so no direct bump reaches them; bun update promotes them to direct deps instead, which is worse. Re-evaluate when those toolchains move, or before expiry."
+
+[[IgnoredVulns]]
+id = "GHSA-7p8r-x3mc-p8w7"
+ignoreUntil = 2026-11-05
+reason = "fast-uri 3.1.4 is pinned by ajv, itself reached via commitlint, ajv-formats, and @modelcontextprotocol/sdk. Build/validation-time only — not in the shipped app's runtime path. Re-evaluate when ajv releases a build accepting fast-uri >=3.1.5."
+
+[[IgnoredVulns]]
+id = "GHSA-8j4g-w8fx-2239"
+ignoreUntil = 2026-11-05
+reason = "hono 4.12.32 is pinned by @modelcontextprotocol/sdk. Orpheus runs MCP over stdio, never hono's HTTP server, so the advisory's request-handling path is unreachable. Same reasoning as the @hono/node-server entry above. Re-evaluate when the MCP SDK accepts hono >=4.12.34."
+
+[[IgnoredVulns]]
+id = "GHSA-fxqj-rqcc-2cmp"
+ignoreUntil = 2026-11-05
+reason = "postcss 8.5.18 is pinned by vite and next — bundler-time only, never evaluated at app runtime. Re-evaluate when vite ships a build accepting postcss >=8.5.23."
+
+[[IgnoredVulns]]
+id = "GHSA-8xcm-r25x-g524"
+ignoreUntil = 2026-11-05
+reason = "undici 6.27.0 is pinned by node-gyp (^6.25.0), used only to compile native addons at build time. Not reachable from the shipped app. Re-evaluate when node-gyp accepts undici >=6.28.0."
+
+[[IgnoredVulns]]
+id = "GHSA-m8rv-5g2x-5cg5"
+ignoreUntil = 2026-11-05
+reason = "undici 6.27.0 via node-gyp — build-time only. See GHSA-8xcm-r25x-g524 above."
+
+[[IgnoredVulns]]
+id = "GHSA-v3r7-h72x-cjcm"
+ignoreUntil = 2026-11-05
+reason = "undici 6.27.0 via node-gyp — build-time only. See GHSA-8xcm-r25x-g524 above."

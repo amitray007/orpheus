@@ -5,14 +5,37 @@ import * as crypto from 'node:crypto'
 import { app } from 'electron'
 import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
-import { getWorkspace, listChildWorkspaces } from './workspaces'
+import { getWorkspace, listChildWorkspaces, listWorkspacesForProject } from './workspaces'
 import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
-import { getProject } from './projects'
+import { getProject, listProjects, addProject, reorderProjectsByActivity } from './projects'
+import { resolveOfferedModesForProject } from './orpheusConfig'
+import { resolveProjectAddPath } from './projectPathResolve'
 import { withReconciledEffort } from './effortReconciliation'
+import { resolveSelectableModels } from './ipc/models'
 import { CLAUDE_EFFORT_VALUES } from '../shared/types'
-import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
+import type {
+  WorkspaceRecord,
+  ClaudePermissionMode,
+  ClaudeEffort,
+  TreeFrame,
+  WorkspaceHostResult,
+  WorkspaceUnhostResult
+} from '../shared/types'
 import { onWorkspaceStatusChange } from './orpheusNotify'
 import { getWorkspaceFileInfo } from './sessionState'
+import { resolveEffectiveModelAndEffort } from './claudeSettings'
+import { getCurrentBranch } from './git'
+import {
+  hostWorkspace,
+  unhostWorkspace,
+  listHostedSessionsCached,
+  buildTreeFrame,
+  tmuxSessionName,
+  tmuxTuiSessionName,
+  resolveTmuxSocketName,
+  shouldBlockTmuxHost,
+  type TreeSourceWorkspace
+} from './tmuxHost'
 import {
   commandReviewContext,
   invokeReviewList,
@@ -29,11 +52,12 @@ import type {
   ControlPermission,
   TrustedRuntimeBinding
 } from './controlPlane/types'
-import type { WorkspaceOperationActor } from './workspaceOrchestration/types'
+import type { WorkspaceOperationActor, WorkspaceMode } from './workspaceOrchestration/types'
 import type { WorkspaceOrchestrationService } from './workspaceOrchestration/service'
 import { legacyWaitReason, type MainWorkspaceWaitEngine } from './workspaceOrchestration/waitEngine'
 import { parseCommandAction } from './commandAction'
 import { redactErrorForLog, redactLogString } from './logRedaction'
+import { resolveSubscribeTimeoutMs } from './subscribeTimeout'
 
 // ---------------------------------------------------------------------------
 // Deps injected from index.ts (these live as locals there, so we receive them
@@ -125,6 +149,15 @@ export type CommandServerDeps = {
     payload: { text?: string; submit?: boolean; key?: string },
     focus?: boolean
   ) => Promise<{ ok: boolean; error?: string }>
+  /**
+   * Native libghostty surface phase for a workspace ('none' when no live
+   * entry exists). Mirrors index.ts's getNativeSurfacePhase() — injected
+   * rather than imported directly so this module never needs to load the
+   * terminal addon itself. Used ONLY by workspace.host's pre-create guard
+   * (see that handler below) to detect "this workspace is already open
+   * natively on the desktop" before ever touching tmux.
+   */
+  getSurfacePhase: (workspaceId: string) => 'none' | 'hidden' | 'attached' | 'visible' | 'freeing'
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +284,24 @@ function buildWorkspaceSettingsOverride(args: Record<string, unknown>): {
   return settingsOverride
 }
 
+const VALID_WORKSPACE_MODES: WorkspaceMode[] = ['local', 'worktree']
+
+/**
+ * Resolve `args.mode` for `workspace.create`, defaulting to 'local' when
+ * absent so every existing caller (MCP tools, scripts, the CLI's `ws new`
+ * before it grows a --mode flag) keeps its current behavior unchanged.
+ * Anything other than 'local'/'worktree' is rejected outright rather than
+ * silently coerced, matching the neighbouring handlers' validation idiom
+ * (see buildWorkspaceSettingsOverride's permissionMode/effort checks above).
+ */
+function resolveLegacyCreateMode(args: Record<string, unknown>): WorkspaceMode {
+  if (args.mode === undefined) return 'local'
+  if (typeof args.mode === 'string' && VALID_WORKSPACE_MODES.includes(args.mode as WorkspaceMode)) {
+    return args.mode as WorkspaceMode
+  }
+  throw new Error(`args.mode must be one of ${VALID_WORKSPACE_MODES.join(', ')}`)
+}
+
 function commandWorkspaceActor(
   args: Record<string, unknown>,
   context: { workspaceId?: string }
@@ -323,15 +374,17 @@ async function handleLegacyWorkspaceCreate(
   if (typeof args.cwd !== 'string') throw new Error('args.cwd is required')
   if (getProject(args.projectId) == null) throw new Error(`project not found: ${args.projectId}`)
 
+  const mode = resolveLegacyCreateMode(args)
   const actor = commandWorkspaceActor(args, context)
   const created = await deps.workspaceOrchestration.create(
     {
-      mode: 'local',
+      mode,
       ...(typeof args.name === 'string' && args.name !== '' ? { name: args.name } : {}),
       ...(typeof args.parentWorkspaceId === 'string'
         ? { parentWorkspaceId: args.parentWorkspaceId }
         : {}),
-      ...(args.fork === true ? { fork: true } : {})
+      ...(args.fork === true ? { fork: true } : {}),
+      ...(typeof args.branch === 'string' && args.branch !== '' ? { branch: args.branch } : {})
     },
     actor
   )
@@ -376,15 +429,272 @@ function collectWorkspaceSubtreeIds(rootId: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Tree frame — full-snapshot `tree` frame for the TUI's `/subscribe`
+// consumers (docs/TUI_SPEC.md D5). Module-level (not per-connection) since
+// there is exactly one command server per process and every active
+// tree-mode /subscribe connection shares the same underlying snapshot.
+//
+// CHANGE DETECTION: reorderWorkspaces()/renameWorkspace()/setProjectPinned()
+// etc. (workspaces.ts/projects.ts) don't currently emit a "structure changed"
+// event of their own, and adding one there would mean workspaces.ts/
+// projects.ts importing this module back — a circular import `check:arch`
+// forbids (main-not-to-... layering aside, dependency-cruiser's no-circular
+// rule is unconditional). So structural/ordering changes are covered by a
+// bounded poll (TREE_POLL_MS) that only runs while at least one tree-mode
+// subscriber is connected; status transitions (the much more frequent case)
+// are covered instantly via the existing onWorkspaceStatusChange observer.
+// Both paths funnel through the same debounced scheduleTreeFrameEmit(), so a
+// burst of either kind of change still coalesces into one emission.
+//
+// IDLE COST: the poll ALWAYS recomputes a candidate frame (a couple of cheap
+// SQLite SELECTs + listHostedSessionsCached(), which is itself short-TTL
+// cached — see tmuxHost.ts — so it does NOT spawn a `tmux list-sessions`
+// subprocess on every single tick), but only bumps `treeRevision` and fans
+// out to subscribers when the candidate's CONTENT actually differs from the
+// last emitted frame (see treeFrameContentKey). An idle TUI therefore costs
+// zero bytes on the wire and a meaningless-`revision` churn never happens —
+// `revision` only ever advances on a real change. `lastTreeFrame` doubles as
+// the immediate reply for a newly-joining subscriber (see handleSubscribe),
+// so a late joiner never waits out a poll tick just to see the current state.
+// ---------------------------------------------------------------------------
+
+const TREE_DEBOUNCE_MS = 50
+const TREE_POLL_MS = 1000
+
+let treeRevision = 0
+let treeDebounceTimer: NodeJS.Timeout | null = null
+let treePollInterval: NodeJS.Timeout | null = null
+/** The last frame actually broadcast (or null before the very first one) —
+ *  reused both to detect "nothing meaningful changed" and to reply
+ *  immediately to a subscriber that joins between polls. */
+let lastTreeFrame: TreeFrame | null = null
+const treeFrameSubscribers = new Set<(frame: TreeFrame) => void>()
+
+// ---------------------------------------------------------------------------
+// Current-branch cache for the tree frame's `gitBranch` overlay field.
+//
+// computeCandidateTreeFrame runs on EVERY tree poll tick (TREE_POLL_MS =
+// 1000ms, see below) for EVERY active workspace across EVERY project, via
+// collectTreeSourceWorkspaces -> withLiveTreeOverlay. A `git rev-parse`
+// subprocess per workspace per tick would mean N workspaces * 1 subprocess/
+// sec, blocking frame emission on subprocess latency — unacceptable, mirrors
+// the exact concern listHostedSessionsCached() (tmuxHost.ts) already solves
+// for `tmux list-sessions`.
+//
+// getCachedCurrentBranch() is a SYNCHRONOUS read: cache hit -> return
+// immediately, zero subprocess cost. Cache miss/stale -> kick off a
+// background refresh (fire-and-forget, de-duped per in-flight cwd so
+// concurrent calls during one refresh — e.g. several workspaces sharing a
+// cwd — never spawn duplicate subprocesses) and return the last-known value
+// (or null if never resolved) for THIS frame. The frame-build loop therefore
+// never awaits a fresh git subprocess call inline.
+//
+// Cache key is the workspace's cwd AS-IS (already an absolute, stable path
+// from WorkspaceRecord — unlike git.ts's own gitWatchers map this doesn't
+// need a separate nodePath.resolve() normalization pass since cwd is never
+// relative here) — workspaces sharing a cwd share one cache entry, so the
+// worst case is one in-flight subprocess per DISTINCT cwd per TTL window,
+// never one per workspace.
+// ---------------------------------------------------------------------------
+
+const CURRENT_BRANCH_CACHE_TTL_MS = 4000
+
+type CurrentBranchCacheEntry = {
+  branch: string | null
+  expiresAt: number
+  refreshing: boolean
+}
+
+const currentBranchCache = new Map<string, CurrentBranchCacheEntry>()
+
+/** Logged at most once (not per-tick) so a persistently-missing/broken git
+ *  binary doesn't spam the log every TTL cycle. */
+let currentBranchErrorLogged = false
+
+function refreshCurrentBranch(cwd: string): void {
+  const entry = currentBranchCache.get(cwd)
+  if (entry?.refreshing) return // already in flight for this cwd — de-duped
+  const placeholder: CurrentBranchCacheEntry = entry
+    ? { ...entry, refreshing: true }
+    : { branch: null, expiresAt: 0, refreshing: true }
+  currentBranchCache.set(cwd, placeholder)
+
+  getCurrentBranch(cwd)
+    .then((branch) => {
+      currentBranchCache.set(cwd, {
+        branch,
+        expiresAt: Date.now() + CURRENT_BRANCH_CACHE_TTL_MS,
+        refreshing: false
+      })
+    })
+    .catch((err) => {
+      // getCurrentBranch already swallows its own subprocess failures and
+      // resolves null rather than rejecting — this catch is an extra safety
+      // net only, matching the same defensive pattern git.ts's own
+      // refreshGitForDir uses around getGitStatus.
+      if (!currentBranchErrorLogged) {
+        currentBranchErrorLogged = true
+        console.warn(
+          '[commandServer] getCurrentBranch failed cwd=%s: %s',
+          cwd,
+          err instanceof Error ? err.message : String(err)
+        )
+      }
+      currentBranchCache.set(cwd, {
+        branch: null,
+        expiresAt: Date.now() + CURRENT_BRANCH_CACHE_TTL_MS,
+        refreshing: false
+      })
+    })
+}
+
+/** Synchronous, non-blocking read of the current-branch cache for `cwd` —
+ *  see the module comment above. Never spawns a subprocess inline; a
+ *  miss/stale entry only schedules a background refresh and returns the
+ *  last-known value (or null) for this call. */
+function getCachedCurrentBranch(cwd: string): string | null {
+  if (!cwd) return null
+  const now = Date.now()
+  const entry = currentBranchCache.get(cwd)
+  if (entry == null || entry.expiresAt <= now) {
+    refreshCurrentBranch(cwd)
+    return entry?.branch ?? null
+  }
+  return entry.branch
+}
+
+/** Live overlay on top of the DB-persisted WorkspaceRecord: `waitingFor`
+ *  (only meaningful while `status === 'attention'`) and a best-effort
+ *  `lastActivityAt`, both sourced from the same live session-file info
+ *  `ws ls`/`ws status` already read (getWorkspaceFileInfo — see
+ *  sessionState.ts). Falls back to the DB's own lastOpenedAt when no live
+ *  file info is available (session not currently running). Also resolves
+ *  `gitBranch` — the workspace cwd's actual current git branch — via the
+ *  synchronous, short-TTL-cached getCachedCurrentBranch() above; distinct
+ *  from `worktreeBranch` (WorkspaceRecord's own persisted field). Also
+ *  carries `providerId` — the resolved model's owning provider, from the
+ *  same resolveEffectiveModelAndEffort call as `model`/`effort` — used by
+ *  the TUI card to show a short agent/provider label. */
+function withLiveTreeOverlay(ws: WorkspaceRecord): TreeSourceWorkspace {
+  const info = getWorkspaceFileInfo(ws.id)
+  // Effective (global -> project -> workspace layered) model/effort — see
+  // claudeSettings.ts's resolveEffectiveModelAndEffort doc comment for why
+  // this cheap resolution (not composeClaudeLaunch) is used here, on every
+  // poll tick, for every workspace.
+  const { model, effort, providerId } = resolveEffectiveModelAndEffort(ws.projectId, ws.id)
+  return {
+    ...ws,
+    ...(ws.status === 'attention' && info.waitingFor != null
+      ? { waitingFor: info.waitingFor }
+      : {}),
+    lastActivityAt: info.statusUpdatedAt ?? ws.lastOpenedAt ?? null,
+    model,
+    effort,
+    providerId,
+    gitBranch: getCachedCurrentBranch(ws.cwd)
+  }
+}
+
+function collectTreeSourceWorkspaces(): TreeSourceWorkspace[] {
+  const out: TreeSourceWorkspace[] = []
+  for (const project of listProjects()) {
+    for (const ws of listWorkspacesForProject(project.id)) {
+      out.push(withLiveTreeOverlay(ws))
+    }
+  }
+  return out
+}
+
+/** Stable content signature for change detection — deliberately EXCLUDES
+ *  `revision` (that's the output of this comparison, not an input to it).
+ *  `projects`/`workspaces` are always built in the same field/insertion
+ *  order by buildTreeFrame, so JSON.stringify is a safe, cheap equality
+ *  check here (no key-ordering nondeterminism to worry about). */
+function treeFrameContentKey(frame: Pick<TreeFrame, 'projects'>): string {
+  return JSON.stringify(frame.projects)
+}
+
+/** Recompute the tree frame's CANDIDATE revision (current + 1) — the caller
+ *  (scheduleTreeFrameEmit) decides whether that candidate actually differs
+ *  from `lastTreeFrame` before committing the revision bump. Uses the
+ *  short-TTL `listHostedSessionsCached()` (not the raw listHostedSessions())
+ *  so a poll tick does not unconditionally spawn a `tmux list-sessions`
+ *  subprocess. */
+async function computeCandidateTreeFrame(): Promise<TreeFrame> {
+  const projects = listProjects()
+  const workspaces = collectTreeSourceWorkspaces()
+  let hostedSessions: Set<string>
+  try {
+    hostedSessions = await listHostedSessionsCached()
+  } catch {
+    // tmux missing/unavailable — degrade to "nothing hosted" rather than
+    // failing the whole tree snapshot over an optional feature.
+    hostedSessions = new Set()
+  }
+  const candidateRevision = treeRevision >= Number.MAX_SAFE_INTEGER ? 1 : treeRevision + 1
+  return buildTreeFrame(projects, workspaces, hostedSessions, candidateRevision)
+}
+
+function ensureTreePolling(): void {
+  if (treePollInterval != null) return
+  treePollInterval = setInterval(() => scheduleTreeFrameEmit(), TREE_POLL_MS)
+  treePollInterval.unref?.()
+}
+
+function stopTreePollingIfIdle(): void {
+  if (treeFrameSubscribers.size === 0 && treePollInterval != null) {
+    clearInterval(treePollInterval)
+    treePollInterval = null
+  }
+}
+
+/** Debounced (~50ms) tree-frame rebuild + fan-out to every connected
+ *  tree-mode /subscribe connection — but ONLY when the rebuilt content
+ *  actually differs from the last emitted frame (see treeFrameContentKey);
+ *  otherwise this is a no-op that neither bumps `revision` nor touches the
+ *  wire. A no-op outright when nobody is currently asking for tree frames. */
+function scheduleTreeFrameEmit(): void {
+  if (treeFrameSubscribers.size === 0) return
+  if (treeDebounceTimer != null) return
+  treeDebounceTimer = setTimeout(() => {
+    treeDebounceTimer = null
+    void (async () => {
+      const candidate = await computeCandidateTreeFrame()
+      if (
+        lastTreeFrame != null &&
+        treeFrameContentKey(candidate) === treeFrameContentKey(lastTreeFrame)
+      ) {
+        return // nothing meaningful changed — do not bump revision or resend
+      }
+      treeRevision = candidate.revision
+      lastTreeFrame = candidate
+      for (const send of treeFrameSubscribers) send(candidate)
+    })()
+  }, TREE_DEBOUNCE_MS)
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch table — one entry per supported CLI action.
 // ---------------------------------------------------------------------------
 
-function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> {
+function makeDispatchTable(
+  deps: CommandServerDeps,
+  serverIdentity: { sockPath: string; token: string }
+): Record<string, DispatchFn> {
   const dispatch: Record<string, DispatchFn> = {
     // Create a new workspace inside a project.
     // Args:
     //   projectId (required) — the project to create the workspace under
     //   cwd (required)       — working directory for the workspace
+    //   mode? ('local'|'worktree') — workspace-creation mode; defaults to 'local'
+    //                          when omitted so every pre-existing caller (MCP tools,
+    //                          scripts, `ws new` before it grows a --mode flag) keeps
+    //                          its current behavior. 'worktree' is a straight passthrough
+    //                          to the orchestration layer's existing worktree support
+    //                          (auto-derives the worktree path/branch) — it throws if the
+    //                          project doesn't offer worktree mode (see project.offeredModes).
+    //   branch?              — worktree branch name (mode: 'worktree' only); auto-named
+    //                          (worktree-<slug>) when omitted. Ignored for mode: 'local'.
     //   name?                — workspace name; defaults to 'New workspace'
     //   fork? (boolean)      — if true, inherit parent session history via --fork-session
     //   parentWorkspaceId?   — explicit parent id; falls back to context.workspaceId
@@ -570,6 +880,109 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       return { ok: true }
     },
 
+    // Host a workspace's `claude` inside a detached tmux session (docs/TUI_SPEC.md).
+    // Args: id (required) — workspace to host.
+    // Mirrors the existence-before-action fix applied to every other id-scoped
+    // action above (workspace.archive/close/reopen/open): getWorkspace(id)
+    // FIRST, so a nonexistent id throws 'workspace not found: <id>' (→ CLI
+    // exit 3) instead of a success-shaped response for nothing.
+    'workspace.host': async (args): Promise<WorkspaceHostResult> => {
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
+      const workspace = getWorkspace(args.id)
+      if (workspace == null) throw new Error(`workspace not found: ${args.id}`)
+
+      // ── Cross-host double-launch guard (MIRROR of index.ts's
+      // willMountCreateSurface — protects the OPPOSITE direction) ─────────
+      // willMountCreateSurface (index.ts) stops the DESKTOP from creating a
+      // tmux session onto a workspace already tmux-hosted. This stops the
+      // TUI/CLI (this action) from creating a tmux session onto a workspace
+      // that is CURRENTLY OPEN NATIVELY on the desktop with NO tmux session
+      // backing it (pre-conversion, or via the tmux-missing-fallback path)
+      // — whose `claude` is already live and writing the same transcript a
+      // fresh `--resume` here would race against. Three signals feed
+      // shouldBlockTmuxHost (see its doc comment in tmuxHost.ts for the full
+      // truth table):
+      //   1. deps.getSurfacePhase — is there a live libghostty surface ENTRY
+      //      for this workspace in the CURRENT process's addon surface map.
+      //   2. getWorkspaceFileInfo — is `claude`'s OWN on-disk session
+      //      registry (~/.claude/sessions/<pid>.json, sessionState.ts)
+      //      reporting this workspace's session as alive right now
+      //      (independent of which host started it — this is the
+      //      authoritative "is claude actually running" signal used
+      //      everywhere else in the app per CLAUDE.md's "Workspace activity
+      //      status" section).
+      //   3. listHostedSessionsCached — is there ALREADY a tmux session for
+      //      this workspace. If so, attaching is always safe (a second tmux
+      //      CLIENT on an existing session, not a second `claude` writer),
+      //      so this signal short-circuits (1) and (2) to an allow — see
+      //      hostWorkspace()'s own has-session→reuse-or-create idempotency,
+      //      which is what actually attaches here. FAIL SAFE: if the tmux
+      //      query itself throws (TmuxNotAvailableError or otherwise),
+      //      treat it as "no session exists" rather than let an unknown
+      //      tmux state turn into a spurious allow — the cost of a wrong
+      //      allow is transcript corruption, the cost of a wrong refuse is
+      //      just a confusing message the user can retry.
+      const nativeSurfaceLive = deps.getSurfacePhase(workspace.id) !== 'none'
+      const claudeSessionLive = getWorkspaceFileInfo(workspace.id).availability === 'available'
+      const sessionName = tmuxSessionName(workspace.name, workspace.id)
+      let tmuxSessionExists = false
+      try {
+        const hostedSessions = await listHostedSessionsCached()
+        tmuxSessionExists = hostedSessions.has(sessionName)
+      } catch {
+        // Fail safe: unknown tmux state must never look like "already
+        // hosted" — leave tmuxSessionExists false so the existing
+        // native/claude-liveness guard still applies below.
+      }
+      if (shouldBlockTmuxHost(nativeSurfaceLive, claudeSessionLive, tmuxSessionExists)) {
+        return {
+          sessionName,
+          tuiSessionName: tmuxTuiSessionName(workspace.name, workspace.id),
+          socketName: resolveTmuxSocketName(),
+          created: false,
+          alreadyRunning: false,
+          refused: {
+            reason: 'open-on-desktop',
+            message:
+              'This workspace is already open natively on the desktop with no tmux session yet. ' +
+              'Close it there (or wait for it to finish converting to tmux hosting) and try again.'
+          }
+        }
+      }
+
+      const result = await hostWorkspace(
+        {
+          workspaceId: workspace.id,
+          projectId: workspace.projectId,
+          workspaceName: workspace.name,
+          cwd: workspace.cwd
+        },
+        serverIdentity
+      )
+      scheduleTreeFrameEmit() // tmuxHosted flipped for this workspace
+      return result
+    },
+
+    // Kill a workspace's tmux session ONLY — the workspace itself is left
+    // resumable via `--resume` (docs/TUI_SPEC.md D2: `x` kills tmux only).
+    // D2 also specifies that archiving (`a`) kills the tmux session too
+    // (archive is terminal — an orphaned session is a leak); this action is
+    // the primitive that gives the TUI/CLI side what it needs to do that
+    // (call workspace.unhost then workspace.archive) — workspace.archive
+    // itself is unchanged here, out of this feature's scope.
+    // Args: id (required) — workspace whose tmux session should be killed.
+    'workspace.unhost': async (args): Promise<WorkspaceUnhostResult> => {
+      if (typeof args.id !== 'string') throw new Error(ARGS_ID_REQUIRED_ERROR)
+      const workspace = getWorkspace(args.id)
+      if (workspace == null) throw new Error(`workspace not found: ${args.id}`)
+      const result = await unhostWorkspace({
+        workspaceId: workspace.id,
+        workspaceName: workspace.name
+      })
+      scheduleTreeFrameEmit() // tmuxHosted flipped for this workspace
+      return result
+    },
+
     // Return identity context for the given workspaceId so the CLI can display
     // the current project name / cwd without querying SQLite directly.
     'whoami.resolve': (args, context) => {
@@ -630,6 +1043,89 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
         resolveCommandReviewSetResolvedInput(args, ARGS_ID_REQUIRED_ERROR),
         commandReviewContext(context?.workspaceId ?? null)
       )
+    },
+
+    // Which workspace-creation modes a project offers — the command-socket
+    // counterpart to the renderer's app:offeredModes IPC handler
+    // (src/main/ipc/misc.ts), so a TUI/CLI new-workspace flow can gate its
+    // 'worktree' option the same way the GUI does (a project may legitimately
+    // be local-only: non-git cwd, or .orpheus/config.yml's allowWorktree:
+    // false). Shares resolveOfferedModesForProject (orpheusConfig.ts) with
+    // that IPC handler rather than re-deriving is-git-repo here, so the two
+    // surfaces can never disagree about what a project offers.
+    // Args:
+    //   projectId (required) — the project to check
+    'project.offeredModes': async (args) => {
+      if (typeof args.projectId !== 'string') throw new Error('args.projectId is required')
+      const project = getProject(args.projectId)
+      if (project == null) throw new Error(`project not found: ${args.projectId}`)
+      const modes = await resolveOfferedModesForProject(project.path)
+      return { local: modes.local, worktree: modes.worktree }
+    },
+
+    // Register a project by filesystem path — the command-socket counterpart
+    // to the desktop's projects:add IPC handler (src/main/ipc/projects.ts),
+    // which is a one-line passthrough to addProject() because the desktop
+    // side always hands it an absolute path chosen from a native directory
+    // picker (dialog.showOpenDialog). This entry point is different: the
+    // socket is fed free-typed text from a CLI/TUI user, so — unlike the
+    // desktop handler — args.path must be validated, resolved (tilde
+    // expansion + relative-to-absolute), and existence-checked BEFORE ever
+    // reaching addProject(), or a typo'd path would silently create a
+    // project (and its default workspace, per addProject's own atomic
+    // insert) pointing at nothing. That whole sequence lives in
+    // resolveProjectAddPath (projectPathResolve.ts) — a pure/fs-only
+    // function with no Electron dependency, kept out of this dispatch table
+    // specifically so it's independently testable (see that module's own
+    // doc comment and scripts/verify-project-add.ts).
+    // Args:
+    //   path (required) — a filesystem path, absolute or relative to the
+    //                      calling CLI process's cwd, or `~`/`~/...`-prefixed.
+    'project.add': (args) => addProject(resolveProjectAddPath(args)),
+
+    // Re-sort projects by activity — the command-socket counterpart to the
+    // desktop's projects:reorderByActivity IPC handler (src/main/ipc/
+    // projects.ts), both of which are thin passthroughs to the SAME
+    // reorderProjectsByActivity() (projects.ts): rank each project by its
+    // best non-archived workspace status, push zero-workspace projects to
+    // the bottom, persist via sort_order. No ranking logic lives here or in
+    // the IPC handler — projects.ts is the single source of truth for it,
+    // exactly like 'project.add' above defers entirely to addProject().
+    // Takes no args — this sorts the WHOLE list, there is no per-project
+    // variant. reorderProjectsByActivity() itself broadcasts projects:changed
+    // for every reordered project (see its own comment for why this needed
+    // adding, not just reusing), so the TUI needs no separate push here: the
+    // desktop's open windows pick up the new order live, and the TUI's own
+    // /subscribe tree frame picks it up on its next poll tick (listProjects()
+    // is called fresh every TREE_POLL_MS) — no explicit
+    // scheduleTreeFrameEmit() call needed either, same as project.add above.
+    'project.reorderByActivity': () => reorderProjectsByActivity(),
+
+    // Selectable-model list for a TUI/CLI model picker (new-workspace
+    // creation flow) — the SAME list + gating the renderer's
+    // WorkspaceDrawer/SettingsDrawer/DropdownChip pickers render from via
+    // the models:listSelectable IPC handler (src/main/ipc/models.ts).
+    // Reuses that handler's own resolveSelectableModels() verbatim rather
+    // than re-assembling routing-proxy/provider/cliproxy inputs here, so
+    // this can never silently drift from the renderer's list (different
+    // availability gating / provisional flags). Returned as-is — grouping
+    // by provider is the CLIENT's job, not this action's.
+    // Args:
+    //   currentModelId? — the workspace's currently-selected model id, if
+    //                      any; passed straight through so a routed model
+    //                      that's no longer healthy is still listed
+    //                      (available: false) rather than silently dropped.
+    'models.list': async (args) => {
+      if (args.currentModelId !== undefined && typeof args.currentModelId !== 'string') {
+        throw new Error('args.currentModelId must be a string')
+      }
+      const models = await resolveSelectableModels(args.currentModelId)
+      // Spread each entry into a plain object literal — NOT a reshape (same
+      // keys/values, untouched order) — purely so this structurally satisfies
+      // DispatchFn's JsonValue return type, which (unlike the type aliases
+      // other actions return) an `interface` like SelectableModel doesn't
+      // satisfy without an explicit index signature.
+      return models.map((model) => ({ ...model }))
     }
   }
   return dispatch
@@ -882,25 +1378,37 @@ function releaseSubscriptionSlot(): void {
 // handleSubscribe needs to proceed, or the (status, error) pair to respond
 // with (the caller writes the response; this function has no res access).
 type SubscribeRequestParseResult =
-  | { ok: true; workspaceIds: string[]; until: UntilMode; effectiveTimeoutMs: number }
+  | {
+      ok: true
+      workspaceIds: string[]
+      until: UntilMode
+      effectiveTimeoutMs: number
+      includeTree: boolean
+    }
   | { ok: false; status: number; error: string }
 
 /**
  * Parse and validate a /subscribe request body: JSON-parse, extract+validate
- * workspaceIds (non-empty string[]), resolve --until (falls back to 'done'
- * on anything invalid/missing — the CLI already validates client-side), and
- * compute the effective server-side timeout (default 5 min, hard-capped at
- * 1 hour). Behavior-identical to the original inline logic; only the
- * response-writing was left to the caller since this function doesn't have
- * access to `res`.
+ * workspaceIds (non-empty string[] UNLESS `tree: true` opts into the TUI's
+ * tree-only mode — see `includeTree` below), resolve --until (falls back to
+ * 'done' on anything invalid/missing — the CLI already validates client-side),
+ * and compute the effective server-side timeout via resolveSubscribeTimeoutMs
+ * (see subscribeTimeout.ts for the full resolution table). Behavior-identical
+ * to the original inline logic for existing ws-wait callers (omitted/NaN/
+ * negative → 5 min default, explicit positive → capped at 1 hour); an
+ * explicit `timeoutMs: 0` (any subscription) or an omitted `timeoutMs` on a
+ * tree-only subscription now resolve to a 24h no-deadline ceiling instead —
+ * see subscribeTimeout.ts. Only the response-writing was left to the caller
+ * since this function doesn't have access to `res`.
  */
 function parseSubscribeRequestBody(raw: Buffer): SubscribeRequestParseResult {
-  let body: { workspaceIds?: unknown; timeoutMs?: unknown; until?: unknown }
+  let body: { workspaceIds?: unknown; timeoutMs?: unknown; until?: unknown; tree?: unknown }
   try {
     body = JSON.parse(raw.toString('utf-8')) as {
       workspaceIds?: unknown
       timeoutMs?: unknown
       until?: unknown
+      tree?: unknown
     }
   } catch {
     return { ok: false, status: 400, error: 'invalid JSON body' }
@@ -910,7 +1418,14 @@ function parseSubscribeRequestBody(raw: Buffer): SubscribeRequestParseResult {
     ? (body.workspaceIds as unknown[]).filter((x): x is string => typeof x === 'string')
     : []
 
-  if (workspaceIds.length === 0) {
+  // `tree: true` (docs/TUI_SPEC.md D5) opts this connection into the
+  // full-snapshot `tree` frame stream, alongside whatever ws-wait status
+  // frames `workspaceIds` also requests (both can be present at once; a
+  // tree-only TUI subscription typically omits workspaceIds entirely, which
+  // is why the emptiness check below is gated on `!includeTree`).
+  const includeTree = body.tree === true
+
+  if (workspaceIds.length === 0 && !includeTree) {
     return { ok: false, status: 400, error: 'workspaceIds must be a non-empty string[]' }
   }
 
@@ -925,19 +1440,32 @@ function parseSubscribeRequestBody(raw: Buffer): SubscribeRequestParseResult {
   const until: UntilMode =
     typeof body.until === 'string' && isValidUntilMode(body.until) ? body.until : 'done'
 
-  // Server-side timeout policy:
-  //   - Default (timeoutMs omitted or zero): 5 minutes (300 000 ms)
-  //   - Explicit caller value: respected up to 1 hour hard cap
-  //   - 1 hour cap still accessible for callers that explicitly opt in
-  const SERVER_MAX_TIMEOUT_MS = 60 * 60 * 1000
-  const SERVER_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
-  const requestedTimeout =
-    typeof body.timeoutMs === 'number' && body.timeoutMs > 0
-      ? body.timeoutMs
-      : SERVER_DEFAULT_TIMEOUT_MS
-  const effectiveTimeoutMs = Math.min(requestedTimeout, SERVER_MAX_TIMEOUT_MS)
+  // Server-side timeout policy (resolveSubscribeTimeoutMs, subscribeTimeout.ts
+  // — see that file's header for the full table + reasoning):
+  //   - Exactly 0 (any subscription): explicit "no deadline requested" —
+  //     resolves to SERVER_NO_DEADLINE_TIMEOUT_MS (24h), a long-but-finite
+  //     ceiling, NOT Infinity and NOT passed through the 1-hour cap (that cap
+  //     is for explicit positive values only). Never silently overridden —
+  //     this is the literal caller-stated value. This is what makes the
+  //     TUI's long-lived tree-mode subscriptions (`{ tree: true, timeoutMs: 0 }`
+  //     — see tui/entry.ts) actually stay open
+  //     indefinitely instead of being silently downgraded to the 5-minute
+  //     default; the real protection against a leaked-forever subscription
+  //     is the MAX_CONCURRENT_SUBSCRIPTIONS cap above (bounded fan-out), not
+  //     this duration.
+  //   - Omitted/non-number/NaN/negative on a tree-only (includeTree)
+  //     subscription: also resolves to the no-deadline ceiling (a live tree
+  //     view has no workspaceIds terminal condition to wait for) — but this
+  //     is a narrower UX-only nicety, distinct from the primary explicit-zero
+  //     rule, and is NOT applied to workspaceIds-based (ws-wait) subscriptions.
+  //   - Omitted/non-number/NaN/negative on a workspaceIds-based subscription:
+  //     5 minutes (SERVER_DEFAULT_TIMEOUT_MS) — unchanged from the original
+  //     behavior; "didn't say" is not a deliberate signal from ws-wait callers.
+  //   - Explicit positive value (any subscription): respected, capped at 1
+  //     hour (SERVER_MAX_TIMEOUT_MS) — unchanged from the original behavior.
+  const effectiveTimeoutMs = resolveSubscribeTimeoutMs(body.timeoutMs, includeTree)
 
-  return { ok: true, workspaceIds, until, effectiveTimeoutMs }
+  return { ok: true, workspaceIds, until, effectiveTimeoutMs, includeTree }
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,8 +1558,14 @@ export function startCommandServer(deps: CommandServerDeps): {
     /* ignore — file may not exist */
   }
 
-  const dispatch = makeDispatchTable(deps)
+  const dispatch = makeDispatchTable(deps, { sockPath, token })
   const catalogWaitControllers = new Set<AbortController>()
+
+  // Global (not per-connection) status-change hook for the tree frame: any
+  // workspace status transition schedules a debounced tree rebuild for every
+  // connected tree-mode /subscribe consumer. Registered once for the life of
+  // the server; unsubscribed in close() below.
+  const unsubscribeTreeStatusObserver = onWorkspaceStatusChange(() => scheduleTreeFrameEmit())
 
   let listening = false
   let readySettled = false
@@ -1201,7 +1735,7 @@ export function startCommandServer(deps: CommandServerDeps): {
         }
         return
       }
-      const { workspaceIds, until, effectiveTimeoutMs } = parsed
+      const { workspaceIds, until, effectiveTimeoutMs, includeTree } = parsed
       const waitSession = deps.workspaceWaitEngine.createSession(workspaceIds)
 
       // Start streaming response — keep connection open
@@ -1210,6 +1744,35 @@ export function startCommandServer(deps: CommandServerDeps): {
         'Transfer-Encoding': 'chunked',
         'Cache-Control': 'no-cache'
       })
+
+      // Tree-mode registration (docs/TUI_SPEC.md D5) — the callback writes
+      // straight to this connection's own `res`, reusing writeFrame (defined
+      // below): TreeFrame is a plain JSON-serializable shape, structurally
+      // assignable to writeFrame's Record<string, unknown> parameter.
+      let treeUnsubscribe: (() => void) | null = null
+      if (includeTree) {
+        const sendTreeFrame = (frame: TreeFrame): void => {
+          writeFrame(frame)
+        }
+        treeFrameSubscribers.add(sendTreeFrame)
+        ensureTreePolling()
+        treeUnsubscribe = () => {
+          treeFrameSubscribers.delete(sendTreeFrame)
+          stopTreePollingIfIdle()
+        }
+        // "Emitted on: initial subscribe" (docs/TUI_SPEC.md) — a NEWLY joining
+        // connection must see the current snapshot right away, regardless of
+        // whether anything has changed since the last broadcast (this
+        // connection has no prior frame to diff against). Replay the last
+        // known-good frame synchronously when one exists; only the very
+        // first tree subscriber ever (lastTreeFrame still null) falls
+        // through to a real compute via the debounced path.
+        if (lastTreeFrame != null) {
+          sendTreeFrame(lastTreeFrame)
+        } else {
+          scheduleTreeFrameEmit()
+        }
+      }
 
       // Track which workspace ids have resolved to a terminal reason
       const resolved = new Map<string, string>() // workspaceId → reason
@@ -1392,7 +1955,18 @@ export function startCommandServer(deps: CommandServerDeps): {
       function cleanup(): void {
         if (cleanedUp) return
         cleanedUp = true
-        activeSubscriptionCount = Math.max(0, activeSubscriptionCount - 1)
+        // Route through releaseSlotOnce() rather than decrementing directly.
+        // These were two INDEPENDENT release mechanisms for a single slot —
+        // `releaseSlotOnce` guarded by `slotReleased`, this one guarded by
+        // `cleanedUp` — each preventing its own double-release while knowing
+        // nothing about the other. That enforced "at most one decrement per
+        // guard", not the invariant that actually matters: exactly one
+        // decrement per increment. A request that released via one path and
+        // exited without reaching the other leaked a slot permanently, and
+        // 32 of those wedge every future /subscribe behind a 429 with no
+        // client actually connected — observed live with zero TUI processes
+        // running. One shared guard makes the pairing structural.
+        releaseSlotOnce()
         if (timeoutHandle != null) {
           clearTimeout(timeoutHandle)
           timeoutHandle = null
@@ -1401,6 +1975,10 @@ export function startCommandServer(deps: CommandServerDeps): {
         if (unsubscribe != null) {
           unsubscribe()
           unsubscribe = null
+        }
+        if (treeUnsubscribe != null) {
+          treeUnsubscribe()
+          treeUnsubscribe = null
         }
         waitSession.dispose()
         if (!res.writableEnded) {
@@ -1464,7 +2042,11 @@ export function startCommandServer(deps: CommandServerDeps): {
         }
       }
 
-      if (checkAllResolved()) {
+      // workspaceIds.length === 0 (a tree-only subscription — see includeTree
+      // above) would make checkAllResolved() vacuously true via .every() on
+      // an empty array; guard on a non-empty list so a tree-only connection
+      // isn't torn down immediately after its initial snapshot is scheduled.
+      if (workspaceIds.length > 0 && checkAllResolved()) {
         cleanup()
         return
       }
@@ -1615,6 +2197,17 @@ export function startCommandServer(deps: CommandServerDeps): {
     token,
     ready,
     close(): void {
+      unsubscribeTreeStatusObserver()
+      if (treePollInterval != null) {
+        clearInterval(treePollInterval)
+        treePollInterval = null
+      }
+      if (treeDebounceTimer != null) {
+        clearTimeout(treeDebounceTimer)
+        treeDebounceTimer = null
+      }
+      treeFrameSubscribers.clear()
+      lastTreeFrame = null
       for (const controller of catalogWaitControllers) controller.abort()
       catalogWaitControllers.clear()
       if (

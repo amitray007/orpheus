@@ -246,6 +246,11 @@ const api = {
     onSleepStateChanged: (
       cb: (data: { workspaceId: string; sleeping: boolean }) => void
     ): (() => void) => subscribe(PUSH_CHANNELS.terminalSleepStateChanged, cb),
+    onCellSizeChanged: (
+      cb: (data: { workspaceId: string; cellHeightPx: number }) => void
+    ): (() => void) => subscribe(PUSH_CHANNELS.terminalCellSizeChanged, cb),
+    onBackgroundColorChanged: (cb: (data: { color: string }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.terminalBackgroundColorChanged, cb),
     onLiveness: (
       cb: (data: {
         workspaceId: string
@@ -334,7 +339,12 @@ const api = {
       }) => void
     ): (() => void) => subscribe(PUSH_CHANNELS.projectsGithubDataUpdated, cb),
     onChanged: (cb: (project: ProjectRecord) => void): (() => void) =>
-      subscribe(PUSH_CHANNELS.projectsChanged, (e) => cb(e.project))
+      subscribe(PUSH_CHANNELS.projectsChanged, (e) => cb(e.project)),
+    /** Projects were re-ordered as a set (activity sort). Carries the new id
+     *  order — onChanged cannot express this, since patching a record in
+     *  place never moves it within the list. */
+    onReordered: (cb: (orderedIds: string[]) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.projectsReordered, (e) => cb(e.orderedIds))
   },
   sessions: {
     listForProject: (

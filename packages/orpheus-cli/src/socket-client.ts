@@ -49,7 +49,7 @@
 
 import * as http from 'node:http'
 import * as fs from 'node:fs'
-import { getCmdSockPath, getCmdTokenPath } from './paths.js'
+import { getCmdSockPath, getCmdTokenPath, ambientTokenOverrideIsTrusted } from './paths.js'
 
 // ---------------------------------------------------------------------------
 // Typed errors
@@ -59,11 +59,20 @@ import { getCmdSockPath, getCmdTokenPath } from './paths.js'
  * Thrown when the Orpheus app is not running (socket absent or refused) or
  * when the auth token cannot be resolved. The CLI's auto-launch logic (U6)
  * catches this error class to trigger a fresh app launch.
+ *
+ * `timedOutAfterLaunch` distinguishes the two cases output.ts's notice needs
+ * to word differently: false/absent (default) means the socket/token was
+ * never found — the app was simply never running. true means the CLI DID
+ * launch the app (autoLaunch() in cli.ts) but the socket never came up
+ * within the timeout — set only at that one throw site.
  */
 export class AppNotRunningError extends Error {
-  constructor(reason?: string) {
+  readonly timedOutAfterLaunch: boolean
+
+  constructor(reason?: string, opts?: { timedOutAfterLaunch?: boolean }) {
     super(reason ?? 'Orpheus is not running (socket not found or token unavailable)')
     this.name = 'AppNotRunningError'
+    this.timedOutAfterLaunch = opts?.timedOutAfterLaunch ?? false
   }
 }
 
@@ -90,7 +99,15 @@ export class CommandTransportError extends Error {
   }
 }
 
-export type SubscriptionErrorKind = 'auth' | 'http' | 'transport'
+// 'unavailable' is distinct from the generic 'transport' kind: it means the
+// socket itself could not be reached at all (ENOENT/ECONNREFUSED — same
+// signal rawPost()'s isUnavailableSocketCode() uses to decide AppNotRunningError
+// for the /cmd path), as opposed to a transport failure on an otherwise-live
+// socket (a response aborting mid-stream, a read error, etc). tui/entry.ts's
+// reconnect loop uses this to tell "the app was never reachable in the first
+// place" apart from "an established connection dropped" — see its own doc
+// comment on attemptReconnect() for why that distinction matters.
+export type SubscriptionErrorKind = 'auth' | 'http' | 'transport' | 'unavailable'
 
 /**
  * A failure of the /subscribe HTTP stream itself, rather than a workspace wait
@@ -140,8 +157,18 @@ function resolveSocketPath(): string {
  * Resolve the auth token, caching it for the lifetime of this CLI process.
  *
  * Resolution order:
- *   1. process.env.ORPHEUS_CMD_TOKEN (allows test scripts to inject a token)
- *   2. getCmdTokenPath() read from disk (written by startCommandServer)
+ *   1. process.env.ORPHEUS_CMD_TOKEN (allows test scripts to inject a token) —
+ *      but ONLY when ambientTokenOverrideIsTrusted() says the invoked and
+ *      ambient app variants agree (or ORPHEUS_FORCE_CROSS_VARIANT=1). A bare
+ *      token string has no embedded variant to cross-check the way
+ *      getCmdSockPath()'s path override does (see paths.ts's
+ *      "CROSS-VARIANT TALK GUARD" and ambientTokenOverrideIsTrusted()'s doc
+ *      comment) — ORPHEUS_CMD_SOCK/ORPHEUS_CMD_TOKEN are injected together
+ *      as a matched pair, so an untrusted socket override implies an
+ *      untrusted token override too, even though the token itself can't be
+ *      inspected directly.
+ *   2. getCmdTokenPath() read from disk (written by startCommandServer) —
+ *      also the fallback when step 1's token is present but distrusted.
  *
  * Throws AppNotRunningError if no token is available from either source.
  */
@@ -158,8 +185,21 @@ export function resolveToken(): string {
   // 1. Env-var override (primarily for tests and internal tooling)
   const envToken = process.env.ORPHEUS_CMD_TOKEN
   if (typeof envToken === 'string' && envToken.length > 0) {
-    _cachedToken = envToken
-    return _cachedToken
+    if (ambientTokenOverrideIsTrusted()) {
+      _cachedToken = envToken
+      return _cachedToken
+    }
+    // Untrusted: this token was very likely minted for a DIFFERENT app
+    // instance's command server (see the doc comment above). Refuse it and
+    // fall through to the invoked variant's own on-disk token. Warn
+    // independently of getCmdSockPath()'s own check — ORPHEUS_CMD_SOCK and
+    // ORPHEUS_CMD_TOKEN are injected together in practice, but nothing
+    // guarantees a caller sets both, so this must not rely on the other
+    // check having already fired.
+    process.stderr.write(
+      'orpheus: warning: ignoring inherited auth token — it was minted for a different ' +
+        'app variant than this CLI is targeting. Set ORPHEUS_FORCE_CROSS_VARIANT=1 to override.\n'
+    )
   }
 
   // 2. On-disk token file
@@ -371,6 +411,74 @@ export async function sendCommand(
 // should pass timeoutMs: 0 to disable the timeout.
 const DEFAULT_SUBSCRIBE_TIMEOUT_MS = 5 * 60 * 1000
 
+// Bound on how long CONNECTION ESTABLISHMENT (opening the Unix socket +
+// receiving response headers with a 200 status) is allowed to take, applied
+// REGARDLESS of what `opts.timeoutMs` the caller passed for the live-stream
+// portion. See subscribe()'s "ESTABLISHMENT VS STREAM DEADLINE" doc comment
+// for why this exists as a separate concern from the overall
+// connect+stream deadline `timeoutMs` covers for positive values. 20s is
+// generous for a Unix domain socket connect plus the app responding (both
+// should normally complete in well under a second) while still catching a
+// genuinely wedged connection (accepted the socket, never sent headers)
+// promptly rather than hanging the caller's "connecting…" UI forever.
+const CONNECTION_ESTABLISHMENT_TIMEOUT_MS = 20 * 1000
+
+/**
+ * Extract the server's `{ ok: false, error: "..." }` message from a
+ * /subscribe error-response body, or undefined if the body isn't that shape
+ * (blank, not JSON, or missing a string `error` field — the server always
+ * sends this envelope for its own 4xx/429 responses, per commandServer.ts's
+ * writeJsonResponse()/parseSubscribeRequestBody(), but a malformed or absent
+ * body must not throw here; the caller falls back to a bare status message).
+ *
+ * Pure string parsing — exported so it's unit-testable without a live socket
+ * or HTTP server. This is what used to be silently discarded: the transport
+ * only ever surfaced `Orpheus subscription failed with HTTP ${statusCode}`,
+ * which is why the /subscribe protocol-vs-stale-server mismatch that this
+ * whole investigation started from took a Unix-socket proxy to diagnose
+ * instead of just reading the error the server had already sent.
+ */
+export function extractSubscriptionErrorDetail(rawBody: string): string | undefined {
+  const trimmed = rawBody.trim()
+  if (trimmed.length === 0) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return undefined
+  }
+  if (parsed == null || typeof parsed !== 'object') return undefined
+  const error = (parsed as { error?: unknown }).error
+  return typeof error === 'string' && error.length > 0 ? error : undefined
+}
+
+/**
+ * Build the SubscriptionError for a non-200 /subscribe response, folding in
+ * the server's own error message (see extractSubscriptionErrorDetail()) when
+ * the body carries one. Pure function of (statusCode, rawBody) — exported
+ * for unit testing; the 'auth'/'http' kind split and 401-specific copy match
+ * subscribe()'s pre-existing behavior exactly, only the message detail is new.
+ */
+export function buildSubscriptionHttpError(statusCode: number, rawBody: string): SubscriptionError {
+  const detail = extractSubscriptionErrorDetail(rawBody)
+  if (statusCode === 401) {
+    return new SubscriptionError(
+      'auth',
+      detail != null
+        ? `Orpheus subscription authentication was rejected: ${detail}`
+        : 'Orpheus subscription authentication was rejected',
+      statusCode
+    )
+  }
+  return new SubscriptionError(
+    'http',
+    detail != null
+      ? `Orpheus subscription failed with HTTP ${statusCode}: ${detail}`
+      : `Orpheus subscription failed with HTTP ${statusCode}`,
+    statusCode
+  )
+}
+
 /**
  * Open a long-lived streaming subscription to the Orpheus app.
  *
@@ -393,6 +501,29 @@ const DEFAULT_SUBSCRIBE_TIMEOUT_MS = 5 * 60 * 1000
  * @returns         { close, done, timedOut } — call close() to tear down the
  *                  connection; done resolves when the server closes or the
  *                  timeout fires; timedOut identifies the latter case.
+ *
+ * ESTABLISHMENT VS STREAM DEADLINE (two different failure modes, one timer
+ * used to cover both — this is the split that matters for `timeoutMs: 0`)
+ * -----------------------------------------------------------------------
+ * Before this split existed, a single `timeoutHandle` covered the ENTIRE
+ * call from `subscribe()` to `teardown()` — both (a) "the Unix socket never
+ * connects / the server never sends response headers" (an ESTABLISHMENT
+ * failure — should always be bounded, regardless of the caller's desired
+ * stream lifetime) and (b) "the live NDJSON stream itself should give up
+ * after N ms" (a STREAM deadline — legitimately wants to be `0`/unbounded
+ * for a long-lived TUI picker subscription). Passing `timeoutMs: 0` to get
+ * (b) unbounded ALSO disabled (a) entirely (`if (timeoutMs > 0)` skipped
+ * arming any timer) — so a server that accepted the socket but never sent
+ * headers back left the caller stuck "connecting…" forever with no client-
+ * side backstop either. Fixed by always arming
+ * CONNECTION_ESTABLISHMENT_TIMEOUT_MS as a SEPARATE, always-on guard around
+ * establishment only, cleared the instant a 200 response's headers are in
+ * (regardless of `timeoutMs`), with the CALLER's `timeoutMs` behavior
+ * unchanged after that point: `0` stays unbounded for the stream itself (the
+ * actual fix for the 300s-death bug this whole change addresses), a
+ * positive value keeps combining connect+stream into one deadline exactly
+ * as before (the original `timeoutHandle` is simply never cleared early for
+ * that case — same as today).
  */
 export function subscribe(
   payload: object,
@@ -405,6 +536,12 @@ export function subscribe(
 
   let reqRef: http.ClientRequest | null = null
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+  // Separate establishment-only guard — see the "ESTABLISHMENT VS STREAM
+  // DEADLINE" doc comment above. Only ever armed when `timeoutMs === 0`
+  // (unbounded stream requested); for a positive `timeoutMs`, `timeoutHandle`
+  // above already covers connect+stream as one deadline, unchanged from
+  // before this split, so a second timer here would be redundant.
+  let establishmentTimeoutHandle: ReturnType<typeof setTimeout> | null = null
   let timedOut = false
   let closed = false
   let resolveDone!: () => void
@@ -414,6 +551,13 @@ export function subscribe(
     rejectDone = reject
   })
 
+  function clearEstablishmentTimeout(): void {
+    if (establishmentTimeoutHandle != null) {
+      clearTimeout(establishmentTimeoutHandle)
+      establishmentTimeoutHandle = null
+    }
+  }
+
   function teardown(error?: SubscriptionError): void {
     if (closed) return
     closed = true
@@ -421,6 +565,7 @@ export function subscribe(
       clearTimeout(timeoutHandle)
       timeoutHandle = null
     }
+    clearEstablishmentTimeout()
     if (reqRef != null) {
       try {
         reqRef.destroy()
@@ -439,11 +584,28 @@ export function subscribe(
   // The deadline covers socket connection and response-header establishment,
   // not only an already-open response stream. A server that accepts the Unix
   // socket but never sends headers must still terminate at the caller's bound.
+  // Unchanged for positive timeoutMs — this single timer still covers
+  // connect+stream as one combined deadline exactly as before this fix.
   if (timeoutMs > 0) {
     timeoutHandle = setTimeout(() => {
       timedOut = true
       teardown()
     }, timeoutMs)
+  } else {
+    // timeoutMs === 0 (unbounded stream requested): the stream itself must
+    // stay unbounded, but ESTABLISHMENT still needs a real bound — see the
+    // "ESTABLISHMENT VS STREAM DEADLINE" doc comment. Cleared as soon as a
+    // 200 response's headers are confirmed, below.
+    establishmentTimeoutHandle = setTimeout(() => {
+      establishmentTimeoutHandle = null
+      timedOut = true
+      teardown(
+        new SubscriptionError(
+          'transport',
+          `Orpheus subscription did not establish within ${CONNECTION_ESTABLISHMENT_TIMEOUT_MS}ms`
+        )
+      )
+    }, CONNECTION_ESTABLISHMENT_TIMEOUT_MS)
   }
 
   // Kick off the connection asynchronously (subscribe is not async itself so
@@ -467,25 +629,39 @@ export function subscribe(
     const req = http.request(options, (res) => {
       res.setEncoding('utf-8')
 
+      // Response headers are in — establishment is over (success OR a
+      // non-200 error status; either way the connection DID establish,
+      // it just may not have been accepted). Clear the establishment-only
+      // guard now regardless of statusCode: a non-200 response gets its own
+      // error handling below (still bounded, just via the error path, not
+      // this timer), and a 200 response falls through to the unbounded
+      // stream `timeoutMs === 0` requested.
+      clearEstablishmentTimeout()
+
       const statusCode = res.statusCode ?? 0
       if (statusCode !== 200) {
         if (statusCode === 401) {
           invalidateConnectionCache()
         }
-        res.resume()
-        teardown(
-          statusCode === 401
-            ? new SubscriptionError(
-                'auth',
-                'Orpheus subscription authentication was rejected',
-                statusCode
-              )
-            : new SubscriptionError(
-                'http',
-                `Orpheus subscription failed with HTTP ${statusCode}`,
-                statusCode
-              )
-        )
+        // Collect the error body (small JSON envelope, not the NDJSON event
+        // stream — that only starts once status 200 is confirmed above) so
+        // the server's actual { ok: false, error } message reaches the
+        // caller instead of being discarded. See
+        // extractSubscriptionErrorDetail()'s doc comment for why this
+        // mattered in practice. teardown() is idempotent (guarded by
+        // `closed`), so if the body read is interrupted mid-flight the
+        // fallback bare-status error below still wins the race safely.
+        const errorChunks: string[] = []
+        res.on('data', (chunk: string) => errorChunks.push(chunk))
+        res.on('end', () => {
+          teardown(buildSubscriptionHttpError(statusCode, errorChunks.join('')))
+        })
+        res.on('aborted', () => {
+          teardown(buildSubscriptionHttpError(statusCode, errorChunks.join('')))
+        })
+        res.on('error', () => {
+          teardown(buildSubscriptionHttpError(statusCode, errorChunks.join('')))
+        })
         return
       }
 
@@ -534,7 +710,7 @@ export function subscribe(
     req.on('error', (err: NodeJS.ErrnoException) => {
       teardown(
         new SubscriptionError(
-          'transport',
+          isUnavailableSocketCode(err.code) ? 'unavailable' : 'transport',
           `cannot open Orpheus subscription${err.code != null ? `: ${err.code}` : ''}`
         )
       )
