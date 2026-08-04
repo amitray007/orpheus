@@ -69,49 +69,81 @@ export function groupModelsByProvider(models: SelectableModel[]): ProviderGroup[
 }
 
 // ---------------------------------------------------------------------------
-// Accordion flattening — Step 1's single screen, see wizardTypes.ts's STEP
-// MODEL section for why this replaced the old provider-list/model-detail
-// two-screen split.
+// Model list flattening — Step 1's single screen: every provider is always
+// fully expanded (no accordion, no toggle state), see wizardTypes.ts's STEP
+// MODEL section for why the old collapse/expand machinery was removed.
 // ---------------------------------------------------------------------------
 
-/** One row of the flattened accordion list — either a provider header (always
- *  present, one per group) or one of the expanded provider's models
- *  (present only for `expandedProviderId`, interleaved directly after that
- *  provider's own header row). `kind` lets callers (WizardScreens.tsx)
- *  build the right `ListRow` shape — provider rows get the trailing
- *  count+marker, model rows get the indent + availability suffix — without
- *  re-deriving which is which from index arithmetic. */
-export type AccordionRow =
-  | { kind: 'provider'; group: ProviderGroup; expanded: boolean }
+/** One row of the flattened model list — either a provider header (always
+ *  present, one per group, non-interactive — the cursor skips it) or one of
+ *  that provider's models (always present, every provider is always
+ *  expanded). `kind` lets callers (WizardScreens.tsx) build the right
+ *  `ListRow` shape — headers get the group colour, model rows get the
+ *  indent + availability suffix — without re-deriving which is which from
+ *  index arithmetic. */
+export type ModelListRow =
+  | { kind: 'provider'; group: ProviderGroup }
   | { kind: 'model'; providerId: string; model: SelectableModel }
 
 /**
- * Flatten the provider groups into the accordion's row list: every provider
- * is always one row; the currently-expanded provider (if any) additionally
- * contributes one row per model, inserted immediately after its own header
- * row. This is the function the harness's "N providers collapsed -> N rows,
- * one expanded -> N + its model count" assertions exercise directly.
- *
- * At most one provider can be expanded at a time (WizardState.
- * expandedProviderId is a single value, not a set) — see wizardTypes.ts for
- * why that bound exists (keeps this list, and the windowing budget over it,
- * predictable regardless of which provider the user opens).
+ * Flatten the provider groups into Step 1's row list: every provider
+ * contributes exactly one header row followed by every one of its models,
+ * in order — ALL providers, always (no expand/collapse state to consult).
+ * This is the function the harness's "every provider's header + every one of
+ * its models, nothing collapsed" assertion exercises directly.
  */
-export function buildModelAccordionRows(
-  groups: ProviderGroup[],
-  expandedProviderId: string | null
-): AccordionRow[] {
-  const rows: AccordionRow[] = []
+export function buildModelListRows(groups: ProviderGroup[]): ModelListRow[] {
+  const rows: ModelListRow[] = []
   for (const group of groups) {
-    const expanded = group.providerId === expandedProviderId
-    rows.push({ kind: 'provider', group, expanded })
-    if (expanded) {
-      for (const model of group.models) {
-        rows.push({ kind: 'model', providerId: group.providerId, model })
-      }
+    rows.push({ kind: 'provider', group })
+    for (const model of group.models) {
+      rows.push({ kind: 'model', providerId: group.providerId, model })
     }
   }
   return rows
+}
+
+/**
+ * The cursor only ever lands on a SELECTABLE row: a model with
+ * `available: true`. Header rows are structural labels now the accordion is
+ * gone (nothing to toggle), and an unavailable model is a dead end if
+ * selected — both are skipped by `moveModelCursor` below, so this predicate
+ * is the one place "is this row a valid cursor stop" is decided.
+ */
+function isSelectableRow(row: ModelListRow): boolean {
+  return row.kind === 'model' && row.model.available
+}
+
+/**
+ * Move the model-step cursor by `delta` (+1/-1), skipping header rows and
+ * unavailable models so the cursor only ever rests on a selectable model —
+ * crossing a provider boundary reads as if the header in between weren't
+ * there. Wraps neither direction (clamps at the first/last selectable row,
+ * matching `moveIndex`'s own clamp-not-wrap contract) and returns the
+ * CURRENT index unchanged if no selectable row exists in the requested
+ * direction (e.g. already on the last available model and pressing down) or
+ * if the list has no selectable rows at all (defensive — shouldn't happen
+ * since a provider only ever lists a model when `models.list` says the
+ * project has one, but a screen full of unavailable models must not crash
+ * navigation).
+ */
+export function moveModelCursor(rows: ModelListRow[], current: number, delta: number): number {
+  let next = current
+  for (let steps = 0; steps < rows.length; steps++) {
+    next += delta
+    if (next < 0 || next >= rows.length) return current
+    if (isSelectableRow(rows[next]!)) return next
+  }
+  return current
+}
+
+/** The first selectable row's index, or -1 if the list has none — used to
+ *  seed the cursor when the model step's data first resolves (see
+ *  `initialWizardState`'s cursor:0 default, which this corrects once
+ *  `models` moves from loading to ready: row 0 is always a provider header,
+ *  never a valid cursor rest). */
+export function firstSelectableModelIndex(rows: ModelListRow[]): number {
+  return rows.findIndex((row) => isSelectableRow(row))
 }
 
 /**
@@ -146,7 +178,6 @@ export function initialWizardState(project: WizardProject): WizardState {
     project,
     models: { kind: 'loading' },
     offeredModes: { kind: 'loading' },
-    expandedProviderId: null,
     cursor: 0,
     selectedModel: null,
     modeIndex: 0,
@@ -159,9 +190,10 @@ export function initialWizardState(project: WizardProject): WizardState {
 export const MODE_KEYS: WorkspaceMode[] = ['local', 'worktree']
 
 /**
- * Move a list highlight index by `delta`, clamped to [0, length). Shared by
- * every list-shaped step (the model accordion's flat cursor, the mode list)
- * so the clamping logic isn't repeated per caller.
+ * Move a list highlight index by `delta`, clamped to [0, length). Used by
+ * the mode list, whose every row is selectable — the model list uses
+ * `moveModelCursor` instead, since it must additionally skip header/
+ * unavailable rows.
  */
 export function moveIndex(current: number, delta: number, length: number): number {
   if (length === 0) return 0
@@ -174,14 +206,18 @@ export function moveIndex(current: number, delta: number, length: number): numbe
 type SetWizardState = (updater: (s: WizardState) => WizardState) => void
 
 /**
- * Step 1 key handling — the single accordion screen. Kept as its own
- * function (rather than inlined into NewWorkspaceWizard.tsx's useInput) to
- * keep BOTH that callback's and this function's own cognitive-complexity
- * under the sonarjs budget (20) — see App.tsx's own handleViewKey for the
- * precedent this follows. Split into three small helpers below (navigate /
- * enter) for the same reason: the old two-screen version was already at two
- * functions for this budget, and the merged accordion has strictly more
- * branches (expand vs. collapse vs. select) to fit in the same ceiling.
+ * Step 1 key handling — the single, always-fully-expanded model list.
+ * Kept as its own function (rather than inlined into
+ * NewWorkspaceWizard.tsx's useInput) to keep BOTH that callback's and this
+ * function's own cognitive-complexity under the sonarjs budget (20) — see
+ * App.tsx's own handleViewKey for the precedent this follows.
+ *
+ * `submitting` is checked here (not just at the mode step) because
+ * selecting a model now creates IMMEDIATELY when Step 2 is auto-skipped —
+ * see `handleModelStepEnter` below — so this screen can itself be "the last
+ * screen" with a request in flight, and further enter presses while that
+ * request is outstanding must not double-submit (mirrors the identical
+ * guard this wizard already had at the old confirm step).
  */
 export function handleModelStepKey(
   input: string,
@@ -197,79 +233,70 @@ export function handleModelStepKey(
     onCancel()
     return
   }
+  if (state.submitting) return // no double-submit while a create is in flight
   if (state.models.kind !== 'ready') return // nothing to navigate yet
-  const groups = state.models.value
-  const rows = buildModelAccordionRows(groups, state.expandedProviderId)
+  const rows = buildModelListRows(state.models.value)
   if (key.downArrow || input === 'j') {
-    setState((s) => ({ ...s, cursor: moveIndex(s.cursor, 1, rows.length) }))
+    setState((s) => ({ ...s, cursor: moveModelCursor(rows, s.cursor, 1) }))
     return
   }
   if (key.upArrow || input === 'k') {
-    setState((s) => ({ ...s, cursor: moveIndex(s.cursor, -1, rows.length) }))
+    setState((s) => ({ ...s, cursor: moveModelCursor(rows, s.cursor, -1) }))
     return
   }
   if (key.return) {
-    handleModelStepEnter(groups, rows, state.cursor, setState)
+    handleModelStepEnter(rows, state.cursor, setState)
   }
 }
 
 /**
- * `enter` on the accordion: a provider row toggles expand/collapse (and, per
- * the task brief, collapses whichever OTHER provider was open — enforced
- * simply by setting `expandedProviderId` to either this provider or null,
- * never adding to a set); a model row selects it (if available) and advances
- * to Step 2. Split out of `handleModelStepKey` purely to keep that
- * function's own branch count under the sonarjs cognitive-complexity budget.
+ * `enter` on the model list: selects the highlighted model (if available —
+ * see `moveModelCursor`'s skip logic, though this guard is kept defensively
+ * since the cursor's starting position at row 0 is a header before the first
+ * navigation) and advances to Step 2. Split out of `handleModelStepKey`
+ * purely to keep that function's own branch count under the sonarjs
+ * cognitive-complexity budget.
  *
- * CURSOR REPOSITIONING ON TOGGLE — load-bearing, not cosmetic. Expanding or
- * collapsing a provider changes how many rows sit ABOVE every row that comes
- * after it in the list (the toggled provider's own model rows appear or
- * disappear), so leaving `cursor` at its pre-toggle numeric index would
- * silently highlight a DIFFERENT row after the list reflows — e.g. expand
- * "claude" (adds 1 model row after it), move the cursor down to "codex"'s
- * header, press enter to expand codex (which collapses claude, removing that
- * 1 row) -> without repositioning, the cursor stays on the old numeric index
- * and now lands one row too low, highlighting the wrong thing. Fixed by
- * rebuilding the row list against the NEW expandedProviderId and re-finding
- * the just-toggled provider's row within it — the toggled provider's OWN
- * header row is always still present post-toggle (toggling never removes a
- * provider, only its models), so this lookup can never fail into "provider
- * vanished, keep the stale cursor".
+ * This no longer decides whether to submit — that decision (mode step
+ * shown vs. auto-skipped) depends on `offeredModes`, an async slot this
+ * pure function has no access to. NewWorkspaceWizard.tsx's mode-auto-skip
+ * effect already resolves that once `step` flips to 'mode' and immediately
+ * calls `submit()` when the project only offers one mode — so selecting a
+ * model always transitions to 'mode' here, and the effect (or the user, at
+ * the mode step) decides what happens next.
  */
 function handleModelStepEnter(
-  groups: ProviderGroup[],
-  rows: AccordionRow[],
+  rows: ModelListRow[],
   cursor: number,
   setState: SetWizardState
 ): void {
   const row = rows[cursor]
-  if (row == null) return
-  if (row.kind === 'provider') {
-    const nextExpandedProviderId = row.expanded ? null : row.group.providerId
-    const nextRows = buildModelAccordionRows(groups, nextExpandedProviderId)
-    const nextCursor = nextRows.findIndex(
-      (r) => r.kind === 'provider' && r.group.providerId === row.group.providerId
-    )
-    setState((s) => ({
-      ...s,
-      expandedProviderId: nextExpandedProviderId,
-      cursor: nextCursor >= 0 ? nextCursor : s.cursor
-    }))
-    return
-  }
-  // Unavailable models are a no-op on enter, never a selectable pick — per
-  // the task brief. No transient notice here (unlike the picker's
-  // Footer.notice pattern) since the row's own dimmed/marked rendering
-  // already explains why nothing happened.
-  if (row.model.available) {
-    setState((s) => ({ ...s, selectedModel: row.model, step: 'mode' }))
-  }
+  if (row == null || row.kind !== 'model' || !row.model.available) return
+  // Clear any stale submitError from a previous failed auto-skip attempt
+  // (see NewWorkspaceWizard.tsx's `submit`'s `autoSkipped` handling) — a
+  // fresh selection is a fresh attempt, not a retry of the old one.
+  setState((s) => ({ ...s, selectedModel: row.model, step: 'mode', submitError: null }))
 }
 
-/** Step 2 (mode) key handling. */
-export function handleModeStepKey(key: Key, input: string, setState: SetWizardState): void {
+/**
+ * Step 2 (mode) key handling. Selecting a mode used to advance to a
+ * 'confirm' screen; that screen is gone — selecting a mode now creates
+ * immediately, via `onSelect`, and this function does not touch
+ * `submitting`/`submitError` itself (see NewWorkspaceWizard.tsx's `submit`,
+ * which owns that lifecycle end to end).
+ */
+export function handleModeStepKey(
+  key: Key,
+  input: string,
+  state: WizardState,
+  setState: SetWizardState,
+  onSelect: (mode: WorkspaceMode) => void
+): void {
+  if (state.submitting) return // no double-submit while a create is in flight
   if (key.escape) {
-    setState((s) => ({ ...s, step: STEP_MODEL }))
+    // Always back to the model list, clearing any stale error from a failed
+    // attempt — matches the old confirm screen's "esc back" affordance.
+    setState((s) => ({ ...s, step: STEP_MODEL, submitError: null }))
     return
   }
   if (key.downArrow || input === 'j') {
@@ -281,11 +308,9 @@ export function handleModeStepKey(key: Key, input: string, setState: SetWizardSt
     return
   }
   if (key.return) {
-    setState((s) => ({
-      ...s,
-      mode: MODE_KEYS[s.modeIndex] ?? 'local',
-      step: 'confirm'
-    }))
+    const mode = MODE_KEYS[state.modeIndex] ?? 'local'
+    setState((s) => ({ ...s, mode }))
+    onSelect(mode)
   }
 }
 

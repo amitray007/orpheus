@@ -224,9 +224,10 @@ function handleNewWorkspaceKey(
  * `mode`/`archiveStage` together resolve which of CloseArchiveConfirm's
  * three screens (close / archive-confirm / archive-execute) is showing —
  * see that component's file header for the full stage-machine rationale.
- * `submitting`/`submitError` mirror ConfirmStep's own submit-state fields
- * (wizard/ConfirmStep.tsx) so the async sendCommand + inline-error UX is the
- * same shape as the wizard's already-established pattern.
+ * `submitting`/`submitError` mirror the new-workspace wizard's own
+ * submit-state fields (wizard/WizardScreens.tsx's `SubmitStatusLine`) so the
+ * async sendCommand + inline-error UX is the same shape as the wizard's
+ * already-established pattern.
  */
 interface CloseArchiveState {
   workspaceId: string
@@ -577,10 +578,10 @@ export function App({
 
   // Submit workspace.close — on success, close the overlay and arm the
   // Footer notice (see the file header's "THE CRITICAL UX GAP" note); on
-  // failure, keep the overlay open and surface the error inline (mirrors
-  // ConfirmStep.tsx's submitError pattern exactly — the self-action-refusal
-  // case, "cannot close/archive the workspace running this command", reads
-  // clearly here rather than as a generic failure).
+  // failure, keep the overlay open and surface the error inline (mirrors the
+  // new-workspace wizard's own submitError pattern exactly — the
+  // self-action-refusal case, "cannot close/archive the workspace running
+  // this command", reads clearly here rather than as a generic failure).
   async function submitClose(state: CloseArchiveState): Promise<void> {
     setCloseArchive((s) => (s == null ? s : { ...s, submitting: true, submitError: null }))
     try {
