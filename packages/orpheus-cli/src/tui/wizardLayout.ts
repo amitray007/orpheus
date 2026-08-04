@@ -101,3 +101,121 @@ export function buildClosePromptLine(workspaceName: string, contentWidth: number
   const nameWidth = Math.max(1, contentWidth - CLOSE_PROMPT_LITERAL_COLUMNS)
   return `close "${truncate(workspaceName, nameWidth)}"?`
 }
+
+// ---------------------------------------------------------------------------
+// Flat-row windowing — Step 1's accordion list has no fixed row count once a
+// provider expands (see wizardStepMachine.ts's `buildModelAccordionRows`):
+// with live data at time of writing, 4 providers collapsed is 4 rows, but
+// expanding the biggest one (13 models) makes it 3 collapsed providers + 1
+// header + 13 models = 17 rows, plus this screen's own title/hint lines —
+// comfortably more than a phone viewport with the on-screen keyboard up
+// (~12 rows). ListStep.tsx renders `rows.map(...)` with NO windowing of its
+// own, which was safe for the old two-screen split (a drilled-in model list
+// was at most 13 rows and NOTHING else) but would silently push the
+// highlighted row and the hint line off-screen for the accordion. This
+// function is the fix: it keeps the highlighted row inside the returned
+// window, exactly the way layout.ts's own `scrollWindowFor` does for the
+// picker's flattened tree rows.
+//
+// WHY THIS ISN'T blocks.ts's `windowBlocks` REUSED
+// -----------------------------------------------------------------------
+// blocks.ts's windowing is built for VARIABLE-height blocks (a 1-row project
+// header next to a 3-row WorkspaceCard) and carries a STICKY window-start
+// (the caller round-trips `previousStart`/`start` through its own state so
+// the window doesn't recenter on every selection change within an
+// already-visible range — see that file's "STICKY WINDOW START" note).
+// Every accordion row here is uniform height (1), so the variable-height
+// bookkeeping (a `height` field per block, `heightFrom`/`endForStart`
+// summation) buys nothing — layout.ts's `scrollWindowFor` is the closer
+// analog (also uniform-height rows) but is typed directly to
+// `DisplayRow[]`, the picker's own row shape, and pulls in that module's
+// import surface for no reason a plain array can't serve. This is that
+// same "keep selection in view, minimal nudge, fixed affordance budget"
+// algorithm, generalized to `T[]` and re-typed against a plain length +
+// selected index the way blocks.ts documents its own scope split from
+// layout.ts. Also, unlike windowBlocks, this is STATELESS (recomputed fresh
+// from `highlightedIndex` on every call, no sticky start) — the accordion
+// only re-renders on an explicit cursor move or expand/collapse, never on
+// an unrelated re-render, so there's no risk of the spurious-recenter bug
+// windowBlocks' sticky start exists to avoid; a plain recompute is simpler
+// and there's nothing here for a sticky start to protect against.
+// ---------------------------------------------------------------------------
+
+export interface RowWindow<T> {
+  /** Slice of `rows` that should actually be rendered this frame. */
+  visible: T[]
+  /** Index into `visible` (not into the original `rows`) of the highlighted
+   *  row — callers use this instead of re-deriving it, since the window's
+   *  own start offset shifts the original index. */
+  visibleHighlightedIndex: number
+  /** Count of rows scrolled off above the visible slice (0 if none). */
+  aboveCount: number
+  /** Count of rows scrolled off below the visible slice (0 if none). */
+  belowCount: number
+  /** True once windowing is engaged at all (rows.length > availableRows).
+   *  Mirrors layout.ts's ScrollWindow.windowed contract. */
+  windowed: boolean
+}
+
+/** Rows spent on "more above/below" affordances once scrolling engages at
+ *  all — mirrors layout.ts's/blocks.ts's own AFFORDANCE_ROWS_WHEN_WINDOWED,
+ *  redeclared here (rather than imported) because this module intentionally
+ *  stays decoupled from layout.ts's DisplayRow-specific windowing (see this
+ *  section's header) and re-declaring one small constant is cheaper than
+ *  pulling in that coupling for it alone. */
+const ACCORDION_AFFORDANCE_ROWS = 2
+
+/** Scroll-off margin: how many rows of context to keep around the highlight
+ *  when it's not near either edge of the full list — mirrors layout.ts's own
+ *  SCROLL_OFF. */
+const ACCORDION_SCROLL_OFF = 1
+
+function clampWindowStart(highlightedIndex: number, totalRows: number, capacity: number): number {
+  const maxStart = Math.max(0, totalRows - capacity)
+  const desired = highlightedIndex - Math.min(ACCORDION_SCROLL_OFF, Math.floor((capacity - 1) / 2))
+  return Math.min(maxStart, Math.max(0, desired))
+}
+
+/**
+ * Keep `highlightedIndex` within a window of `availableRows` lines out of
+ * `rows`, reserving a fixed affordance budget once windowing engages at all
+ * so the content window's own height never changes mid-scroll (same
+ * discipline as layout.ts's `scrollWindowFor`; see this section's header for
+ * why that function itself isn't reused directly).
+ */
+export function windowListRows<T>(
+  rows: T[],
+  highlightedIndex: number,
+  availableRows: number
+): RowWindow<T> {
+  if (availableRows <= 0 || rows.length === 0) {
+    return {
+      visible: [],
+      visibleHighlightedIndex: -1,
+      aboveCount: rows.length,
+      belowCount: 0,
+      windowed: rows.length > 0
+    }
+  }
+  if (rows.length <= availableRows) {
+    return {
+      visible: rows,
+      visibleHighlightedIndex: highlightedIndex,
+      aboveCount: 0,
+      belowCount: 0,
+      windowed: false
+    }
+  }
+
+  const capacity = Math.max(1, availableRows - ACCORDION_AFFORDANCE_ROWS)
+  const start = clampWindowStart(highlightedIndex, rows.length, capacity)
+  const end = Math.min(rows.length, start + capacity)
+
+  return {
+    visible: rows.slice(start, end),
+    visibleHighlightedIndex: highlightedIndex - start,
+    aboveCount: start,
+    belowCount: rows.length - end,
+    windowed: true
+  }
+}
