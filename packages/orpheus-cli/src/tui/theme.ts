@@ -439,9 +439,13 @@ export const CARD_PAD_GUTTER = 1
  *  on the left so the tinted block is symmetrically inset from its content. */
 export const CARD_PAD_RIGHT = 1
 
-/** Blank rows BELOW each card, separating it from the next. Lives here rather
- *  than in App.tsx so the card component (which renders the row) and the
- *  windowing height (which must budget for it) read the same constant. */
+/** Rows reserved ABOVE a card for its leading divider rule, separating it
+ *  from the PREVIOUS card. Every card gets this row except the first in a
+ *  project group, which has no previous card to rule off and reserves none
+ *  at all (see blocks.ts's `firstCardHeightDelta` / WorkspaceCard.tsx's
+ *  `separatorRows` prop). Lives here rather than in App.tsx so the card
+ *  component (which renders the row) and the windowing height (which must
+ *  budget for it) read the same constant. */
 export const CARD_SEPARATOR_ROWS = 1
 
 /** Dotted rule drawn in the card separator row, between consecutive cards.
