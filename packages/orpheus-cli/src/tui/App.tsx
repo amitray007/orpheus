@@ -149,6 +149,10 @@ const WIDE_MIN_COLUMNS = CARD_MEDIUM_MAX + 1
  *  why this exists at all. Long enough to read on a phone-width terminal,
  *  short enough that it doesn't linger and get mistaken for permanent chrome. */
 const CLOSE_NOTICE_MS = 3000
+/** How often the picker repaints purely to advance the rendered ages — see
+ *  the age-ticker effect in App() for why a local timer (rather than a
+ *  server-side frame) is the right place to fix a frozen "2h". */
+const AGE_TICK_MS = 30_000
 
 type WorkspaceDisplayRow = Extract<DisplayRow, { kind: 'workspace' }>
 
@@ -448,6 +452,36 @@ export function App({
     return () => {
       if (closeNoticeTimer.current != null) clearTimeout(closeNoticeTimer.current)
     }
+  }, [])
+
+  // AGE TICKER — why the ages need one at all.
+  //
+  // A tree frame carries `lastActivityAt` as a fixed TIMESTAMP; the "2h"
+  // you see is formatAge()/formatAgeLong() converting it at RENDER time
+  // (see format.ts — both default `nowMs` to Date.now()). So the age is
+  // only ever as fresh as the last render.
+  //
+  // The server deliberately suppresses byte-identical tree frames
+  // (commandServer.ts's treeFrameContentKey / scheduleTreeFrameEmit): an
+  // idle workspace produces no new frame, so nothing re-renders, so the
+  // age sits frozen until some UNRELATED input (j/k, a resize) happens to
+  // repaint it. That suppression is correct — an idle picker on a phone
+  // over SSH should not be resending unchanged data every few seconds — so
+  // the fix belongs HERE, not on the wire: re-render locally on a timer and
+  // let the existing formatters recompute against the current clock.
+  //
+  // 30s (not 1s): the coarsest unit these formatters can show is seconds,
+  // but only below 60 — past a minute the label only changes once a minute
+  // at best, and past an hour once an hour. A 30s tick keeps sub-minute
+  // ages honest to within half their own resolution while costing two
+  // repaints a minute on an otherwise-idle SSH link. The state value is
+  // deliberately unused-but-incrementing: it exists purely to invalidate
+  // the render, since the timestamps themselves never change.
+  const [, setAgeTick] = useState(0)
+  useEffect(() => {
+    const handle = setInterval(() => setAgeTick((n) => n + 1), AGE_TICK_MS)
+    handle.unref?.()
+    return () => clearInterval(handle)
   }, [])
 
   const palette = activePalette
