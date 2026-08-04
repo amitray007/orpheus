@@ -7,8 +7,9 @@ import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 import { getWorkspace, listChildWorkspaces, listWorkspacesForProject } from './workspaces'
 import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
-import { getProject, listProjects } from './projects'
+import { getProject, listProjects, addProject } from './projects'
 import { resolveOfferedModesForProject } from './orpheusConfig'
+import { resolveProjectAddPath } from './projectPathResolve'
 import { withReconciledEffort } from './effortReconciliation'
 import { resolveSelectableModels } from './ipc/models'
 import { CLAUDE_EFFORT_VALUES } from '../shared/types'
@@ -1061,6 +1062,26 @@ function makeDispatchTable(
       const modes = await resolveOfferedModesForProject(project.path)
       return { local: modes.local, worktree: modes.worktree }
     },
+
+    // Register a project by filesystem path — the command-socket counterpart
+    // to the desktop's projects:add IPC handler (src/main/ipc/projects.ts),
+    // which is a one-line passthrough to addProject() because the desktop
+    // side always hands it an absolute path chosen from a native directory
+    // picker (dialog.showOpenDialog). This entry point is different: the
+    // socket is fed free-typed text from a CLI/TUI user, so — unlike the
+    // desktop handler — args.path must be validated, resolved (tilde
+    // expansion + relative-to-absolute), and existence-checked BEFORE ever
+    // reaching addProject(), or a typo'd path would silently create a
+    // project (and its default workspace, per addProject's own atomic
+    // insert) pointing at nothing. That whole sequence lives in
+    // resolveProjectAddPath (projectPathResolve.ts) — a pure/fs-only
+    // function with no Electron dependency, kept out of this dispatch table
+    // specifically so it's independently testable (see that module's own
+    // doc comment and scripts/verify-project-add.ts).
+    // Args:
+    //   path (required) — a filesystem path, absolute or relative to the
+    //                      calling CLI process's cwd, or `~`/`~/...`-prefixed.
+    'project.add': (args) => addProject(resolveProjectAddPath(args)),
 
     // Selectable-model list for a TUI/CLI model picker (new-workspace
     // creation flow) — the SAME list + gating the renderer's

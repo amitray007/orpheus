@@ -6,11 +6,13 @@
  * it requires server actions beyond workspace.host/unhost/create/close/
  * archive that aren't wired in this build. `n` (new workspace) IS wired — see
  * NewWorkspaceWizard.tsx — and is listed here right after `enter`, the row
- * it's most often reached for alongside. `c` (close) and `a` (archive) are
- * ALSO wired — see App.tsx's `handleCloseArchiveKey` and
- * components/CloseArchiveConfirm.tsx — and are listed right after `v`,
- * since both act on the currently-highlighted row exactly like `enter`/`v`
- * do, just further down the destructiveness scale.
+ * it's most often reached for alongside. `p` (add project) is ALSO wired —
+ * see App.tsx's `handleAddProjectKey` and components/AddProjectPrompt.tsx —
+ * and is listed right after `n`, since both open a full-screen creation
+ * overlay. `c` (close) and `a` (archive) are ALSO wired — see App.tsx's
+ * `handleCloseArchiveKey` and components/CloseArchiveConfirm.tsx — and are
+ * listed right after `v`, since both act on the currently-highlighted row
+ * exactly like `enter`/`v` do, just further down the destructiveness scale.
  *
  * RENAME: `f` (filter) -> `v` (view) — card redesign.
  *
@@ -28,6 +30,7 @@ import type { Palette } from '../theme.js'
 const ROWS: Array<[string, string]> = [
   ['enter', 'open the highlighted workspace (hosts it in tmux, attaches)'],
   ['n', "new workspace, in the highlighted row's project"],
+  ['p', 'add a project by filesystem path'],
   ['j/k', 'move the highlighted row'],
   ['v', 'cycle view: active -> all'],
   ['c', 'close the highlighted workspace (reversible)'],

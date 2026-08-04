@@ -78,6 +78,7 @@ import { ScrollAffordance } from './components/ScrollAffordance.js'
 import { DetailPane } from './components/DetailPane.js'
 import { NewWorkspaceWizard } from './components/NewWorkspaceWizard.js'
 import { CloseArchiveConfirm, type ArchiveStage } from './components/CloseArchiveConfirm.js'
+import { AddProjectPrompt } from './components/AddProjectPrompt.js'
 import { activePalette, VRULE_PAD_X, CARD_SEPARATOR_ROWS } from './theme.js'
 import type { Palette } from './theme.js'
 import type { TreeProject, TreeWorkspace } from './types.js'
@@ -218,6 +219,20 @@ function handleNewWorkspaceKey(
   if (selectedProject == null) return
   const { id, name, cwd } = selectedProject
   setWizardProject({ id, name, cwd })
+}
+
+/**
+ * Handles `p` (open the add-project overlay) — extracted for the same
+ * cognitive-complexity reason as handleViewKey/handleNewWorkspaceKey above.
+ * Unlike `n`, this needs no currently-selected row/project: adding a project
+ * by path is meaningful even with an empty picker (a brand-new install with
+ * zero registered projects), so this is unconditional — just flips the
+ * overlay open.
+ */
+function handleAddProjectKey(
+  setAddProjectOpen: React.Dispatch<React.SetStateAction<boolean>>
+): void {
+  setAddProjectOpen(true)
 }
 
 /**
@@ -457,6 +472,15 @@ export function App({
   // wizard is open.
   const [wizardProject, setWizardProject] = useState<WizardProject | null>(null)
 
+  // The add-project overlay (`p`) — boolean, not nullable-project-id, since
+  // unlike the wizard this needs no inferred context (see
+  // handleAddProjectKey above). Same not-persisted-across-mounts rationale
+  // as `helpVisible`/`wizardProject`: a detach/reattach should never
+  // silently resurrect an in-progress add-project prompt. AddProjectPrompt
+  // itself owns its own buffer/submit state (mirrors NewWorkspaceWizard
+  // owning its own step machine) — this flag only flips true<->false.
+  const [addProjectOpen, setAddProjectOpen] = useState(false)
+
   // The close/archive confirm overlay (`c`/`a`) — null means closed. Same
   // not-persisted-across-mounts rationale as `helpVisible`/`wizardProject`
   // above: a detach/reattach should never silently resurrect an in-progress
@@ -684,11 +708,13 @@ export function App({
     // regardless of what's rendered, so this early return is what actually
     // stops j/k/v/q/?/enter from leaking through to the picker's own
     // handlers while the wizard is up, exactly mirroring the `helpVisible`
-    // short-circuit immediately below it. The close/archive confirm gets
-    // the exact same treatment, checked right after: while it's open, every
-    // key goes through handleConfirmInput and NOTHING else in this callback
-    // may run (including j/k/enter/c/a on the row underneath).
+    // short-circuit immediately below it. The add-project overlay
+    // (AddProjectPrompt.tsx) and the close/archive confirm get the exact
+    // same treatment: while either is open, every key goes to that
+    // overlay's own handler and NOTHING else in this callback may run
+    // (including j/k/enter/n/c/a on the row underneath).
     if (wizardProject != null) return
+    if (addProjectOpen) return
     if (closeArchive != null) {
       handleConfirmInput(closeArchive, input, key)
       return
@@ -707,6 +733,10 @@ export function App({
     }
     if (input === 'n') {
       handleNewWorkspaceKey(selectedProject, setWizardProject)
+      return
+    }
+    if (input === 'p') {
+      handleAddProjectKey(setAddProjectOpen)
       return
     }
     // `a` (archive) and `c` (close) are BOTH unshifted, and deliberately not
@@ -794,14 +824,14 @@ export function App({
         scope={scope}
         connected={frame != null && connectionNotice == null}
         disconnected={connectionNotice != null}
-        // Hide the hidden-count hint while the wizard is open: "N hidden
-        // (v)" advertises a picker key (`v`) that does nothing right now —
-        // the wizard has swallowed the whole keymap (see useInput's
-        // wizardProject early-return above) — so showing it would read as a
-        // broken affordance. The connection state itself still matters
-        // (the wizard's own workspace.create depends on it), so only this
-        // one hint is suppressed, not the whole bar.
-        hiddenCount={wizardProject != null ? 0 : flattened.hiddenCount}
+        // Hide the hidden-count hint while the wizard or add-project overlay
+        // is open: "N hidden (v)" advertises a picker key (`v`) that does
+        // nothing right now — both overlays swallow the whole keymap (see
+        // useInput's wizardProject/addProjectOpen early-returns above) — so
+        // showing it would read as a broken affordance. The connection state
+        // itself still matters (both overlays' own sendCommand calls depend
+        // on it), so only this one hint is suppressed, not the whole bar.
+        hiddenCount={wizardProject != null || addProjectOpen ? 0 : flattened.hiddenCount}
         palette={palette}
         width={contentWidth}
       />
@@ -826,6 +856,17 @@ export function App({
             // behaviour and always safe.
             if (createdWorkspaceId != null) onOpen(createdWorkspaceId)
           }}
+        />
+      ) : addProjectOpen ? (
+        <AddProjectPrompt
+          width={contentWidth}
+          palette={palette}
+          // Unlike the wizard, there is no created-id to navigate to — the
+          // task brief is explicit that a successful add just closes the
+          // overlay and lets the new project's row arrive over the existing
+          // /subscribe tree-frame connection (frameStore.ts), no manual
+          // refetch. The user picks a workspace from it the normal way.
+          onDone={() => setAddProjectOpen(false)}
         />
       ) : (
         <PickerScreen

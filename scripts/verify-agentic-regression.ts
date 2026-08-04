@@ -11,6 +11,7 @@ const verifiers = [
   'verify-runtime-main-integration.ts',
   'verify-session-state-observation.ts',
   'verify-command-action.ts',
+  'verify-project-add.ts',
   'verify-workspace-orchestration-foundation.ts',
   'verify-workspace-orchestration-main.ts',
   'verify-cli-phase3-compat.ts',

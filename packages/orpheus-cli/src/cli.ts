@@ -587,7 +587,8 @@ registerCommand('whoami', {
 // 'reviews list', 'reviews resolve', 'reviews unresolve' are registered by
 // src/commands/reviews.ts (imported at top of file)
 
-// 'project ls' and 'project show' are registered by src/commands/project.ts (imported at top of file)
+// 'project ls', 'project show', and 'project add' are registered by
+// src/commands/project.ts (imported at top of file)
 
 // ---------------------------------------------------------------------------
 // Usage / help
@@ -629,6 +630,7 @@ Commands:
   reviews unresolve   Mark a local review comment as unresolved
   project ls          List projects
   project show        Show project details
+  project add         Register a project by filesystem path
   tui                 Launch the interactive terminal UI (mobile/SSH picker)
   help                Show full CLI reference (text/md/json)
   ai skill            Agent playbook for orchestrating via this CLI
