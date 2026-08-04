@@ -170,8 +170,18 @@ export function addProject(path: string): ProjectRecord {
 
   if (existing) {
     db.prepare('UPDATE projects SET last_opened_at = ? WHERE id = ?').run(Date.now(), existing.id)
-    const updated = db.prepare(SELECT_PROJECT_BY_ID).get(existing.id) as ProjectRow
-    return rowToRecord(updated)
+    const updated = rowToRecord(db.prepare(SELECT_PROJECT_BY_ID).get(existing.id) as ProjectRow)
+    // Broadcast even on the dedup path: addProject is reachable from the
+    // CLI/TUI socket bridge and from a second desktop window, neither of
+    // which is the renderer that owns *this* window's local `projects`
+    // state. Without this, re-adding an already-known project from another
+    // surface bumps last_opened_at in SQLite with nothing telling any
+    // renderer — the sidebar's activity-sort position silently goes stale
+    // until some unrelated refresh catches up. See this function's own
+    // "BOTH PATHS BROADCAST" note below for why the fresh-insert path needs
+    // the identical call.
+    broadcastProjectChanged(updated)
+    return updated
   }
 
   const id = crypto.randomUUID()
@@ -213,6 +223,20 @@ export function addProject(path: string): ProjectRecord {
   })
 
   const project = insertProject()
+
+  // BOTH PATHS BROADCAST: this mirrors the dedup branch's own
+  // broadcastProjectChanged call above — see that comment for why the event
+  // is needed at all. Fired AFTER insertProject() returns, i.e. after the
+  // whole transaction (project row + createWorkspace's default-workspace
+  // row) has committed, and therefore after createWorkspace's OWN
+  // broadcastWorkspaceCreated has already fired from inside that
+  // transaction. Ordering matters: a renderer reacting to projects:changed
+  // by fetching that project's workspace list must find the Default
+  // workspace already there, and a renderer reacting to workspaces:created
+  // for a project it doesn't know about yet (this event) is a narrower,
+  // pre-existing gap this change doesn't need to fix — projects:changed
+  // firing second is what closes it going forward.
+  broadcastProjectChanged(project)
 
   // Import sessions async so the main thread isn't blocked on N file reads
   // during project addition. Fire-and-forget; errors are non-fatal.
@@ -333,18 +357,57 @@ export function setProjectPinned(id: string, pinned: boolean): ProjectRecord {
   return rowToRecord(row)
 }
 
-// Broadcast helper — fan out a projects:changed event to all renderer windows
-// so any component holding its own copy of the projects list (e.g. Dashboard's
-// sidebar-driving state) can patch the record in place, mirroring
-// broadcastWorkspaceChanged in workspaces.ts. Settings → Privacy already
-// patches its own local list from the returned ProjectRecord; this covers
-// every OTHER subscriber.
-function broadcastProjectChanged(project: ProjectRecord): void {
+// TEST SEAM — addProject()'s two broadcast call sites (dedup path, fresh-
+// insert path) are the actual behavior scripts/verify-project-add.ts needs
+// to assert (see that script's "addProject broadcast" section): that
+// projects:changed fires on BOTH paths, not just one. This module is
+// otherwise hard to exercise from a plain script without pulling in the
+// real Electron `app`/BrowserWindow AND a real better-sqlite3-backed
+// getDb() (see db/index.ts's getDbPath(), which calls
+// `app.getPath('userData')`) — a disproportionate amount of module-graph
+// mocking for two call sites. Rather than leave the broadcast untested, or
+// grep addProject's source text (the exact anti-pattern
+// verify-project-add.ts's own header already rejects, with the
+// neutered-guard example to prove why), the fan-out itself is swapped
+// behind this tiny injectable hook: production always uses the real
+// BrowserWindow-based sender installed below; a test calls
+// `setProjectChangedSender()` to install a spy instead (paired with
+// mocking `./db` and the other Electron-coupled imports addProject() pulls
+// in — see verify-project-add.ts's own comment for the full mocking
+// approach it uses), which is what makes the CALL COUNT and payload of
+// every addProject() broadcast directly assertable. Exported (not
+// file-private) so that harness can install a spy without needing
+// Electron.
+type ProjectChangedSender = (project: ProjectRecord) => void
+
+let projectChangedSender: ProjectChangedSender = (project) => {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send(PUSH_CHANNELS.projectsChanged, { project })
     }
   }
+}
+
+/** Test-only seam — swap the projects:changed fan-out for a spy. Returns the
+ *  PREVIOUS sender so a test can restore it in a `finally`. Never called from
+ *  production code (which always uses the default BrowserWindow-based
+ *  sender installed above). */
+export function setProjectChangedSender(sender: ProjectChangedSender): ProjectChangedSender {
+  const previous = projectChangedSender
+  projectChangedSender = sender
+  return previous
+}
+
+// Broadcast helper — fan out a projects:changed event to all renderer windows
+// so any component holding its own copy of the projects list (e.g. Dashboard's
+// sidebar-driving state) can patch the record in place, mirroring
+// broadcastWorkspaceChanged in workspaces.ts. Settings → Privacy already
+// patches its own local list from the returned ProjectRecord; this covers
+// every OTHER subscriber. Delegates to the swappable `projectChangedSender`
+// (see the TEST SEAM note above) rather than calling BrowserWindow directly,
+// so every call site below stays exactly as it was.
+function broadcastProjectChanged(project: ProjectRecord): void {
+  projectChangedSender(project)
 }
 
 export function setProjectClassified(id: string, classified: boolean): ProjectRecord {

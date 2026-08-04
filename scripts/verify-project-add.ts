@@ -259,4 +259,159 @@ testResolveProjectPath()
 testAssertProjectDirectory()
 testResolveProjectAddPath()
 
+await testAddProjectBroadcasts()
+
 console.log('\nAll project-add assertions passed.')
+
+// ---------------------------------------------------------------------------
+// addProject() broadcast coverage — src/main/projects.ts's addProject()
+// (bug fix: it previously never called broadcastProjectChanged at all, so a
+// project added from the CLI/TUI socket bridge or a second desktop window
+// left every OTHER renderer's sidebar stale until some unrelated refresh).
+// This is a DIFFERENT module than the rest of this file (projects.ts, not
+// projectPathResolve.ts) and — unlike everything above — is NOT Electron-
+// free: it imports `electron`'s BrowserWindow at module scope and calls
+// getDb() (Electron's `app.getPath('userData')`) at runtime, plus
+// createWorkspace/importSessionsForProject/refreshGithubData, each with
+// their own further Electron/fs/network coupling. Booting the real app to
+// exercise this would be disproportionate for two call sites, so this uses
+// `bun:test`'s `mock.module()` (confirmed to work in a plain `bun run`
+// script, not just under `bun test`) to replace exactly the modules
+// addProject() imports with minimal fakes — a REAL in-memory SQLite
+// `projects` table (so the actual SQL addProject() runs is exercised, not a
+// hand-rolled fake of `db.prepare`), backed by `bun:sqlite` rather than
+// `better-sqlite3` (the real native `better-sqlite3` addon isn't loadable
+// under the plain `bun run` runtime this script executes under — verified:
+// it throws ERR_DLOPEN_FAILED, the same reason scripts/verify-migration-
+// engine.ts uses node:sqlite's DatabaseSync for its own harness instead of
+// better-sqlite3 — though THAT module isn't available under bun either, so
+// this uses bun:sqlite specifically, with a tiny `.transaction()` shim
+// added since bun:sqlite's Database doesn't implement better-sqlite3's
+// transaction() wrapper and addProject() calls db.transaction(fn)()) — plus
+// no-op stubs for everything addProject() doesn't use the return value of
+// (createWorkspace, importSessionsForProject, refreshGithubData, the
+// cache-invalidation/runtime-resource-scope side calls).
+// `setProjectChangedSender()` (exported from projects.ts specifically for
+// this — see that file's "TEST SEAM" comment) replaces the BrowserWindow
+// fan-out with a spy that records every broadcast, which is what this test
+// actually asserts against: BOTH addProject() call sites (dedup path,
+// fresh-insert path) must broadcast, not just one — a bare source-text grep
+// couldn't tell a live call from a commented-out or dead-branch one (see
+// this file's own header for why verify-project-add.ts already rejects
+// that approach elsewhere).
+// ---------------------------------------------------------------------------
+
+async function testAddProjectBroadcasts(): Promise<void> {
+  const { mock } = await import('bun:test')
+  const { Database: SqliteDatabase } = await import('bun:sqlite')
+
+  const db = new SqliteDatabase(':memory:')
+  db.exec(`
+    CREATE TABLE projects (
+      id TEXT PRIMARY KEY,
+      path TEXT NOT NULL,
+      name TEXT NOT NULL,
+      claude_encoded_name TEXT,
+      added_at INTEGER NOT NULL,
+      last_opened_at INTEGER,
+      expanded_in_sidebar INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER,
+      pinned_at INTEGER,
+      github_owner TEXT,
+      github_repo TEXT,
+      github_avatar_url TEXT,
+      github_checked_at INTEGER,
+      classified INTEGER NOT NULL DEFAULT 0,
+      hidden INTEGER NOT NULL DEFAULT 0
+    )
+  `)
+  // better-sqlite3-compatible `.transaction(fn)` shim: addProject() calls
+  // `db.transaction(() => {...})()` (see src/main/projects.ts's
+  // `insertProject`) — bun:sqlite's Database has no such method natively.
+  // Only needs to support the exact shape addProject() uses: wrap in a
+  // BEGIN/COMMIT, roll back on throw.
+  const dbWithTransaction = db as InstanceType<typeof SqliteDatabase> & {
+    transaction: <A extends unknown[], R>(fn: (...args: A) => R) => (...args: A) => R
+  }
+  dbWithTransaction.transaction = (fn) => {
+    return (...args) => {
+      db.exec('BEGIN')
+      try {
+        const result = fn(...args)
+        db.exec('COMMIT')
+        return result
+      } catch (err) {
+        db.exec('ROLLBACK')
+        throw err
+      }
+    }
+  }
+
+  // Module specifiers exactly as src/main/projects.ts imports them, resolved
+  // to absolute paths so mock.module() doesn't depend on this script's own
+  // location relative to src/main.
+  const projectsTsDir = new URL('../src/main/', import.meta.url)
+  const abs = (rel: string): string => new URL(rel, projectsTsDir).pathname
+
+  mock.module('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
+  // './db' resolves to db/index.ts (a directory module), not a sibling
+  // db.ts file — the wrong specifier here would silently fall through to
+  // the REAL db/index.ts (which imports electron's `app`) instead of being
+  // intercepted, so getDb() must be mocked at its actual resolved path.
+  mock.module(abs('db/index.ts'), () => ({ getDb: () => dbWithTransaction }))
+  mock.module(abs('workspaces.ts'), () => ({ createWorkspace: () => undefined }))
+  mock.module(abs('sessions.ts'), () => ({ importSessionsForProject: async () => [] }))
+  mock.module(abs('githubAvatar.ts'), () => ({ refreshGithubData: async () => undefined }))
+  mock.module(abs('claudeProjectSettings.ts'), () => ({
+    invalidateClaudeProjectSettingsCache: () => undefined
+  }))
+  mock.module(abs('controlPlane/runtimeResourceScopeRevision.ts'), () => ({
+    markRuntimeResourceScopeChanged: () => undefined
+  }))
+
+  const { addProject, setProjectChangedSender } = await import('../src/main/projects.ts')
+
+  const broadcasts: Array<{ id: string; path: string }> = []
+  const previousSender = setProjectChangedSender((project) => {
+    broadcasts.push({ id: project.id, path: project.path })
+  })
+
+  try {
+    // FRESH-INSERT PATH: a brand-new path must broadcast exactly once, with
+    // the newly-created project's own id/path.
+    const fresh = addProject('/fake/fresh-project')
+    assert.equal(broadcasts.length, 1, 'fresh-insert path: addProject broadcasts exactly once')
+    assert.equal(
+      broadcasts[0]!.id,
+      fresh.id,
+      'fresh-insert path: the broadcast payload carries the newly-created project'
+    )
+    assert.equal(broadcasts[0]!.path, '/fake/fresh-project')
+
+    // DEDUP PATH: re-adding the SAME path must ALSO broadcast (the bug fix
+    // covers both branches — an earlier revision of this fix could plausibly
+    // add the call to only one of the two `if (existing) { ... return }` /
+    // fall-through branches and still look correct at a glance).
+    const deduped = addProject('/fake/fresh-project')
+    assert.equal(broadcasts.length, 2, 'dedup path: addProject ALSO broadcasts on re-add')
+    assert.equal(deduped.id, fresh.id, 'dedup path: returns the SAME project id, not a duplicate')
+    assert.equal(
+      broadcasts[1]!.id,
+      fresh.id,
+      'dedup path: the broadcast payload carries the existing (bumped) project'
+    )
+
+    // A second, genuinely different fresh path broadcasts again — confirms
+    // the fresh-insert broadcast isn't a one-shot fluke tied to call order.
+    const secondFresh = addProject('/fake/second-project')
+    assert.equal(broadcasts.length, 3, 'a second distinct fresh-insert also broadcasts')
+    assert.equal(broadcasts[2]!.id, secondFresh.id)
+
+    console.log(
+      '✓ addProject: broadcasts projects:changed on BOTH the fresh-insert path and the dedup (already-exists) path, with the correct project payload each time'
+    )
+  } finally {
+    setProjectChangedSender(previousSender)
+    db.close()
+  }
+}

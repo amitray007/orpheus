@@ -327,9 +327,28 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // That local update doesn't reach this component's projects state (the one
   // driving the Sidebar), so main also broadcasts the updated record — patch it
   // in-place here, mirroring the onGithubDataUpdated subscription above.
+  //
+  // ALSO covers a project this window didn't add itself — main's addProject
+  // now broadcasts projects:changed on every call (see src/main/projects.ts),
+  // including from the CLI/TUI socket bridge or a second desktop window. A
+  // bare `prev.map(...)` only patches a record ALREADY in `prev`; a project
+  // this window has never seen before would match nothing and be silently
+  // dropped, which defeats the whole point of the broadcast — the sidebar
+  // would still never show it. So: patch in place if known, otherwise APPEND
+  // it — using the exact same "after the pinned prefix, top of the unpinned
+  // tier" placement handleAddProject's own optimistic insert uses below, so
+  // a project that arrives via this broadcast lands in the same spot one
+  // added from this window would.
   useEffect(() => {
     return window.api.projects.onChanged((rec) => {
-      setProjects((prev) => prev.map((p) => (p.id === rec.id ? rec : p)))
+      setProjects((prev) => {
+        if (prev.some((p) => p.id === rec.id)) {
+          return prev.map((p) => (p.id === rec.id ? rec : p))
+        }
+        const firstUnpinnedIndex = prev.findIndex((p) => p.pinnedAt == null)
+        const insertAt = firstUnpinnedIndex === -1 ? prev.length : firstUnpinnedIndex
+        return [...prev.slice(0, insertAt), rec, ...prev.slice(insertAt)]
+      })
     })
   }, [])
 

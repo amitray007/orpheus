@@ -56,6 +56,19 @@ export type Block =
        *  never desync (mirrors how `separatorRows` is derived from a card
        *  block's own `height` rather than recomputed — see App.tsx). */
       blankAbove: boolean
+      /** True when this project committed zero card blocks — either it has
+       *  no workspaces at all, or the active-view filter hid every one it
+       *  has. Read by ProjectGroupHeader.tsx to swap its (normally blank)
+       *  breather row for a quiet "no workspaces" placeholder line, so an
+       *  empty group reads as deliberate content rather than a rendering
+       *  glitch — and by App.tsx to decide whether this header itself is a
+       *  valid selection target (see "EMPTY-PROJECT SUPPRESSION" below: an
+       *  empty group's header is now the ONLY row a caret can land on for
+       *  that project, since it has no cards to select instead). Does NOT
+       *  change `height` — the placeholder text replaces the existing
+       *  blank-below row rather than adding a new one, so windowing math is
+       *  identical for empty and non-empty groups. */
+      isEmpty: boolean
       height: number
     }
   | { kind: 'card'; row: WorkspaceRow; height: number }
@@ -85,26 +98,33 @@ function headerHeight(blankAbove: boolean): number {
  * Group flattened rows (flattenTree()'s output) into Blocks, one per
  * project-header/workspace row, with an explicit `height` per block.
  *
- * EMPTY-PROJECT SUPPRESSION: flattenTree() (layout.ts) ALWAYS emits a
+ * EMPTY GROUPS RENDER THEIR HEADER: flattenTree() (layout.ts) ALWAYS emits a
  * project-header row even for a project with zero (or, under view:active,
- * zero surviving) workspaces. Rendering that bare header with nothing under
- * it is a presentation bug, not a data bug — fixed HERE by buffering each
- * project's own header+body into a pending group and only committing it to
- * the output once at least one workspace row actually survives for that
- * project. An empty project contributes NOTHING to the returned list —
- * including no blank-above row, since "blank above the NEXT surviving
- * header" is decided once that next header actually commits (see below),
- * not by the presence of a suppressed one.
+ * zero surviving) workspaces. An earlier revision of this function
+ * suppressed that header entirely whenever no card block survived for it —
+ * defensible when the only way to reach an empty group was the `active`
+ * filter hiding everything, since the project was still reachable some
+ * other way (switch view, or it had workspaces elsewhere). It stopped being
+ * defensible once `project.add` shipped: a freshly-registered project with
+ * zero workspaces would render NOTHING — invisible, unhighlightable, and
+ * therefore impossible to target with `n` (which infers its project from
+ * the highlighted row — see App.tsx's `handleNewWorkspaceKey`). You could
+ * add a project you could then never use from the TUI. So every project's
+ * header is now committed unconditionally — `pendingBody.length > 0` is no
+ * longer a gate, only an input to `isEmpty` (see the `Block` doc comment)
+ * and the "blank above" bookkeeping below still runs off `out`'s actual
+ * contents, which now always includes every project, so no separate
+ * suppression accounting is needed at all.
  *
  * BLANK ABOVE (breathing room between consecutive project groups) — the
- * first COMMITTED header in the returned list never gets a leading blank
- * (nothing above it to separate from — a blank row at the very top of the
- * list is wasted vertical space on a phone); every header committed after
- * it does. This is tracked by whether `out` already contains a
- * 'project-header' block at commit time, NOT by position in the input
- * `rows` array — an empty/fully-filtered-out project ahead of it in `rows`
- * must not count as "there was already a header", since that header was
- * itself suppressed and never rendered.
+ * first header in the returned list never gets a leading blank (nothing
+ * above it to separate from — a blank row at the very top of the list is
+ * wasted vertical space on a phone); every header after it does. Tracked by
+ * whether `out` already contains a 'project-header' block at commit time —
+ * now trivially correct for every project since none are suppressed
+ * anymore, but left as a live check (rather than a running index) since
+ * `out`'s contents are the actual source of truth this list gets rendered
+ * from.
  *
  * FIRST-CARD HEIGHT REDUCTION: a card's separator row exists to rule off
  * consecutive cards from EACH OTHER. The first card in a group has no
@@ -114,7 +134,10 @@ function headerHeight(blankAbove: boolean): number {
  * casing the RENDER while the block still claims the old uniform height
  * (which would desync the windowing sum from what's actually drawn), the
  * first card's block itself is `firstCardHeightDelta` rows shorter. Every
- * other card in the group is unaffected and stays exactly `cardHeight`.
+ * other card in the group is unaffected and stays exactly `cardHeight`. An
+ * empty group has no first card at all, so this reduction simply doesn't
+ * apply to it — its header's own height already accounts for everything it
+ * renders.
  */
 export function buildBlocks(
   rows: DisplayRow[],
@@ -127,7 +150,7 @@ export function buildBlocks(
   let pendingBody: Block[] = []
 
   const commitPendingGroup = (): void => {
-    if (pendingHeader != null && pendingBody.length > 0) {
+    if (pendingHeader != null) {
       const blankAbove = out.some((b) => b.kind === 'project-header')
       out.push({
         kind: 'project-header',
@@ -135,6 +158,7 @@ export function buildBlocks(
         projectName: pendingHeader.projectName,
         visibleCount: pendingHeader.visibleCount,
         blankAbove,
+        isEmpty: pendingBody.length === 0,
         height: headerHeight(blankAbove)
       })
       out.push(...pendingBody)
@@ -193,11 +217,34 @@ export interface BlockWindow {
 }
 
 /**
- * Keep the block containing `selectedWorkspaceId` fully in view within
- * `availableRows`, reserving a FIXED `AFFORDANCE_ROWS_WHEN_WINDOWED`-row
- * budget for the whole scrolling session once windowing engages at all
- * (never a variable 0/1/2, so the content window's own height never
- * changes mid-scroll — same discipline as layout.ts's scrollWindowFor).
+ * Identifies whichever row is currently highlighted — either an ordinary
+ * workspace card, or (new, for the empty-group fix) an empty project's own
+ * header, since that header is the only block an empty group contributes
+ * for the caret to land on. `null` means nothing is selected (empty list).
+ * A NON-empty project's header is never a valid selection target here —
+ * App.tsx's selection model only ever produces this variant when the
+ * highlighted row IS that project's header, which only happens for empty
+ * groups (see App.tsx's `selectableRows`).
+ */
+export type SelectedBlockId =
+  | { kind: 'workspace'; workspaceId: string }
+  | { kind: 'project-header'; projectId: string }
+  | null
+
+function blockMatchesSelection(block: Block, selected: SelectedBlockId): boolean {
+  if (selected == null) return false
+  if (selected.kind === 'workspace') {
+    return block.kind === 'card' && block.row.workspaceId === selected.workspaceId
+  }
+  return block.kind === 'project-header' && block.projectId === selected.projectId
+}
+
+/**
+ * Keep the block containing `selected` fully in view within `availableRows`,
+ * reserving a FIXED `AFFORDANCE_ROWS_WHEN_WINDOWED`-row budget for the whole
+ * scrolling session once windowing engages at all (never a variable 0/1/2,
+ * so the content window's own height never changes mid-scroll — same
+ * discipline as layout.ts's scrollWindowFor).
  *
  * STICKY WINDOW START, NOT RECOMPUTED-FROM-SCRATCH PER SELECTION — an
  * early version of this algorithm recomputed [start, end) fresh on every
@@ -225,7 +272,7 @@ export interface BlockWindow {
  */
 export function windowBlocks(
   blocks: Block[],
-  selectedWorkspaceId: string | null,
+  selected: SelectedBlockId,
   availableRows: number,
   previousStart: number
 ): BlockWindow {
@@ -247,7 +294,7 @@ export function windowBlocks(
   const contentBudget = Math.max(1, budget - AFFORDANCE_ROWS_WHEN_WINDOWED)
   const selectedBlockIndex = Math.max(
     0,
-    blocks.findIndex((b) => b.kind === 'card' && b.row.workspaceId === selectedWorkspaceId)
+    blocks.findIndex((b) => blockMatchesSelection(b, selected))
   )
 
   // Clamp any prior start into the current block list's bounds first (a
