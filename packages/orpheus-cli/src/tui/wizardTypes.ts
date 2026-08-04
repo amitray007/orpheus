@@ -12,20 +12,27 @@
  * -----------------------------------------------------------------------
  * The wizard is a single piece of state, `WizardState | null` in App.tsx —
  * null means closed. `WizardState.step` is the step MACHINE: 'model' is
- * Step 1 — ONE screen, an accordion list of providers where `enter` on a
- * collapsed provider expands it inline (its models appear indented beneath
- * it, every other provider stays visible but collapsed) and `enter` on a
- * model selects it and advances. This used to be two screens
- * ('model-provider' listing providers, 'model-detail' drilling into one) —
- * merged into a single accordion screen because a drill-in/back-out cycle is
- * two extra keypresses for a decision that fits on one screen once the list
- * is windowed (see `expandedProviderId`/`cursor` below, and
- * wizardLayout.ts's `windowListRows`). 'mode' is Step 2 (conditionally
- * skipped — see NewWorkspaceWizard.tsx's `modeStepNeeded`), and 'confirm' is
- * Step 3. Every other field (selectedModel, mode, projectId/cwd) persists
- * across step changes so `esc` going backward never loses what the user
- * already chose — see "esc on later steps goes back ONE step, preserving
- * state" below.
+ * Step 1 — ONE screen, a flat list of EVERY provider's models, always fully
+ * expanded (no accordion, no collapsed state — see wizardStepMachine.ts's
+ * `buildModelListRows`). Provider headers still render as group labels but
+ * are not part of the cursor's walk — `j`/`k`/arrows move model-to-model
+ * only, and `enter` on a model selects it and advances. This used to be an
+ * accordion (`enter` on a provider expanded/collapsed it, one at a time,
+ * with cursor-repositioning logic to keep the highlight on the just-toggled
+ * row across the reflow) — that whole toggle mechanism is gone: expanding
+ * all providers up front removes the reflow, so there is nothing left for a
+ * repositioning fix to protect against. See wizardLayout.ts's
+ * `windowListRows` for how the resulting ~49-row list (45 models + 4 headers,
+ * live shape) still fits a ~12-row phone viewport.
+ *
+ * There is no more 'confirm' step — see `submit()` in NewWorkspaceWizard.tsx
+ * and this file's `submitting`/`submitError` fields below for where that
+ * screen's still-needed submit lifecycle moved. 'mode' is Step 2
+ * (conditionally skipped — see NewWorkspaceWizard.tsx's `modeStepNeeded`);
+ * selecting a mode now creates immediately, and when Step 2 is auto-skipped,
+ * selecting the MODEL creates immediately instead. Every other field
+ * (selectedModel, mode, projectId/cwd) persists across step changes so `esc`
+ * going backward never loses what the user already chose.
  *
  * A NAME STEP EXISTED HERE AND WAS DELIBERATELY REMOVED — DO NOT RE-ADD IT
  * -----------------------------------------------------------------------
@@ -43,7 +50,7 @@
  * typed. See `buildCreateArgs` in wizardStepMachine.ts for that logic.
  */
 
-type WizardStep = 'model' | 'mode' | 'confirm'
+type WizardStep = 'model' | 'mode'
 
 /**
  * Mirrors src/shared/types.ts's `SelectableModel` (see this file's header on
@@ -122,32 +129,24 @@ export interface WizardState {
   project: WizardProject
   models: AsyncSlot<ProviderGroup[]>
   offeredModes: AsyncSlot<OfferedModes>
-  /** Which provider's models are currently shown inline, or null when every
-   *  provider is collapsed. At most ONE provider is ever expanded at a time —
-   *  opening a second collapses the first (see wizardStepMachine.ts's
-   *  `handleModelStepKey`) — so the flattened row list can't grow unbounded
-   *  and the windowing budget (wizardLayout.ts's `windowListRows`) stays
-   *  predictable regardless of which provider the user opens. Keyed by
-   *  providerId (not an index) so it survives the models list re-resolving
-   *  (loading -> ready) without needing to be re-derived. */
-  expandedProviderId: string | null
-  /** Cursor into the FLATTENED accordion row list (every collapsed provider
-   *  is one row; the expanded provider's models are additional rows
-   *  interleaved after it) — see wizardStepMachine.ts's
-   *  `buildModelAccordionRows`. One shared index, not two, because the
-   *  provider and model rows now live in a single list the user scans
-   *  top-to-bottom with one cursor; expanding/collapsing a provider inserts
-   *  or removes rows AROUND the cursor rather than switching between two
-   *  separate lists. */
+  /** Cursor into the FLATTENED model row list (every provider's header row
+   *  plus every one of its models, all providers always expanded — see
+   *  wizardStepMachine.ts's `buildModelListRows`). The cursor only ever
+   *  lands on a selectable model row (available, non-header) — header rows
+   *  and unavailable models are skipped entirely by the move/clamp logic, so
+   *  this index, while it indexes into the full row list, is guaranteed at
+   *  render time to point at a model. */
   cursor: number
   selectedModel: SelectableModel | null
   modeIndex: number
   mode: WorkspaceMode | null
   /** Set once `workspace.create` is in flight, to disable double-submission
-   *  (see the task brief's confirm-step requirement). */
+   *  and show a "creating…" indicator on whichever step is now last (mode,
+   *  or model when mode is auto-skipped — see WizardScreens.tsx's
+   *  `SubmitStatusLine`). */
   submitting: boolean
   /** Set when a `workspace.create` attempt failed — surfaced inline on the
-   *  confirm screen with a retry (enter) / back (esc) affordance, per the
-   *  task brief. Cleared on the next submit attempt. */
+   *  active step with a retry (enter) / back (esc) affordance. Cleared on
+   *  the next submit attempt. */
   submitError: string | null
 }

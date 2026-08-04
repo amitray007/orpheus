@@ -5,25 +5,32 @@
  * component's own body is what keeps that component's cognitive complexity
  * under the sonarjs budget (20).
  *
- * Step 1 used to be two distinct screens (a provider list drilling into a
- * per-provider model list); it's now ONE accordion screen — see
- * wizardTypes.ts's STEP MODEL section for why, and
- * `buildModelAccordionListRows` below for how the two-level hierarchy is
- * flattened into the single row list ListStep.tsx renders.
- * (A separate name-entry screen also existed here and was deliberately
- * removed — see wizardTypes.ts's header for why.)
+ * Step 1 is a single screen listing EVERY provider's models, always fully
+ * expanded — see wizardTypes.ts's STEP MODEL section and
+ * `buildModelListRows` (wizardStepMachine.ts) for why the old accordion
+ * (one provider expanded at a time, toggled via enter) was replaced: cutting
+ * the expand/collapse keystroke entirely. Provider headers still render (as
+ * group labels, in their `palette.agentColors` hue) but are not part of the
+ * cursor's walk — see `buildModelListRows` below for how they're marked
+ * non-interactive.
+ *
+ * There is no more confirm/create screen. Selecting a mode (or, when Step 2
+ * is auto-skipped, selecting a model) creates immediately — see
+ * NewWorkspaceWizard.tsx's `submit`. The submit lifecycle that used to live
+ * on that dedicated screen (submitting/error/retry) is rendered here inline,
+ * under whichever step is currently on screen, via `SubmitStatusLine`.
  *
  * A NOTE ON WHY THE ROW-BUILDING LOGIC LIVES HERE, NOT IN ListStep.tsx OR
- * wizardStepMachine.ts: `buildModelAccordionRows` (wizardStepMachine.ts)
- * only knows about providers/models/expansion — it stays react/ink-free.
- * `ListRow` (ListStep.tsx) only knows about generic row content (label,
- * colour, indent, trailing marker) — it stays provider-agnostic. This file
- * is the translation layer between the two, same role
- * `groupModelsByProvider` plays for the raw `models.list` response.
+ * wizardStepMachine.ts: `buildModelListRows` (wizardStepMachine.ts) only
+ * knows about providers/models — it stays react/ink-free. `ListRow`
+ * (ListStep.tsx) only knows about generic row content (label, colour,
+ * indent, selectability) — it stays provider-agnostic. This file is the
+ * translation layer between the two, same role `groupModelsByProvider`
+ * plays for the raw `models.list` response.
  *
  * WizardBody is the only export other files need — it fully hides the
- * loading/error/ready branching each async-backed screen (the model
- * accordion) requires.
+ * loading/error/ready branching each async-backed screen (the model list)
+ * requires.
  */
 
 import * as React from 'react'
@@ -31,43 +38,32 @@ import { Box, Text } from 'ink'
 import { CARD_GUTTER_WIDTH, CARD_PAD_GUTTER } from '../../theme.js'
 import type { Palette } from '../../theme.js'
 import { ListStep, type ListRow } from './ListStep.js'
-import { ConfirmStep } from './ConfirmStep.js'
-import { STEP_MODEL, MODE_KEYS, buildModelAccordionRows } from '../../wizardStepMachine.js'
+import { STEP_MODEL, MODE_KEYS, buildModelListRows } from '../../wizardStepMachine.js'
 import type { AsyncSlot, ProviderGroup, WizardState } from '../../wizardTypes.js'
 
-/** Collapsed-provider trailing marker: model count, right-padded from the
- *  `>` glyph by one space so it doesn't read as glued to the count digit.
- *  Both `>` and `v` are plain ASCII (East_Asian_Width=Na, Narrow) — safe
- *  inside a padded row text at any terminal's East Asian width setting; see
- *  this package's house rule against Ambiguous-width glyphs like `▸`/`▾` in
- *  that same position (theme.ts's header). */
-function providerTrailingMarker(modelCount: number, expanded: boolean): string {
-  return ` ${modelCount}  ${expanded ? 'v' : '>'}`
-}
-
 /**
- * Flatten the accordion's provider groups + expansion state into ListStep's
- * generic `ListRow` shape — the one place that knows providers get a colour
- * + trailing count/marker and models get an indent + the "(unavailable)"
- * suffix. NOT exported (react-refresh/only-export-components forbids a
- * component file exporting a plain function alongside its components) —
- * scripts/verify-tui-wizard.ts instead asserts the accordion's row-count
- * behaviour directly against `buildModelAccordionRows`
- * (wizardStepMachine.ts), which is the react/ink-free layer this function
- * only adds cosmetic ListRow fields on top of.
+ * Flatten the provider groups into ListStep's generic `ListRow` shape — the
+ * one place that knows providers get a colour (and no cursor stop: `kind:
+ * 'provider'` rows carry no `key` collision risk with models since provider
+ * ids and model ids live in disjoint namespaces, but more importantly are
+ * simply never pointed at by `highlightedIndex`, which
+ * NewWorkspaceWizard.tsx/wizardStepMachine.ts's `moveModelCursor` guarantees
+ * by construction) and models get an indent + the "(unavailable)" suffix.
+ * NOT exported (react-refresh/only-export-components forbids a component
+ * file exporting a plain function alongside its components) —
+ * scripts/verify-tui-wizard.ts instead asserts the row-building behaviour
+ * directly against `buildModelListRows` (wizardStepMachine.ts), which is the
+ * react/ink-free layer this function only adds cosmetic ListRow fields on
+ * top of.
  */
-function buildModelAccordionListRows(
-  groups: ProviderGroup[],
-  expandedProviderId: string | null,
-  palette: Palette
-): ListRow[] {
-  return buildModelAccordionRows(groups, expandedProviderId).map((row) => {
+function buildModelListListRows(groups: ProviderGroup[], palette: Palette): ListRow[] {
+  return buildModelListRows(groups).map((row) => {
     if (row.kind === 'provider') {
       return {
         key: row.group.providerId,
         label: row.group.providerLabel,
         color: palette.agentColors[row.group.providerId] ?? palette.modelText,
-        trailingMarker: providerTrailingMarker(row.group.models.length, row.expanded)
+        groupHeader: true
       }
     }
     return {
@@ -111,20 +107,58 @@ function ErrorScreen({
   )
 }
 
-function ModelAccordionScreen({
+/**
+ * The submit lifecycle ConfirmStep.tsx used to own exclusively — now
+ * rendered inline under whichever step is last for a given project (the
+ * mode screen normally, or the model screen when Step 2 is auto-skipped and
+ * a create fails — see NewWorkspaceWizard.tsx's `submit`'s `autoSkipped`
+ * handling for why a failure there routes back to the model step rather
+ * than stranding the user on a two-option mode picker their project doesn't
+ * actually offer). Renders nothing (not even a blank line) in the idle case
+ * so it costs zero rows on every other screen.
+ */
+function SubmitStatusLine({
+  submitting,
+  submitError,
+  palette
+}: {
+  submitting: boolean
+  submitError: string | null
+  palette: Palette
+}): React.JSX.Element | null {
+  if (submitting) {
+    return (
+      <Text color={palette.awaiting} wrap="truncate-end">
+        creating…
+      </Text>
+    )
+  }
+  if (submitError != null) {
+    return (
+      <Text color={palette.attention} wrap="truncate-end">
+        {submitError}
+      </Text>
+    )
+  }
+  return null
+}
+
+function ModelListScreen({
   models,
-  expandedProviderId,
   cursor,
   width,
   availableRows,
-  palette
+  palette,
+  submitting,
+  submitError
 }: {
   models: AsyncSlot<ProviderGroup[]>
-  expandedProviderId: string | null
   cursor: number
   width: number
   availableRows: number
   palette: Palette
+  submitting: boolean
+  submitError: string | null
 }): React.JSX.Element {
   if (models.kind === 'loading') {
     return <LoadingScreen palette={palette} text="loading models…" />
@@ -132,15 +166,51 @@ function ModelAccordionScreen({
   if (models.kind === 'error') {
     return <ErrorScreen palette={palette} message={models.message} hint="esc cancel" />
   }
+  const statusLine = (
+    <SubmitStatusLine submitting={submitting} submitError={submitError} palette={palette} />
+  )
   return (
     <ListStep
       title="Model"
-      rows={buildModelAccordionListRows(models.value, expandedProviderId, palette)}
+      rows={buildModelListListRows(models.value, palette)}
       highlightedIndex={cursor}
       width={width}
       availableRows={availableRows}
       palette={palette}
-      hint="enter select   esc cancel"
+      hint={submitError != null ? 'enter retry   esc cancel' : 'enter select   esc cancel'}
+      statusLine={submitting || submitError != null ? statusLine : undefined}
+    />
+  )
+}
+
+function ModeScreen({
+  modeIndex,
+  width,
+  availableRows,
+  palette,
+  submitting,
+  submitError
+}: {
+  modeIndex: number
+  width: number
+  availableRows: number
+  palette: Palette
+  submitting: boolean
+  submitError: string | null
+}): React.JSX.Element {
+  const statusLine = (
+    <SubmitStatusLine submitting={submitting} submitError={submitError} palette={palette} />
+  )
+  return (
+    <ListStep
+      title="Mode"
+      rows={MODE_ROWS}
+      highlightedIndex={modeIndex}
+      width={width}
+      availableRows={availableRows}
+      palette={palette}
+      hint={submitError != null ? 'enter retry   esc back' : 'enter select   esc back'}
+      statusLine={submitting || submitError != null ? statusLine : undefined}
     />
   )
 }
@@ -155,7 +225,7 @@ export interface WizardBodyProps {
 /**
  * Step-to-screen dispatch. NewWorkspaceWizard.tsx renders only this
  * component for its body; every step-specific concern (which async slot is
- * ready, which list to render, what the confirm summary says) lives here or
+ * ready, which list to render, whether a create is in flight) lives here or
  * in the screen components above it.
  */
 export function WizardBody({
@@ -166,37 +236,25 @@ export function WizardBody({
 }: WizardBodyProps): React.JSX.Element {
   if (state.step === STEP_MODEL) {
     return (
-      <ModelAccordionScreen
+      <ModelListScreen
         models={state.models}
-        expandedProviderId={state.expandedProviderId}
         cursor={state.cursor}
         width={width}
         availableRows={availableRows}
         palette={palette}
-      />
-    )
-  }
-  if (state.step === 'mode') {
-    return (
-      <ListStep
-        title="Mode"
-        rows={MODE_ROWS}
-        highlightedIndex={state.modeIndex}
-        width={width}
-        availableRows={availableRows}
-        palette={palette}
-        hint="enter select   esc back"
+        submitting={state.submitting}
+        submitError={state.submitError}
       />
     )
   }
   return (
-    <ConfirmStep
-      selectedModel={state.selectedModel}
-      mode={state.mode ?? 'local'}
+    <ModeScreen
+      modeIndex={state.modeIndex}
+      width={width}
+      availableRows={availableRows}
+      palette={palette}
       submitting={state.submitting}
       submitError={state.submitError}
-      width={width}
-      palette={palette}
     />
   )
 }

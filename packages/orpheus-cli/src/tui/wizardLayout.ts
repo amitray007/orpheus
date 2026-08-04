@@ -70,13 +70,13 @@ export function buildListRowText(label: string, innerWidth: number, suffix = '')
 }
 
 /**
- * The confirm screen's summary is a fixed set of "label: value" lines. Each
- * is truncated (never wrapped — Ink wrapping a summary line would silently
- * grow the screen's row count in a way the wizard's fixed-height frame
- * doesn't budget for) to the given content width and left as-is otherwise
- * (no padding needed here — the confirm screen doesn't apply a background
- * tint to these lines, so the WorkspaceCard-style "pad before colour"
- * requirement doesn't apply; see ConfirmStep.tsx).
+ * A fixed "label: value" summary line (e.g. CloseArchiveConfirm's "archive:
+ * <name>" / "branch: <name>" lines). Truncated (never wrapped — Ink wrapping
+ * a summary line would silently grow a fixed-height screen's row count past
+ * its budget) to the given content width and left as-is otherwise (no
+ * padding needed here — these lines don't apply a background tint, so the
+ * WorkspaceCard-style "pad before colour" requirement doesn't apply; see
+ * CloseArchiveConfirm.tsx).
  */
 export function buildSummaryLine(label: string, value: string, contentWidth: number): string {
   const raw = `${label}: ${value}`
@@ -103,19 +103,19 @@ export function buildClosePromptLine(workspaceName: string, contentWidth: number
 }
 
 // ---------------------------------------------------------------------------
-// Flat-row windowing — Step 1's accordion list has no fixed row count once a
-// provider expands (see wizardStepMachine.ts's `buildModelAccordionRows`):
-// with live data at time of writing, 4 providers collapsed is 4 rows, but
-// expanding the biggest one (13 models) makes it 3 collapsed providers + 1
-// header + 13 models = 17 rows, plus this screen's own title/hint lines —
-// comfortably more than a phone viewport with the on-screen keyboard up
-// (~12 rows). ListStep.tsx renders `rows.map(...)` with NO windowing of its
-// own, which was safe for the old two-screen split (a drilled-in model list
-// was at most 13 rows and NOTHING else) but would silently push the
-// highlighted row and the hint line off-screen for the accordion. This
-// function is the fix: it keeps the highlighted row inside the returned
-// window, exactly the way layout.ts's own `scrollWindowFor` does for the
-// picker's flattened tree rows.
+// Flat-row windowing — Step 1's model list has no fixed row count: every
+// provider is always fully expanded (see wizardStepMachine.ts's
+// `buildModelListRows`), so with the live 4-provider/45-model shape the row
+// count is 45 models + 4 headers = 49 rows, plus this screen's own
+// title/hint lines — comfortably more than a phone viewport with the
+// on-screen keyboard up (~12 rows). ListStep.tsx renders `rows.map(...)`
+// with NO windowing of its own, which was safe back when the tallest
+// possible screen was a single drilled-in model list (at most 13 rows and
+// NOTHING else) but would silently push the highlighted row and the hint
+// line off-screen once every provider is shown at once. This function is
+// the fix: it keeps the highlighted row inside the returned window, exactly
+// the way layout.ts's own `scrollWindowFor` does for the picker's flattened
+// tree rows.
 //
 // WHY THIS ISN'T blocks.ts's `windowBlocks` REUSED
 // -----------------------------------------------------------------------
@@ -124,7 +124,7 @@ export function buildClosePromptLine(workspaceName: string, contentWidth: number
 // (the caller round-trips `previousStart`/`start` through its own state so
 // the window doesn't recenter on every selection change within an
 // already-visible range — see that file's "STICKY WINDOW START" note).
-// Every accordion row here is uniform height (1), so the variable-height
+// Every model-list row here is uniform height (1), so the variable-height
 // bookkeeping (a `height` field per block, `heightFrom`/`endForStart`
 // summation) buys nothing — layout.ts's `scrollWindowFor` is the closer
 // analog (also uniform-height rows) but is typed directly to
@@ -134,11 +134,11 @@ export function buildClosePromptLine(workspaceName: string, contentWidth: number
 // algorithm, generalized to `T[]` and re-typed against a plain length +
 // selected index the way blocks.ts documents its own scope split from
 // layout.ts. Also, unlike windowBlocks, this is STATELESS (recomputed fresh
-// from `highlightedIndex` on every call, no sticky start) — the accordion
-// only re-renders on an explicit cursor move or expand/collapse, never on
-// an unrelated re-render, so there's no risk of the spurious-recenter bug
-// windowBlocks' sticky start exists to avoid; a plain recompute is simpler
-// and there's nothing here for a sticky start to protect against.
+// from `highlightedIndex` on every call, no sticky start) — the model list
+// only re-renders on an explicit cursor move, never on an unrelated
+// re-render, so there's no risk of the spurious-recenter bug windowBlocks'
+// sticky start exists to avoid; a plain recompute is simpler and there's
+// nothing here for a sticky start to protect against.
 // ---------------------------------------------------------------------------
 
 export interface RowWindow<T> {

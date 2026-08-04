@@ -10,19 +10,20 @@
  * duplicate the StatusLine/Box scaffolding. `mode` picks which copy/keys
  * apply; the async submit/error rendering is shared.
  *
- * WHY THIS IS NOT wizard/ConfirmStep.tsx VERBATIM
+ * WHY THIS IS NOT A FULL-SCREEN WIZARD STEP
  * -----------------------------------------------------------------------
- * ConfirmStep.tsx is the wizard's full-screen step (replaces the ENTIRE
- * body). This is a small, non-full-screen overlay: the picker underneath
- * stays exactly as it is per the task brief ("does NOT need to be a
- * separate full-screen overlay like the wizard — it can be a compact box"),
- * so this component renders just the box, and App.tsx is responsible for
- * stacking it (below the title bar, above/instead of the footer — see
- * App.tsx's PickerScreen wiring). No `flexGrow`/no border — a plain
- * <Box flexDirection="column"> the same way ConfirmStep's own StatusLine
- * needs no background tint (see that file's header): simpler is enough
- * here, per the task brief's "if you don't need a background tint... a
- * plain <Text> block may be entirely sufficient" steer.
+ * The new-workspace wizard's own steps (wizard/WizardScreens.tsx) each
+ * replace the ENTIRE body — full-screen. This is a small, non-full-screen
+ * overlay: the picker underneath stays exactly as it is per the task brief
+ * ("does NOT need to be a separate full-screen overlay like the wizard — it
+ * can be a compact box"), so this component renders just the box, and
+ * App.tsx is responsible for stacking it (below the title bar, above/instead
+ * of the footer — see App.tsx's PickerScreen wiring). No `flexGrow`/no
+ * border — a plain <Box flexDirection="column"> the same way the wizard's
+ * own `SubmitStatusLine` needs no background tint (see
+ * wizard/WizardScreens.tsx's header): simpler is enough here, per the task
+ * brief's "if you don't need a background tint... a plain <Text> block may
+ * be entirely sufficient" steer.
  *
  * ARCHIVE IS A TWO-KEY FLOW, NOT A TYPED-NAME CONFIRM
  * -----------------------------------------------------------------------
