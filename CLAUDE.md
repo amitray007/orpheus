@@ -103,7 +103,23 @@ on refresh or otherwise pull the user's attention.
 
 **Enforcement gates.** Husky hooks run automatically: `pre-commit` (lint-staged ESLint + Prettier on staged files), `commit-msg` (commitlint), `pre-push` (`typecheck` + `eslint --max-warnings=146` + `prettier --check`). In CI, `typecheck`, `lint` (146 ratchet), `format`, `check:dup`, and `check:arch` are hard gates; `check:dead` is advisory; `test:db` is a hard gate but path-filtered to run only when `src/main/db/**` changes.
 
-There is no general/renderer test runner — don't invent one for feature code. The DB migration engine is the one exception: it has a real assertion harness, `scripts/verify-migration-engine.ts`, run via `bun run test:db` (see the SQLite section below).
+There is no general/renderer test runner — don't invent one for feature code. The exceptions are the pure, no-TTY/no-Electron assertion harnesses under `scripts/`, all of which ARE gated in CI:
+
+| Harness                         | Covers                                                                  |
+| ------------------------------- | ----------------------------------------------------------------------- |
+| `bun run test:db`               | DB migration engine (path-filtered to `src/main/db/**`)                 |
+| `bun run test:tmux`             | `tmuxHost.ts` pure helpers **plus real-tmux behaviour**                 |
+| `bun run test:tmux:integration` | end-to-end tmux against a throwaway socket                              |
+| `bun run test:tui`              | `layout.ts` — flattening, filters, scroll windows                       |
+| `bun run test:tui-blocks`       | `blocks.ts` — block heights, windowing, project headers                 |
+| `bun run test:tui-wizard`       | `wizardLayout.ts`/`projectHeaderLayout.ts` width math at 38 columns     |
+| `bun run test:agentic`          | command-socket + control-plane suite (includes `verify-project-add.ts`) |
+
+**Both tmux harnesses exit 0 when the `tmux` binary is absent** — verified empirically, not assumed. That is why `ci.yml` installs tmux explicitly before running them; without that step they pass while testing nothing. Never remove that install step to "simplify" the job.
+
+**A new harness must be wired into `ci.yml`, not just `package.json`.** Three harnesses were added during the TUI work and each was initially left ungated; an ungated harness is indistinguishable from no harness. `test:agentic` is the cheapest home for a new command-socket check (add the script to `verify-agentic-regression.ts`'s list) since it is already gated.
+
+**Assert behaviour, not source text.** A harness that greps a source file for a guard passes even when the guard is dead (`if (false && ...)`) — this happened during `project.add` and was only caught by mutation-testing the assertion. Extract the logic into a directly-callable pure function and call it. And after writing an assertion, break the behaviour deliberately and confirm the harness fails; an assertion never tried against a mutation is one you don't know works.
 
 **What lint actually catches** (`eslint.config.mjs`, ~lines 64-126): type-aware
 `recommendedTypeChecked` rules on `src/main`/`src/preload`/`src/shared` —
@@ -191,6 +207,42 @@ Never write destructive migrations by hand; the engine's rebuild path backs up v
 
 The shell-integration resources (terminfo + integration scripts) live under `resources/ghostty/` and are bundled to `Contents/Resources/{terminfo,ghostty}/` by `electron-builder.yml`. `GHOSTTY_RESOURCES_DIR` is set in `loadTerminalAddon()` before the `.node` is `require`'d so ghostty's auto-walk can find them in both packaged and dev layouts.
 
+### tmux hosting (every workspace terminal)
+
+Workspace terminals are hosted by **tmux**, not run directly, so a session survives the app quitting, a laptop sleeping, or a phone's SSH link dropping. `src/main/tmuxHost.ts` owns this end to end.
+
+- **One session GROUP per workspace, two names.** `workspace-N-<id8>` is what the desktop attaches to; `workspace-N-<id8>-tui` is what the TUI attaches to. Same window, same pane, same `claude` — but tmux has no per-client option scope, so a second grouped session is the only way to give the TUI its `^\ Back` status footer while the desktop gets no status bar. Seeing both names for one workspace is correct, not a leak.
+- **Teardown order matters: kill the `-tui` session FIRST.** A grouped session holds the window open on its own, so killing only the primary leaves the pane's `claude` alive under the sibling. `unhostWorkspace()` does this and tolerates a missing session, a missing tmux binary, and an already-dead session.
+- **Every close and archive path must call `unhostWorkspace()`.** There are FOUR: `performClose` and `performArchive` in `index.ts` (desktop IPC, plus the inactivity auto-close watchdog, which routes through `performClose`), and the `close`/`remove` ports in `workspaceOrchestration/mainAdapter.ts` (CLI and TUI). They do not route through each other. `destroyWorkspaceRuntime()` only destroys a libghostty surface and is a **no-op for a tmux-hosted workspace** — relying on it leaked sessions that survived app restarts for days. If you add a fifth path, wire the teardown.
+- **Socket per variant:** `orpheus` / `orpheus-dev` / `orpheus-wt` / `orpheus-nightly`, so variants can run simultaneously without colliding.
+- `hostWorkspace()` is idempotent (has-session check, then reuse or create), so reopening a closed workspace creates a fresh session rather than reattaching — scrollback from before the close is deliberately not preserved.
+
+### The TUI (`orpheus tui`)
+
+An **Ink** (React) picker in `packages/orpheus-cli/src/tui/`, designed for SSH from a phone (Tailscale + Termius). It replaced an OpenTUI/Solid build, which needed `node:ffi` that the Electron-hosted Node cannot provide.
+
+- **Phone-first means 38 columns.** That is the primary target, not a degraded case — `cardBreakpoints.ts`'s narrow tier and every width helper are budgeted against it. Pure width math lives in `wizardLayout.ts` / `projectHeaderLayout.ts` / `addProjectLayout.ts` precisely so it can be asserted at 38 columns without a TTY.
+- **East_Asian_Width discipline.** Ambiguous-width glyphs (`▌ ● ─ ━ ═ · … ◆ ▲ ■`) render double-width in CJK terminals and break every padded layout. Safe: `|` `-` `+` `>` `v`, U+2387, U+2726, U+254C. Ambiguous is permitted ONLY inside a fixed-width `<Box>` that clips, or in a width-budgeted `truncate-end` line (see `PROJECT_RULE_CHAR`). `theme.ts`'s header is the audited list.
+- **Ink's `backgroundColor` colours existing characters and reserves ZERO columns.** Pad a line to full width BEFORE applying a tint, or the highlight stops at the last glyph. Every selected row also needs a tinted trailing cell or its content sits flush against the highlight edge.
+- **Block heights and rendered rows must agree.** `blocks.ts` windows by summed `Block.height`; `App.tsx` derives what it renders FROM the block (`separatorRows`, `blankAbove`) rather than recomputing, so the two cannot drift. `verify-tui-blocks.ts` guards this — change a height and its component together.
+- **Keymap:** `enter` open · `j`/`k` move · `n` new workspace · `p` add project · `v` cycle view (all/active/used) · `c` close · `a` archive (`a` → `d` → enter) · `o` sort by activity · `?` keys · `q` quit. `c`/`a` are deliberately NOT a shifted pair — shift is a mode switch on a phone keyboard, and a missed shift must never turn the reversible action into the permanent one.
+- **The picker↔tmux handover holds the alternate screen.** Ink's unmount writes `rmcup` unconditionally, which would reveal the user's real terminal for the whole `workspace.host` round trip. `entry.ts` re-enters immediately and releases after detach so enters and exits stay balanced.
+- Rendered ages tick locally once a second: the server suppresses byte-identical tree frames (correct), so without a timer an age freezes until unrelated input repaints it.
+
+### The CLI ↔ app relationship (there is no CLI database)
+
+The CLI is a **remote control for the running app**, split by direction:
+
+- **Reads** (`project ls`, `ws ls`) open `orpheus.sqlite` directly, read-only. Fast, and they work with the app closed.
+- **Writes** (`project.add`, `workspace.create`, `workspace.close`) go over the Unix command socket to the app's main process, which owns the write lock. The DB is WAL-mode: many readers, one writer.
+
+Consequences worth internalising:
+
+- **A write action only exists if the INSTALLED app has it.** Editing `src/main/` and running the CLI from source produces `unknown action: …` until `bun run build:unpack`. TUI-only changes need no rebuild.
+- **Main mutating state is not enough — the renderer needs telling.** Three bugs in this class shipped during the TUI work: `addProject` never broadcast; the renderer's `projects:changed` handler used `prev.map()` and silently dropped a project it had never seen; and the activity sort broadcast per-record changes, which cannot express a reorder (the sidebar renders in array order and never re-sorts). If a mutation doesn't show up in the desktop, look for a missing broadcast or a handler that can't represent the change — not for a sync bug.
+- **Cross-variant guard.** Every workspace terminal exports `ORPHEUS_DATA_VARIANT`, so invoking a DIFFERENT variant's binary from that shell would otherwise talk to the wrong app's socket. `resources/bin/orpheus` sets `ORPHEUS_INVOKED_VARIANT` from which Electron binary sits beside it, and `paths.ts` prefers that over the ambient value. This already caused one misdiagnosed HTTP 400.
+- The shim resolves `SCRIPT_DIR` by walking symlinks by hand (macOS bash 3.2 has no portable `readlink -f`). Do not simplify it to `dirname "${BASH_SOURCE[0]}"` — invoked through the Homebrew `binary` symlink that resolves to Homebrew's bin, not the bundle, and every derived path breaks.
+
 ### Workspace activity status (file-authoritative)
 
 Workspaces get a live status (`in_progress` / `attention` / `awaiting_input` / `idle`) shown by `Dashboard/ActivityIndicator.tsx`. **Claude's own on-disk session registry is the single source of truth — not hooks** (this changed in the Phase 2 cutover).
@@ -209,6 +261,10 @@ Workspaces get a live status (`in_progress` / `attention` / `awaiting_input` / `
 ### Distribution
 
 Ships exclusively via **public Homebrew tap** (`amitray007/homebrew-tap` cask; the dmg is hosted on a release on that public repo — see the release-pipeline section above). Brew installs strip macOS quarantine so the ad-hoc-signed bundle launches. There is no `electron-updater`; auto-publish IS wired (release-please on merge to `main` — not `scripts/release.mjs`, which is the rarely-used manual fallback). The in-app updates check (`src/main/updates.ts` → `OrpheusUpdatesSection.tsx`) uses `brew outdated`/`brew upgrade` against the tap cask (refreshing the tap first).
+
+**The CLI reaches `PATH` via the cask, per variant.** `scripts/orpheus-cask.template.rb` carries a `binary` stanza pointing at `Contents/Resources/bin/orpheus`, so brew creates the symlink on install, re-points it on upgrade, and removes it on uninstall — no privilege prompt and no app-side code. The nightly cask uses `target: "orpheus-nightly"` so both casks coexist. Dev and WT are NOT brew-distributed: `scripts/install-mac.mjs` symlinks `orpheus-dev` / `orpheus-wt` into `~/.local/bin` on every local build (idempotent, never touches a link named `orpheus`, warns and continues if it can't). The shim needs no per-variant logic — it identifies itself from the Electron binary beside it.
+
+Two consequences: the stanza path must match `electron-builder.yml`'s `extraResources` mapping or the symlink dangles, and **a cask edit only reaches users on the next release**, since the template is rendered into the tap at publish time by `sed` (only `{{VERSION}}`/`{{SHA256}}` are substituted — Ruby `#{...}` interpolation passes through untouched).
 
 Ad-hoc codesigning is re-applied to the whole bundle in `scripts/install-mac.mjs` because electron-builder leaves inner frameworks with mismatched Team IDs and macOS 15+ refuses to load them. **Do not store secrets in macOS Keychain** until proper Developer ID signing exists — ad-hoc re-sign reshuffles ACLs on every build. Plaintext SQLite columns are intentional (`auth_api_key`, `auth_token`, etc.).
 
