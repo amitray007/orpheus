@@ -176,14 +176,17 @@ export function reorderProjectsByActivity(): string[] {
   // caller (IPC, command-socket, a future third caller) gets it for free
   // rather than each caller remembering to do it themselves.
   //
-  // Broadcasts every project in `newOrder`, not just the ones whose rank
-  // actually moved — sort_order was just persisted for ALL of them
-  // (reorderProjects() above writes every index unconditionally), so a
-  // partial broadcast would leave some windows holding a stale sort_order
-  // for projects that in fact didn't visibly move, which is harmless but
-  // inconsistent; broadcasting the full new order keeps every open window's
-  // copy byte-for-byte in sync with what SQLite now holds.
-  newOrder.forEach((p, idx) => broadcastProjectChanged({ ...p, sortOrder: idx }))
+  // Sends the ORDER, not per-project records. A 'projects:changed' fan-out
+  // was tried first and does NOT work: Dashboard.tsx's handler patches a
+  // record in place (`prev.map(...)`), which updates each project's
+  // sortOrder FIELD but never moves it within the array — and Sidebar.tsx
+  // renders `projects.map(...)` in plain array order, never re-sorting by
+  // sortOrder. So a field-only update is completely invisible, which is
+  // exactly the bug this replaces. The desktop's own sort button never hit
+  // this because it applies the returned id order itself
+  // (handleReorderProjectsByActivity -> reorderWithTail); a TUI-triggered
+  // sort has no such local step, so the order has to travel over the wire.
+  broadcastProjectsReordered(orderedIds)
 
   return orderedIds
 }
@@ -435,6 +438,19 @@ export function setProjectChangedSender(sender: ProjectChangedSender): ProjectCh
 // every OTHER subscriber. Delegates to the swappable `projectChangedSender`
 // (see the TEST SEAM note above) rather than calling BrowserWindow directly,
 // so every call site below stays exactly as it was.
+/** Fan out a projects:reordered event — the new project id ORDER, for
+ *  consumers that render projects in array order (every one of them today).
+ *  Separate from broadcastProjectChanged because a per-record patch cannot
+ *  express "these moved relative to each other" — see the call site in
+ *  reorderProjectsByActivity for the bug that distinction fixes. */
+function broadcastProjectsReordered(orderedIds: string[]): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(PUSH_CHANNELS.projectsReordered, { orderedIds })
+    }
+  }
+}
+
 function broadcastProjectChanged(project: ProjectRecord): void {
   projectChangedSender(project)
 }

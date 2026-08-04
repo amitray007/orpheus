@@ -352,6 +352,24 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
+  // Projects were re-ordered as a SET (the activity sort), from a source that
+  // has no local optimistic step of its own — today the TUI's `o` key via the
+  // project.reorderByActivity command-socket action.
+  //
+  // This needs its own channel rather than riding on projects:changed above:
+  // that handler patches a record IN PLACE, which updates sortOrder as a
+  // field but never moves the project within `projects` — and Sidebar renders
+  // this array in plain order, never re-sorting by sortOrder. So a per-record
+  // broadcast is invisible for a reorder. reorderWithTail is the same helper
+  // handleReorderProjectsByActivity uses for the desktop button's own
+  // response, so both paths land on identical ordering logic (including its
+  // guard for a project added between main's snapshot and this arriving).
+  useEffect(() => {
+    return window.api.projects.onReordered((orderedIds) => {
+      setProjects((arr) => reorderWithTail(arr, orderedIds))
+    })
+  }, [])
+
   // Derived workspace id
   const currentlyViewedWorkspaceId = view.kind === 'workspace' ? view.workspaceId : null
 

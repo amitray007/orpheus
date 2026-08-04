@@ -1009,6 +1009,13 @@ export interface RendererPushMap {
   'workspaces:archived': { workspaceId: string; projectId: string }
   'workspaces:changed': { workspace: WorkspaceRecord }
   'projects:changed': { project: ProjectRecord }
+  /** Projects were RE-ORDERED as a set (activity sort). Carries the new id
+   *  order rather than per-project records: 'projects:changed' patches a
+   *  record in place and cannot move it, and the sidebar renders projects in
+   *  plain array order (never re-sorting by sortOrder), so a field-only
+   *  update is invisible. Consumers should apply this order to their own
+   *  list — see Dashboard.tsx's reorderWithTail. */
+  'projects:reordered': { orderedIds: string[] }
   'uiState:changed': AppUiState
   'git:statusChanged': { workspaceId: string; status: GitStatus }
   'github:prChanged': { workspaceId: string; pr: GhPullRequest | null }
@@ -1099,6 +1106,7 @@ export const PUSH_CHANNELS = {
   workspacesArchived: 'workspaces:archived',
   workspacesChanged: 'workspaces:changed',
   projectsChanged: 'projects:changed',
+  projectsReordered: 'projects:reordered',
   uiStateChanged: 'uiState:changed',
   gitStatusChanged: 'git:statusChanged',
   githubPrChanged: 'github:prChanged',
