@@ -96,6 +96,13 @@ import { OrpheusDataNotFoundError, openDb } from './reads/db.js'
 import { resolveContext, ProjectNotFoundError } from './context.js'
 import { getCmdSockPath, resolveAppName } from './paths.js'
 import {
+  decideLaunchAttempts,
+  allAttemptsFailed,
+  formatLaunchFailureDetail,
+  nextPollDelayMs,
+  type LaunchAttemptResult
+} from './autolaunch.js'
+import {
   setJsonMode,
   printError,
   printUsageError,
@@ -486,28 +493,99 @@ function probeSocket(sockPath: string, timeoutMs: number): Promise<boolean> {
 }
 
 /**
- * Spawn the Orpheus app (detached) and wait for the command socket to become
- * reachable, up to totalTimeoutMs. Returns when the socket is available or
- * throws an error if the timeout elapses.
+ * Run one launch attempt (spawn detached, but WAIT for and capture its exit
+ * code + stderr instead of discarding them via stdio:'ignore'/.unref()).
+ *
+ * `open`/`launchctl` are short-lived dispatcher processes — they hand off to
+ * the target app and exit, they don't stay running for the app's lifetime —
+ * so waiting for THIS process to exit does not tie the CLI to the app's
+ * lifecycle; that was never what detached/.unref() was protecting against.
+ * What .unref()-without-waiting WAS silently doing was throwing away the one
+ * signal ("did the launch command itself succeed?") this whole fix needs.
+ */
+function runLaunchAttempt(attempt: {
+  label: string
+  command: string
+  args: readonly string[]
+}): Promise<LaunchAttemptResult> {
+  return new Promise((resolve) => {
+    const child = spawn(attempt.command, attempt.args, { stdio: ['ignore', 'ignore', 'pipe'] })
+    let stderr = ''
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf-8')
+    })
+    child.once('error', (err) => {
+      resolve({ label: attempt.label, exitCode: null, stderr: stderr || String(err) })
+    })
+    child.once('exit', (code) => {
+      resolve({ label: attempt.label, exitCode: code, stderr })
+    })
+  })
+}
+
+/**
+ * Try each launch attempt in order (see decideLaunchAttempts's doc comment
+ * for why plain `open -a` is tried first with `launchctl asuser` as the
+ * SSH/no-GUI-session fallback) until one succeeds (exit code 0) or all have
+ * been tried. Returns the full per-attempt result list so the caller can
+ * both short-circuit on success and report a complete failure detail.
+ */
+async function runLaunchAttempts(appName: string): Promise<LaunchAttemptResult[]> {
+  const attempts = decideLaunchAttempts(appName, process.getuid?.() ?? null)
+  const results: LaunchAttemptResult[] = []
+  for (const attempt of attempts) {
+    const result = await runLaunchAttempt(attempt)
+    results.push(result)
+    if (result.exitCode === 0) break
+  }
+  return results
+}
+
+/**
+ * Spawn the Orpheus app and wait for the command socket to become reachable,
+ * up to totalTimeoutMs.
+ *
+ * Two failure modes, reported distinctly (see AppNotRunningError's doc
+ * comment):
+ *   - every launch attempt itself failed → throws immediately with
+ *     launchFailed:true, skipping the poll loop entirely (there is nothing
+ *     to wait for — we KNOW the app was never started).
+ *   - at least one attempt reported success but the socket never came up →
+ *     polls up to totalTimeoutMs, then throws timedOutAfterLaunch:true.
+ *
+ * The poll loop no longer sleeps a fixed interval after every probe
+ * regardless of how quickly it resolved (see nextPollDelayMs's doc comment)
+ * — a probe that fails near-instantly (e.g. ENOENT on a missing socket file)
+ * gets a bounded gap before the next attempt, not the full interval on top
+ * of the time it already spent failing.
  */
 async function autoLaunch(totalTimeoutMs = 15_000): Promise<void> {
   const appName = resolveAppName()
   const sockPath = getCmdSockPath()
 
-  // Spawn detached — we don't want the CLI to own the app process lifecycle
-  spawn('open', ['-a', appName], {
-    detached: true,
-    stdio: 'ignore'
-  }).unref()
+  const attemptResults = await runLaunchAttempts(appName)
+  if (allAttemptsFailed(attemptResults)) {
+    throw new AppNotRunningError(
+      `could not launch "${appName}": ${formatLaunchFailureDetail(attemptResults)}`,
+      { launchFailed: true }
+    )
+  }
 
   const pollIntervalMs = 500
   const deadline = Date.now() + totalTimeoutMs
 
   while (Date.now() < deadline) {
+    const probeStart = Date.now()
     const reachable = await probeSocket(sockPath, pollIntervalMs)
     if (reachable) return
-    // Wait before next probe (don't hammer the socket)
-    await new Promise<void>((r) => setTimeout(r, pollIntervalMs))
+    const delay = nextPollDelayMs({
+      probeSucceeded: false,
+      elapsedMsSinceProbeStart: Date.now() - probeStart,
+      pollIntervalMs
+    })
+    if (delay > 0) {
+      await new Promise<void>((r) => setTimeout(r, delay))
+    }
   }
 
   throw new AppNotRunningError(

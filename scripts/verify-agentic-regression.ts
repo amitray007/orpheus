@@ -35,7 +35,8 @@ const verifiers = [
   'verify-automations-settings.ts',
   'verify-agentic-integration.ts',
   'verify-log-redaction.ts',
-  'verify-mcp-bridge.ts'
+  'verify-mcp-bridge.ts',
+  'verify-cli-autolaunch.ts'
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {
