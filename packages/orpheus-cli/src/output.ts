@@ -230,22 +230,37 @@ function emitNotice(lines: string[], exitCode: number): void {
  * so it gets calm phrasing instead of error styling. Exit code stays
  * non-zero — the command still didn't complete.
  *
- * Distinguishes the two real cases via AppNotRunningError#timedOutAfterLaunch:
- * - false (default): socket/token absent — the app was never running, and
- *   the CLI never attempted to launch it (read commands skip auto-launch).
- * - true: the CLI DID launch the app (autoLaunch() in cli.ts) but the
- *   socket never came up within the timeout.
- * Both point at the same fix — open the app — via the exact `open -a`
- * command for the invoked variant (resolveAppName(), never hardcoded).
+ * Distinguishes three real cases (see AppNotRunningError's doc comment):
+ * - launchFailed: the CLI tried to launch the app and every attempt failed
+ *   outright — most commonly, no attempt could reach a GUI/Aqua session
+ *   (e.g. driving `orpheus tui` over a bare SSH login with nobody
+ *   graphically logged in). Told explicitly to start Orpheus ON THE MAC,
+ *   since `open -a` from this same SSH shell will fail the same way.
+ * - timedOutAfterLaunch: the CLI DID launch the app but the socket never
+ *   came up within the timeout — the genuine "cold start taking a while"
+ *   case; retrying `open -a` directly is still a reasonable next step.
+ * - neither (default): socket/token absent and the CLI never attempted to
+ *   launch it (read commands skip auto-launch) — the app was never running.
  */
 export function printNotice(err: AppNotRunningError, opts?: { exitCode?: number }): void {
   const exitCode = opts?.exitCode ?? 1
   const appName = resolveAppName()
   const openCmd = `open -a "${appName}"`
 
-  const lines = err.timedOutAfterLaunch
-    ? [`Orpheus was launched but didn't come up in time. Try opening it directly:`, `  ${openCmd}`]
-    : [`Orpheus isn't running. Start it with:`, `  ${openCmd}`]
+  let lines: string[]
+  if (err.launchFailed) {
+    lines = [
+      `Orpheus could not be launched from here (no graphical session to start it in —`,
+      `common over SSH). Start "${appName}" on the Mac itself, then retry.`
+    ]
+  } else if (err.timedOutAfterLaunch) {
+    lines = [
+      `Orpheus was launched but didn't come up in time. Try opening it directly:`,
+      `  ${openCmd}`
+    ]
+  } else {
+    lines = [`Orpheus isn't running. Start it with:`, `  ${openCmd}`]
+  }
 
   emitNotice(lines, exitCode)
 }

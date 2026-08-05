@@ -60,19 +60,30 @@ import { getCmdSockPath, getCmdTokenPath, ambientTokenOverrideIsTrusted } from '
  * when the auth token cannot be resolved. The CLI's auto-launch logic (U6)
  * catches this error class to trigger a fresh app launch.
  *
- * `timedOutAfterLaunch` distinguishes the two cases output.ts's notice needs
- * to word differently: false/absent (default) means the socket/token was
- * never found — the app was simply never running. true means the CLI DID
- * launch the app (autoLaunch() in cli.ts) but the socket never came up
- * within the timeout — set only at that one throw site.
+ * Three distinct cases, mutually exclusive, that output.ts's notice words
+ * differently (see printNotice()):
+ *   - launchFailed=false, timedOutAfterLaunch=false (default): socket/token
+ *     was never found and the CLI never attempted to launch the app (read
+ *     commands skip auto-launch) — the app was simply never running.
+ *   - launchFailed=true: the CLI DID attempt to launch the app but EVERY
+ *     launch attempt itself failed (e.g. `open -a` has no GUI/Aqua session
+ *     to target, as happens over a bare SSH login) — we know for certain the
+ *     app was never started, so this is reported immediately rather than
+ *     after burning the poll timeout. See autolaunch.ts for the launch
+ *     attempts and their failure detail.
+ *   - timedOutAfterLaunch=true: the CLI DID launch the app (at least one
+ *     attempt reported success) but the socket never came up within the
+ *     timeout — the genuine "cold Electron start taking a while" case.
  */
 export class AppNotRunningError extends Error {
   readonly timedOutAfterLaunch: boolean
+  readonly launchFailed: boolean
 
-  constructor(reason?: string, opts?: { timedOutAfterLaunch?: boolean }) {
+  constructor(reason?: string, opts?: { timedOutAfterLaunch?: boolean; launchFailed?: boolean }) {
     super(reason ?? 'Orpheus is not running (socket not found or token unavailable)')
     this.name = 'AppNotRunningError'
     this.timedOutAfterLaunch = opts?.timedOutAfterLaunch ?? false
+    this.launchFailed = opts?.launchFailed ?? false
   }
 }
 
