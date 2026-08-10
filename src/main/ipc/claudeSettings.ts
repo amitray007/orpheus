@@ -26,6 +26,7 @@ import {
   composeClaudeLaunch
 } from '../claudeSettings'
 import { getClaudeAuthEnv } from '../claudeAuth'
+import { invalidateClaudeUsageCache } from '../claudeUsage'
 import { currentEffectiveHostingPolicy } from '../tmuxHost'
 import { isLiveApplicableModelChange } from '../modelRouting'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from '../claudeProjectSettings'
@@ -347,6 +348,15 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
   handle('claudeSettings:update', (_e, patch) => {
     const reconciledPatch = withReconciledEffort(patch, undefined, undefined)
     const result = updateClaudeGlobalSettings(reconciledPatch)
+    // A customEnvVars edit can change (or introduce) the env-sourced
+    // CLAUDE_CODE_OAUTH_TOKEN that claudeUsage.ts's readClaudeOAuthToken()
+    // falls back to (see resolveOAuthTokenFromEnv). Without this, pasting a
+    // token into Settings > Claude > Developer > Env Vars would appear to
+    // do nothing for up to the usage TTL (~3min) because a prior 'no-auth'
+    // result stays cached. Scoped to just this patch shape — cheap either
+    // way (clears one in-memory pointer), but only bother when the field
+    // that could actually affect the resolved token changed.
+    if ('customEnvVars' in patch) invalidateClaudeUsageCache()
     recomputeDirty()
     broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
     return result

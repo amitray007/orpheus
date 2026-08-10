@@ -38,6 +38,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import { DASHBOARD_CACHE_KEYS, readDashboardCache, writeDashboardCache } from './db/dashboardCache'
+import { getClaudeGlobalSettings } from './claudeSettings'
 import type { ClaudeUsage, ClaudeUsageLimit, ClaudeUsageResult } from '../shared/types'
 
 const execFile = promisify(childProcess.execFile)
@@ -54,6 +55,13 @@ const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 
 const KEYCHAIN_SERVICE = 'Claude Code-credentials'
 const FETCH_TIMEOUT_MS = 8000
+
+// `claude setup-token`'s long-lived OAuth access token. Env-var auth (no
+// interactive login, so neither the keychain item nor .credentials.json
+// exists) is the third and last-resort token source — see
+// resolveOAuthTokenFromEnv below.
+const OAUTH_ENV_VAR_NAME = 'CLAUDE_CODE_OAUTH_TOKEN'
+const OAUTH_TOKEN_PREFIX = 'sk-ant-oat'
 
 // ---------------------------------------------------------------------------
 // Credential shape (subset we read) — tolerant of extra/missing fields since
@@ -110,13 +118,59 @@ async function readClaudeOAuthCreds(): Promise<ClaudeOAuthCreds['claudeAiOauth']
 }
 
 /**
+ * Validate + resolve an OAuth access token from environment-style sources,
+ * for the env-var-authenticated case (`claude setup-token`, no interactive
+ * login — so neither the keychain item nor .credentials.json exists). A
+ * PURE function: both sources are passed in as parameters rather than read
+ * internally (process.env / getClaudeGlobalSettings()) so it's directly
+ * unit-testable without mocking global state — see
+ * scripts/verify-claude-usage-env-token.ts.
+ *
+ * Source order (first non-empty, validated value wins):
+ *   1. `customEnvVars` — Orpheus's own Settings > Claude > Developer > Env
+ *      Vars UI (`claude_global_settings.custom_env_vars`). This is the
+ *      primary path in practice: it's how a user actually saves a
+ *      `setup-token` value in Orpheus, and unlike process.env it survives
+ *      an app relaunch without re-exporting anything.
+ *   2. `processEnv` — the app's own process environment, for the case where
+ *      Orpheus itself was launched with the var already set (e.g. from a
+ *      shell profile). Lower priority than the Orpheus-configured value so
+ *      an explicit in-app setting always wins over ambient environment.
+ *
+ * Validation: trims whitespace, requires non-empty, and requires the
+ * `sk-ant-oat` prefix. An `sk-ant-api…` console API key (a DIFFERENT
+ * credential class — not a valid bearer token for the usage endpoint) is
+ * deliberately rejected so a misconfigured API key degrades to the honest
+ * `{ unavailable: 'no-auth' }` rather than a misleading `'error'` state.
+ * NEVER logs the token value.
+ */
+export function resolveOAuthTokenFromEnv(
+  processEnv: Record<string, string | undefined>,
+  customEnvVars: Record<string, string>
+): string | null {
+  const candidates = [customEnvVars[OAUTH_ENV_VAR_NAME], processEnv[OAUTH_ENV_VAR_NAME]]
+  for (const candidate of candidates) {
+    const trimmed = candidate?.trim()
+    if (trimmed && trimmed.startsWith(OAUTH_TOKEN_PREFIX)) return trimmed
+  }
+  return null
+}
+
+/**
  * Resolve just the access token (the common case every caller wants).
- * Returns null on any failure — see readClaudeOAuthCreds. NEVER logs the
- * token value.
+ * Order: keychain / credentials.json (richest — refreshable) first, then
+ * falls back to an env-sourced token (see resolveOAuthTokenFromEnv) for
+ * env-var-authenticated setups that have neither. Returns null on total
+ * failure. NEVER logs the token value.
  */
 export async function readClaudeOAuthToken(): Promise<string | null> {
   const creds = await readClaudeOAuthCreds()
-  return creds?.accessToken ?? null
+  if (creds?.accessToken) return creds.accessToken
+
+  // No interactive-login credential found — try env-sourced auth. Global
+  // settings only: usage is account-wide, not per-workspace, and there is
+  // no workspace context at this call site (see providerUsage.ts).
+  return resolveOAuthTokenFromEnv(process.env, getClaudeGlobalSettings().customEnvVars)
 }
 
 // ---------------------------------------------------------------------------
@@ -191,8 +245,13 @@ const USAGE_TTL_MS = 3 * 60 * 1000
 let cachedResult: { value: ClaudeUsageResult; fetchedAt: number } | null = null
 let inflight: Promise<ClaudeUsageResult> | null = null
 
-/** Test-only escape hatch so a future test harness can force a re-fetch;
- *  unused in production code paths. */
+/** Escape hatch to force the next getClaudeUsage() call to re-fetch instead
+ *  of serving the TTL cache. Used by ipc/claudeSettings.ts's
+ *  `claudeSettings:update` handler when a customEnvVars edit could have
+ *  changed the env-sourced CLAUDE_CODE_OAUTH_TOKEN (see
+ *  resolveOAuthTokenFromEnv) — without this, a cached `no-auth` result would
+ *  keep the Dashboard usage card dark for up to USAGE_TTL_MS after the user
+ *  pastes in a working token. Also available for test harnesses. */
 export function invalidateClaudeUsageCache(): void {
   cachedResult = null
 }

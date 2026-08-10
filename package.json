@@ -66,6 +66,7 @@
     "test:automation-operations": "bun run scripts/verify-production-automation-operations.ts",
     "test:agentic-integration:harness": "bun run scripts/verify-agentic-integration.ts",
     "test:log-redaction": "bun run scripts/verify-log-redaction.ts",
+    "test:usage-env-token": "bun run scripts/verify-claude-usage-env-token.ts",
     "test:agentic": "bun run scripts/verify-agentic-regression.ts",
     "test:agentic-integration": "bun run test:agentic",
     "test:mcp": "bun run build:mcp && bun run scripts/verify-mcp-bridge.ts",
