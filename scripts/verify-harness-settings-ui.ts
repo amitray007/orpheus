@@ -5,10 +5,10 @@
 // (src/renderer/src/components/dashboard/settings/harnessSettingsLogic.ts,
 // U8, multi-harness architecture plan). Asserts against the REAL exported
 // functions (isSecretLikeKey, moveRow, resolveProvenance, mergeDefaultArgs,
-// draftsToStoredRows), not a restatement of their logic or a grep over
-// component source text — see CLAUDE.md: "Assert behaviour, not source
-// text... Extract the logic into a directly-callable pure function and call
-// it."
+// draftsToStoredRows, hasUnsavedChanges), not a restatement of their logic
+// or a grep over component source text — see CLAUDE.md: "Assert behaviour,
+// not source text... Extract the logic into a directly-callable pure
+// function and call it."
 //
 // RUNTIME CHOICE — plain `bun run`, not `node --experimental-strip-types`.
 // harnessSettingsLogic.ts has zero SQLite/native/Electron dependencies (pure
@@ -23,7 +23,7 @@
 import assert from 'node:assert/strict'
 import {
   isSecretLikeKey,
-  shouldResyncDrafts,
+  hasUnsavedChanges,
   moveRow,
   resolveProvenance,
   mergeDefaultArgs,
@@ -272,66 +272,94 @@ function mutatedMergeDefaultArgsClobbersOverride(
 console.log('✓ mutation test: a clobbering merge is correctly caught as a failing assertion')
 
 // ---------------------------------------------------------------------------
-// shouldResyncDrafts — the Add-button regression
+// hasUnsavedChanges — the explicit-Save dirty check
 // ---------------------------------------------------------------------------
 //
-// REGRESSION: the row editor's resync guard compared external rows against
-// ALL local drafts. `addRow` appends a blank, deliberately-uncommitted draft
-// (a row with no key is not a setting yet), which made local diverge from
-// external — so the guard fired on the next render and deleted the new row
-// before the user could type. The Add args / Add env buttons looked dead:
-// the row appeared and vanished inside one frame.
+// Replaces the old render-time resync guard (`shouldResyncDrafts`, deleted):
+// the row editor no longer auto-saves on blur or fights local edits with a
+// resync. Local drafts are the single source of truth while editing; this
+// function only decides whether the Save button should be enabled.
 {
-  const stored = [{ key: '--verbose', enabled: true }]
+  const loaded = [{ key: '--verbose', enabled: true }]
 
-  // The bug: a pending blank draft must NOT count as divergence.
+  // No difference at all -> not dirty.
   assert.equal(
-    shouldResyncDrafts(stored, [
+    hasUnsavedChanges(loaded, [{ key: '--verbose', enabled: true }]),
+    false,
+    'identical drafts must not read as dirty'
+  )
+
+  // An edited value -> dirty.
+  assert.equal(
+    hasUnsavedChanges(loaded, [{ key: '--verbose', value: 'x', enabled: true }]),
+    true,
+    'an edited row value must read as dirty'
+  )
+
+  // A toggle -> dirty.
+  assert.equal(
+    hasUnsavedChanges(loaded, [{ key: '--verbose', enabled: false }]),
+    true,
+    'a toggled enabled flag must read as dirty'
+  )
+
+  // An added (named) row -> dirty.
+  assert.equal(
+    hasUnsavedChanges(loaded, [
+      { key: '--verbose', enabled: true },
+      { key: '--add-dir', value: '/repo', enabled: true }
+    ]),
+    true,
+    'a newly added, named row must read as dirty'
+  )
+
+  // A reorder -> dirty (order is part of the persisted shape).
+  assert.equal(
+    hasUnsavedChanges(
+      [
+        { key: '--a', enabled: true },
+        { key: '--b', enabled: true }
+      ],
+      [
+        { key: '--b', enabled: true },
+        { key: '--a', enabled: true }
+      ]
+    ),
+    true,
+    'a reordered pair must read as dirty'
+  )
+
+  // A removed row -> dirty.
+  assert.equal(
+    hasUnsavedChanges(
+      [
+        { key: '--a', enabled: true },
+        { key: '--b', enabled: true }
+      ],
+      [{ key: '--a', enabled: true }]
+    ),
+    true,
+    'a removed row must read as dirty'
+  )
+
+  // BLANK ROWS ARE NOT CHANGES. A pending, never-named Add-row draft must not
+  // make an otherwise-untouched list read as dirty — that would enable Save
+  // for a click that has nothing real to persist, and (per draftsToStoredRows
+  // / the save-time filter) the blank row would be dropped anyway.
+  assert.equal(
+    hasUnsavedChanges(loaded, [
       { key: '--verbose', enabled: true },
       { key: '', value: '', enabled: true }
     ]),
     false,
-    'a pending blank draft must not trigger a resync — that is what deleted the new row'
+    'a pending blank row must not make the drafts read as dirty'
   )
 
-  // In-progress typing must survive too: the row exists locally but is not
-  // yet stored, so external still has one row and local has one named row
-  // plus the one being typed.
+  // A blank row already present on BOTH sides (defensive — should never
+  // happen once save-time filtering is correct, but the check must still be
+  // symmetric) -> not dirty.
   assert.equal(
-    shouldResyncDrafts(stored, [
-      { key: '--verbose', enabled: true },
-      { key: '--add', value: '', enabled: true }
-    ]),
-    true,
-    'a newly NAMED row does diverge — the editor commits it, then props catch up'
-  )
-
-  // A real external change still resyncs.
-  assert.equal(
-    shouldResyncDrafts(
-      [{ key: '--verbose', enabled: false }],
-      [{ key: '--verbose', enabled: true }]
-    ),
-    true,
-    'a genuine external change (toggled enabled) must still resync'
-  )
-
-  // Identical state must not resync — otherwise the editor thrashes forever.
-  assert.equal(
-    shouldResyncDrafts(stored, [{ key: '--verbose', enabled: true }]),
-    false,
-    'identical state must not resync'
-  )
-  // THE CRASH (React #301, too many re-renders). A blank row that reached
-  // storage appears in `external`. If only the local side filtered blanks, the
-  // two lists could never match: resync -> render -> still unequal -> resync,
-  // forever, until React aborts. Reordering a blank row triggered it because
-  // move() commits, and commit used to send blank rows upward.
-  //
-  // Both sides now filter, so the comparison is total: an equal set of KEYED
-  // rows compares equal no matter what blanks either side carries.
-  assert.equal(
-    shouldResyncDrafts(
+    hasUnsavedChanges(
       [
         { key: '', value: '', enabled: true },
         { key: '--verbose', enabled: true }
@@ -339,26 +367,43 @@ console.log('✓ mutation test: a clobbering merge is correctly caught as a fail
       [{ key: '--verbose', enabled: true }]
     ),
     false,
-    'a blank row in EXTERNAL must not force an unsatisfiable resync — this is the #301 crash'
+    'a blank row on either side must not affect dirtiness — the check is symmetric'
   )
 
-  // Convergence: whatever resync produces must itself not want another resync,
-  // or the loop is merely slower rather than fixed.
-  {
-    const external = [
-      { key: '', value: '', enabled: true },
-      { key: '--verbose', enabled: true }
-    ]
-    const afterResync = external.map((r) => ({ ...r }))
-    assert.equal(
-      shouldResyncDrafts(external, afterResync),
-      false,
-      'the state produced BY a resync must not request another one — that is what makes it terminate'
-    )
-  }
-  console.log('✓ shouldResyncDrafts: a pending blank row survives; real external changes resync')
   console.log(
-    '✓ shouldResyncDrafts: a blank row in storage cannot cause an unsatisfiable resync loop'
+    '✓ hasUnsavedChanges: edit/toggle/add/reorder/remove all dirty; identical and blank-only diffs are not'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// MUTATION TEST — hasUnsavedChanges
+// ---------------------------------------------------------------------------
+//
+// Deliberately break the dirty check (always return false, i.e. Save stays
+// disabled forever no matter what the user typed) and confirm a real
+// behavioral assertion — the exact shape used above, against the exact
+// expected boolean a correct implementation must return — actually catches
+// it. CLAUDE.md: "an assertion never tried against a mutation is one you
+// don't know works."
+function mutatedHasUnsavedChangesAlwaysClean(): boolean {
+  // BUG: never reports dirty, no matter what differs. Takes no params (the
+  // real signature's `loadedRows`/`draftRows` are irrelevant to a function
+  // that ignores its input) rather than declaring and not using them.
+  return false
+}
+
+{
+  let threw = false
+  try {
+    assert.equal(mutatedHasUnsavedChangesAlwaysClean(), true, 'an edited row must read as dirty')
+  } catch (err) {
+    threw = true
+    console.log('  mutation caught (expected failure):', (err as Error).message.split('\n')[0])
+  }
+  assert.ok(threw, 'MUTATION TEST FAILED TO FAIL: an always-false dirty check went undetected')
+
+  console.log(
+    '✓ mutation test: an always-false dirty check is correctly caught as a failing assertion'
   )
 }
 

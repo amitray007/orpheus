@@ -239,29 +239,34 @@ export function draftsToStoredRows(
 }
 
 // ---------------------------------------------------------------------------
-// Editor resync
+// Unsaved-changes detection (explicit Save)
 // ---------------------------------------------------------------------------
 
 /**
- * Should the row editor discard its local drafts and resync from the props?
+ * Does `draftRows` hold changes not yet reflected in `loadedRows` (the rows
+ * last loaded from — or saved to — storage)?
  *
- * True only when the EXTERNAL rows genuinely differ from the drafts the user
- * has actually named. Drafts with a blank key are PENDING — `addRow` creates
- * one deliberately uncommitted, because a row with no key is not a setting
- * yet and persisting it would write an empty flag.
+ * This replaces a render-time resync guard (`shouldResyncDrafts`, now
+ * deleted) that auto-saved on blur and fought local edits: three bugs in a
+ * row (a dead Add button, a React #301 crash, typed text disappearing
+ * mid-edit) all traced back to that architecture. The fix is explicit save —
+ * local drafts are the single source of truth while editing, seeded from
+ * props once and re-seeded only on a deliberate context change (switching
+ * harness or scope), never in response to this check. This function only
+ * answers "is there anything to save"; it never triggers a resync itself.
  *
- * The subtlety this function exists to pin: comparing the raw lists counts a
- * pending row as divergence, so the guard fires on the very next render and
- * deletes the new row before the user can type in it. The row appears and
- * vanishes within a frame, which reads as "the Add button does nothing".
- *
- * A real external change (a different scope loaded, a default toggled) still
- * returns true and still discards the pending row — correct, since it held
- * nothing.
+ * BLANK ROWS ARE NOT CHANGES. A row with an empty key is a pending,
+ * deliberately uncommitted addition (see `addRow` in HarnessSection.tsx) —
+ * it must not make an otherwise-untouched draft list read as dirty, and it
+ * must never be persisted (callers filter it out at save time; see
+ * `draftsToStoredRows` and the `key.trim() === ''` filter in
+ * `HarnessSection`'s `save()`). Filtering both sides identically also keeps
+ * the comparison symmetric: a blank row that somehow reached storage cannot
+ * make an otherwise-clean draft list read as dirty either.
  */
-export function shouldResyncDrafts(
-  externalRows: readonly { key: string; value?: string; enabled: boolean; fromDefault?: boolean }[],
-  drafts: readonly { key: string; value?: string; enabled: boolean; fromDefault?: boolean }[]
+export function hasUnsavedChanges(
+  loadedRows: readonly { key: string; value?: string; enabled: boolean; fromDefault?: boolean }[],
+  draftRows: readonly { key: string; value?: string; enabled: boolean; fromDefault?: boolean }[]
 ): boolean {
   const project = (r: {
     key: string
@@ -269,19 +274,13 @@ export function shouldResyncDrafts(
     enabled: boolean
     fromDefault?: boolean
   }): string => JSON.stringify({ k: r.key, v: r.value, e: r.enabled, d: r.fromDefault })
-  // Filter BOTH sides identically. Filtering only the local side made the
-  // comparison asymmetric: a blank row that reached storage (older data, or a
-  // caller that forgot to filter) appears in `external`, is stripped from
-  // `local`, and the two can never converge — the render-time resync fires
-  // forever and React aborts with #301. Symmetry makes the function total:
-  // whatever it is handed, an equal set of KEYED rows compares equal.
-  const external = externalRows
+  const loaded = loadedRows
     .filter((r) => r.key.trim() !== '')
     .map(project)
-    .join('\u0000')
-  const local = drafts
-    .filter((d) => d.key.trim() !== '')
+    .join(' ')
+  const draft = draftRows
+    .filter((r) => r.key.trim() !== '')
     .map(project)
-    .join('\u0000')
-  return external !== local
+    .join(' ')
+  return loaded !== draft
 }

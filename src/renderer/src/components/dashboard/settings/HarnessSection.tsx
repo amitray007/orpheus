@@ -7,12 +7,19 @@ import type {
   HarnessSettingsScope,
   ProjectRecord
 } from '@shared/types'
-import { Plus, Trash, CaretUp, CaretDown, Question } from '@phosphor-icons/react'
+import {
+  Plus,
+  Trash,
+  CaretUp,
+  CaretDown,
+  Question,
+  ArrowCounterClockwise
+} from '@phosphor-icons/react'
 import { SettingRow, SegmentedControl, Select, Toggle, Eyebrow, SecretInput } from './primitives'
 import { ProviderIcon, isKnownProviderIconId } from '@/components/ProviderIcon'
 import {
   isSecretLikeKey,
-  shouldResyncDrafts,
+  hasUnsavedChanges,
   moveRow,
   resolveProvenance,
   mergeDefaultArgs,
@@ -149,15 +156,25 @@ function HarnessPicker({ harnesses, selectedId, onSelect }: HarnessPickerProps):
 // plus a Toggle and reorder buttons, since no existing editor combines all
 // three. `secretValues` (env only) renders the value input via SecretInput
 // when the row's key looks secret-bearing.
+//
+// FULLY CONTROLLED — no internal draft state, no resync guard. The section
+// below owns ALL draft rows (args + env) as the single source of truth while
+// editing; this component just renders `rows` and reports every mutation
+// straight up via `onChange`, including an in-progress blank row (a row with
+// no key is a pending, uncommitted addition — see `addRow` in the section
+// below). Nothing here decides what gets persisted; that's Save's job.
+// This is deliberate: the previous version kept a second copy of the rows in
+// local state and reconciled it against props on every render, which is what
+// produced three bugs in a row (dead Add button, a React #301 crash, typed
+// text disappearing mid-edit). A single owner removes the reconciliation
+// entirely rather than tuning it again.
 // ---------------------------------------------------------------------------
 
 interface RowDraft extends HarnessSettingRow {
   id: string
   /** Display-only: this row currently matches a harness-provided default
-   *  (see mergeDefaultArgs). Never sent through onChange — the editor emits
-   *  plain key/value/enabled, and the caller re-derives which rows are
-   *  defaults (via draftsToStoredRows) rather than trusting a flag threaded
-   *  back out through the UI. */
+   *  (see mergeDefaultArgs). Re-derived at save time (via draftsToStoredRows)
+   *  rather than trusted as an edit signal. */
   fromDefault?: boolean
 }
 
@@ -166,8 +183,8 @@ function toDrafts(rows: readonly (HarnessSettingRow & { fromDefault?: boolean })
 }
 
 interface HarnessRowEditorProps {
-  rows: readonly (HarnessSettingRow & { fromDefault?: boolean })[]
-  onChange: (rows: HarnessSettingRow[]) => void
+  rows: readonly RowDraft[]
+  onChange: (rows: RowDraft[]) => void
   keyPlaceholder: string
   valuePlaceholder: string
   keyAriaLabel: string
@@ -186,78 +203,25 @@ function HarnessRowEditor({
   secretValues,
   addLabel
 }: HarnessRowEditorProps): React.JSX.Element {
-  const [drafts, setDrafts] = useState<RowDraft[]>(() => toDrafts(rows))
-
-  // Render-time sync from external prop changes — never fights an
-  // in-progress edit, only resyncs when the incoming value actually diverges
-  // from local state (same discipline as CliFlagsEditor's prevValueRef).
-  // Compared on the same key/value/enabled/fromDefault projection on both
-  // sides (not raw `rows`, which may carry an `id` — synthesized fresh per
-  // toDrafts call — that would never match and force a resync every render).
-  //
-  // PENDING ROWS ARE EXCLUDED FROM THE COMPARISON. `addRow` appends a blank
-  // draft that deliberately has NOT been committed upward — a row with no key
-  // is not a setting yet, and persisting it would write an empty flag. But a
-  // blank draft makes local diverge from external, so comparing the raw lists
-  // made this guard resync on the very next render and delete the new row
-  // before the user could type in it. That is what made the Add buttons look
-  // dead: the row appeared and vanished within one frame.
-  //
-  // Filtering un-keyed drafts out of `localKey` lets a pending row exist
-  // locally without being mistaken for divergence, while a REAL external
-  // change (another scope loaded, a default toggled) still resyncs — and
-  // still discards the empty row, which is correct: it held nothing.
-  if (shouldResyncDrafts(rows, drafts)) {
-    setDrafts(toDrafts(rows))
-  }
-
-  function commit(next: RowDraft[]): void {
-    setDrafts(next)
-    // Un-keyed drafts are LOCAL-ONLY and must never travel upward. A row with
-    // no key is not a setting yet; persisting one puts a blank row in storage
-    // that comes straight back as an external row, which `shouldResyncDrafts`
-    // then filters out of the local side — the two lists can never match, the
-    // render-time resync never converges, and React aborts with #301
-    // (too many re-renders). That is what crashed the settings page after
-    // reordering a blank row: every commit path (move, toggle, remove) fed the
-    // blank row into storage, not just the one the user was typing in.
-    onChange(
-      next
-        .filter((r) => r.key.trim() !== '')
-        .map(({ key, value, enabled }) => ({ key, value, enabled }))
-    )
-  }
-
   function updateRow(idx: number, patch: Partial<HarnessSettingRow>): void {
-    const next = drafts.map((r, i) => (i === idx ? { ...r, ...patch } : r))
-    setDrafts(next)
-  }
-
-  function commitRow(idx: number): void {
-    const row = drafts[idx]
-    if (!row) return
-    if (!row.key.trim()) {
-      commit(drafts.filter((_, i) => i !== idx))
-      return
-    }
-    commit(drafts)
+    onChange(rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
   }
 
   function removeRow(idx: number): void {
-    commit(drafts.filter((_, i) => i !== idx))
+    onChange(rows.filter((_, i) => i !== idx))
   }
 
   function addRow(): void {
-    setDrafts((prev) => [...prev, { id: crypto.randomUUID(), key: '', value: '', enabled: true }])
+    onChange([...rows, { id: crypto.randomUUID(), key: '', value: '', enabled: true }])
   }
 
   function move(idx: number, direction: 'up' | 'down'): void {
-    commit(moveRow(drafts, idx, direction))
+    onChange(moveRow(rows, idx, direction))
   }
 
   return (
     <div className="flex flex-col gap-2">
-      {drafts.map((row, idx) => {
+      {rows.map((row, idx) => {
         const useSecretInput = secretValues && isSecretLikeKey(row.key)
         return (
           <div key={row.id} className="flex items-center gap-1.5">
@@ -274,7 +238,7 @@ function HarnessRowEditor({
               <button
                 type="button"
                 onClick={() => move(idx, 'down')}
-                disabled={idx === drafts.length - 1}
+                disabled={idx === rows.length - 1}
                 aria-label="Move down"
                 className="w-4 h-2.5 flex items-center justify-center text-text-muted hover:text-text-primary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
@@ -283,7 +247,7 @@ function HarnessRowEditor({
             </div>
             <Toggle
               value={row.enabled}
-              onChange={(v) => commit(drafts.map((r, i) => (i === idx ? { ...r, enabled: v } : r)))}
+              onChange={(v) => updateRow(idx, { enabled: v })}
               ariaLabel={`Enable ${row.key || 'row'}`}
             />
             <input
@@ -291,7 +255,6 @@ function HarnessRowEditor({
               aria-label={keyAriaLabel}
               value={row.key}
               onChange={(e) => updateRow(idx, { key: e.target.value })}
-              onBlur={() => commitRow(idx)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
                 if (e.key === 'Escape') removeRow(idx)
@@ -311,7 +274,6 @@ function HarnessRowEditor({
               <SecretInput
                 value={row.value ?? ''}
                 onChange={(v) => updateRow(idx, { value: v })}
-                onBlur={() => commitRow(idx)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
                   if (e.key === 'Escape') removeRow(idx)
@@ -325,7 +287,6 @@ function HarnessRowEditor({
                 aria-label={valueAriaLabel}
                 value={row.value ?? ''}
                 onChange={(e) => updateRow(idx, { value: e.target.value })}
-                onBlur={() => commitRow(idx)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
                   if (e.key === 'Escape') removeRow(idx)
@@ -376,6 +337,15 @@ export function HarnessSection(): React.JSX.Element | null {
   const [globalSettings, setGlobalSettings] = useState<HarnessSettings>(EMPTY_SETTINGS)
   const [projectSettings, setProjectSettings] = useState<HarnessSettings>(EMPTY_SETTINGS)
 
+  // Local draft state — the single source of truth WHILE EDITING. Seeded
+  // from the loaded scope settings once per context change (see the effect
+  // below) and otherwise mutated only by the editors and never resynced
+  // from props; that resync was the bug (see HarnessRowEditor's header).
+  const [draftArgs, setDraftArgs] = useState<RowDraft[]>([])
+  const [draftEnv, setDraftEnv] = useState<RowDraft[]>([])
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
   useEffect(() => {
     let cancelled = false
     window.api.harness
@@ -406,45 +376,93 @@ export function HarnessSection(): React.JSX.Element | null {
     if (next === 'global') setSelectedProjectId('')
   }
 
+  const selectedHarness = harnesses?.find((h) => h.id === selectedHarnessId) ?? null
+
+  const scopeId = scope === 'project' ? selectedProjectId : undefined
+
   // Fetch global+project settings for the selected harness in parallel
   // whenever the harness or the project selection changes — the provenance
   // resolver (harnessSettingsLogic.ts) needs both layers regardless of
   // which scope is currently being edited, so "which scope is a value
-  // inherited from" can be shown correctly.
+  // inherited from" can be shown correctly. NOT keyed on `scope` — flipping
+  // the Global/Project segmented control re-reads settings already fetched
+  // here, it doesn't need a fresh round trip.
+  //
+  // `loadedFetchKey` records which [harness, project] pair the MOST RECENT
+  // successful fetch belongs to — the exact same pairing the fetch effect
+  // below is keyed on (state, not a ref, so its change can itself trigger
+  // the seed effect further down to re-run). The seed effect compares it
+  // against the CURRENT [harness, project] pair to avoid seeding drafts from
+  // stale, still-resident globalSettings/projectSettings — switching harness
+  // OR project fires both effects in the same render, but this fetch
+  // resolves asynchronously, later.
+  const fetchKey = `${selectedHarnessId}::${selectedProjectId}`
+  const [loadedFetchKey, setLoadedFetchKey] = useState<string>('')
+
   useEffect(() => {
     if (!selectedHarnessId) return
     let cancelled = false
-    window.api.harness
-      .getSettings(selectedHarnessId, 'global')
-      .then((s) => {
-        if (!cancelled) setGlobalSettings(s)
+    const fetchingKey = fetchKey
+
+    const globalP = window.api.harness.getSettings(selectedHarnessId, 'global').then((g) => {
+      if (!cancelled) setGlobalSettings(g)
+      return g
+    })
+    const projectP = selectedProjectId
+      ? window.api.harness
+          .getSettings(selectedHarnessId, 'project', selectedProjectId)
+          .then((p) => {
+            if (!cancelled) setProjectSettings(p)
+            return p
+          })
+      : // Deferred to a microtask (not a direct call in the effect body) so
+        // this reset goes through the same async-callback shape as the fetch
+        // branch above — see react-hooks/set-state-in-effect.
+        Promise.resolve().then(() => {
+          if (!cancelled) setProjectSettings(EMPTY_SETTINGS)
+          return EMPTY_SETTINGS
+        })
+
+    Promise.all([globalP, projectP])
+      .then(() => {
+        if (!cancelled) setLoadedFetchKey(fetchingKey)
       })
       .catch(console.error)
-    if (selectedProjectId) {
-      window.api.harness
-        .getSettings(selectedHarnessId, 'project', selectedProjectId)
-        .then((s) => {
-          if (!cancelled) setProjectSettings(s)
-        })
-        .catch(console.error)
-    } else {
-      // Deferred to a microtask (not a direct call in the effect body) so
-      // this reset goes through the same async-callback shape as the fetch
-      // branch above — see react-hooks/set-state-in-effect.
-      Promise.resolve().then(() => {
-        if (!cancelled) setProjectSettings(EMPTY_SETTINGS)
-      })
-    }
+
     return () => {
       cancelled = true
     }
-  }, [selectedHarnessId, selectedProjectId])
-
-  const selectedHarness = harnesses?.find((h) => h.id === selectedHarnessId) ?? null
+  }, [selectedHarnessId, selectedProjectId, fetchKey])
 
   const scopeSettings: HarnessSettings = scope === 'global' ? globalSettings : projectSettings
 
-  const scopeId = scope === 'project' ? selectedProjectId : undefined
+  // Re-seed drafts ONLY on a deliberate context change — switching harness
+  // or scope (global/project) or, within project scope, switching which
+  // project — never in response to `scopeSettings` changing on its own
+  // (a save round-trip re-fetches and calls setGlobalSettings/
+  // setProjectSettings too; reseeding then would discard whatever the user
+  // typed after clicking Save but before the response landed, resurrecting
+  // the exact resync-vs-edit fight explicit save was built to remove).
+  //
+  // Gated on `loadedFetchKey === fetchKey` so this effect's
+  // fire-on-context-change doesn't seed from a PREVIOUS harness/project's
+  // still-resident scopeSettings before the fetch above resolves — it waits
+  // for `loadedFetchKey` to catch up (which re-runs this effect, since it's
+  // a dependency) rather than seeding from stale data.
+  useEffect(() => {
+    if (!selectedHarnessId || loadedFetchKey !== fetchKey) return
+    let cancelled = false
+    Promise.resolve().then(() => {
+      if (cancelled) return
+      setDraftArgs(toDrafts(mergeDefaultArgs(selectedHarness?.defaultArgs, scopeSettings.args)))
+      setDraftEnv(toDrafts(scopeSettings.env ?? []))
+      setSaveError(null)
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedHarnessId, scope, scopeId, loadedFetchKey, fetchKey])
 
   const provenance = useMemo(
     () =>
@@ -457,34 +475,64 @@ export function HarnessSection(): React.JSX.Element | null {
 
   // Harness-provided defaultArgs merged with the scope's stored rows — see
   // mergeDefaultArgs's doc comment for the identity/precedence contract.
-  // Recomputed whenever the selected harness or scope's stored args change.
-  const mergedArgs = useMemo(
-    () => mergeDefaultArgs(selectedHarness?.defaultArgs, scopeSettings.args),
+  // This is the LOADED shape — the baseline the dirty check and Discard
+  // compare drafts against. It tracks `scopeSettings` reactively (unlike
+  // drafts, which only reseed on a genuine context change above), so a save
+  // round-trip's fresh response updates the baseline correctly without
+  // touching whatever the user is mid-edit on.
+  const loadedArgs = useMemo(
+    () => toDrafts(mergeDefaultArgs(selectedHarness?.defaultArgs, scopeSettings.args)),
     [selectedHarness, scopeSettings.args]
   )
+  const loadedEnv = useMemo(() => toDrafts(scopeSettings.env ?? []), [scopeSettings.env])
 
-  function persist(next: HarnessSettings): void {
+  const argsDirty = hasUnsavedChanges(loadedArgs, draftArgs)
+  const envDirty = hasUnsavedChanges(loadedEnv, draftEnv)
+  const isDirty = argsDirty || envDirty
+
+  function discard(): void {
+    setDraftArgs(loadedArgs)
+    setDraftEnv(loadedEnv)
+    setSaveError(null)
+  }
+
+  function save(): void {
     if (!selectedHarnessId) return
     if (scope === 'project' && !scopeId) return
+    // Blank rows (an in-progress, never-named Add) must never persist — see
+    // draftsToStoredRows / the addRow doc comment. Re-derive which args
+    // still match the harness's own shipped defaults and drop those too, so
+    // an untouched default isn't written into storage just because it was
+    // displayed (draftsToStoredRows's contract).
+    const namedArgs = draftArgs
+      .filter((r) => r.key.trim() !== '')
+      .map(({ key, value, enabled }) => ({ key, value, enabled }))
+    const namedEnv = draftEnv
+      .filter((r) => r.key.trim() !== '')
+      .map(({ key, value, enabled }) => ({ key, value, enabled }))
+    // Spread the existing settings — NOT a fresh { args, env } object — so
+    // `curated` (still persisted, even though this UI no longer edits it;
+    // see the file header) survives the round trip untouched. Both args and
+    // env go in ONE setSettings call: they live in a single settings_json
+    // blob, so two separate writes would race.
+    const next: HarnessSettings = {
+      ...scopeSettings,
+      args: draftsToStoredRows(namedArgs, selectedHarness?.defaultArgs),
+      env: namedEnv
+    }
+    setSaving(true)
+    setSaveError(null)
     window.api.harness
       .setSettings(selectedHarnessId, scope, scopeId, next)
       .then((saved) => {
         if (scope === 'global') setGlobalSettings(saved)
         else setProjectSettings(saved)
       })
-      .catch((err) => console.error('[harness] setSettings failed', err))
-  }
-
-  function setArgs(rows: HarnessSettingRow[]): void {
-    // Re-derive which rows still match the harness's own defaults and drop
-    // those before persisting — see draftsToStoredRows: a default the user
-    // never actually changed must not be written into storage just because
-    // it was displayed.
-    persist({ ...scopeSettings, args: draftsToStoredRows(rows, selectedHarness?.defaultArgs) })
-  }
-
-  function setEnv(rows: HarnessSettingRow[]): void {
-    persist({ ...scopeSettings, env: rows })
+      .catch((err) => {
+        console.error('[harness] setSettings failed', err)
+        setSaveError(err instanceof Error ? err.message : 'Failed to save harness settings.')
+      })
+      .finally(() => setSaving(false))
   }
 
   if (!harnesses) return null
@@ -545,8 +593,8 @@ export function HarnessSection(): React.JSX.Element | null {
                   />
                 )}
                 <HarnessRowEditor
-                  rows={mergedArgs}
-                  onChange={setArgs}
+                  rows={draftArgs}
+                  onChange={setDraftArgs}
                   keyPlaceholder="--flag"
                   valuePlaceholder="value (optional)"
                   keyAriaLabel="Argument flag"
@@ -567,8 +615,8 @@ export function HarnessSection(): React.JSX.Element | null {
                   />
                 )}
                 <HarnessRowEditor
-                  rows={scopeSettings.env ?? []}
-                  onChange={setEnv}
+                  rows={draftEnv}
+                  onChange={setDraftEnv}
                   keyPlaceholder="ENV_VAR_NAME"
                   valuePlaceholder="value"
                   keyAriaLabel="Environment variable name"
@@ -578,10 +626,71 @@ export function HarnessSection(): React.JSX.Element | null {
                 />
               </div>
             </div>
+
+            <SaveBar
+              isDirty={isDirty}
+              saving={saving}
+              saveError={saveError}
+              onSave={save}
+              onDiscard={discard}
+            />
           </>
         )
       )}
     </section>
+  )
+}
+
+/** Explicit save/discard control for the args + env editors above. Sits at
+ *  the bottom of the section rather than per-editor — one Save persists
+ *  both rows in a single `setSettings` call (they share one `settings_json`
+ *  blob; two separate writes would race). Disabled with no unsaved changes,
+ *  so it never reads as "click to be safe" when there's nothing to persist. */
+function SaveBar({
+  isDirty,
+  saving,
+  saveError,
+  onSave,
+  onDiscard
+}: {
+  isDirty: boolean
+  saving: boolean
+  saveError: string | null
+  onSave: () => void
+  onDiscard: () => void
+}): React.JSX.Element {
+  return (
+    <div className="flex flex-col gap-2">
+      {saveError && (
+        <p className="text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-md px-3 py-2">
+          {saveError}
+        </p>
+      )}
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-xs text-text-muted italic">
+          {isDirty ? 'Unsaved changes' : 'No changes to save'}
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onDiscard}
+            disabled={!isDirty || saving}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md text-text-secondary hover:text-text-primary hover:bg-surface-overlay border border-border-default transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          >
+            <ArrowCounterClockwise size={12} weight="bold" />
+            Discard
+          </button>
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={!isDirty || saving}
+            className="text-xs px-3 py-1.5 rounded-md bg-accent text-white font-medium hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
