@@ -35,6 +35,7 @@ import {
 } from '../claudeWorkspaceSettings'
 import type { ClaudeWorkspaceSettings, ClaudeEffort } from '../../shared/types'
 import { withReconciledEffort } from '../effortReconciliation'
+import { setCuratedModelEffort } from '../harness/settings'
 import {
   getLaunchSnapshot,
   setLaunchSnapshot,
@@ -273,6 +274,27 @@ function reconcileFlagsExceptTarget(
   return patchedTokens.join(FLAG_DELIMITER)
 }
 
+// A0 (support-multi-harness) WORKSPACE-SCOPE DECISION — harness_settings
+// only has 'global' and 'project' scope (settings.ts's own doc comment: "a
+// parameter that silently does nothing is worse than one that does not
+// exist" — no workspace scope was added). The footer Model/Effort chips are
+// a per-WORKSPACE control: picking Opus in one workspace must NOT change
+// what a sibling workspace in the same project effectively launches with.
+// Promoting a workspace-originated write to harness_settings PROJECT scope
+// was considered and rejected — it would silently clobber every sibling
+// workspace's effective curated model/effort the moment any one workspace's
+// footer chip changes it (verified: this is invisible in a DB with 0
+// workspaces, but a real production project with multiple workspaces would
+// see every workspace snap to whichever one was changed last).
+//
+// So this stays a WRITE to claude_workspace_settings only, unchanged from
+// before — no harness_settings write happens here at all. The read side
+// (composeClaudeHarnessLaunch in launch.ts) is where the split-brain is
+// actually closed: it layers claude_workspace_settings' model/effort
+// override ON TOP of harness_settings' resolved (global -> project)
+// curated values, so a workspace override still wins at launch time without
+// ever being written into (or clobbering) the project-scope harness_settings
+// row. See launch.ts's own comment at the call site for the exact layering.
 function setWorkspaceSettingAndSuppressDirty(
   workspaceId: string,
   patch: Partial<{ model: string; effort: ClaudeEffort }>,
@@ -347,6 +369,17 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
   handle('claudeSettings:update', (_e, patch) => {
     const reconciledPatch = withReconciledEffort(patch, undefined, undefined)
     const result = updateClaudeGlobalSettings(reconciledPatch)
+    // A0 (support-multi-harness): keep harness_settings.curated — the launch
+    // emitter's actual source of truth — in sync with this global-scope
+    // write. Only fires when the patch actually touches model/effort; a
+    // patch touching neither leaves the existing curated values alone (see
+    // setCuratedModelEffort's own "undefined = leave alone" contract).
+    if (reconciledPatch.model !== undefined || reconciledPatch.effort !== undefined) {
+      setCuratedModelEffort('claude', 'global', undefined, {
+        model: reconciledPatch.model,
+        effort: reconciledPatch.effort
+      })
+    }
     recomputeDirty()
     broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
     return result
@@ -366,6 +399,14 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
   handle('claudeProjectSettings:update', (_e, args) => {
     const reconciledPatch = withReconciledEffort(args.patch, args.projectId, undefined)
     const result = updateClaudeProjectSettings(args.projectId, reconciledPatch)
+    // A0 (support-multi-harness): same harness_settings sync as
+    // claudeSettings:update above, at project scope.
+    if (reconciledPatch.model !== undefined || reconciledPatch.effort !== undefined) {
+      setCuratedModelEffort('claude', 'project', args.projectId, {
+        model: reconciledPatch.model,
+        effort: reconciledPatch.effort
+      })
+    }
     recomputeDirty()
     broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
     return result
@@ -381,7 +422,11 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
 
   // Reconciles effort against a model change at workspace scope (e.g. a
   // model switch made via WorkspaceDrawer rather than the footer chip) — see
-  // withReconciledEffort's own doc comment.
+  // withReconciledEffort's own doc comment. A0 (support-multi-harness): this
+  // stays a claude_workspace_settings-only write, deliberately NOT promoted
+  // to harness_settings — see setWorkspaceSettingAndSuppressDirty's own
+  // WORKSPACE-SCOPE DECISION comment for why a workspace-scoped write must
+  // never land in harness_settings' (global|project)-only scope tiers.
   handle('claudeWorkspaceSettings:update', (_e, args) => {
     const ws = getWorkspace(args.workspaceId)
     const reconciledPatch = withReconciledEffort(args.patch, ws?.projectId, args.workspaceId)

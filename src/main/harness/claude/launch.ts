@@ -2,10 +2,9 @@
 // src/main/harness/claude/launch.ts
 //
 // U4 of the multi-harness migration plan: produces a `HarnessLaunch` for
-// Claude from THREE sources — U3's curated fields (model/effort/
-// permission-mode), U2's generic harness_settings rows
-// (resolveHarnessSettings), and U5's session-continuity tokens
-// (claudeSessionArgs, ./session.ts).
+// Claude from THREE sources — U3's curated fields (model/effort), U2's
+// generic harness_settings rows (resolveHarnessSettings), and U5's
+// session-continuity tokens (claudeSessionArgs, ./session.ts).
 //
 // KTD2 — ZERO TYPED PASSTHROUGH SETTINGS. This is the whole point of this
 // file. It does NOT read `claude_global_settings`, does NOT import anything
@@ -15,7 +14,7 @@
 // concepts is, for this emitter, just a user-supplied arg row or env row —
 // R5: "all other configuration is user-supplied arg rows and env rows.
 // Nothing else is hardcoded or maintained by Orpheus." Do not add a single
-// hardcoded flag/env emission here beyond the three curated fields; that
+// hardcoded flag/env emission here beyond the two curated fields; that
 // would silently reintroduce the 94-column maintenance burden this unit
 // exists to kill. Session continuity (U5) is a DELIBERATE exception to
 // "nothing else is hardcoded": it isn't one of the 94 passthrough settings
@@ -24,12 +23,16 @@
 // claude_global_settings), gated behind capabilities.resume/fork exactly
 // because it does NOT generalize to every harness. See session.ts's header.
 //
-// NOT WIRED YET. Nothing calls this module — the registry's Claude
-// descriptor still points `composeLaunch` at composeClaudeLaunch (see
-// registry.ts's own comment: "Phase 1 ... zero-behavior-change"). U7 proves
-// this emitter's output is equivalent (or documents where it deliberately
-// diverges, e.g. this KTD2 cutover) before U9 switches the descriptor over.
-// This file is additive only.
+// WIRED (U9 cutover). registry.ts's CLAUDE_DESCRIPTOR now points
+// `composeLaunch` at composeClaudeHarnessLaunch directly — every mount goes
+// through this emitter, not composeClaudeLaunch. composeClaudeLaunch
+// (src/main/claudeSettings.ts) still exists and still works; it is simply no
+// longer what a mount runs. U7's parity gate
+// (scripts/verify-harness-launch-parity.ts) is what proved this emitter's
+// output equivalent (or documented where it deliberately diverges, e.g. this
+// KTD2 cutover) before the switch — it keeps running post-cutover as a
+// regression guard, not a pre-cutover gate. Reverting is the one line in
+// registry.ts.
 // ---------------------------------------------------------------------------
 
 import type { HarnessLaunch } from '../../../shared/harness/types'
@@ -38,6 +41,7 @@ import { resolveHarnessSettings, type HarnessSettingRow } from '../settings'
 import { CLAUDE_CURATED, buildCuratedArgs, buildCuratedEnv } from './curated'
 import { isClaude } from '../../models/registry'
 import { claudeSessionArgs } from './session'
+import { getClaudeWorkspaceSettings } from '../../claudeWorkspaceSettings'
 
 const HARNESS_ID = 'claude'
 
@@ -66,6 +70,75 @@ function claudeModelFlagValue(model: string | undefined): string {
 }
 
 /**
+ * A0 (support-multi-harness) — layers a per-WORKSPACE model/effort override
+ * on top of the (already global -> project layered) harness_settings
+ * curated values, without ever writing that override INTO harness_settings.
+ *
+ * harness_settings has only 'global' and 'project' scope (see settings.ts's
+ * own doc comment on why a workspace tier was deliberately not added), but
+ * the footer Model/Effort chips are a genuinely per-workspace control
+ * (claude_workspace_settings, keyed by workspace_id) — picking Opus in one
+ * workspace must never change what a SIBLING workspace in the same project
+ * effectively launches with. Writing a workspace-scoped chip change into
+ * harness_settings' project scope would do exactly that (every workspace in
+ * the project would snap to whichever one was changed last), so
+ * ipc/claudeSettings.ts's write path deliberately keeps writing ONLY
+ * claude_workspace_settings for a workspace-originated change (see
+ * setWorkspaceSettingAndSuppressDirty's own WORKSPACE-SCOPE DECISION
+ * comment). This function is the read-side half of that design: it resolves
+ * the effective curated value the same way composeClaudeLaunch's
+ * mergeWorkspaceOverrides did — workspace override wins when set, otherwise
+ * falls through to the (already-resolved) global/project curated value —
+ * entirely at read time, so the workspace layer never touches storage
+ * shared by other workspaces.
+ *
+ * 'auto' EFFORT SENTINEL — same translation as the
+ * unify-model-effort-into-harness-settings data step (data-steps.ts): the
+ * legacy claude_workspace_settings.overrides.effort column still allows the
+ * literal string 'auto' (composeFlagTokens's `s.effort && s.effort !==
+ * 'auto'` guard treats it as "no override, let claude pick" and never
+ * emits it as a flag value), but harness_settings.curated has no such
+ * sentinel — an ABSENT curated.effort is what "no override" means there
+ * (buildCuratedArgs's skip-if-empty contract). So a workspace effort of
+ * 'auto' (or '') is treated here exactly like an unset workspace override:
+ * it falls through to the already-resolved project/global curated.effort,
+ * rather than being carried across and either emitted as the invalid
+ * `--effort auto` or silently masking a real project/global value. A
+ * workspace effort that IS a real value (low/medium/high/etc.) still wins
+ * over project/global, same as model.
+ *
+ * READ DEFENSIVELY — this runs on every terminal mount. getClaudeWorkspaceSettings
+ * itself already degrades a missing row to `{ overrides: {} }` (overridesStore.ts's
+ * `get`), but a throw from underneath it (e.g. getDb() failing) must not take
+ * the whole launch down with it — caught here and treated as "no override".
+ *
+ * No workspaceId -> returns `curated` unchanged (no override to apply).
+ */
+function withWorkspaceCuratedOverride(
+  curated: { model?: string; effort?: string },
+  workspaceId: string | undefined
+): { model?: string; effort?: string } {
+  if (!workspaceId) return curated
+  let model: string | undefined
+  let effort: string | undefined
+  try {
+    const ws = getClaudeWorkspaceSettings(workspaceId)
+    model = ws.overrides.model
+    effort = ws.overrides.effort
+  } catch {
+    return curated
+  }
+  // 'auto' (and '', for symmetry with buildCuratedArgs's own empty-string
+  // skip) means "no override" — see the 'auto' SENTINEL note above.
+  const effortOverride = effort && effort !== 'auto' ? effort : undefined
+  if (model === undefined && effortOverride === undefined) return curated
+  return {
+    model: model !== undefined ? model : curated.model,
+    effort: effortOverride !== undefined ? effortOverride : curated.effort
+  }
+}
+
+/**
  * Composes a Claude `HarnessLaunch` from resolved harness_settings +
  * curated fields. Mirrors composeClaudeLaunch's public signature
  * (projectId?, workspaceId?) so it's a drop-in candidate once U9 cuts over.
@@ -73,11 +146,10 @@ function claudeModelFlagValue(model: string | undefined): string {
  * COMPOSITION ORDER (load-bearing — see the per-step notes below and U4's
  * test scenarios, which assert this exact ordering):
  *
- *   1. CURATED FIRST — model, effort, permission-mode, via
- *      buildCuratedArgs/buildCuratedEnv. These are Orpheus's three stable,
- *      app-read-back concepts (KTD3) and always take the front of the argv/
- *      env so a user's custom rows can be read, visually, as "everything
- *      after the curated trio."
+ *   1. CURATED FIRST — model, effort, via buildCuratedArgs/buildCuratedEnv.
+ *      These are Orpheus's two stable, app-read-back concepts (KTD3) and
+ *      always take the front of the argv/env so a user's custom rows can be
+ *      read, visually, as "everything after the curated pair."
  *   2. THEN SESSION-CONTINUITY TOKENS (U5), via claudeSessionArgs —
  *      `--resume`/`--session-id`/`--fork-session`. Placed here to match
  *      composeClaudeLaunch's own order exactly: composeFlagTokens
@@ -133,7 +205,7 @@ export function composeClaudeHarnessLaunch(
   // neither id still composes the user's global settings rather than a bare
   // invocation.
   const resolved = resolveHarnessSettings(HARNESS_ID, projectId)
-  const curated = resolved.curated ?? {}
+  const curated = withWorkspaceCuratedOverride(resolved.curated ?? {}, workspaceId)
 
   const flagTokens: string[] = [
     // ORDER IS LOAD-BEARING: model -> permission-mode -> effort, matching
@@ -150,7 +222,6 @@ export function composeClaudeHarnessLaunch(
 
   const curatedEnv: Record<string, string> = {
     ...buildCuratedEnv(CLAUDE_CURATED.model, curated.model ?? ''),
-    ...buildCuratedEnv(CLAUDE_CURATED.effort, curated.effort ?? ''),
     ...buildCuratedEnv(CLAUDE_CURATED.effort, curated.effort ?? '')
   }
   const env = applyUserEnvRows(curatedEnv, resolved.env)
@@ -161,7 +232,13 @@ export function composeClaudeHarnessLaunch(
     // above) — nothing to emit, and nothing hardcoded to fill the gap.
     settingsJson: '',
     env,
-    model: curated.model ?? ''
+    model: curated.model ?? '',
+    // A0 (support-multi-harness) — structured effort alongside `model`, so
+    // callers (workspace:getEffectiveEffort) can read the resolved effort
+    // back without grepping `flags` for `--effort`. Additive field; every
+    // other property above is unchanged, preserving
+    // verify-harness-launch-parity's byte-equality pin on `flags`/`model`.
+    effort: curated.effort ?? ''
   }
 }
 

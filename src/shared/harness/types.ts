@@ -117,6 +117,18 @@ export type HarnessLaunch = {
    *  conditional) use this to decide isClaude(model) without re-parsing
    *  `flags`. Empty string means claude's own default (bare sonnet). */
   model: string
+  /** Effective resolved effort/reasoning-level (workspace → project →
+   *  global), the same value emitted as the --effort flag when curated
+   *  emits one. Added in A0 (support-multi-harness) so callers that need
+   *  the resolved effort (the footer Effort chip, the TUI tree frame) can
+   *  read it back structurally instead of grepping `flags` for `--effort`.
+   *  Appended after `model` rather than inserted alongside it, and every
+   *  other field is untouched, to preserve
+   *  scripts/verify-harness-launch-parity.ts's byte-equality pin on `flags`
+   *  between the old and new emitters — see this type's own header comment
+   *  ("do not reshape this"). Empty string means no override (claude picks
+   *  its own default), matching `model`'s empty-string convention. */
+  effort: string
 }
 
 // ---------------------------------------------------------------------------

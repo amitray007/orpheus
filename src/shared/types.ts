@@ -354,7 +354,9 @@ export type WorkspaceRecord = {
   /** Branch checked out in this worktree; null for a plain workspace (v64). */
   worktreeBranch: string | null
   /** Which coding-agent CLI this workspace runs (Phase 1, P1.3). Defaults to
-   *  'claude' for every pre-existing row. Nothing reads this yet — see
+   *  'claude' for every pre-existing row. Read on the live launch path —
+   *  orpheusSurfaceAdapter.ts resolves the workspace's harness descriptor
+   *  from this field on every mount, and footerActions.ts reads it too. See
    *  HarnessId in src/shared/harness/types.ts. */
   harnessId: HarnessId
 }

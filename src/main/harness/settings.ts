@@ -107,6 +107,35 @@ export function setHarnessSettings(
     .run(randomUUID(), harnessId, scope, normalizedScopeId, settingsJson, now)
 }
 
+/**
+ * Merge-writes ONLY curated.model/curated.effort into one (harnessId, scope,
+ * scopeId) row, preserving that row's existing args/env and any other
+ * curated key untouched (e.g. setting model alone never drops a
+ * previously-stored effort). A0 (support-multi-harness): the write path for
+ * the footer Model/Effort chips, so a chip change persists through the SAME
+ * storage the launch emitter (composeClaudeHarnessLaunch) and the other
+ * footer chip both read — closing the split-brain where
+ * workspace:setModel/setEffort wrote only claude_workspace_settings /
+ * claude_global_settings and harness_settings.curated silently went stale.
+ *
+ * Pass `undefined` for a key to leave that key's stored value alone (NOT to
+ * clear it) — matching setHarnessSettings' own "whole-row replace" semantics
+ * would otherwise make a model-only chip write silently erase a previously
+ * stored effort, and vice versa.
+ */
+export function setCuratedModelEffort(
+  harnessId: string,
+  scope: HarnessSettingsScope,
+  scopeId: string | undefined,
+  patch: { model?: string; effort?: string }
+): void {
+  const existing = getHarnessSettings(harnessId, scope, scopeId)
+  const nextCurated: HarnessCuratedSettings = { ...existing.curated }
+  if (patch.model !== undefined) nextCurated.model = patch.model
+  if (patch.effort !== undefined) nextCurated.effort = patch.effort
+  setHarnessSettings(harnessId, scope, scopeId, { ...existing, curated: nextCurated })
+}
+
 // ---------------------------------------------------------------------------
 // Layering
 // ---------------------------------------------------------------------------

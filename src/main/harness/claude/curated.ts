@@ -1,13 +1,16 @@
 // ---------------------------------------------------------------------------
 // src/main/harness/claude/curated.ts
 //
-// Claude's three curated concepts (KTD3 of the multi-harness migration
-// plan, unit U3): model, effort, permission-mode. These are hardcoded per
-// harness because they are stable AND Orpheus itself reads them back
-// (commandServer.ts's TUI tree frame, tmuxHost.ts's TreeSourceWorkspace,
-// settingsResourceService.ts's validator, the footer's modelSelect/
-// effortSelect pickers). Every other Claude setting stays untyped
-// passthrough args/env (KTD2) — this file is deliberately narrow.
+// Claude's two curated concepts (KTD3 of the multi-harness migration plan,
+// unit U3): model, effort. These are hardcoded per harness because they are
+// stable AND Orpheus itself reads them back (commandServer.ts's TUI tree
+// frame, tmuxHost.ts's TreeSourceWorkspace, settingsResourceService.ts's
+// validator, the footer's modelSelect/effortSelect pickers). permission-mode
+// was originally a third curated concept but was demoted to a plain default
+// arg row (see CLAUDE_DEFAULT_ARGS below) because the same intent takes a
+// different argv shape per harness — not one field with different values.
+// Every other Claude setting stays untyped passthrough args/env (KTD2) —
+// this file is deliberately narrow.
 //
 // REUSE, NOT DUPLICATE: the option lists below are read straight off the
 // existing canonical arrays in src/shared/types.ts — CLAUDE_MODEL_OPTIONS
@@ -18,14 +21,16 @@
 // derives from them instead of restating their contents.
 //
 // FLAGS VERIFIED against composeFlagTokens (src/main/claudeSettings.ts,
-// ~lines 774-834): `--model`, `--permission-mode`, `--effort` are the exact
-// tokens that function pushes today. Claude has no env-var form for any of
-// the three (unlike superset's Vibe harness, which has no model flag and
-// uses VIBE_ACTIVE_MODEL instead) — every CuratedField below uses `flag`,
-// never `env`. scripts/verify-harness-curated.ts asserts these three
-// strings match composeFlagTokens's actual output, not just this file's
-// literals, so a future rename of one of those flags fails the harness
-// instead of silently drifting.
+// ~lines 774-834): `--model` and `--effort` are the exact tokens that
+// function pushes today for these two curated fields (`--permission-mode`
+// is verified separately, as the CLAUDE_DEFAULT_ARGS row below, since it is
+// no longer a curated concept). Claude has no env-var form for either field
+// (unlike superset's Vibe harness, which has no model flag and uses
+// VIBE_ACTIVE_MODEL instead) — every CuratedField below uses `flag`, never
+// `env`. scripts/verify-harness-curated.ts asserts both strings match
+// composeFlagTokens's actual output, not just this file's literals, so a
+// future rename of either flag fails the harness instead of silently
+// drifting.
 // ---------------------------------------------------------------------------
 
 import type {

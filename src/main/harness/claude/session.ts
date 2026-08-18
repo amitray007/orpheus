@@ -2,12 +2,15 @@
 // src/main/harness/claude/session.ts
 //
 // U5 of the multi-harness migration plan — the PROOF CASE for the whole
-// architecture. This is a PARALLEL implementation, not a relocation: the
-// existing pushSessionContinuityFlags in src/main/claudeSettings.ts stays
-// exactly as-is and keeps being composeClaudeLaunch's sole caller. U7's
-// parity gate compares this module's output against that one; only after
-// they agree does U9 cut the descriptor over. Until then, nothing here is
-// reachable from the live launch path.
+// architecture. This was written as a PARALLEL implementation, not a
+// relocation: the existing pushSessionContinuityFlags in
+// src/main/claudeSettings.ts stays exactly as-is, but it is no longer the
+// live launch path's session-continuity source. U9 cut the registry's
+// composeLaunch over to launch.ts's composeClaudeHarnessLaunch, which calls
+// claudeSessionArgs (below) on every mount. U7's parity gate
+// (scripts/verify-harness-launch-parity.ts) proved this module's output
+// matches pushSessionContinuityFlags's before that cutover, and keeps
+// running post-cutover as a regression guard.
 //
 // The three-way branch below is ported VERBATIM in behavior from
 // claudeSettings.ts's pushSessionContinuityFlags (~line 731) — same

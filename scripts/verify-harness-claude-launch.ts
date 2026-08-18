@@ -158,7 +158,7 @@ const { splitFlagString, FLAG_DELIMITER } = await import('../src/shared/cliFlags
   const launch = composeClaudeHarnessLaunch('proj-1', 'ws-1')
   assert.deepEqual(
     launch,
-    { flags: '', settingsJson: '', env: {}, model: '' },
+    { flags: '', settingsJson: '', env: {}, model: '', effort: '' },
     'nothing configured -> fully bare launch'
   )
   console.log('✓ empty settings -> bare invocation (flags === "", no stray flags)')
@@ -189,6 +189,7 @@ const { splitFlagString, FLAG_DELIMITER } = await import('../src/shared/cliFlags
     'curated fields must emit in model -> effort order'
   )
   assert.equal(launch.model, 'opus', 'model field must equal the resolved curated model value')
+  assert.equal(launch.effort, 'high', 'effort field must equal the resolved curated effort value')
   console.log('✓ curated model + effort produce the expected argv, in order')
 }
 
