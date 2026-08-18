@@ -159,8 +159,16 @@ if (SKIP_SECTION_1_BUILDMOUNTENV_SIMULATION) {
   // a one-time interactive approval prompt that would hang a terminal-less
   // workspace, which is exactly why AUTH_TOKEN is used instead. The
   // authEnv-provided key is untouched by computeRoutingEnv (it doesn't
-  // delete keys), but a real 'routed' cloud_provider row never populates it
-  // in the first place (see claudeAuth.ts's routed branch returning {}).
+  // delete keys).
+  //
+  // RE-LAND(routing): this used to add "and a real 'routed' cloud_provider
+  // row never populates it in the first place (claudeAuth.ts's routed branch
+  // returns {})". That stopped being true in Phase 0 — the routed branch now
+  // falls through to buildAnthropicEnv(row), so a routed row DOES populate
+  // ANTHROPIC_API_KEY, deliberately: with launch-side routing severed there
+  // is no proxy supplying credentials, and an unauthenticated `claude` would
+  // hang on an interactive auth prompt. Phase 6 must re-examine this
+  // interaction when routing re-lands harness-aware.
   assert.equal(
     getRoutingProxyUrl(),
     DEFAULT_ROUTING_PROXY_URL,
