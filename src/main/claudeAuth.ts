@@ -209,14 +209,15 @@ export function getClaudeAuthEnv(): Record<string, string> {
   } else if (row.cloud_provider === 'vertex') {
     env = buildVertexEnv(row)
   } else if (row.cloud_provider === 'routed') {
-    // Routed workspaces get ANTHROPIC_BASE_URL/ANTHROPIC_MODEL/
-    // ANTHROPIC_AUTH_TOKEN from buildMountEnv's routing conditional
-    // (src/main/orpheusSurfaceAdapter.ts), applied strictly AFTER this env is
-    // merged in — see that file for the ordering rationale. Contributing
-    // nothing here keeps this auth layer a true no-op for routed workspaces
-    // instead of leaking a stale anthropic_api_key/base_url that the routing
-    // block would then have to fight to override.
-    env = {}
+    // Phase 0 (multi-harness migration) severed launch-side routing:
+    // orpheusSurfaceAdapter.ts no longer injects ANTHROPIC_BASE_URL/
+    // ANTHROPIC_MODEL/ANTHROPIC_AUTH_TOKEN for routed workspaces, so this
+    // branch intentionally behaves identically to 'anthropic' for now —
+    // a routed workspace still needs real Anthropic auth to launch at all,
+    // rather than silently dropping into an unauthenticated `claude`. This
+    // branch is kept distinct (not collapsed into the else) because it is
+    // the designated Phase 6 re-land site for harness-aware routing.
+    env = buildAnthropicEnv(row)
   } else {
     // anthropic (default)
     env = buildAnthropicEnv(row)
