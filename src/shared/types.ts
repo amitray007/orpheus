@@ -1,4 +1,4 @@
-import type { HarnessId } from './harness/types'
+import type { HarnessId, HarnessCapabilities, CuratedField } from './harness/types'
 
 // ---------------------------------------------------------------------------
 // Updates
@@ -3387,4 +3387,48 @@ export interface IconPackSummary {
 export interface IconPackCatalogResult {
   packs: IconPackSummary[]
   selectedId: string
+}
+
+// ---------------------------------------------------------------------------
+// Harness settings (U8) — renderer-safe mirror of src/main/harness/settings.ts
+// and src/main/harness/registry.ts's descriptor shape.
+//
+// src/main cannot be imported from the renderer (check:arch), so these types
+// deliberately re-declare the SAME shapes those main-only modules define,
+// rather than importing them. HarnessSettingRow/HarnessSettings/
+// HarnessCuratedSettings below are kept field-for-field identical to their
+// src/main/harness/settings.ts namesakes on purpose — see that file if either
+// drifts, and update both together.
+// ---------------------------------------------------------------------------
+
+export type HarnessSettingsScope = 'global' | 'project' | 'workspace'
+
+export type HarnessSettingRow = {
+  key: string
+  value?: string
+  enabled: boolean
+}
+
+export type HarnessCuratedSettings = {
+  model?: string
+  effort?: string
+  permissionMode?: string
+}
+
+export type HarnessSettings = {
+  args?: HarnessSettingRow[]
+  env?: HarnessSettingRow[]
+  curated?: HarnessCuratedSettings
+}
+
+/** Renderer-safe projection of a HarnessDescriptor (src/main/harness/registry.ts)
+ *  — everything the Settings UI needs to render a harness picker and its
+ *  curated-field pickers, with no function references (composeLaunch) or
+ *  non-serializable fields (knownGoodVersions is a Set) crossing the IPC
+ *  boundary. */
+export interface HarnessSummary {
+  id: HarnessId
+  label: string
+  capabilities: HarnessCapabilities
+  curated?: { model?: CuratedField; effort?: CuratedField; permissionMode?: CuratedField }
 }

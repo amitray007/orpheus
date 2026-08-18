@@ -23,6 +23,7 @@ export type SectionId =
   | 'orpheus-privacy'
   | 'orpheus-updates'
   | 'orpheus-model-routing'
+  | 'orpheus-harness'
   | 'orpheus-status'
   | 'orpheus-developer'
   | 'orpheus-about'
@@ -1935,6 +1936,30 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     description: 'Providers connected to the managed routing proxy and their health.',
     mapsTo: [],
     keywords: ['auth files', 'connected accounts', 'oauth', 'provider health']
+  },
+
+  // ---------------------------------------------------------------------------
+  // Orpheus › Harness
+  // ---------------------------------------------------------------------------
+  {
+    sectionId: 'orpheus-harness',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Harness',
+    settingId: 'harness-curated',
+    label: 'Model, effort, permission mode',
+    description: 'The three curated concepts Orpheus understands per harness, per scope.',
+    mapsTo: [],
+    keywords: ['model', 'effort', 'permission mode', 'curated', 'harness', 'claude code']
+  },
+  {
+    sectionId: 'orpheus-harness',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Harness',
+    settingId: 'harness-args-env',
+    label: 'Arguments and environment variables',
+    description: 'Custom CLI arguments and environment variables for a harness, layered by scope.',
+    mapsTo: [],
+    keywords: ['args', 'arguments', 'flags', 'env', 'environment variables', 'harness', 'cli']
   },
 
   // ---------------------------------------------------------------------------

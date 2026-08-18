@@ -81,6 +81,9 @@ import type {
   ProviderDescriptorSummary,
   ProviderConfigSummary,
   ProviderApiKeyEntrySummary,
+  HarnessSummary,
+  HarnessSettings,
+  HarnessSettingsScope,
   SelectableModel,
   ModelAliasesState,
   ModelAliasTargetOption,
@@ -764,6 +767,40 @@ export interface InvokeChannelMap {
   'providers:setBaseUrl': {
     req: [{ providerId: string; baseUrl: string | null }]
     res: ProviderConfigSummary[]
+  }
+
+  // Harness settings (U8, multi-harness architecture plan) — the generic
+  // Settings UI for a harness's (coding-agent CLI) args/env/curated concepts.
+  // See src/main/harness/settings.ts (getHarnessSettings/setHarnessSettings/
+  // resolveHarnessSettings) and src/main/harness/registry.ts (HARNESSES) for
+  // the main-process implementations these channels wrap. 'harness:list'
+  // returns the renderer-safe HarnessSummary projection (no composeLaunch
+  // function refs, no knownGoodVersions Set). 'harness:settings:get'/`:set`
+  // read/write ONE exact (harnessId, scope, scopeId) row — the renderer
+  // fetches global+project+workspace+resolved in parallel and computes
+  // inherited-scope provenance client-side (see harnessSettingsLogic.ts's
+  // resolveProvenance) rather than the main process doing that diffing, to
+  // keep this IPC surface small and put the diffing logic in a pure,
+  // unit-testable renderer-side module.
+  'harness:list': { req: []; res: HarnessSummary[] }
+  'harness:settings:get': {
+    req: [{ harnessId: string; scope: HarnessSettingsScope; scopeId?: string }]
+    res: HarnessSettings
+  }
+  'harness:settings:set': {
+    req: [
+      {
+        harnessId: string
+        scope: HarnessSettingsScope
+        scopeId?: string
+        settings: HarnessSettings
+      }
+    ]
+    res: HarnessSettings
+  }
+  'harness:settings:resolved': {
+    req: [{ harnessId: string; projectId?: string; workspaceId?: string }]
+    res: HarnessSettings
   }
 
   // Model-name aliasing (model-routing unit 08) — see

@@ -80,6 +80,9 @@ import type {
   ProviderDescriptorSummary,
   ProviderConfigSummary,
   ProviderApiKeyEntrySummary,
+  HarnessSummary,
+  HarnessSettings,
+  HarnessSettingsScope,
   ModelAliasesState,
   ModelAliasTargetOption,
   OAuthStartResult,
@@ -979,6 +982,27 @@ const api = {
     ): Promise<ProviderConfigSummary[]> => invoke('providers:setApiKeys', { providerId, apiKeys }),
     setBaseUrl: (providerId: string, baseUrl: string | null): Promise<ProviderConfigSummary[]> =>
       invoke('providers:setBaseUrl', { providerId, baseUrl })
+  },
+  harness: {
+    list: (): Promise<HarnessSummary[]> => invoke('harness:list'),
+    getSettings: (
+      harnessId: string,
+      scope: HarnessSettingsScope,
+      scopeId?: string
+    ): Promise<HarnessSettings> => invoke('harness:settings:get', { harnessId, scope, scopeId }),
+    setSettings: (
+      harnessId: string,
+      scope: HarnessSettingsScope,
+      scopeId: string | undefined,
+      settings: HarnessSettings
+    ): Promise<HarnessSettings> =>
+      invoke('harness:settings:set', { harnessId, scope, scopeId, settings }),
+    getResolvedSettings: (
+      harnessId: string,
+      projectId?: string,
+      workspaceId?: string
+    ): Promise<HarnessSettings> =>
+      invoke('harness:settings:resolved', { harnessId, projectId, workspaceId })
   },
   aliases: {
     list: (): Promise<ModelAliasesState> => invoke('aliases:list'),

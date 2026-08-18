@@ -168,6 +168,7 @@ import { registerUpdatesIpc } from './ipc/updates'
 import { registerProdImportIpc } from './ipc/prodImport'
 import { registerRoutingProxyIpc } from './ipc/routingProxy'
 import { registerProvidersIpc } from './ipc/providers'
+import { registerHarnessSettingsIpc } from './ipc/harnessSettings'
 import { registerAliasesIpc } from './ipc/aliases'
 import { registerOAuthIpc } from './ipc/oauth'
 import {
@@ -1395,6 +1396,8 @@ registerProdImportIpc()
 registerRoutingProxyIpc()
 
 registerProvidersIpc()
+
+registerHarnessSettingsIpc()
 
 registerAliasesIpc()
 

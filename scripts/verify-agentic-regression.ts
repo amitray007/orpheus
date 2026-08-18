@@ -73,7 +73,14 @@ const verifiers = [
   // fixtures and asserts byte-equality over the surface they share. Needs a
   // real DB (claude_global_settings + harness_settings + workspaces), so the
   // same node:sqlite constraint as the three entries above applies.
-  ['verify-harness-launch-parity.ts', ['node', '--experimental-strip-types']]
+  ['verify-harness-launch-parity.ts', ['node', '--experimental-strip-types']],
+  // U8 — the harness settings UI's pure logic module (isSecretLikeKey/
+  // moveRow/resolveProvenance). No SQLite/native dependency, so this runs
+  // under plain bun like the majority of this suite's entries — see
+  // verify-harness-settings-ui.ts's own header for why it doesn't need the
+  // node:sqlite dispatch the harness-settings/-claude-launch/-session/-parity
+  // entries above require.
+  'verify-harness-settings-ui.ts'
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {

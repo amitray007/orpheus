@@ -30,7 +30,8 @@ import {
   EyeSlash,
   Clock,
   Database,
-  Image
+  Image,
+  Sliders
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -142,6 +143,9 @@ const OrpheusModelRoutingSection = lazy(() =>
     default: m.OrpheusModelRoutingSection
   }))
 )
+const HarnessSection = lazy(() =>
+  import('./settings/HarnessSection').then((m) => ({ default: m.HarnessSection }))
+)
 const OrpheusStatusSection = lazy(() =>
   import('./settings/OrpheusStatusSection').then((m) => ({ default: m.OrpheusStatusSection }))
 )
@@ -207,6 +211,7 @@ export type SectionId =
   | 'orpheus-updates'
   | 'orpheus-prod-import'
   | 'orpheus-model-routing'
+  | 'orpheus-harness'
   | 'orpheus-status'
   | 'orpheus-footer'
   | 'orpheus-developer'
@@ -332,6 +337,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Model Routing',
         icon: ShareNetwork,
         Component: OrpheusModelRoutingSection
+      },
+      {
+        id: 'orpheus-harness',
+        label: 'Harness',
+        icon: Sliders,
+        Component: HarnessSection
       },
       {
         id: 'orpheus-status',
