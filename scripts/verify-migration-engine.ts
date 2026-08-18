@@ -187,6 +187,65 @@ const { sync, planSync } = await import('../src/main/db/engine.ts')
   console.log('✓ engine')
 }
 
+// addColumn against a POPULATED table with a NOT NULL non-empty-string
+// DEFAULT (the exact shape workspaces.harness_id uses, Phase 1 P1.3): SQLite
+// allows this as a plain ALTER TABLE ADD COLUMN (no rebuild needed, unlike a
+// CHECK/type/NOT-NULL-without-DEFAULT change), and every pre-existing row
+// must silently backfill to the default with zero data loss and zero
+// explicit data step. Neither the 'diff' case above (asserts the op shape
+// only, in-memory desired/live structs, no real ALTER) nor 'engine' above
+// (empty table) actually applies this against real rows, so this closes
+// that gap.
+{
+  const hdb = new Database(':memory:')
+  const initialSchema = {
+    workspaces: {
+      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT NOT NULL' }
+    }
+  }
+  sync(hdb, initialSchema, { dbPath: ':memory:', legacyVersion: 0 })
+  hdb.exec(`INSERT INTO workspaces (id, name) VALUES ('w1', 'first'), ('w2', 'second')`)
+
+  const withHarnessId = {
+    workspaces: {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        name: 'TEXT NOT NULL',
+        harness_id: { type: 'TEXT', notNull: true, default: "'claude'" }
+      }
+    }
+  }
+  sync(hdb, withHarnessId, { dbPath: ':memory:', legacyVersion: 0 })
+
+  const rows = hdb.prepare('SELECT id, harness_id FROM workspaces ORDER BY id').all()
+  assert.deepEqual(
+    rows,
+    [
+      { id: 'w1', harness_id: 'claude' },
+      { id: 'w2', harness_id: 'claude' }
+    ],
+    'pre-existing rows must backfill harness_id to the schema DEFAULT with no data step'
+  )
+
+  const colInfo = (
+    hdb.prepare('PRAGMA table_info("workspaces")').all() as Array<{
+      name: string
+      type: string
+      notnull: number
+      dflt_value: string | null
+    }>
+  ).find((c) => c.name === 'harness_id')
+  assert.deepEqual(
+    colInfo && { type: colInfo.type, notnull: colInfo.notnull, dflt_value: colInfo.dflt_value },
+    { type: 'TEXT', notnull: 1, dflt_value: "'claude'" },
+    "harness_id must materialize as TEXT NOT NULL DEFAULT 'claude'"
+  )
+
+  // idempotent: re-syncing the same target schema plans no further ops.
+  assert.deepEqual(planSync(hdb, withHarnessId), [])
+  console.log('✓ engine-add-column-backfill (harness_id)')
+}
+
 const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
 
 {
@@ -597,6 +656,28 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
     assert.equal(w2.parent_workspace_id, 'w1')
     assert.equal(w2.worktree_parent_cwd, '/tmp/w1')
     assert.equal(w2.worktree_branch, 'feature/worktree-branch')
+
+    // (iv) Multi-harness migration (Phase 1, P1.3): the hand-built v66
+    // workspaces table above has no harness_id column at all, so sync()
+    // above must have reconciled it via a plain addColumn op (schema.ts
+    // declares harness_id TEXT NOT NULL DEFAULT 'claude'). Both pre-existing
+    // rows (inserted before sync ran) must read back 'claude' — proving
+    // ALTER TABLE ... ADD COLUMN honors the schema's NOT NULL + DEFAULT
+    // rather than silently adding the column nullable/undefaulted (which
+    // would leave existing rows NULL and violate the NOT NULL the very same
+    // statement declares).
+    const harnessRows = vdb.prepare('SELECT id, harness_id FROM workspaces ORDER BY id').all() as {
+      id: string
+      harness_id: string
+    }[]
+    assert.deepEqual(
+      harnessRows,
+      [
+        { id: 'w1', harness_id: 'claude' },
+        { id: 'w2', harness_id: 'claude' }
+      ],
+      'addColumn must backfill harness_id to its schema DEFAULT (claude) on pre-existing workspace rows'
+    )
 
     const settings = vdb
       .prepare(

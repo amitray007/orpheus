@@ -240,7 +240,12 @@ export const schema: SchemaDef = {
       parent_workspace_id: 'TEXT',
       // worktree-native workspaces (v64)
       worktree_parent_cwd: 'TEXT',
-      worktree_branch: 'TEXT'
+      worktree_branch: 'TEXT',
+      // Multi-harness migration (Phase 1, P1.3). Every existing row is
+      // implicitly Claude today, so the DEFAULT backfills them with zero
+      // data migration — see HarnessId in src/shared/harness/types.ts for
+      // why 'claude' (not 'claude-cli') is the bare default value.
+      harness_id: { type: 'TEXT', notNull: true, default: "'claude'" }
     },
     foreignKeys: [{ columns: ['project_id'], ref: 'projects(id)', onDelete: 'CASCADE' }],
     indexes: {

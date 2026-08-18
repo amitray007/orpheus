@@ -1,3 +1,5 @@
+import type { HarnessId } from './harness/types'
+
 // ---------------------------------------------------------------------------
 // Updates
 // ---------------------------------------------------------------------------
@@ -351,6 +353,10 @@ export type WorkspaceRecord = {
   worktreeParentCwd: string | null
   /** Branch checked out in this worktree; null for a plain workspace (v64). */
   worktreeBranch: string | null
+  /** Which coding-agent CLI this workspace runs (Phase 1, P1.3). Defaults to
+   *  'claude' for every pre-existing row. Nothing reads this yet — see
+   *  HarnessId in src/shared/harness/types.ts. */
+  harnessId: HarnessId
 }
 
 /**

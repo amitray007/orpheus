@@ -1,6 +1,7 @@
 import { BrowserWindow } from 'electron'
 import { getDb } from './db'
 import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from '../shared/types'
+import type { HarnessId } from '../shared/harness/types'
 import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
 import { removeWorktree, withRepoLock } from './worktrees'
 import { PUSH_CHANNELS } from '../shared/ipc'
@@ -32,6 +33,8 @@ type WorkspaceRow = {
   // v64: worktree-native workspaces
   worktree_parent_cwd: string | null
   worktree_branch: string | null
+  // Multi-harness migration (Phase 1, P1.3)
+  harness_id: HarnessId
 }
 
 type ProjectRow = {
@@ -73,7 +76,8 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     lastTitle: row.last_title ?? null,
     parentWorkspaceId: row.parent_workspace_id ?? null,
     worktreeParentCwd: row.worktree_parent_cwd ?? null,
-    worktreeBranch: row.worktree_branch ?? null
+    worktreeBranch: row.worktree_branch ?? null,
+    harnessId: row.harness_id ?? 'claude'
   }
 }
 
