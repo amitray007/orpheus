@@ -97,7 +97,6 @@ import type { WorkspaceRecord } from '../shared/types'
 import {
   loadOrpheusSurface,
   buildMountEnv,
-  isRoutedMount,
   composeLaunchForMount,
   buildTmuxAttachEnv
 } from './orpheusSurfaceAdapter'
@@ -173,8 +172,7 @@ import { registerOAuthIpc } from './ipc/oauth'
 import {
   hydrateSnapshotAtBoot,
   reconcileRoutingProxy,
-  shutdownRoutingProxySync,
-  ensureHealthyForRouting
+  shutdownRoutingProxySync
 } from './routingProxy/manager'
 import { registerMcpIpc } from './ipc/mcp'
 import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
@@ -1630,7 +1628,7 @@ async function traceTerminalMount(
 
     // Assemble the surface env as a child span nested under terminal.mount.
     // buildMountEnv is sync; use diag.span (not diag.trace). precomposedLaunch
-    // was already composed once by the caller (for the isRoutedMount gate) —
+    // was already composed once by the caller (composeLaunchForMount) —
     // passed through so this span does NOT re-run composeClaudeLaunch.
     let buildResult!: ReturnType<typeof buildMountEnv>
     try {
@@ -1793,11 +1791,13 @@ async function traceTerminalMountForTmuxAttach(
 /** Post-mount overlay handling: show the "Starting workspace" overlay only when a
  *  new surface was actually created (re-attach/resize of an already-running
  *  workspace has no boot to mask), and arm the 10s fallback dismissal timer.
- *  `routed` (from isRoutedMount(precomposedLaunch), already computed by the
- *  caller for the health-gate check above) picks the slow-watchdog copy and
- *  threshold inside loadingOverlay.ts — a routed mount waits on a proxy
- *  round-trip before claude registers its session file, so the generic
- *  "hooks/auth" slow copy would be wrong and 3s too aggressive for it. */
+ *  `routed` picks the slow-watchdog copy and threshold inside
+ *  loadingOverlay.ts — a routed mount waits on a proxy round-trip before
+ *  claude registers its session file, so the generic "hooks/auth" slow copy
+ *  would be wrong and 3s too aggressive for it. Every call site currently
+ *  passes `false` (launch-side routing was severed in Phase 0); the
+ *  parameter itself stays live as the Phase 6 re-land hook — see
+ *  multi-harness roadmap. */
 function handlePostMountOverlay(workspaceId: string, created: boolean, routed: boolean): void {
   if (created) {
     showLoadingOverlay(workspaceId, { title: 'Starting workspace' }, routed)
@@ -1888,10 +1888,10 @@ function willMountCreateSurface(addon: GhosttySurfaceAddon, workspaceId: string)
 }
 
 /** Discriminated pre-decision for whether this mount should go through tmux
- *  at all — resolved once, before either tmux or the routed-model gate is
- *  touched, so downstream code branches on a plain value instead of
- *  re-deriving availability. See resolveMountStrategy() (tmuxHost.ts) for
- *  the pure decision this wraps with the actual ensureTmuxVersion() I/O. */
+ *  at all — resolved once, before tmux is touched, so downstream code
+ *  branches on a plain value instead of re-deriving availability. See
+ *  resolveMountStrategy() (tmuxHost.ts) for the pure decision this wraps
+ *  with the actual ensureTmuxVersion() I/O. */
 async function resolveTmuxMountAvailability(): Promise<
   ReturnType<typeof resolveMountStrategy> extends infer T ? T : never
 > {
@@ -2035,12 +2035,9 @@ async function finishTmuxAttachMount(
     })
   }
 
-  // Routed-model health gate deliberately NOT run here — see the
-  // isRoutedMount(precomposedLaunch) call in the native path below, which
-  // only runs on the native/create path. Re-attaching to an already-running
-  // tmux session must never re-probe proxy health: that gate exists to fail
-  // fast before spawning a NEW `claude` process against an unreachable
-  // routing proxy, and no new `claude` process is spawned here.
+  // Routed-model health gate: severed repo-wide in Phase 0 (launch-side
+  // routing injection), so there is currently nothing to (deliberately not)
+  // run here at all — see multi-harness roadmap (Phase 6) for the re-land.
   handlePostMountOverlay(workspaceId, result.created, false)
 
   // Snapshot handling on the tmux-attach path — subtle, documented in full
@@ -2183,35 +2180,20 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
   // re-attach of an already-live surface, or the tmux-missing/too-old
   // fallback for a fresh create) ──────────────────────────────────────────
 
-  // Compose claude settings -> ClaudeLaunch ONCE for this mount. Both the
-  // routed-model health gate below and traceTerminalMount's env assembly
-  // need the composed launch; previously each called composeClaudeLaunch
-  // independently (a real DB read of global/project/workspace settings rows
-  // every time), so every single mount — including Claude-only ones — paid
-  // for settings composition twice. Composing once here and threading the
-  // result through both call sites halves that cost for every workspace.
+  // Compose claude settings -> ClaudeLaunch ONCE for this mount.
+  // traceTerminalMount's env assembly below needs the composed launch;
+  // previously it (plus a now-removed routed-model health gate) each called
+  // composeClaudeLaunch independently (a real DB read of
+  // global/project/workspace settings rows every time), so every single
+  // mount — including Claude-only ones — paid for settings composition
+  // twice. Composing once here and threading the result through keeps that
+  // cost to one composition per mount.
   const precomposedLaunch = composeLaunchForMount(projectId, workspaceId)
 
-  // Fail-closed gate (model-routing unit 04): an unreachable routing proxy
-  // makes Claude Code hang ~44-128s silently (measured) once addon.mount
-  // spawns the wrapper script against it. Check reachability BEFORE spawning
-  // for routed-model workspaces only — this is a strict no-op (zero extra
-  // network calls, zero added latency, zero extra composition) for
-  // Claude-model workspaces, mirroring computeRoutingEnv's own no-op
-  // guarantee for the Claude path. Also correctly skipped for a plain
-  // re-attach of an already-live surface: hostWorkspace/tmuxAttach is never
-  // set in that case (willMountCreateSurface was false), so this whole
-  // native path only runs for either a genuine re-attach OR a fresh native
-  // (tmux-fallback) create — the gate itself is still keyed off whether
-  // addon.mount will actually create a new entry, exactly as before.
-  if (isRoutedMount(precomposedLaunch)) {
-    try {
-      await ensureHealthyForRouting()
-    } catch (err) {
-      hideLoadingOverlay(workspaceId)
-      throw err
-    }
-  }
+  // Phase-0: the routed-model health gate that used to run here (fail-closed
+  // check of the routing proxy before addon.mount spawns the wrapper script)
+  // is severed along with launch-side routing injection — re-lands
+  // harness-aware, see multi-harness roadmap (Phase 6).
 
   const launchBox: {
     launch?: ReturnType<typeof buildMountEnv>['launch']
@@ -2245,7 +2227,7 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     })
   }
 
-  handlePostMountOverlay(workspaceId, result.created, isRoutedMount(precomposedLaunch))
+  handlePostMountOverlay(workspaceId, result.created, false)
 
   // Snapshot the composed launch (+ auth env layer) so we can detect settings
   // AND auth drift later — see LaunchSnapshot in workspaceResources.ts.

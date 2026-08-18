@@ -22,9 +22,15 @@
 // path (it's neither hooks nor auth), and 3s is too aggressive for a proxy
 // hop that legitimately takes longer than a direct Anthropic call. This
 // module stays a leaf: it takes the boolean the caller already computed
-// (index.ts derives it from isRoutedMount/isRoutedModel) rather than
-// importing modelRouting.ts or any electron-touching module itself — nothing
-// here changes WHAT dismisses the overlay, only the slow-state copy/timing.
+// rather than importing modelRouting.ts or any electron-touching module
+// itself — nothing here changes WHAT dismisses the overlay, only the
+// slow-state copy/timing.
+//
+// CURRENT STATE (Phase 0): index.ts hardcodes `routed: false` at every call
+// site — launch-side routing injection was severed, so no mount is currently
+// classified as routed and this copy/timing branch is unreachable in
+// practice. The flag and branch are kept as the Phase 6 re-land hook (see
+// multi-harness roadmap) rather than deleted; do not remove them.
 
 type OverlayState = 'idle' | 'showing' | 'slow' | 'error'
 

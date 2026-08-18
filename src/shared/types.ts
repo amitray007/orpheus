@@ -3188,9 +3188,13 @@ export interface SelectableModel {
    *  false for Claude and for any routed entry backed by real live authFiles
    *  data. The picker MAY show a subtle "connecting…" affordance for a
    *  provisional entry; it must never be treated as less real for selection
-   *  purposes — the actual safety backstop is ensureHealthyForRouting's
-   *  fail-closed gate at mount time, which still runs regardless of this
-   *  flag. */
+   *  purposes. NOTE (Phase 0): the mount-time fail-closed backstop this used
+   *  to describe (ensureHealthyForRouting's pre-mount health gate) was
+   *  severed along with the rest of launch-side routing injection — it no
+   *  longer runs at mount time at all. The function itself still exists in
+   *  routingProxy/ and the proxy server lifecycle is untouched; only the
+   *  pre-spawn call from the launch path is gone. A harness-aware pre-mount
+   *  gate is expected to return in Phase 6 — see multi-harness roadmap. */
   provisional: boolean
 }
 

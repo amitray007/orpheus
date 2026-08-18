@@ -7,7 +7,6 @@
 // Exports:
 //   loadOrpheusSurface()     — resolve the correct .node path and load the addon
 //   composeLaunchForMount()  — compose settings -> ClaudeLaunch ONCE per mount
-//   isRoutedMount()          — pure check over an already-composed ClaudeLaunch
 //   buildMountEnv()          — assemble the surfaceEnv + command for terminal:mount
 //                              (accepts the same ClaudeLaunch via precomposedLaunch
 //                              so a mount never composes settings twice)
@@ -21,12 +20,10 @@ import { join } from 'path'
 import { loadGhosttySurface, type GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import { composeClaudeLaunch, type ClaudeLaunch } from './claudeSettings'
 import { getClaudeAuthEnv } from './claudeAuth'
-import { computeRoutingEnv, isRoutedModel } from './modelRouting'
 import { shimPath } from './orpheusNotify'
 import { getCachedShellPath } from './shellHelpers'
 import { writeGhosttyConfigFile } from './ghosttyConfig'
 import { getAppUiState } from './uiState'
-import { getRoutingProxyRuntime } from './routingProxy/runtime'
 import { isDev, isWorktreeBuild, isNightly } from './appMode'
 import { buildManagedMcpFlagsString } from './controlPlane/managedMcpLaunch'
 import type { ClaudeRuntimeBinding } from './controlPlane/runtimeLeases'
@@ -120,11 +117,11 @@ export function buildMountEnv(
   runtimeLease?: RuntimeMountLease
 ): MountEnvResult {
   // Compose claude settings → flags, settingsJson, base env vars. Callers on
-  // the terminal:mount hot path (index.ts) already composed this once for
-  // the isRoutedMount gate check and pass it back in via precomposedLaunch —
+  // the terminal:mount hot path (index.ts) already composed this once via
+  // composeLaunchForMount and pass it back in via precomposedLaunch —
   // composeClaudeLaunch is a DB read (global/project/workspace settings rows)
   // per call, so reusing it here halves the settings-layering work paid on
-  // EVERY mount (see the isRoutedMount doc comment for the fuller story).
+  // EVERY mount (see composeLaunchForMount's doc comment for the fuller story).
   const launch = precomposedLaunch ?? composeClaudeLaunch(projectId, workspaceId)
 
   // Auth env vars (ANTHROPIC_API_KEY, provider routing flags, etc.).
@@ -185,39 +182,13 @@ export function buildMountEnv(
     ...(cmdServer ? { ORPHEUS_CMD_TOKEN: cmdServer.token } : {})
   }
 
-  // ---------------------------------------------------------------------
-  // Model routing (unit 03) — MUST be applied strictly AFTER the `env`
-  // object above is fully assembled, in particular after the `...authEnv`
-  // spread on line ~131.
-  //
-  // WHY HERE, AFTER authEnv: authEnv (getClaudeAuthEnv()) is merged after
-  // launch.env specifically so a user's configured secrets/base URL always
-  // win over typed launch settings (see the module doc comment above). For
-  // the 'anthropic' cloud provider, authEnv CAN itself set
-  // ANTHROPIC_BASE_URL (from auth_base_url — claudeAuth.ts buildAnthropicEnv).
-  // If the routing overlay were merged BEFORE that spread, a configured
-  // custom Anthropic base URL would silently clobber the proxy URL for a
-  // routed workspace, defeating routing. Applying computeRoutingEnv() here,
-  // strictly after `env` is finalized, makes it win deterministically for
-  // routed workspaces regardless of what authEnv contributed.
-  //
-  // WHY THIS IS A STRICT NO-OP FOR CLAUDE MODELS: computeRoutingEnv returns
-  // `{}` whenever isRoutedModel(launch.model) is false (see
-  // src/main/modelRouting.ts). Spreading an empty object adds/overwrites
-  // nothing, so `env` here is byte-for-byte identical to what it was before
-  // this block for every Claude-model workspace — this is the ToS-critical
-  // invariant: Claude traffic must reach real api.anthropic.com via the
-  // official binary, never through this proxy. `cloud_provider: 'routed'`
-  // is also structurally exclusive with bedrock/vertex/foundry (see
-  // ClaudeCloudProvider in src/shared/types.ts), so a routed model can never
-  // collide with a CLAUDE_CODE_USE_* env var from those providers either.
-  if (isRoutedModel(launch.model)) {
-    const proxyUrl = getRoutingProxyRuntime(getAppUiState).url
-    if (proxyUrl === null) {
-      throw new Error('Routing proxy automatic port has no effective port allocated')
-    }
-    Object.assign(env, computeRoutingEnv(launch.model, { proxyUrl }))
-  }
+  // Phase-0: routing env injection severed here; re-lands harness-aware —
+  // see multi-harness roadmap (Phase 6). Re-land site rationale, preserved:
+  // the routing overlay must be applied strictly AFTER the `...authEnv`
+  // spread above, because for cloud_provider 'anthropic' authEnv can itself
+  // set ANTHROPIC_BASE_URL (from auth_base_url — claudeAuth.ts
+  // buildAnthropicEnv), which would otherwise silently clobber the proxy URL
+  // for a routed workspace and defeat routing.
 
   // Runtime identity is server-owned launch metadata. Merge it last so neither
   // custom Claude env nor provider-routing layers can spoof the trusted binding.
@@ -313,17 +284,15 @@ export function buildTmuxAttachEnv(socketName: string, sessionName: string): Tmu
 // ---------------------------------------------------------------------------
 // composeLaunchForMount
 //
-// The terminal:mount hot path (index.ts) needs the composed ClaudeLaunch for
-// TWO reasons that used to each call composeClaudeLaunch independently: (1)
-// isRoutedMount's fail-closed routing-health gate, which must run BEFORE the
-// surface is spawned, and (2) buildMountEnv's own env assembly a few lines
-// later in the same handler. composeClaudeLaunch does a real DB read
-// (global/project/workspace settings rows) on every call, so calling it
-// twice per mount doubled that cost for EVERY workspace, including
-// Claude-only ones. index.ts now calls this ONCE, uses the result for the
-// isRoutedMount check, then threads the same ClaudeLaunch into buildMountEnv
-// via its precomposedLaunch param — so a mount now pays exactly one
-// composition, never two.
+// The terminal:mount hot path (index.ts) needs the composed ClaudeLaunch
+// before spawning the surface, then again for buildMountEnv's own env
+// assembly a few lines later in the same handler. composeClaudeLaunch does a
+// real DB read (global/project/workspace settings rows) on every call, so
+// calling it twice per mount doubled that cost for EVERY workspace. index.ts
+// calls this ONCE and threads the same ClaudeLaunch into buildMountEnv via
+// its precomposedLaunch param — so a mount pays exactly one composition,
+// never two. (This used to also feed the isRoutedMount routing-health gate,
+// severed in Phase 0 — see multi-harness roadmap Phase 6 for the re-land.)
 // ---------------------------------------------------------------------------
 
 export function composeLaunchForMount(
@@ -331,23 +300,4 @@ export function composeLaunchForMount(
   workspaceId: string
 ): ClaudeLaunch {
   return composeClaudeLaunch(projectId, workspaceId)
-}
-
-// ---------------------------------------------------------------------------
-// isRoutedMount
-//
-// Fail-closed gate hook point (model-routing unit 04): resolves whether a
-// workspace's ALREADY-COMPOSED launch model is routed (non-Claude), so the
-// terminal:mount handler (index.ts) can call routingProxy's
-// ensureHealthyForRouting() BEFORE spawning the surface for a routed
-// workspace. Takes the ClaudeLaunch produced by composeLaunchForMount above
-// (the SAME composition buildMountEnv reuses) rather than recomposing —
-// this is a pure in-memory check now, zero I/O, zero DB read.
-//
-// An unreachable proxy makes Claude Code hang ~44-128s silently (measured) —
-// this is the one check standing between that and a clear, immediate error.
-// ---------------------------------------------------------------------------
-
-export function isRoutedMount(launch: ClaudeLaunch): boolean {
-  return isRoutedModel(launch.model)
 }
