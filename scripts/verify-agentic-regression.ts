@@ -41,7 +41,8 @@ const verifiers = [
   'verify-cli-flags.ts',
   'verify-aliases.ts',
   'verify-effort-levels.ts',
-  'verify-session-status.ts'
+  'verify-session-status.ts',
+  'verify-non-claude-launch-behavior.ts'
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {

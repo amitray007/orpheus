@@ -22,7 +22,7 @@ const VALID_PROVIDERS: ClaudeCloudProvider[] = [
 // Internal read helper
 // ---------------------------------------------------------------------------
 
-type Row = {
+export type Row = {
   cloud_provider: string
   auth_api_key: string
   auth_token: string
@@ -180,13 +180,50 @@ function buildVertexEnv(row: Row): Record<string, string> {
 
 /**
  * Anthropic (default) provider env vars (§getClaudeAuthEnv).
+ *
+ * Exported so scripts/verify-runtime-main-integration.ts can assert the
+ * P0.4 behavior (routed workspaces still get real Anthropic auth) against
+ * the actual production row->env mapping rather than a re-stated copy. Pure
+ * — takes a plain data row, touches no DB/electron API — safe to call from
+ * a bare `bun run` script.
  */
-function buildAnthropicEnv(row: Row): Record<string, string> {
+export function buildAnthropicEnv(row: Row): Record<string, string> {
   const env: Record<string, string> = {}
   setIfPresent(env, 'ANTHROPIC_API_KEY', row.auth_api_key)
   setIfPresent(env, 'ANTHROPIC_AUTH_TOKEN', row.auth_token)
   setIfPresent(env, 'ANTHROPIC_BASE_URL', row.auth_base_url)
   return env
+}
+
+/**
+ * Provider-branch dispatch: cloud_provider row value -> the env builder that
+ * runs for it. Extracted as its own pure function (row in, env out — no
+ * DB/cache access) so the P0.4 "routed still gets real Anthropic auth"
+ * behavior can be asserted directly against the same logic getClaudeAuthEnv
+ * runs, from scripts/verify-runtime-main-integration.ts, without needing a
+ * live DB. getClaudeAuthEnv is the only caller — this is not a parallel copy.
+ */
+export function buildAuthEnvForRow(row: Row): Record<string, string> {
+  if (row.cloud_provider === 'foundry') {
+    return buildFoundryEnv(row)
+  } else if (row.cloud_provider === 'bedrock') {
+    return buildBedrockEnv(row)
+  } else if (row.cloud_provider === 'vertex') {
+    return buildVertexEnv(row)
+  } else if (row.cloud_provider === 'routed') {
+    // Phase 0 (multi-harness migration) severed launch-side routing:
+    // orpheusSurfaceAdapter.ts no longer injects ANTHROPIC_BASE_URL/
+    // ANTHROPIC_MODEL/ANTHROPIC_AUTH_TOKEN for routed workspaces, so this
+    // branch intentionally behaves identically to 'anthropic' for now —
+    // a routed workspace still needs real Anthropic auth to launch at all,
+    // rather than silently dropping into an unauthenticated `claude`. This
+    // branch is kept distinct (not collapsed into the else) because it is
+    // the designated Phase 6 re-land site for harness-aware routing.
+    return buildAnthropicEnv(row)
+  } else {
+    // anthropic (default)
+    return buildAnthropicEnv(row)
+  }
 }
 
 /**
@@ -201,30 +238,8 @@ export function getClaudeAuthEnv(): Record<string, string> {
     return cachedAuthEnv
   }
 
-  let env: Record<string, string>
-  if (row.cloud_provider === 'foundry') {
-    env = buildFoundryEnv(row)
-  } else if (row.cloud_provider === 'bedrock') {
-    env = buildBedrockEnv(row)
-  } else if (row.cloud_provider === 'vertex') {
-    env = buildVertexEnv(row)
-  } else if (row.cloud_provider === 'routed') {
-    // Phase 0 (multi-harness migration) severed launch-side routing:
-    // orpheusSurfaceAdapter.ts no longer injects ANTHROPIC_BASE_URL/
-    // ANTHROPIC_MODEL/ANTHROPIC_AUTH_TOKEN for routed workspaces, so this
-    // branch intentionally behaves identically to 'anthropic' for now —
-    // a routed workspace still needs real Anthropic auth to launch at all,
-    // rather than silently dropping into an unauthenticated `claude`. This
-    // branch is kept distinct (not collapsed into the else) because it is
-    // the designated Phase 6 re-land site for harness-aware routing.
-    env = buildAnthropicEnv(row)
-  } else {
-    // anthropic (default)
-    env = buildAnthropicEnv(row)
-  }
-
-  cachedAuthEnv = env
-  return env
+  cachedAuthEnv = buildAuthEnvForRow(row)
+  return cachedAuthEnv
 }
 
 /**

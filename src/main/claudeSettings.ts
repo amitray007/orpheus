@@ -760,7 +760,14 @@ function pushSessionContinuityFlags(flagTokens: string[], workspaceId?: string):
 // The array is joined with FLAG_DELIMITER (0x1F) below and split back into
 // argv by resources/orpheus-claude.sh via zsh's `${(@ps:\x1f:)VAR}` — see
 // that script's comment block and src/shared/cliFlags.ts for why.
-function composeFlagTokens(
+//
+// Exported (composeClaudeLaunch is its only production caller — not a
+// parallel copy) so scripts/verify-runtime-main-integration.ts can assert
+// the P0.3 --model-omission behavior directly against this function. It
+// never touches getDb()/getWorkspace() when workspaceId is undefined (see
+// pushSessionContinuityFlags's early return), so it's safe to call from a
+// plain `bun run` script without an Electron/DB runtime.
+export function composeFlagTokens(
   s: ClaudeGlobalSettings,
   workspaceId: string | undefined,
   global: ClaudeGlobalSettings,

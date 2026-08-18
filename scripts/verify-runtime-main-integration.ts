@@ -37,13 +37,54 @@ const sessionStateSource = readRepoFile('src/main/sessionState.ts')
   assert.equal(inlineConfig.includes('runtime-secret'), false)
 }
 
-// Runtime env is appended after auth/custom/routing layers, and the build
-// variant preserves the independent worktree data directory.
+// Runtime env is appended after auth/custom layers, and the build variant
+// preserves the independent worktree data directory.
+//
+// Phase 0 (multi-harness migration) deleted the launch-side routing overlay
+// (`Object.assign(env, computeRoutingEnv(...))`) from buildMountEnv — see
+// commit d14115fb. That deletion is now itself the load-bearing invariant:
+// re-introducing it would silently reroute non-Claude-model workspaces
+// through CLIProxyAPI again ahead of schedule (routing returns harness-aware
+// in Phase 6). So this asserts the OPPOSITE of what it used to: the routing
+// call must be ABSENT.
+//
+// A bare "string is absent" check would also pass if this file were
+// renamed, gutted, or moved, so it's paired with positive assertions that
+// adapterSource still contains real, expected content — the file wasn't
+// merely emptied out from under this check.
 {
-  const routingIndex = adapterSource.indexOf('Object.assign(env, computeRoutingEnv')
-  const runtimeEnvIndex = adapterSource.indexOf('ORPHEUS_RUNTIME_CONTEXT_VERSION')
-  assert.ok(routingIndex >= 0)
-  assert.ok(runtimeEnvIndex > routingIndex)
+  assert.ok(adapterSource.length > 0, 'orpheusSurfaceAdapter.ts must not be empty')
+  assert.ok(
+    adapterSource.includes('function buildMountEnv'),
+    'buildMountEnv must still be defined in orpheusSurfaceAdapter.ts'
+  )
+  assert.equal(
+    adapterSource.includes('Object.assign(env, computeRoutingEnv'),
+    false,
+    'RE-LAND(routing): the launch-side routing overlay must stay absent from buildMountEnv until Phase 6'
+  )
+  assert.ok(
+    adapterSource.includes('ORPHEUS_RUNTIME_CONTEXT_VERSION'),
+    'runtime env constant must still be present'
+  )
+  // The old check ordered runtimeEnvIndex > routingIndex (routing, then
+  // runtime env, applied last). With the routing call gone there is nothing
+  // to order against; re-anchor on the invariant the comment at
+  // orpheusSurfaceAdapter.ts's Phase-0 note calls out instead — auth env
+  // (`...authEnv`) must still be spread into `env` BEFORE the runtime
+  // identity block (`Object.assign(env, { ORPHEUS_RUNTIME_CONTEXT_VERSION`)
+  // overwrites it, since runtime identity must win over anything upstream,
+  // including auth-provided vars, and never the reverse.
+  const authEnvSpreadIndex = adapterSource.indexOf('...authEnv, // auth env wins on conflict')
+  const runtimeAssignIndex = adapterSource.indexOf(
+    'Object.assign(env, {\n      ORPHEUS_RUNTIME_CONTEXT_VERSION'
+  )
+  assert.ok(authEnvSpreadIndex >= 0, 'authEnv spread must still be present')
+  assert.ok(runtimeAssignIndex >= 0, 'runtime identity Object.assign must still be present')
+  assert.ok(
+    runtimeAssignIndex > authEnvSpreadIndex,
+    'runtime identity env must still be merged AFTER authEnv, so it always wins on conflict'
+  )
   for (const envName of [
     'ORPHEUS_RUNTIME_ID',
     'ORPHEUS_RUNTIME_KIND',

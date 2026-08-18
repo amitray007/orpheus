@@ -45,9 +45,30 @@ import {
 // ---------------------------------------------------------------------------
 // 1. Claude models (explicit id AND bare alias) are never routed, and
 //    computeRoutingEnv is a byte-for-byte no-op for them.
+//
+// RE-LAND(routing): this section's second half explicitly "simulates
+// buildMountEnv's baseline env ... apply[ies] the routing overlay exactly as
+// buildMountEnv does" (see comment below). Since commit d14115fb
+// (Phase 0, multi-harness migration) deleted the
+// `Object.assign(env, computeRoutingEnv(...))` call from the real
+// buildMountEnv (src/main/orpheusSurfaceAdapter.ts), that simulation no
+// longer describes production behavior — it now only re-confirms
+// computeRoutingEnv's own pure-function contract, which unit 03 already
+// covers directly via isRoutedModel/computeRoutingEnv. Left in place
+// (not deleted) as the Phase 6 reconnection checklist: when routing
+// re-lands harness-aware, restore this block as the buildMountEnv-mirroring
+// assertion it was written to be.
 // ---------------------------------------------------------------------------
 
-{
+const SKIP_SECTION_1_BUILDMOUNTENV_SIMULATION = true
+
+if (SKIP_SECTION_1_BUILDMOUNTENV_SIMULATION) {
+  console.log(
+    '⊘ SKIPPED (RE-LAND(routing)): §1 buildMountEnv-simulation assertions — buildMountEnv no ' +
+      'longer calls computeRoutingEnv (Phase 0 cut, commit d14115fb); re-enable when routing ' +
+      'returns harness-aware in Phase 6'
+  )
+} else {
   const claudeModels = [
     'claude-opus-4-8',
     'claude-sonnet-5',
