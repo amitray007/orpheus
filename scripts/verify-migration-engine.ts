@@ -246,6 +246,145 @@ const { sync, planSync } = await import('../src/main/db/engine.ts')
   console.log('✓ engine-add-column-backfill (harness_id)')
 }
 
+// harness_settings (U1, multi-harness architecture plan) — a fresh DB gets
+// the table with the right columns/types/NOT-NULLs/defaults, rows at all
+// three scopes coexist without collision (including two DIFFERENT harnesses
+// both at 'global' scope, proving the key is harness_id-scoped and not just
+// scope-scoped), and a second planSync is empty.
+{
+  const { schema: harnessSchema } = await import('../src/main/db/schema.ts')
+  const hsdb = new Database(':memory:')
+  sync(hsdb, harnessSchema, { dbPath: ':memory:', legacyVersion: 0 })
+
+  const tableInfo = hsdb.prepare('PRAGMA table_info("harness_settings")').all() as Array<{
+    name: string
+    type: string
+    notnull: number
+    dflt_value: string | null
+    pk: number
+  }>
+  const byName = Object.fromEntries(tableInfo.map((c) => [c.name, c]))
+  assert.deepEqual(
+    Object.keys(byName).sort(),
+    ['harness_id', 'id', 'scope', 'scope_id', 'settings_json', 'updated_at'].sort(),
+    'harness_settings must declare exactly these columns'
+  )
+  assert.deepEqual(
+    { type: byName.id.type, pk: byName.id.pk },
+    { type: 'TEXT', pk: 1 },
+    'id must be the TEXT PRIMARY KEY'
+  )
+  assert.deepEqual(
+    { type: byName.harness_id.type, notnull: byName.harness_id.notnull },
+    { type: 'TEXT', notnull: 1 },
+    'harness_id must be TEXT NOT NULL'
+  )
+  assert.deepEqual(
+    { type: byName.scope.type, notnull: byName.scope.notnull },
+    { type: 'TEXT', notnull: 1 },
+    'scope must be TEXT NOT NULL'
+  )
+  assert.deepEqual(
+    {
+      type: byName.scope_id.type,
+      notnull: byName.scope_id.notnull,
+      dflt_value: byName.scope_id.dflt_value
+    },
+    { type: 'TEXT', notnull: 1, dflt_value: "''" },
+    "scope_id must be TEXT NOT NULL DEFAULT '' (sentinel for global scope — NULL can't dedupe in a composite key)"
+  )
+  assert.deepEqual(
+    {
+      type: byName.settings_json.type,
+      notnull: byName.settings_json.notnull,
+      dflt_value: byName.settings_json.dflt_value
+    },
+    { type: 'TEXT', notnull: 1, dflt_value: "'{}'" },
+    "settings_json must be TEXT NOT NULL DEFAULT '{}'"
+  )
+  assert.deepEqual(
+    { type: byName.updated_at.type, notnull: byName.updated_at.notnull },
+    { type: 'INTEGER', notnull: 1 },
+    'updated_at must be INTEGER NOT NULL'
+  )
+
+  // the scope CHECK constraint actually rejects an out-of-vocabulary value
+  assert.throws(
+    () =>
+      hsdb
+        .prepare(
+          `INSERT INTO harness_settings (id, harness_id, scope, scope_id, updated_at) VALUES ('bad', 'claude', 'bogus', '', 1)`
+        )
+        .run(),
+    /CHECK constraint failed/,
+    'scope must be constrained to global|project|workspace'
+  )
+
+  // insert rows at all three scopes (global uses the '' sentinel, per the
+  // schema comment) for TWO different harnesses, and assert they all coexist
+  hsdb
+    .prepare(
+      `INSERT INTO harness_settings (id, harness_id, scope, scope_id, settings_json, updated_at) VALUES
+        ('g1', 'claude', 'global', '', '{"a":1}', 1),
+        ('p1', 'claude', 'project', 'proj-1', '{"b":2}', 2),
+        ('w1', 'claude', 'workspace', 'ws-1', '{"c":3}', 3),
+        ('g2', 'other-harness', 'global', '', '{"d":4}', 4)`
+    )
+    .run()
+  const rows = hsdb
+    .prepare('SELECT harness_id, scope, scope_id, settings_json FROM harness_settings ORDER BY id')
+    .all()
+  assert.deepEqual(
+    rows,
+    [
+      { harness_id: 'claude', scope: 'global', scope_id: '', settings_json: '{"a":1}' },
+      { harness_id: 'other-harness', scope: 'global', scope_id: '', settings_json: '{"d":4}' },
+      { harness_id: 'claude', scope: 'project', scope_id: 'proj-1', settings_json: '{"b":2}' },
+      { harness_id: 'claude', scope: 'workspace', scope_id: 'ws-1', settings_json: '{"c":3}' }
+    ],
+    'rows at all three scopes, across two harnesses, must coexist'
+  )
+
+  // the unique index enforces the real (harness_id, scope, scope_id) key —
+  // a second 'global' row for the SAME harness must collide even with a
+  // different synthetic id, proving the '' sentinel actually dedupes where a
+  // NULL scope_id could not have.
+  assert.throws(
+    () =>
+      hsdb
+        .prepare(
+          `INSERT INTO harness_settings (id, harness_id, scope, scope_id, updated_at) VALUES ('g1-dup', 'claude', 'global', '', 99)`
+        )
+        .run(),
+    /UNIQUE constraint failed/,
+    'a second row at the same (harness_id, scope, scope_id) key must collide'
+  )
+
+  // settings_json defaults to '{}' when unspecified
+  hsdb
+    .prepare(
+      `INSERT INTO harness_settings (id, harness_id, scope, scope_id, updated_at) VALUES ('w2', 'claude', 'workspace', 'ws-2', 5)`
+    )
+    .run()
+  assert.equal(
+    (
+      hsdb.prepare('SELECT settings_json FROM harness_settings WHERE id = ?').get('w2') as {
+        settings_json: string
+      }
+    ).settings_json,
+    '{}',
+    "settings_json must default to '{}' when unspecified"
+  )
+
+  // idempotent: a second planSync against the same target schema is empty
+  assert.deepEqual(
+    planSync(hsdb, harnessSchema),
+    [],
+    'harness_settings must be idempotent on a second planSync'
+  )
+  console.log('✓ engine (harness_settings materializes, scopes coexist, idempotent)')
+}
+
 const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
 
 {

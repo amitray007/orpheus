@@ -38,6 +38,11 @@ const LOG_LEVEL = ['debug', 'info', 'warn', 'error'] as const
 // routing_proxy_providers.provider_id, which is deliberately free-text so
 // adding a new PROVIDER never requires a schema change.
 const PROVIDER_AUTH_METHOD = ['oauth', 'apiKey', 'openaiCompatible'] as const
+// harness_settings.scope (U1, multi-harness architecture plan) — the same
+// three-tier layering as claude_global_settings/claude_project_settings/
+// claude_workspace_settings, but generalized to any harness_id rather than
+// one fixed Claude table per scope.
+const HARNESS_SETTINGS_SCOPE = ['global', 'project', 'workspace'] as const
 const AUTOMATION_TRIGGER_KIND = ['schedule', 'event'] as const
 const AUTOMATION_SCOPE_KIND = ['app', 'project', 'workspace'] as const
 const AUTOMATION_IDEMPOTENCY = ['none', 'keyed', 'natural'] as const
@@ -482,6 +487,59 @@ export const schema: SchemaDef = {
       updated_at: INTEGER_NOT_NULL
     },
     foreignKeys: [{ columns: ['workspace_id'], ref: 'workspaces(id)', onDelete: 'CASCADE' }]
+  },
+
+  // ---------------------------------------------------------------------
+  // harness_settings — U1 (multi-harness architecture plan). Generic,
+  // per-harness settings storage layered by scope, generalizing the
+  // claude_global_settings / claude_project_settings / claude_workspace_settings
+  // three-tier split above to any harness_id rather than a fixed Claude-only
+  // table per scope. `settings_json` is an opaque JSON blob — each harness
+  // module owns its own shape; this table only owns identity + layering.
+  //
+  // Composite-PK-with-nullable-column note: the conceptual key is
+  // (harness_id, scope, scope_id) with scope_id NULL for the 'global' scope.
+  // This schema DSL (see TableDef in ./types.ts, and renderCreateTable in
+  // ./render.ts) has NO table-level composite PRIMARY KEY support at all —
+  // `primaryKey` only renders inline on a single column — so a literal
+  // "PRIMARY KEY (harness_id, scope, scope_id)" isn't expressible here in the
+  // first place. Even if it were, SQLite treats NULL as distinct from every
+  // other NULL in a PK/UNIQUE, so a NULL scope_id would never be deduplicated
+  // by such a constraint anyway — every "global" row would silently insert as
+  // a new row instead of colliding. `automation_runs.idx_automation_runs_idempotency`
+  // is this file's existing precedent for a composite natural key: a
+  // synthetic single-column TEXT PRIMARY KEY id plus a `unique: true` index
+  // over the real key columns. Followed here, with one addition: scope_id
+  // uses the sentinel '' (not NULL) for the 'global' scope specifically so
+  // the unique index's own NULL-distinctness gap can't bite either — every
+  // row's key columns are always non-NULL and therefore actually enforce
+  // one-row-per-(harness_id, scope, scope_id). Callers must normalize a
+  // missing/undefined scope_id to '' before every read/write for 'global'
+  // scope; this is an honest, explicit tradeoff (a reserved sentinel value)
+  // rather than a silently-broken dedup guarantee.
+  // ---------------------------------------------------------------------
+  harness_settings: {
+    columns: {
+      id: TEXT_PK,
+      harness_id: TEXT_NOT_NULL,
+      scope: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('scope', HARNESS_SETTINGS_SCOPE)
+      },
+      // '' sentinel for global scope — see the table-level comment above for
+      // why NULL cannot be used here despite 'global' conceptually having no
+      // scope_id.
+      scope_id: { type: 'TEXT', notNull: true, default: "''" },
+      settings_json: { type: 'TEXT', notNull: true, default: "'{}'" },
+      updated_at: INTEGER_NOT_NULL
+    },
+    indexes: {
+      idx_harness_settings_key: {
+        columns: ['harness_id', 'scope', 'scope_id'],
+        unique: true
+      }
+    }
   },
 
   // ---------------------------------------------------------------------
@@ -1351,6 +1409,7 @@ export {
   CLOUD_PROVIDER,
   LOG_LEVEL,
   PROVIDER_AUTH_METHOD,
+  HARNESS_SETTINGS_SCOPE,
   AUTOMATION_TRIGGER_KIND,
   AUTOMATION_SCOPE_KIND,
   AUTOMATION_IDEMPOTENCY,
