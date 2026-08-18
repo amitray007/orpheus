@@ -12,6 +12,7 @@ import { SettingRow, SegmentedControl, Select, Toggle, Eyebrow, SecretInput } fr
 import { ProviderIcon, isKnownProviderIconId } from '@/components/ProviderIcon'
 import {
   isSecretLikeKey,
+  shouldResyncDrafts,
   moveRow,
   resolveProvenance,
   mergeDefaultArgs,
@@ -193,13 +194,20 @@ function HarnessRowEditor({
   // Compared on the same key/value/enabled/fromDefault projection on both
   // sides (not raw `rows`, which may carry an `id` — synthesized fresh per
   // toDrafts call — that would never match and force a resync every render).
-  const externalKey = JSON.stringify(
-    rows.map(({ key, value, enabled, fromDefault }) => ({ key, value, enabled, fromDefault }))
-  )
-  const localKey = JSON.stringify(
-    drafts.map(({ key, value, enabled, fromDefault }) => ({ key, value, enabled, fromDefault }))
-  )
-  if (externalKey !== localKey) {
+  //
+  // PENDING ROWS ARE EXCLUDED FROM THE COMPARISON. `addRow` appends a blank
+  // draft that deliberately has NOT been committed upward — a row with no key
+  // is not a setting yet, and persisting it would write an empty flag. But a
+  // blank draft makes local diverge from external, so comparing the raw lists
+  // made this guard resync on the very next render and delete the new row
+  // before the user could type in it. That is what made the Add buttons look
+  // dead: the row appeared and vanished within one frame.
+  //
+  // Filtering un-keyed drafts out of `localKey` lets a pending row exist
+  // locally without being mistaken for divergence, while a REAL external
+  // change (another scope loaded, a default toggled) still resyncs — and
+  // still discards the empty row, which is correct: it held nothing.
+  if (shouldResyncDrafts(rows, drafts)) {
     setDrafts(toDrafts(rows))
   }
 

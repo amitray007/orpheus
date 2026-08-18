@@ -23,6 +23,7 @@
 import assert from 'node:assert/strict'
 import {
   isSecretLikeKey,
+  shouldResyncDrafts,
   moveRow,
   resolveProvenance,
   mergeDefaultArgs,
@@ -269,5 +270,59 @@ function mutatedMergeDefaultArgsClobbersOverride(
 }
 
 console.log('✓ mutation test: a clobbering merge is correctly caught as a failing assertion')
+
+// ---------------------------------------------------------------------------
+// shouldResyncDrafts — the Add-button regression
+// ---------------------------------------------------------------------------
+//
+// REGRESSION: the row editor's resync guard compared external rows against
+// ALL local drafts. `addRow` appends a blank, deliberately-uncommitted draft
+// (a row with no key is not a setting yet), which made local diverge from
+// external — so the guard fired on the next render and deleted the new row
+// before the user could type. The Add args / Add env buttons looked dead:
+// the row appeared and vanished inside one frame.
+{
+  const stored = [{ key: '--verbose', enabled: true }]
+
+  // The bug: a pending blank draft must NOT count as divergence.
+  assert.equal(
+    shouldResyncDrafts(stored, [
+      { key: '--verbose', enabled: true },
+      { key: '', value: '', enabled: true }
+    ]),
+    false,
+    'a pending blank draft must not trigger a resync — that is what deleted the new row'
+  )
+
+  // In-progress typing must survive too: the row exists locally but is not
+  // yet stored, so external still has one row and local has one named row
+  // plus the one being typed.
+  assert.equal(
+    shouldResyncDrafts(stored, [
+      { key: '--verbose', enabled: true },
+      { key: '--add', value: '', enabled: true }
+    ]),
+    true,
+    'a newly NAMED row does diverge — the editor commits it, then props catch up'
+  )
+
+  // A real external change still resyncs.
+  assert.equal(
+    shouldResyncDrafts(
+      [{ key: '--verbose', enabled: false }],
+      [{ key: '--verbose', enabled: true }]
+    ),
+    true,
+    'a genuine external change (toggled enabled) must still resync'
+  )
+
+  // Identical state must not resync — otherwise the editor thrashes forever.
+  assert.equal(
+    shouldResyncDrafts(stored, [{ key: '--verbose', enabled: true }]),
+    false,
+    'identical state must not resync'
+  )
+  console.log('✓ shouldResyncDrafts: a pending blank row survives; real external changes resync')
+}
 
 console.log('\nharness settings UI logic verification passed')

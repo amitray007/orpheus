@@ -237,3 +237,42 @@ export function draftsToStoredRows(
   }
   return result
 }
+
+// ---------------------------------------------------------------------------
+// Editor resync
+// ---------------------------------------------------------------------------
+
+/**
+ * Should the row editor discard its local drafts and resync from the props?
+ *
+ * True only when the EXTERNAL rows genuinely differ from the drafts the user
+ * has actually named. Drafts with a blank key are PENDING — `addRow` creates
+ * one deliberately uncommitted, because a row with no key is not a setting
+ * yet and persisting it would write an empty flag.
+ *
+ * The subtlety this function exists to pin: comparing the raw lists counts a
+ * pending row as divergence, so the guard fires on the very next render and
+ * deletes the new row before the user can type in it. The row appears and
+ * vanishes within a frame, which reads as "the Add button does nothing".
+ *
+ * A real external change (a different scope loaded, a default toggled) still
+ * returns true and still discards the pending row — correct, since it held
+ * nothing.
+ */
+export function shouldResyncDrafts(
+  externalRows: readonly { key: string; value?: string; enabled: boolean; fromDefault?: boolean }[],
+  drafts: readonly { key: string; value?: string; enabled: boolean; fromDefault?: boolean }[]
+): boolean {
+  const project = (r: {
+    key: string
+    value?: string
+    enabled: boolean
+    fromDefault?: boolean
+  }): string => JSON.stringify({ k: r.key, v: r.value, e: r.enabled, d: r.fromDefault })
+  const external = externalRows.map(project).join('\u0000')
+  const local = drafts
+    .filter((d) => d.key.trim() !== '')
+    .map(project)
+    .join('\u0000')
+  return external !== local
+}
