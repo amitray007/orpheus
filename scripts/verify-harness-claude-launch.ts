@@ -138,6 +138,17 @@ function createFreshDb(): InstanceType<typeof Database> {
       harness_id TEXT NOT NULL DEFAULT 'claude'
     )
   `)
+  // A2 (support-multi-harness) — withWorkspaceCuratedOverride (launch.ts)
+  // reads claude_workspace_settings via getClaudeWorkspaceSettings for the
+  // per-workspace model/effort override layer. Same overrides_json shape as
+  // schema.ts's real table (see overridesStore.ts's get/update).
+  db.exec(`
+    CREATE TABLE claude_workspace_settings (
+      workspace_id TEXT PRIMARY KEY NOT NULL,
+      overrides_json TEXT NOT NULL DEFAULT '{}',
+      updated_at INTEGER NOT NULL
+    )
+  `)
   ;(
     globalThis as unknown as { __HARNESS_CLAUDE_LAUNCH_TEST_DB__: unknown }
   ).__HARNESS_CLAUDE_LAUNCH_TEST_DB__ = db
@@ -148,6 +159,22 @@ const { setHarnessSettings } = await import('../src/main/harness/settings.ts')
 const { composeClaudeHarnessLaunch, applyUserEnvRows } =
   await import('../src/main/harness/claude/launch.ts')
 const { splitFlagString, FLAG_DELIMITER } = await import('../src/shared/cliFlags.ts')
+const { updateClaudeWorkspaceSettings, invalidateClaudeWorkspaceSettingsCache } =
+  await import('../src/main/claudeWorkspaceSettings.ts')
+
+// Writes a workspace's model/effort override directly, bypassing the cache
+// (createFreshDb() swaps in a brand-new DB per scenario, but
+// claudeWorkspaceSettings.ts's overridesStore cache is module-level and
+// would otherwise leak a stale value across scenarios that reuse a
+// workspace id — invalidate first so every write reads/writes the CURRENT
+// fresh DB).
+function setWorkspaceOverride(
+  workspaceId: string,
+  patch: { model?: string; effort?: string }
+): void {
+  invalidateClaudeWorkspaceSettingsCache(workspaceId)
+  updateClaudeWorkspaceSettings(workspaceId, patch)
+}
 
 // ---------------------------------------------------------------------------
 // 1. Empty settings -> bare invocation: no stray flags, flags === '', env
@@ -405,6 +432,102 @@ const { splitFlagString, FLAG_DELIMITER } = await import('../src/shared/cliFlags
     )
   }
   console.log('✓ global-scope settings reach the launch with a missing projectId/workspaceId')
+}
+
+// ---------------------------------------------------------------------------
+// A2 (support-multi-harness) — the read-side conversions in
+// ipc/claudeSettings.ts, effortReconciliation.ts, controlPlane/
+// settingsResourceService.ts, and sessions.ts now resolve model/effort via
+// resolveHarness(...).composeLaunch(...).model/.effort instead of composing
+// composeClaudeLaunch and grepping its `flags` for `--model`/`--effort`.
+// composeClaudeHarnessLaunch (this file's subject, and what resolveHarness's
+// Claude descriptor's composeLaunch IS) is the function every one of those
+// call sites now runs through. These scenarios pin the exact resolution
+// precedence those call sites depend on: global -> project curated ->
+// workspace override, with 'auto'/'' as the workspace "no override"
+// sentinel — see withWorkspaceCuratedOverride's doc comment in
+// harness/claude/launch.ts.
+// ---------------------------------------------------------------------------
+
+// 8. Global curated only (no project/workspace layer at all) resolves model
+//    and effort directly off HarnessLaunch's structured fields — the exact
+//    shape workspace:getEffectiveModel/getEffectiveEffort now read.
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    curated: { model: 'opus', effort: 'high' }
+  })
+  const launch = composeClaudeHarnessLaunch('proj-1', 'ws-global-only')
+  assert.equal(launch.model, 'opus', 'global curated model resolves with only a global layer set')
+  assert.equal(launch.effort, 'high', 'global curated effort resolves with only a global layer set')
+  console.log('✓ resolved model/effort come back correctly with only global curated set')
+}
+
+// 9. A project-scope curated value overrides global.
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    curated: { model: 'sonnet', effort: 'low' }
+  })
+  setHarnessSettings('claude', 'project', 'proj-9', {
+    curated: { model: 'opus', effort: 'high' }
+  })
+  const launch = composeClaudeHarnessLaunch('proj-9', 'ws-project-override')
+  assert.equal(launch.model, 'opus', 'project curated model must override global')
+  assert.equal(launch.effort, 'high', 'project curated effort must override global')
+  console.log('✓ a project-scope curated value overrides global')
+}
+
+// 10. A workspace override wins over both project and global (per
+//     withWorkspaceCuratedOverride).
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    curated: { model: 'sonnet', effort: 'low' }
+  })
+  setHarnessSettings('claude', 'project', 'proj-10', {
+    curated: { model: 'opus', effort: 'medium' }
+  })
+  setWorkspaceOverride('ws-workspace-wins', { model: 'haiku', effort: 'high' })
+  const launch = composeClaudeHarnessLaunch('proj-10', 'ws-workspace-wins')
+  assert.equal(launch.model, 'haiku', 'workspace override model must win over project and global')
+  assert.equal(launch.effort, 'high', 'workspace override effort must win over project and global')
+  console.log('✓ a workspace override wins over both project and global')
+}
+
+// 11. A workspace effort of 'auto' must NOT override a project/global
+//     effort — it is the legacy "no override" sentinel (see
+//     withWorkspaceCuratedOverride's 'auto' SENTINEL note). A workspace
+//     MODEL override set alongside it must still apply independently.
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'project', 'proj-11', {
+    curated: { model: 'opus', effort: 'medium' }
+  })
+  setWorkspaceOverride('ws-auto-effort', { model: 'haiku', effort: 'auto' })
+  const launch = composeClaudeHarnessLaunch('proj-11', 'ws-auto-effort')
+  assert.equal(
+    launch.effort,
+    'medium',
+    "a workspace effort of 'auto' must fall through to the project curated effort, not override it"
+  )
+  assert.equal(
+    launch.model,
+    'haiku',
+    'a workspace model override alongside an auto effort must still apply independently'
+  )
+  console.log("✓ a workspace effort of 'auto' does not override a project/global effort")
+}
+
+// 12. Empty/unset resolves to '' (not 'auto', not undefined) — the exact
+//     contract workspace:getEffectiveModel/getEffectiveEffort's handlers
+//     return to the footer chips.
+{
+  createFreshDb()
+  const launch = composeClaudeHarnessLaunch('proj-12', 'ws-nothing-set')
+  assert.equal(launch.model, '', "unset model must resolve to '' (not undefined, not 'auto')")
+  assert.equal(launch.effort, '', "unset effort must resolve to '' (not undefined, not 'auto')")
+  console.log("✓ empty/unset resolves to '' for both model and effort")
 }
 
 console.log('\nAll harness-claude-launch assertions passed.')

@@ -10,9 +10,9 @@ import {
   setWorkspaceClaudeSessionId
 } from './workspaces'
 import { resolveContextBudget } from './models/registry'
-import { composeClaudeLaunch, getClaudeGlobalSettings } from './claudeSettings'
+import { getClaudeGlobalSettings } from './claudeSettings'
 import { encodePathToClaudeDir } from './claudeProjectDir'
-import { findFlagValue } from '../shared/cliFlags'
+import { resolveHarness } from './harness/registry'
 import {
   branchExists,
   createWorktree,
@@ -1493,10 +1493,14 @@ export type ContextBudgetResult = {
 export function getContextBudget(workspaceId: string): ContextBudgetResult {
   const db = getDb()
 
-  // Pull the workspace row so we can get projectId + claudeSessionId
+  // Pull the workspace row so we can get projectId + claudeSessionId +
+  // harnessId (A2, support-multi-harness — needed to resolve the harness
+  // descriptor below instead of grepping composeClaudeLaunch's flags).
   const ws = db
-    .prepare('SELECT project_id, claude_session_id FROM workspaces WHERE id = ?')
-    .get(workspaceId) as { project_id: string; claude_session_id: string | null } | undefined
+    .prepare('SELECT project_id, claude_session_id, harness_id FROM workspaces WHERE id = ?')
+    .get(workspaceId) as
+    | { project_id: string; claude_session_id: string | null; harness_id: string | null }
+    | undefined
 
   // 1. Try the session's cached model column first — avoids reading the JSONL.
   //    Fall back to extractModel() only when the DB column is NULL (not yet populated).
@@ -1513,14 +1517,22 @@ export function getContextBudget(workspaceId: string): ContextBudgetResult {
     }
   }
 
-  // 2. Compose launch settings to get the merged model (workspace → project → global)
+  // 2. Compose launch settings to get the merged model (workspace → project → global),
+  //    resolved through the workspace's harness descriptor (A2,
+  //    support-multi-harness) rather than composeClaudeLaunch + a
+  //    findFlagValue grep on `--model` — reads the composed HarnessLaunch's
+  //    structured `model` field directly. resolveHarness never throws and
+  //    falls back to the Claude descriptor for a missing/unknown harnessId.
   let modelFromSettings: string | null = null
   if (ws) {
     try {
-      const launch = composeClaudeLaunch(ws.project_id, workspaceId)
-      // findFlagValue is the single parser for composed (0x1F-delimited)
-      // flags strings — see src/shared/cliFlags.ts.
-      modelFromSettings = findFlagValue(launch.flags, '--model')
+      const descriptor = resolveHarness(ws.harness_id)
+      const launch = descriptor.composeLaunch(ws.project_id, workspaceId)
+      // Empty string means "claude's own default" (see HarnessLaunch's doc
+      // comment) — preserve findFlagValue's old null-when-absent contract
+      // so downstream `modelFromJSONL ?? modelFromSettings ?? 'sonnet'`
+      // fallback logic is unchanged.
+      modelFromSettings = launch.model || null
     } catch {
       // ignore — settings DB may not be ready
     }

@@ -13,8 +13,8 @@ import type {
   WorkspaceRecord
 } from '../../shared/types'
 import { CLAUDE_EFFORT_VALUES } from '../../shared/types'
-import { findFlagValue } from '../../shared/cliFlags'
 import type { ClaudeLaunch } from '../claudeSettings'
+import type { HarnessLaunch } from '../../shared/harness/types'
 import type {
   EffectReceipt,
   WorkspaceAuditPort,
@@ -148,6 +148,21 @@ export type SettingsResourceServiceDeps = {
     workspaceId?: string,
     precomputedGlobal?: ClaudeGlobalSettings
   ) => ClaudeLaunch
+  // A2 (support-multi-harness): resolves a workspace's harness descriptor
+  // and composes its HarnessLaunch — structural model/effort fields, no
+  // grepping `flags`. Injected (rather than importing resolveHarness
+  // directly in this file) so this service stays free of any import chain
+  // that reaches `electron` — harness/registry.ts's Claude descriptor pulls
+  // in session.ts -> workspaces.ts -> electron's BrowserWindow, which
+  // scripts/verify-control-plane.ts's header explicitly documents this
+  // service must never require (it runs under plain `bun run` with no
+  // electron stub). See mainSettingsResourceService.ts for the real
+  // resolveHarness-backed wiring.
+  composeHarnessLaunch: (
+    harnessId: string | undefined,
+    projectId?: string,
+    workspaceId?: string
+  ) => HarnessLaunch
   updateWorkspaceSettings: (
     workspaceId: string,
     patch: ClaudeWorkspaceSettingsOverrides
@@ -607,8 +622,23 @@ export class SettingsResourceService {
     const global = this.deps.getGlobalSettings()
     const project = this.deps.getProjectSettings(workspace.projectId)
     const scopedWorkspace = this.deps.getWorkspaceSettings(workspace.id)
-    const launch = this.deps.composeLaunch(workspace.projectId, workspace.id, global)
-    const composedEffort = findFlagValue(launch.flags, '--effort') ?? 'auto'
+    // A2 (support-multi-harness): resolve through the workspace's harness
+    // descriptor (via the injected composeHarnessLaunch — see its doc
+    // comment on SettingsResourceServiceDeps for why this isn't a direct
+    // resolveHarness import) rather than this.deps.composeLaunch (a
+    // ClaudeLaunch-typed seam kept for its other callers/test doubles), so
+    // effort is read from the composed HarnessLaunch's structured `effort`
+    // field instead of grepping `flags` for `--effort`. `'auto'` is
+    // preserved as the "no override" sentinel this method's callers expect
+    // (isEffort/CLAUDE_EFFORT_VALUES both accept it) — an empty resolved
+    // effort maps to 'auto', matching the old findFlagValue(...) ?? 'auto'
+    // fallback exactly.
+    const launch = this.deps.composeHarnessLaunch(
+      workspace.harnessId,
+      workspace.projectId,
+      workspace.id
+    )
+    const composedEffort = launch.effort || 'auto'
     if (
       !isModel(global.model) ||
       !isModel(launch.model) ||

@@ -36,6 +36,7 @@ import {
 import type { ClaudeWorkspaceSettings, ClaudeEffort } from '../../shared/types'
 import { withReconciledEffort } from '../effortReconciliation'
 import { setCuratedModelEffort } from '../harness/settings'
+import { resolveHarness } from '../harness/registry'
 import {
   getLaunchSnapshot,
   setLaunchSnapshot,
@@ -184,15 +185,20 @@ function broadcastEffectiveSettingsForMountedWorkspaces(
   if (launchSnapshotCount() === 0) return
   const win = getMainWindow()
   if (!win || win.isDestroyed()) return
-  const globalSettings = getClaudeGlobalSettings()
   for (const [workspaceId] of launchSnapshotEntries()) {
     const ws = getWorkspace(workspaceId)
     if (!ws) continue // evicted by recomputeDirty's own pass; nothing to push
-    const fresh = composeClaudeLaunch(ws.projectId, workspaceId, globalSettings)
+    // A2 (support-multi-harness): resolve through the workspace's harness
+    // descriptor rather than composeClaudeLaunch directly, so `fresh.effort`
+    // is read structurally instead of grepping `fresh.flags` for `--effort`
+    // — see workspace:getEffectiveModel/getEffectiveEffort above for the
+    // same conversion and its rationale.
+    const descriptor = resolveHarness(ws.harnessId)
+    const fresh = descriptor.composeLaunch(ws.projectId, workspaceId)
     win.webContents.send(PUSH_CHANNELS.workspaceEffectiveSettingsChanged, {
       workspaceId,
       model: fresh.model,
-      effort: findFlagValue(fresh.flags, '--effort') ?? ''
+      effort: fresh.effort
     })
   }
 }
@@ -468,15 +474,18 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
 
   // Footer Model chip: read the TRUE effective model a workspace would launch
   // with right now (workspace override → project override → global setting),
-  // by reusing composeClaudeLaunch verbatim — the single source of truth for
-  // launch composition — instead of duplicating its resolution precedence.
-  // findFlagValue is position-independent (no start-anchor needed, unlike
-  // the old regex) — it finds --model by name wherever it lands in the
-  // composed token stream.
+  // by resolving the workspace's harness descriptor and reading its
+  // composed HarnessLaunch's structured `model` field directly — A2
+  // (support-multi-harness) replaces the old composeClaudeLaunch + grep
+  // pattern, which only worked because Claude happens to express model as
+  // `--model <value>`; a harness that expresses it differently (e.g. an env
+  // var) would silently break the grep. resolveHarness never throws and
+  // falls back to the Claude descriptor for a missing/unknown harnessId.
   handle('workspace:getEffectiveModel', (_e, args) => {
     const ws = getWorkspace(args.workspaceId)
-    const launch = composeClaudeLaunch(ws?.projectId, args.workspaceId)
-    return { model: findFlagValue(launch.flags, '--model') ?? '' }
+    const descriptor = resolveHarness(ws?.harnessId)
+    const launch = descriptor.composeLaunch(ws?.projectId, args.workspaceId)
+    return { model: launch.model }
   })
 
   // Footer Effort chip: persist an effort override and suppress the resulting
@@ -492,13 +501,15 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
     )
   })
 
-  // Footer Effort chip: read the TRUE effective effort a workspace would launch
-  // with right now, by reusing composeClaudeLaunch verbatim. findFlagValue is
-  // position-independent by construction (finds --effort by name wherever it
-  // lands in the composed token stream), so no start-anchor caveat applies.
+  // Footer Effort chip: read the TRUE effective effort a workspace would
+  // launch with right now, by resolving the workspace's harness descriptor
+  // and reading its composed HarnessLaunch's structured `effort` field
+  // directly — see workspace:getEffectiveModel above for why this replaced
+  // the old composeClaudeLaunch + grep pattern (A2, support-multi-harness).
   handle('workspace:getEffectiveEffort', (_e, args) => {
     const ws = getWorkspace(args.workspaceId)
-    const launch = composeClaudeLaunch(ws?.projectId, args.workspaceId)
-    return { effort: findFlagValue(launch.flags, '--effort') ?? '' }
+    const descriptor = resolveHarness(ws?.harnessId)
+    const launch = descriptor.composeLaunch(ws?.projectId, args.workspaceId)
+    return { effort: launch.effort }
   })
 }

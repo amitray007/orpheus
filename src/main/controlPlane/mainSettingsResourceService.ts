@@ -13,6 +13,7 @@ import { getWorkspace } from '../workspaces'
 import { getProject } from '../projects'
 import { isDirty } from '../workspaceResources'
 import { getDb } from '../db'
+import { resolveHarness } from '../harness/registry'
 import { createControlAuditStore } from './controlAudit'
 import { SettingsResourceService } from './settingsResourceService'
 
@@ -24,6 +25,13 @@ export function createMainSettingsResourceService(): SettingsResourceService {
     getProjectSettings: getClaudeProjectSettings,
     getWorkspaceSettings: getClaudeWorkspaceSettings,
     composeLaunch: composeClaudeLaunch,
+    // A2 (support-multi-harness): resolveHarness never throws and falls
+    // back to the Claude descriptor for a missing/unknown harnessId — see
+    // SettingsResourceServiceDeps.composeHarnessLaunch's doc comment for why
+    // this seam exists instead of settingsResourceService.ts importing
+    // resolveHarness directly.
+    composeHarnessLaunch: (harnessId, projectId, workspaceId) =>
+      resolveHarness(harnessId).composeLaunch(projectId, workspaceId),
     updateWorkspaceSettings: updateClaudeWorkspaceSettings,
     reconcileEffort: withReconciledEffort,
     recomputeDirty,

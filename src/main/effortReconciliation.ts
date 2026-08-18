@@ -26,24 +26,34 @@
 // every persistence path shares ONE implementation.
 // ---------------------------------------------------------------------------
 
-import { composeClaudeLaunch } from './claudeSettings'
 import { resolveEffortLevelsForModelId } from './models/selectable'
 import { listCliProxyModelCacheEntries } from './models/sources/cliproxy'
 import { clampEffortToSupportedLevel } from '../shared/types'
 import type { ClaudeEffort } from '../shared/types'
-import { findFlagValue } from '../shared/cliFlags'
+import { getWorkspace } from './workspaces'
+import { resolveHarness } from './harness/registry'
 
 /**
- * Reads the effective effort a scope would currently launch with — the SAME
- * composeClaudeLaunch primitive workspace:getEffectiveEffort reads from, so
- * "what's the effort right now" is computed identically everywhere.
+ * Reads the effective effort a scope would currently launch with — resolved
+ * through the workspace's harness descriptor (A2, support-multi-harness),
+ * the SAME resolution workspace:getEffectiveEffort reads from, so "what's
+ * the effort right now" is computed identically everywhere. Previously
+ * composed a ClaudeLaunch and grepped its `flags` for `--effort`, which only
+ * worked because Claude happens to express effort as a CLI flag.
+ * resolveHarness never throws and falls back to the Claude descriptor for a
+ * missing/unknown harnessId, and `workspaceId` is undefined for a
+ * global/project-scope call (see this function's call sites in
+ * ipc/claudeSettings.ts) — getWorkspace(undefined-ish) is guarded the same
+ * way those call sites already guard it.
  */
 export function readEffectiveEffort(
   projectId: string | undefined,
   workspaceId: string | undefined
 ): string {
-  const launch = composeClaudeLaunch(projectId, workspaceId)
-  return findFlagValue(launch.flags, '--effort') ?? ''
+  const ws = workspaceId ? getWorkspace(workspaceId) : null
+  const descriptor = resolveHarness(ws?.harnessId)
+  const launch = descriptor.composeLaunch(projectId, workspaceId)
+  return launch.effort
 }
 
 /**

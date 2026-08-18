@@ -10,6 +10,7 @@ import type {
   WorkspaceRecord
 } from '../src/shared/types.ts'
 import type { ClaudeLaunch } from '../src/main/claudeSettings.ts'
+import type { HarnessLaunch } from '../src/shared/harness/types.ts'
 import { createAutomationRuntime } from '../src/main/automations/index.ts'
 import type {
   AutomationDefinitionDraft,
@@ -240,6 +241,30 @@ function composeLaunch(projectId?: string, workspaceId?: string): ClaudeLaunch {
   }
 }
 
+// A2 (support-multi-harness) — the composeHarnessLaunch seam
+// (SettingsResourceServiceDeps), mirroring composeLaunch's own model/effort
+// resolution above but returning the structured HarnessLaunch shape
+// (model/effort as real fields, not flags to grep). This harness doesn't
+// exercise settingsResourceService's getEffectiveSettings path today, but
+// the field is required on SettingsResourceServiceDeps.
+function composeHarnessLaunch(
+  _harnessId: string | undefined,
+  projectId?: string,
+  workspaceId?: string
+): HarnessLaunch {
+  assert.equal(projectId, PROJECT_ID)
+  assert.equal(workspaceId, WORKSPACE_ID)
+  const effort =
+    workspaceSettings.overrides.effort ?? projectSettings.overrides.effort ?? globalSettings.effort
+  return {
+    flags: effort === 'auto' ? '' : ['--effort', effort].join(FLAG_DELIMITER),
+    settingsJson: '',
+    env: {},
+    model: workspaceSettings.overrides.model ?? globalSettings.model,
+    effort: effort === 'auto' ? '' : effort
+  }
+}
+
 const settingsDeps = {
   getWorkspace: workspaceRecord,
   getProject: (projectId) => (projectId === PROJECT_ID ? project : null),
@@ -247,6 +272,7 @@ const settingsDeps = {
   getProjectSettings: () => projectSettings,
   getWorkspaceSettings: () => workspaceSettings,
   composeLaunch,
+  composeHarnessLaunch,
   updateWorkspaceSettings: (workspaceId, patch) => {
     assert.equal(workspaceId, WORKSPACE_ID)
     settingsWrites++
