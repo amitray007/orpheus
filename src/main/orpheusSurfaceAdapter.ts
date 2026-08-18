@@ -18,7 +18,7 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { loadGhosttySurface, type GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
-import { composeClaudeLaunch, type ClaudeLaunch } from './claudeSettings'
+import { type ClaudeLaunch } from './claudeSettings'
 import { getClaudeAuthEnv } from './claudeAuth'
 import { shimPath } from './orpheusNotify'
 import { getCachedShellPath } from './shellHelpers'
@@ -28,6 +28,8 @@ import { isDev, isWorktreeBuild, isNightly } from './appMode'
 import { buildManagedMcpFlagsString } from './controlPlane/managedMcpLaunch'
 import type { ClaudeRuntimeBinding } from './controlPlane/runtimeLeases'
 import { FLAG_DELIMITER } from '../shared/cliFlags'
+import { getWorkspace } from './workspaces'
+import { resolveHarness } from './harness/registry'
 
 // Which data dir the bundled CLI should target, mirroring APP_NAME in
 // appMode.ts. Resolved once at module load — the build variant is a
@@ -116,13 +118,26 @@ export function buildMountEnv(
   precomposedLaunch?: ClaudeLaunch,
   runtimeLease?: RuntimeMountLease
 ): MountEnvResult {
-  // Compose claude settings → flags, settingsJson, base env vars. Callers on
-  // the terminal:mount hot path (index.ts) already composed this once via
-  // composeLaunchForMount and pass it back in via precomposedLaunch —
-  // composeClaudeLaunch is a DB read (global/project/workspace settings rows)
-  // per call, so reusing it here halves the settings-layering work paid on
-  // EVERY mount (see composeLaunchForMount's doc comment for the fuller story).
-  const launch = precomposedLaunch ?? composeClaudeLaunch(projectId, workspaceId)
+  // Resolve the workspace's harness descriptor. resolveHarness() NEVER
+  // throws — a missing workspace row or an unknown/stale harnessId both fall
+  // back to the Claude descriptor, so this lookup can't change behavior for
+  // any workspace that predates the harness_id column (all of which read
+  // back as 'claude' — see workspaces.ts's row→record mapping).
+  const workspace = getWorkspace(workspaceId)
+  const descriptor = resolveHarness(workspace?.harnessId)
+
+  // Compose the harness's launch payload → flags, settingsJson, base env
+  // vars. Callers on the terminal:mount hot path (index.ts) already composed
+  // this once via composeLaunchForMount and pass it back in via
+  // precomposedLaunch — composing is a DB read (global/project/workspace
+  // settings rows) per call, so reusing it here halves the settings-layering
+  // work paid on EVERY mount (see composeLaunchForMount's doc comment for the
+  // fuller story). Phase 1 has exactly one descriptor (Claude), so
+  // precomposedLaunch — itself produced by composeClaudeLaunch via
+  // composeLaunchForMount — is always the same function's output as
+  // descriptor.composeLaunch would produce; this stays true until a second
+  // harness lands.
+  const launch = precomposedLaunch ?? descriptor.composeLaunch(projectId, workspaceId)
 
   // Auth env vars (ANTHROPIC_API_KEY, provider routing flags, etc.).
   // Merged AFTER launch.env so auth always wins on conflict.
@@ -156,8 +171,23 @@ export function buildMountEnv(
   const env: Record<string, string> = {
     ...launch.env,
     ...authEnv, // auth env wins on conflict
-    ...(effectiveFlags ? { ORPHEUS_CLAUDE_FLAGS: effectiveFlags } : {}),
-    ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {}),
+    // Dual-emit under BOTH the legacy ORPHEUS_CLAUDE_* names and the new
+    // ORPHEUS_HARNESS_* names, with identical values. A tmux session created
+    // by the PREVIOUS build is still running the OLD wrapper script, which
+    // only reads ORPHEUS_CLAUDE_*; emitting only the new names would break
+    // every in-flight session across an app upgrade (the wrapper isn't
+    // re-run — the tmux session just keeps its original env). Keep both
+    // until Phase 5, at least one release after every wrapper script reads
+    // the new names exclusively. Do NOT "simplify" this to one pair.
+    ...(effectiveFlags
+      ? { ORPHEUS_CLAUDE_FLAGS: effectiveFlags, ORPHEUS_HARNESS_FLAGS: effectiveFlags }
+      : {}),
+    ...(launch.settingsJson
+      ? {
+          ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson,
+          ORPHEUS_HARNESS_SETTINGS_JSON: launch.settingsJson
+        }
+      : {}),
     ORPHEUS_WORKSPACE_ID: workspaceId, // always present — load-bearing for CLI guardrails
     ...(sockPath ? { ORPHEUS_SOCK: sockPath } : {}),
     ...(hooksEnabled ? { ORPHEUS_NOTIFY: shimPath() } : {}),
@@ -213,12 +243,14 @@ export function buildMountEnv(
     })
   }
 
-  // Resolve the wrapper script path.
-  // Packaged: Contents/Resources/orpheus-claude.sh
-  // Dev:      <repo>/resources/orpheus-claude.sh
+  // Resolve the wrapper script path from the harness descriptor.
+  // Packaged: Contents/Resources/<descriptor.wrapperScript>
+  // Dev:      <repo>/resources/<descriptor.wrapperScript>
+  // Phase 1 has one descriptor (Claude, wrapperScript: 'orpheus-claude.sh'),
+  // so this resolves identically to the prior hardcoded path.
   const command = app.isPackaged
-    ? join(process.resourcesPath, 'orpheus-claude.sh')
-    : join(__dirname, '../../resources/orpheus-claude.sh')
+    ? join(process.resourcesPath, descriptor.wrapperScript)
+    : join(__dirname, '../../resources', descriptor.wrapperScript)
 
   return { command, env, launch, authEnv }
 }
@@ -286,18 +318,27 @@ export function buildTmuxAttachEnv(socketName: string, sessionName: string): Tmu
 //
 // The terminal:mount hot path (index.ts) needs the composed ClaudeLaunch
 // before spawning the surface, then again for buildMountEnv's own env
-// assembly a few lines later in the same handler. composeClaudeLaunch does a
-// real DB read (global/project/workspace settings rows) on every call, so
-// calling it twice per mount doubled that cost for EVERY workspace. index.ts
-// calls this ONCE and threads the same ClaudeLaunch into buildMountEnv via
-// its precomposedLaunch param — so a mount pays exactly one composition,
-// never two. (This used to also feed the isRoutedMount routing-health gate,
+// assembly a few lines later in the same handler. Composing is a real DB
+// read (global/project/workspace settings rows) on every call, so calling it
+// twice per mount doubled that cost for EVERY workspace. index.ts calls this
+// ONCE and threads the same ClaudeLaunch into buildMountEnv via its
+// precomposedLaunch param — so a mount pays exactly one composition, never
+// two. (This used to also feed the isRoutedMount routing-health gate,
 // severed in Phase 0 — see multi-harness roadmap Phase 6 for the re-land.)
+//
+// Resolves the workspace's harness descriptor itself (mirroring
+// buildMountEnv's own lookup) so the precomposed value it hands back is
+// exactly what buildMountEnv's own `descriptor.composeLaunch(...)` fallback
+// would have produced — today that's always the Claude descriptor (Phase 1
+// has one), but keeping the two lookups in lockstep now avoids a
+// precomposedLaunch/descriptor mismatch once a second harness exists.
 // ---------------------------------------------------------------------------
 
 export function composeLaunchForMount(
   projectId: string | undefined,
   workspaceId: string
 ): ClaudeLaunch {
-  return composeClaudeLaunch(projectId, workspaceId)
+  const workspace = getWorkspace(workspaceId)
+  const descriptor = resolveHarness(workspace?.harnessId)
+  return descriptor.composeLaunch(projectId, workspaceId)
 }

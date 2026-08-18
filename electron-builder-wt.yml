@@ -29,6 +29,11 @@ extraResources:
       - '**/*'
   - from: resources/orpheus-claude.sh
     to: orpheus-claude.sh
+  # Generic (non-Claude-specific) half of the launch wrapper — sourced by
+  # orpheus-claude.sh at runtime as a sibling file. See electron-builder.yml's
+  # matching entry for the full rationale.
+  - from: resources/harness-common.sh
+    to: harness-common.sh
   - from: resources/orpheus-attach.sh
     to: orpheus-attach.sh
   - from: resources/orpheus-pane.sh

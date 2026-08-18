@@ -844,10 +844,17 @@ async function _startupCrossCheck(): Promise<void> {
   try {
     const resolvedPath = await getUserShellPath()
 
+    // App-global startup check — no workspace in scope to read a harness id
+    // from, so resolve the Claude descriptor explicitly. Behavior-identical
+    // (resolveHarness('claude').binary === 'claude') by construction.
+    // TODO(Phase 3): once a second harness exists, this must iterate
+    // HARNESSES rather than hardcoding the Claude descriptor.
+    const claudeBinary = resolveHarness('claude').binary
+
     // Find claude binary
     let claudePath: string
     try {
-      claudePath = await _which('claude', resolvedPath)
+      claudePath = await _which(claudeBinary, resolvedPath)
     } catch {
       console.log('[sessionState] startup cross-check skipped (claude not found)')
       return

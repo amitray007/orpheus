@@ -26,6 +26,7 @@ import { formatTraceTree, formatEventLine } from '../../shared/diagFormat'
 import { handle } from './handle'
 import { redactErrorMessage } from '../logRedaction'
 import { writePrivateDiagnosticReportFiles } from '../diagnosticExportFiles'
+import { resolveHarness } from '../harness/registry'
 
 export interface SystemIpcDeps {
   getAppUiState: () => AppUiState
@@ -38,20 +39,26 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 
   handle('health:get', async (): Promise<HealthReport> => {
     // claudeCli
+    // App-global health check — no workspace in scope to read a harness id
+    // from, so resolve the Claude descriptor explicitly. Behavior-identical
+    // (resolveHarness('claude').binary === 'claude') by construction.
+    // TODO(Phase 3): once a second harness exists, this must iterate
+    // HARNESSES rather than hardcoding the Claude descriptor.
+    const claudeBinary = resolveHarness('claude').binary
     let claudeCli: HealthReport['claudeCli']
     try {
       const userPath = await getUserShellPath()
       const whichResult = await new Promise<string>((resolve, reject) => {
         childProcess.exec(
-          'which claude',
+          `which ${claudeBinary}`,
           { env: { ...process.env, PATH: userPath } },
           (err, stdout) => {
-            if (err) reject(err instanceof Error ? err : new Error('which claude failed'))
+            if (err) reject(err instanceof Error ? err : new Error(`which ${claudeBinary} failed`))
             else resolve(stdout.trim())
           }
         )
       })
-      if (!whichResult) throw new Error('claude not found on PATH')
+      if (!whichResult) throw new Error(`${claudeBinary} not found on PATH`)
       const version = await new Promise<string>((resolve, reject) => {
         const child = childProcess.spawn(whichResult, ['--version'], {
           env: { ...process.env, PATH: userPath },
@@ -72,7 +79,7 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
       })
       claudeCli = { status: 'ok', detail: version }
     } catch {
-      claudeCli = { status: 'error', detail: 'claude not found on PATH' }
+      claudeCli = { status: 'error', detail: `${claudeBinary} not found on PATH` }
     }
 
     // sessionRegistry

@@ -103,6 +103,7 @@ import {
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import { prepareTerminalLaunchEnv } from './terminalLaunchEnv'
 import { buildAppMenu } from './appMenu'
+import { resolveHarness } from './harness/registry'
 import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor } from '../shared/types'
@@ -1155,9 +1156,16 @@ async function checkClaude(): Promise<{
 
   const execFile = promisify(childProcess.execFile)
 
+  // App-global doctor check — no workspace in scope to read a harness id
+  // from, so resolve the Claude descriptor explicitly. Behavior-identical
+  // (resolveHarness('claude').binary === 'claude') by construction.
+  // TODO(Phase 3): once a second harness exists, this must iterate
+  // HARNESSES rather than hardcoding the Claude descriptor.
+  const claudeBinary = resolveHarness('claude').binary
+
   let claudePath: string
   try {
-    const { stdout } = await execFile('which', ['claude'], {
+    const { stdout } = await execFile('which', [claudeBinary], {
       encoding: 'utf-8',
       env,
       timeout: 3000
@@ -1176,7 +1184,7 @@ async function checkClaude(): Promise<{
 
   let version: string | null = null
   try {
-    const { stdout: versionOutput } = await execFile('claude', ['--version'], {
+    const { stdout: versionOutput } = await execFile(claudeBinary, ['--version'], {
       encoding: 'utf-8',
       env,
       timeout: 3000

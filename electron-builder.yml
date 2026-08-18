@@ -55,6 +55,14 @@ extraResources:
   # after claude exits so the terminal stays alive for further use.
   - from: resources/orpheus-claude.sh
     to: orpheus-claude.sh
+  # Generic (non-Claude-specific) half of the launch wrapper — PATH/shell-init
+  # setup and the 0x1F flag-splitting protocol — sourced by orpheus-claude.sh
+  # at runtime as a sibling file (resolved via `${0:A:h}`). MUST ship
+  # alongside orpheus-claude.sh in every packaging config or the workspace
+  # launch fails at runtime (no compile-time or lint signal catches a missing
+  # extraResources entry).
+  - from: resources/harness-common.sh
+    to: harness-common.sh
   # Universal tmux hosting: attaches the desktop native surface to the
   # tmux session hostWorkspace() (src/main/tmuxHost.ts) already created —
   # same stay-alive rationale as orpheus-claude.sh above, applied to the
