@@ -46,9 +46,7 @@ function normalizeScopeId(scope: HarnessSettingsScope, scopeId?: string): string
   // Global scope has no real scope_id — always collapse to the '' sentinel
   // regardless of what's passed in, so callers can't accidentally create a
   // second global row by passing undefined once and '' another time.
-  // MUTATION-TEST: intentionally broken to prove verify-harness-settings.ts
-  // catches loss of the '' sentinel. Must be reverted before commit.
-  if (scope === 'global') return (scopeId ?? undefined) as unknown as string
+  if (scope === 'global') return ''
   if (!scopeId) {
     throw new Error(`harnessSettings: scope_id is required for scope '${scope}'`)
   }
