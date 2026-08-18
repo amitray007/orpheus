@@ -20,6 +20,7 @@ import { encodePathToClaudeDir } from './claudeProjectDir'
 import { FLAG_DELIMITER, mergeFlagScopes, parseFlagEntry } from '../shared/cliFlags'
 import { validateCustomCliFlagsValue, validateCustomEnvVarsValue } from './overridesStore'
 import { shouldEmitFallbackModel } from './modelRouting'
+import { isClaude } from './models/registry'
 import { resolveProviderIdForModel } from './models/selectable'
 
 // One-way-true cache for session JSONL existence checks.
@@ -768,12 +769,36 @@ function composeFlagTokens(
 ): string[] {
   const flagTokens: string[] = []
 
-  // --model: always pass when set. Skipping the flag for 'sonnet' (claude's
-  // own default) made picking "Sonnet" indistinguishable from "no override",
-  // and let an ambient ANTHROPIC_MODEL env var silently win over the user's
-  // explicit choice. Passing it always also makes the command in scrollback
-  // reflect exactly what claude will run with.
-  if (s.model) {
+  // --model: pass when set, UNLESS it is not a Claude model — i.e. one the
+  // `claude` binary itself does not understand. Phase 0 deleted the
+  // launch-side CLIProxyAPI routing block that used to translate a
+  // non-Claude model into a real request against a local proxy
+  // (orpheusSurfaceAdapter.ts). Without that block, passing a non-Claude
+  // model id straight through to `claude --model <id>` would run against the
+  // REAL api.anthropic.com with a model id it doesn't recognize — a silent
+  // failure. So a non-Claude model now falls back to claude's own default
+  // (no --model flag) with a one-time warning; the stored value is left
+  // untouched in the DB so Phase 6 (routing's return) can pick it back up.
+  // This is deliberately keyed on isClaude (models/registry.ts), not on
+  // modelRouting.ts's isRoutedModel: today the two coincide, but Phase 6
+  // re-lands routing keyed on (harness, model) rather than !isClaude, at
+  // which point "routed" and "not a Claude model" stop meaning the same
+  // thing (e.g. a Gemini-CLI workspace running a Gemini model would be
+  // non-routed but must still never get --model passed to a Claude binary).
+  // isClaude has no empty-string guard (unlike isRoutedModel), so the check
+  // below is written as `s.model && !isClaude(s.model)` — an empty model
+  // means "claude's own default" and must stay silent, not warn.
+  // A Claude model is still always passed (never skipped for 'sonnet' etc.)
+  // for the same reason as before: skipping it made picking "Sonnet"
+  // indistinguishable from "no override", and let an ambient ANTHROPIC_MODEL
+  // env var silently win over the user's explicit choice. Passing it always
+  // also makes the command in scrollback reflect exactly what claude will
+  // run with.
+  if (s.model && !isClaude(s.model)) {
+    console.warn(
+      `[claudeSettings] workspace model '${s.model}' is not a Claude model; omitting --model and falling back to claude's default for this launch (routed models return in Phase 6)`
+    )
+  } else if (s.model) {
     flagTokens.push('--model', s.model)
   }
 
