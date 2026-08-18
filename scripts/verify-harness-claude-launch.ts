@@ -155,8 +155,14 @@ const { splitFlagString, FLAG_DELIMITER } = await import('../src/shared/cliFlags
   const launch = composeClaudeHarnessLaunch('proj-1', 'ws-1')
   assert.deepEqual(
     splitFlagString(launch.flags),
-    ['--model', 'opus', '--effort', 'high', '--permission-mode', 'acceptEdits'],
-    'curated fields must emit in model -> effort -> permission-mode order'
+    ['--model', 'opus', '--permission-mode', 'acceptEdits', '--effort', 'high'],
+    // Order matches composeFlagTokens's own emission order (claudeSettings.ts
+    // :813 model, :821 permission-mode, :826 effort) — NOT the order the
+    // curated fields happen to be declared in. verify-harness-launch-parity
+    // asserts byte-equality against that emitter, so this is the order that
+    // is actually correct; an earlier revision of this assertion encoded
+    // model -> effort -> permission-mode and the parity gate caught it.
+    'curated fields must emit in model -> permission-mode -> effort order'
   )
   assert.equal(launch.model, 'opus', 'model field must equal the resolved curated model value')
   console.log('✓ curated model + effort + permission-mode produce the expected argv, in order')

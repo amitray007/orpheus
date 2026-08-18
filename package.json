@@ -45,6 +45,7 @@
     "test:harness-settings": "node --experimental-strip-types scripts/verify-harness-settings.ts",
     "test:harness-claude-launch": "node --experimental-strip-types scripts/verify-harness-claude-launch.ts",
     "test:harness-session": "node --experimental-strip-types scripts/verify-harness-session.ts",
+    "test:harness-parity": "node --experimental-strip-types scripts/verify-harness-launch-parity.ts",
     "test:proxy": "bun run scripts/verify-routing-proxy.ts",
     "test:providers": "bun run scripts/verify-providers.ts",
     "test:provider-usage": "bun run scripts/verify-provider-usage-parsers.ts && bun run scripts/verify-provider-usage-cursor-grok.ts",

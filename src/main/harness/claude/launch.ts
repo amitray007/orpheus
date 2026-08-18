@@ -36,9 +36,34 @@ import type { HarnessLaunch } from '../../../shared/harness/types'
 import { FLAG_DELIMITER } from '../../../shared/cliFlags'
 import { resolveHarnessSettings, type HarnessSettingRow } from '../settings'
 import { CLAUDE_CURATED, buildCuratedArgs, buildCuratedEnv } from './curated'
+import { isClaude } from '../../models/registry'
 import { claudeSessionArgs } from './session'
 
 const HARNESS_ID = 'claude'
+
+/**
+ * Gate --model on the value actually being a Claude model.
+ *
+ * This mirrors composeFlagTokens's own coercion (claudeSettings.ts, the
+ * `s.model && !isClaude(s.model)` branch) and it is NOT optional: Phase 0
+ * severed launch-side CLIProxyAPI routing, so a non-Claude model id passed
+ * through to `claude --model <id>` would run against the real
+ * api.anthropic.com with an id it does not recognise — a silent failure that
+ * announces itself nowhere. Emitting nothing lets claude fall back to its own
+ * default instead.
+ *
+ * Note this is deliberately narrower than the curated `allowCustom` contract,
+ * which is about the UI not restricting what a user may TYPE. A custom value
+ * is still stored and still shown; it simply is not forwarded as --model
+ * unless the binary would understand it. Keyed on isClaude (the model
+ * registry) rather than modelRouting's isRoutedModel for the same reason
+ * P0.3 was: the two coincide today, but Phase 6 re-lands routing on
+ * (harness, model) and they stop meaning the same thing.
+ */
+function claudeModelFlagValue(model: string | undefined): string {
+  if (!model || !isClaude(model)) return ''
+  return model
+}
 
 /**
  * Composes a Claude `HarnessLaunch` from resolved harness_settings +
@@ -111,9 +136,15 @@ export function composeClaudeHarnessLaunch(
   const curated = resolved.curated ?? {}
 
   const flagTokens: string[] = [
-    ...buildCuratedArgs(CLAUDE_CURATED.model, curated.model ?? ''),
-    ...buildCuratedArgs(CLAUDE_CURATED.effort, curated.effort ?? ''),
+    // ORDER IS LOAD-BEARING: model -> permission-mode -> effort, matching
+    // composeFlagTokens's own emission order (claudeSettings.ts:813, :821,
+    // :826). Not alphabetical, not the order the fields are declared in —
+    // the order the OLD emitter uses, because verify-harness-launch-parity
+    // asserts byte-equality between the two and a reordering here is a real
+    // (if subtle) behavior change in the composed argv.
+    ...buildCuratedArgs(CLAUDE_CURATED.model, claudeModelFlagValue(curated.model)),
     ...buildCuratedArgs(CLAUDE_CURATED.permissionMode, curated.permissionMode ?? ''),
+    ...buildCuratedArgs(CLAUDE_CURATED.effort, curated.effort ?? ''),
     ...claudeSessionArgs(workspaceId),
     ...userArgTokens(resolved.args)
   ]

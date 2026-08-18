@@ -68,7 +68,12 @@ const verifiers = [
   // reason as the two entries above. See verify-harness-session.ts's own
   // header for why resolveHarness is ALSO intercepted here (not for a DB
   // dependency, but to make the capability-gating scenarios test-controllable).
-  ['verify-harness-session.ts', ['node', '--experimental-strip-types']]
+  ['verify-harness-session.ts', ['node', '--experimental-strip-types']],
+  // U7 THE PARITY GATE — drives BOTH launch emitters against the same
+  // fixtures and asserts byte-equality over the surface they share. Needs a
+  // real DB (claude_global_settings + harness_settings + workspaces), so the
+  // same node:sqlite constraint as the three entries above applies.
+  ['verify-harness-launch-parity.ts', ['node', '--experimental-strip-types']]
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {
