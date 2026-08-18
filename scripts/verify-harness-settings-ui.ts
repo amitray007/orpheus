@@ -322,7 +322,44 @@ console.log('✓ mutation test: a clobbering merge is correctly caught as a fail
     false,
     'identical state must not resync'
   )
+  // THE CRASH (React #301, too many re-renders). A blank row that reached
+  // storage appears in `external`. If only the local side filtered blanks, the
+  // two lists could never match: resync -> render -> still unequal -> resync,
+  // forever, until React aborts. Reordering a blank row triggered it because
+  // move() commits, and commit used to send blank rows upward.
+  //
+  // Both sides now filter, so the comparison is total: an equal set of KEYED
+  // rows compares equal no matter what blanks either side carries.
+  assert.equal(
+    shouldResyncDrafts(
+      [
+        { key: '', value: '', enabled: true },
+        { key: '--verbose', enabled: true }
+      ],
+      [{ key: '--verbose', enabled: true }]
+    ),
+    false,
+    'a blank row in EXTERNAL must not force an unsatisfiable resync — this is the #301 crash'
+  )
+
+  // Convergence: whatever resync produces must itself not want another resync,
+  // or the loop is merely slower rather than fixed.
+  {
+    const external = [
+      { key: '', value: '', enabled: true },
+      { key: '--verbose', enabled: true }
+    ]
+    const afterResync = external.map((r) => ({ ...r }))
+    assert.equal(
+      shouldResyncDrafts(external, afterResync),
+      false,
+      'the state produced BY a resync must not request another one — that is what makes it terminate'
+    )
+  }
   console.log('✓ shouldResyncDrafts: a pending blank row survives; real external changes resync')
+  console.log(
+    '✓ shouldResyncDrafts: a blank row in storage cannot cause an unsatisfiable resync loop'
+  )
 }
 
 console.log('\nharness settings UI logic verification passed')

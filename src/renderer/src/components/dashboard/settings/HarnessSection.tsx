@@ -213,7 +213,19 @@ function HarnessRowEditor({
 
   function commit(next: RowDraft[]): void {
     setDrafts(next)
-    onChange(next.map(({ key, value, enabled }) => ({ key, value, enabled })))
+    // Un-keyed drafts are LOCAL-ONLY and must never travel upward. A row with
+    // no key is not a setting yet; persisting one puts a blank row in storage
+    // that comes straight back as an external row, which `shouldResyncDrafts`
+    // then filters out of the local side — the two lists can never match, the
+    // render-time resync never converges, and React aborts with #301
+    // (too many re-renders). That is what crashed the settings page after
+    // reordering a blank row: every commit path (move, toggle, remove) fed the
+    // blank row into storage, not just the one the user was typing in.
+    onChange(
+      next
+        .filter((r) => r.key.trim() !== '')
+        .map(({ key, value, enabled }) => ({ key, value, enabled }))
+    )
   }
 
   function updateRow(idx: number, patch: Partial<HarnessSettingRow>): void {

@@ -269,7 +269,16 @@ export function shouldResyncDrafts(
     enabled: boolean
     fromDefault?: boolean
   }): string => JSON.stringify({ k: r.key, v: r.value, e: r.enabled, d: r.fromDefault })
-  const external = externalRows.map(project).join('\u0000')
+  // Filter BOTH sides identically. Filtering only the local side made the
+  // comparison asymmetric: a blank row that reached storage (older data, or a
+  // caller that forgot to filter) appears in `external`, is stripped from
+  // `local`, and the two can never converge — the render-time resync fires
+  // forever and React aborts with #301. Symmetry makes the function total:
+  // whatever it is handed, an equal set of KEYED rows compares equal.
+  const external = externalRows
+    .filter((r) => r.key.trim() !== '')
+    .map(project)
+    .join('\u0000')
   const local = drafts
     .filter((d) => d.key.trim() !== '')
     .map(project)
