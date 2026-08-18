@@ -196,12 +196,21 @@ function mergeCurated(
  */
 export function resolveHarnessSettings(
   harnessId: string,
-  projectId: string,
-  workspaceId: string
+  projectId?: string,
+  workspaceId?: string
 ): HarnessSettings {
+  // The scope ids are OPTIONAL and each layer is skipped independently. The
+  // global layer ALWAYS applies — it has no id to be missing — so a caller
+  // with no project/workspace context still gets the user's global settings.
+  //
+  // This is deliberately owned here rather than by each caller: a caller that
+  // guarded on `projectId && workspaceId` before calling would silently drop
+  // the global layer entirely, composing a launch as though nothing were
+  // configured. That failure is invisible — no error, just a bare invocation
+  // and settings that appear saved in the UI but never take effect.
   const global = getHarnessSettings(harnessId, 'global')
-  const project = getHarnessSettings(harnessId, 'project', projectId)
-  const workspace = getHarnessSettings(harnessId, 'workspace', workspaceId)
+  const project = projectId ? getHarnessSettings(harnessId, 'project', projectId) : {}
+  const workspace = workspaceId ? getHarnessSettings(harnessId, 'workspace', workspaceId) : {}
 
   const args = mergeRowsByKey([global.args, project.args, workspace.args])
   const env = mergeRowsByKey([global.env, project.env, workspace.env])

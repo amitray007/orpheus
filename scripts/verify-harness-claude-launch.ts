@@ -1,0 +1,341 @@
+// ---------------------------------------------------------------------------
+// scripts/verify-harness-claude-launch.ts
+//
+// Behavior guard for src/main/harness/claude/launch.ts (U4, multi-harness
+// architecture plan) — composeClaudeHarnessLaunch, the KTD2 emitter that
+// produces a HarnessLaunch from ONLY resolved harness_settings (U2) +
+// curated fields (U3), with zero typed passthrough settings. Asserts
+// against the REAL exported function, not a restatement of its logic.
+//
+// RUNTIME CHOICE — plain `node --experimental-strip-types`, NOT `bun run`,
+// mirroring scripts/verify-harness-settings.ts exactly. launch.ts imports
+// resolveHarnessSettings from ../settings, which imports getDb() from
+// ../../db — a chain that pulls in better-sqlite3 + electron's `app`.
+// better-sqlite3 reliably crashes Bun 1.3.10 on this machine the moment
+// `new Database(...)` runs under `bun run` (verified empirically by
+// verify-harness-settings.ts). This harness ALSO needs a REAL, WORKING
+// database — composeClaudeHarnessLaunch's whole job is to read layered
+// settings back out, so a stub that merely throws (the pattern
+// verify-harness-launch.ts/verify-harness-registry.ts use, where the DB
+// path is provably unreached) won't do here. Reuses
+// verify-harness-settings.ts's exact combination: node:sqlite's
+// DatabaseSync (aliased to `Database`) for a real in-memory DB, plus a
+// node:module `register()` resolve hook redirecting 'electron' to an inert
+// stub and settings.ts's '../db' specifier to a virtual module backed by
+// that DatabaseSync instance.
+// ---------------------------------------------------------------------------
+
+import assert from 'node:assert/strict'
+import { register } from 'node:module'
+import { DatabaseSync } from 'node:sqlite'
+
+class Database extends DatabaseSync {}
+
+const dbStubSource = `
+export function getDb() {
+  if (!globalThis.__HARNESS_CLAUDE_LAUNCH_TEST_DB__) {
+    throw new Error('verify-harness-claude-launch: no test DB set before a settings.ts call')
+  }
+  return globalThis.__HARNESS_CLAUDE_LAUNCH_TEST_DB__
+}
+`
+
+const hooks = `
+const dbStubUrl = ${JSON.stringify('data:text/javascript,' + encodeURIComponent(dbStubSource))}
+
+export async function resolve(specifier, context, nextResolve) {
+  if (specifier === 'electron') {
+    return { url: 'data:text/javascript,export const app = {}', shortCircuit: true }
+  }
+  // Match settings.ts's own relative specifier ('../db') exactly, resolved
+  // against ITS parent URL — settings.ts lives under src/main/harness/, the
+  // same directory launch.ts's own '../settings' import resolves into.
+  if (specifier === '../db' && context.parentURL && context.parentURL.includes('/src/main/harness/')) {
+    return { url: dbStubUrl, shortCircuit: true }
+  }
+  try {
+    return await nextResolve(specifier, context)
+  } catch (err) {
+    // src/main/**/*.ts and src/shared/**/*.ts use extensionless relative
+    // imports (bundler moduleResolution) — retry with .ts appended, same
+    // fallback verify-migration-engine.ts / verify-harness-settings.ts use.
+    if (err && err.code === 'ERR_MODULE_NOT_FOUND' && specifier.startsWith('.') && !specifier.endsWith('.ts')) {
+      return await nextResolve(specifier + '.ts', context)
+    }
+    throw err
+  }
+}
+`
+register('data:text/javascript,' + encodeURIComponent(hooks), import.meta.url)
+
+function createFreshDb(): InstanceType<typeof Database> {
+  const db = new Database(':memory:')
+  db.exec(`
+    CREATE TABLE harness_settings (
+      id TEXT PRIMARY KEY NOT NULL,
+      harness_id TEXT NOT NULL,
+      scope TEXT NOT NULL CHECK (scope IN ('global', 'project', 'workspace')),
+      scope_id TEXT NOT NULL DEFAULT '',
+      settings_json TEXT NOT NULL DEFAULT '{}',
+      updated_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(
+    `CREATE UNIQUE INDEX idx_harness_settings_key ON harness_settings (harness_id, scope, scope_id)`
+  )
+  ;(
+    globalThis as unknown as { __HARNESS_CLAUDE_LAUNCH_TEST_DB__: unknown }
+  ).__HARNESS_CLAUDE_LAUNCH_TEST_DB__ = db
+  return db
+}
+
+const { setHarnessSettings } = await import('../src/main/harness/settings.ts')
+const { composeClaudeHarnessLaunch, applyUserEnvRows } =
+  await import('../src/main/harness/claude/launch.ts')
+const { splitFlagString, FLAG_DELIMITER } = await import('../src/shared/cliFlags.ts')
+
+// ---------------------------------------------------------------------------
+// 1. Empty settings -> bare invocation: no stray flags, flags === '', env
+//    empty, settingsJson empty, model empty.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  const launch = composeClaudeHarnessLaunch('proj-1', 'ws-1')
+  assert.deepEqual(
+    launch,
+    { flags: '', settingsJson: '', env: {}, model: '' },
+    'nothing configured -> fully bare launch'
+  )
+  console.log('✓ empty settings -> bare invocation (flags === "", no stray flags)')
+}
+
+// ---------------------------------------------------------------------------
+// 2. Curated model + effort + permission-mode produce the expected argv,
+//    IN ORDER, and model is read back on the HarnessLaunch.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    curated: { model: 'opus', effort: 'high', permissionMode: 'acceptEdits' }
+  })
+  const launch = composeClaudeHarnessLaunch('proj-1', 'ws-1')
+  assert.deepEqual(
+    splitFlagString(launch.flags),
+    ['--model', 'opus', '--effort', 'high', '--permission-mode', 'acceptEdits'],
+    'curated fields must emit in model -> effort -> permission-mode order'
+  )
+  assert.equal(launch.model, 'opus', 'model field must equal the resolved curated model value')
+  console.log('✓ curated model + effort + permission-mode produce the expected argv, in order')
+}
+
+// ---------------------------------------------------------------------------
+// 3. User arg rows appear in declared order, AFTER curated ones. A bare
+//    flag (no value) emits just its key.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    curated: { model: 'sonnet' },
+    args: [
+      { key: '--add-dir', value: '/tmp/foo', enabled: true },
+      { key: '--verbose', enabled: true }
+    ]
+  })
+  const launch = composeClaudeHarnessLaunch('proj-1', 'ws-1')
+  assert.deepEqual(
+    splitFlagString(launch.flags),
+    ['--model', 'sonnet', '--add-dir', '/tmp/foo', '--verbose'],
+    'user arg rows must follow curated ones, in declared order; a valueless row emits just its key'
+  )
+  console.log(
+    '✓ user arg rows appear after curated ones, in declared order; a bare flag emits only its key'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 4. Disabled rows are absent from both args and env.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    args: [
+      { key: '--verbose', enabled: true },
+      { key: '--debug', enabled: false }
+    ],
+    env: [
+      { key: 'ANTHROPIC_LOG', value: 'debug', enabled: true },
+      { key: 'DISABLED_VAR', value: 'x', enabled: false }
+    ]
+  })
+  const launch = composeClaudeHarnessLaunch('proj-1', 'ws-1')
+  assert.deepEqual(
+    splitFlagString(launch.flags),
+    ['--verbose'],
+    'a disabled arg row must not appear in the composed flags'
+  )
+  assert.deepEqual(
+    launch.env,
+    { ANTHROPIC_LOG: 'debug' },
+    'a disabled env row must not appear in the composed env'
+  )
+  console.log('✓ disabled rows are absent from both composed args and composed env')
+}
+
+// ---------------------------------------------------------------------------
+// 5. 0x1F round-trip: a value containing spaces and '=' survives.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    args: [{ key: '--append-system-prompt', value: 'a=b has spaces too', enabled: true }]
+  })
+  const launch = composeClaudeHarnessLaunch('proj-1', 'ws-1')
+  assert.ok(
+    launch.flags.includes(FLAG_DELIMITER),
+    'composed flags must be 0x1F-joined, not whitespace-joined'
+  )
+  assert.deepEqual(
+    splitFlagString(launch.flags),
+    ['--append-system-prompt', 'a=b has spaces too'],
+    'a value containing spaces and "=" must survive the 0x1F round trip byte-for-byte'
+  )
+  console.log('✓ 0x1F round-trip: a value containing spaces and "=" survives intact')
+}
+
+// ---------------------------------------------------------------------------
+// 6. model field equals the curated model value, and is '' when unset —
+//    even when other settings ARE configured.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    args: [{ key: '--verbose', enabled: true }],
+    env: [{ key: 'FOO', value: 'bar', enabled: true }]
+  })
+  const launch = composeClaudeHarnessLaunch('proj-1', 'ws-1')
+  assert.equal(launch.model, '', 'model must be "" when no curated model is configured')
+  console.log('✓ model field is "" when curated.model is unset, independent of other settings')
+}
+
+// ---------------------------------------------------------------------------
+// 6b. model must be the RESOLVED CURATED VALUE, not something re-derived by
+// scanning the composed flag tokens. A user arg row that itself happens to
+// contain a bare '--model' passthrough (a plausible, if unusual, escape
+// hatch a user could type into the generic args editor) must NOT influence
+// `launch.model` — only curated.model may. This is the discriminating case:
+// an implementation that reads `curated.model` directly and one that greps
+// flagTokens for '--model' agree on every other scenario in this file but
+// diverge here.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    curated: { model: 'opus' },
+    args: [{ key: '--model', value: 'user-typed-decoy', enabled: true }]
+  })
+  const launch = composeClaudeHarnessLaunch('proj-1', 'ws-1')
+  assert.equal(
+    launch.model,
+    'opus',
+    'model must be read from resolved curated.model, never re-derived by scanning composed flag tokens'
+  )
+  console.log(
+    '✓ model field is read from curated.model, not parsed out of the composed flags (decoy user --model row ignored)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 7. Env-collision precedence: CURATED WINS. A user env row using the same
+//    key as a curated field's env key must be dropped, not override it.
+//
+// Claude's curated fields are all flag-based today (see curated.ts's
+// header: "every CuratedField below uses `flag`, never `env`"), so
+// composeClaudeHarnessLaunch itself can never exercise a live collision —
+// there is no way to make curatedEnv non-empty through the public surface
+// with today's descriptor. launch.ts exports applyUserEnvRows (the exact
+// function composeClaudeHarnessLaunch calls internally to layer user rows
+// on top of curated env) precisely so this rule can be asserted against
+// REAL behavior rather than left as an untested comment ahead of the
+// future harness (e.g. one with `curated.model = { env: 'MODEL', ... }`)
+// that makes the collision reachable end-to-end.
+// ---------------------------------------------------------------------------
+{
+  const result = applyUserEnvRows({ MODEL: 'opus' }, [
+    { key: 'MODEL', value: 'user-override', enabled: true },
+    { key: 'OTHER', value: 'x', enabled: true }
+  ])
+  assert.deepEqual(
+    result,
+    { MODEL: 'opus', OTHER: 'x' },
+    'a user env row colliding with a curated env key must be dropped; curated wins'
+  )
+  console.log(
+    '✓ env-collision precedence: curated wins over a colliding user env row (applyUserEnvRows)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 7b. Reachable-today proxy: with Claude's curated fields all flag-based,
+//     curatedEnv is always {} in practice, so the merge that actually
+//     happens at the composeClaudeHarnessLaunch level is scope layering
+//     among user rows — resolveHarnessSettings's own workspace-beats-global
+//     precedence (asserted here to confirm curated-first layering doesn't
+//     interfere with it).
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    env: [{ key: 'SHARED_KEY', value: 'global-value', enabled: true }]
+  })
+  setHarnessSettings('claude', 'workspace', 'ws-1', {
+    env: [{ key: 'SHARED_KEY', value: 'workspace-value', enabled: true }]
+  })
+  const launch = composeClaudeHarnessLaunch('proj-1', 'ws-1')
+  assert.deepEqual(
+    launch.env,
+    { SHARED_KEY: 'workspace-value' },
+    'workspace-scope user row must win over global-scope user row beneath curated-first layering'
+  )
+  console.log('✓ curated-first layering does not interfere with scope precedence among user rows')
+}
+
+// ---------------------------------------------------------------------------
+// REGRESSION GUARD: global-scope settings must reach the launch even when no
+// project/workspace id is supplied.
+//
+// Both parameters are optional (composeClaudeLaunch has the same shape and
+// real callers do pass undefined). An earlier revision guarded the whole
+// resolve behind `projectId && workspaceId`, which silently dropped the
+// global layer for those callers — the user's configured flags simply never
+// reached `claude`, with no error and no log line. resolveHarnessSettings now
+// owns per-layer skipping and always reads global, which has no id to miss.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    curated: { model: 'opus' },
+    args: [{ key: '--verbose', enabled: true }],
+    env: [{ key: 'GLOBAL_ONLY', value: 'yes', enabled: true }]
+  })
+
+  for (const [label, launch] of [
+    ['no ids at all', composeClaudeHarnessLaunch()],
+    ['projectId only', composeClaudeHarnessLaunch('proj-1')],
+    ['workspaceId only', composeClaudeHarnessLaunch(undefined, 'ws-1')]
+  ] as const) {
+    assert.deepEqual(
+      splitFlagString(launch.flags),
+      ['--model', 'opus', '--verbose'],
+      `global args must still compose with ${label}`
+    )
+    assert.equal(launch.model, 'opus', `global curated model must still resolve with ${label}`)
+    assert.deepEqual(
+      launch.env,
+      { GLOBAL_ONLY: 'yes' },
+      `global env must still compose with ${label}`
+    )
+  }
+  console.log('✓ global-scope settings reach the launch with a missing projectId/workspaceId')
+}
+
+console.log('\nAll harness-claude-launch assertions passed.')
