@@ -27,6 +27,7 @@
 
 import type { HarnessDescriptor, HarnessId } from '../../shared/harness/types'
 import { composeClaudeLaunch } from '../claudeSettings'
+import { CLAUDE_CURATED } from './claude/curated'
 
 // Known-good `claude --version` strings, used by sessionState.ts to warn
 // (once per version, non-fatal) when a session file reports a version this
@@ -115,6 +116,11 @@ const CLAUDE_DESCRIPTOR: HarnessDescriptor = {
   // comment in src/shared/harness/types.ts) — a direct pass-through, no
   // reshaping, no cast needed.
   composeLaunch: composeClaudeLaunch,
+  // U3's curated concepts — model/effort/permission-mode. See
+  // src/main/harness/claude/curated.ts for the values (reused from
+  // src/shared/types.ts's CLAUDE_MODEL_OPTIONS/CLAUDE_EFFORT_VALUES, not
+  // duplicated) and the flag verification against composeFlagTokens.
+  curated: CLAUDE_CURATED,
   knownGoodVersions: CLAUDE_KNOWN_GOOD_VERSIONS
 }
 

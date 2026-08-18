@@ -118,6 +118,44 @@ export type HarnessLaunch = {
 }
 
 // ---------------------------------------------------------------------------
+// CuratedField
+// ---------------------------------------------------------------------------
+
+// One of the three concepts Orpheus curates per harness — model, effort, or
+// permission-mode (KTD3 of the multi-harness migration plan: these three are
+// hardcoded per harness because they are stable AND Orpheus itself reads
+// them back — commandServer.ts's TUI tree frame, tmuxHost.ts's
+// TreeSourceWorkspace, settingsResourceService.ts's validator, and the
+// footer's modelSelect/effortSelect pickers. Every other setting is
+// user-supplied, untyped passthrough args/env — see KTD2).
+//
+// A harness expresses a curated concept ONE way: either as a CLI flag
+// (Claude's `--model`) or as an environment variable (superset's Vibe
+// harness, which has no model flag and reads `VIBE_ACTIVE_MODEL` instead).
+// Never both for the same concept — that's what the `flag`/`env` union
+// below encodes: exactly one discriminating key is present per shape, so a
+// descriptor author cannot accidentally set both, and a builder can branch
+// on `'flag' in field` without a runtime assertion. (Both shapes could in
+// principle be collapsed into one interface with `flag?: string; env?: string`
+// and an ad-hoc invariant comment, but a discriminated union lets the
+// exclusivity be enforced by the type checker itself — see buildCuratedArgs/
+// buildCuratedEnv in src/main/harness/claude/curated.ts, which each accept
+// this type and simply don't have a "both" case to handle.)
+//
+// `options` is a curated SUGGESTION list for UI pickers — never a
+// validation whitelist. `allowCustom: true` is not a toggle (there is no
+// `false` case): every curated field must accept a value outside `options`,
+// because a user's install may have models/effort levels/permission modes
+// this build's curated list doesn't know about yet. It exists as an
+// explicit literal-`true` field (rather than being implied) so a reader of
+// a HarnessDescriptor sees the "always accept custom" contract stated right
+// on the data, not only in this comment.
+export type CuratedField = { options: string[]; allowCustom: true } & (
+  | { flag: string; env?: never }
+  | { flag?: never; env: string }
+)
+
+// ---------------------------------------------------------------------------
 // HarnessDescriptor
 // ---------------------------------------------------------------------------
 
@@ -160,6 +198,13 @@ export interface HarnessDescriptor {
   /** Composes this harness's launch payload (flags/settingsJson/env/model)
    *  for a given project/workspace. See ComposeHarnessLaunch. */
   composeLaunch: ComposeHarnessLaunch
+  /** The three curated concepts (KTD3) — model, effort, permission-mode —
+   *  this harness exposes, each optional (a harness may lack any of the
+   *  three; e.g. a harness with no reasoning-effort control simply omits
+   *  `effort`). See CuratedField above for the flag/env exclusivity and the
+   *  always-accept-custom-values contract. Undeclared (not just empty)
+   *  entirely for a harness that curates none of the three. */
+  curated?: { model?: CuratedField; effort?: CuratedField; permissionMode?: CuratedField }
   /** Known-good CLI versions for this harness, used to gate features that
    *  depend on a minimum version or to warn on an untested one. Moves here
    *  from KNOWN_GOOD_VERSIONS (currently a module-level Set in
