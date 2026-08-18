@@ -72,15 +72,17 @@ const sessionStateSource = readRepoFile('src/main/sessionState.ts')
   // to order against; re-anchor on the invariant the comment at
   // orpheusSurfaceAdapter.ts's Phase-0 note calls out instead — auth env
   // (`...authEnv`) must still be spread into `env` BEFORE the runtime
-  // identity block (`Object.assign(env, { ORPHEUS_RUNTIME_CONTEXT_VERSION`)
-  // overwrites it, since runtime identity must win over anything upstream,
-  // including auth-provided vars, and never the reverse.
+  // identity block (which sets ORPHEUS_RUNTIME_CONTEXT_VERSION) overwrites
+  // it, since runtime identity must win over anything upstream, including
+  // auth-provided vars, and never the reverse. indexOf on single-line,
+  // semantically-meaningful tokens — deliberately NOT a multi-line literal
+  // with hard-coded indentation, which prettier (run via lint-staged on
+  // every commit) could reflow and break for a reason unrelated to the
+  // actual invariant.
   const authEnvSpreadIndex = adapterSource.indexOf('...authEnv, // auth env wins on conflict')
-  const runtimeAssignIndex = adapterSource.indexOf(
-    'Object.assign(env, {\n      ORPHEUS_RUNTIME_CONTEXT_VERSION'
-  )
+  const runtimeAssignIndex = adapterSource.indexOf('ORPHEUS_RUNTIME_CONTEXT_VERSION')
   assert.ok(authEnvSpreadIndex >= 0, 'authEnv spread must still be present')
-  assert.ok(runtimeAssignIndex >= 0, 'runtime identity Object.assign must still be present')
+  assert.ok(runtimeAssignIndex >= 0, 'runtime identity constant must still be present')
   assert.ok(
     runtimeAssignIndex > authEnvSpreadIndex,
     'runtime identity env must still be merged AFTER authEnv, so it always wins on conflict'

@@ -181,11 +181,17 @@ function buildVertexEnv(row: Row): Record<string, string> {
 /**
  * Anthropic (default) provider env vars (§getClaudeAuthEnv).
  *
- * Exported so scripts/verify-runtime-main-integration.ts can assert the
+ * Exported so scripts/verify-non-claude-launch-behavior.ts can assert the
  * P0.4 behavior (routed workspaces still get real Anthropic auth) against
- * the actual production row->env mapping rather than a re-stated copy. Pure
- * — takes a plain data row, touches no DB/electron API — safe to call from
- * a bare `bun run` script.
+ * the actual production row->env mapping rather than a re-stated copy.
+ * The FUNCTION BODY is pure — takes a plain data row, touches no DB/electron
+ * API — but this MODULE is not: claudeAuth.ts statically imports `./db`,
+ * which statically imports electron's `app`, so a plain `bun run` script
+ * cannot import this module at all (verified empirically — even a bare,
+ * uncalled import fails at link time under a clean Bun cache). The
+ * consuming harness works around this with `bun:test`'s `mock.module()` to
+ * stub `electron`/`./db` before dynamically importing this file, per the
+ * precedent already established in scripts/verify-project-add.ts.
  */
 export function buildAnthropicEnv(row: Row): Record<string, string> {
   const env: Record<string, string> = {}
@@ -200,8 +206,11 @@ export function buildAnthropicEnv(row: Row): Record<string, string> {
  * runs for it. Extracted as its own pure function (row in, env out — no
  * DB/cache access) so the P0.4 "routed still gets real Anthropic auth"
  * behavior can be asserted directly against the same logic getClaudeAuthEnv
- * runs, from scripts/verify-runtime-main-integration.ts, without needing a
+ * runs, from scripts/verify-non-claude-launch-behavior.ts, without needing a
  * live DB. getClaudeAuthEnv is the only caller — this is not a parallel copy.
+ * See buildAnthropicEnv's doc comment above for why the harness still needs
+ * mock.module() to reach this function at all (this module statically
+ * imports electron transitively via ./db).
  */
 export function buildAuthEnvForRow(row: Row): Record<string, string> {
   if (row.cloud_provider === 'foundry') {

@@ -762,11 +762,15 @@ function pushSessionContinuityFlags(flagTokens: string[], workspaceId?: string):
 // that script's comment block and src/shared/cliFlags.ts for why.
 //
 // Exported (composeClaudeLaunch is its only production caller — not a
-// parallel copy) so scripts/verify-runtime-main-integration.ts can assert
-// the P0.3 --model-omission behavior directly against this function. It
-// never touches getDb()/getWorkspace() when workspaceId is undefined (see
-// pushSessionContinuityFlags's early return), so it's safe to call from a
-// plain `bun run` script without an Electron/DB runtime.
+// parallel copy) so scripts/verify-non-claude-launch-behavior.ts can assert
+// the P0.3 --model-omission behavior directly against this function. The
+// FUNCTION BODY never touches getDb()/getWorkspace() when workspaceId is
+// undefined (see pushSessionContinuityFlags's early return) — but this
+// MODULE still statically imports './db' and './workspaces', both of which
+// reach electron transitively, so a plain `bun run` script cannot import
+// claudeSettings.ts at all without first stubbing electron (verified
+// empirically). The harness uses `bun:test`'s mock.module() for that, per
+// the precedent in scripts/verify-project-add.ts.
 export function composeFlagTokens(
   s: ClaudeGlobalSettings,
   workspaceId: string | undefined,
