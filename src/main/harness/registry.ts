@@ -28,6 +28,7 @@
 import type { HarnessDescriptor, HarnessId } from '../../shared/harness/types'
 import { composeClaudeLaunch } from '../claudeSettings'
 import { CLAUDE_CURATED } from './claude/curated'
+import { CLAUDE_DEFAULT_ACTIONS } from './claude/actions'
 
 // Known-good `claude --version` strings, used by sessionState.ts to warn
 // (once per version, non-fatal) when a session file reports a version this
@@ -121,6 +122,9 @@ const CLAUDE_DESCRIPTOR: HarnessDescriptor = {
   // src/shared/types.ts's CLAUDE_MODEL_OPTIONS/CLAUDE_EFFORT_VALUES, not
   // duplicated) and the flag verification against composeFlagTokens.
   curated: CLAUDE_CURATED,
+  // R8/U6's seed data — see src/main/harness/claude/actions.ts's header for
+  // why this is not yet wired into any seeding call site.
+  defaultActions: CLAUDE_DEFAULT_ACTIONS,
   knownGoodVersions: CLAUDE_KNOWN_GOOD_VERSIONS
 }
 

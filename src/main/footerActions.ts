@@ -7,6 +7,17 @@
 // Merge semantics for listMerged(workspaceId):
 //   [...global rows] ++ [...project rows] ++ [...workspace rows]
 //   Within each scope ordered by `position` ASC.
+//
+// Harness capability gating (R8/U6, multi-harness migration): listMerged
+// additionally filters the merged list through filterActionsForHarness
+// against the workspace's resolved harness descriptor. This is a LIST-TIME
+// concern only — it never mutates or deletes a stored row, so a user's
+// existing footer_actions_* rows are always intact in the DB even when a
+// particular action is momentarily hidden because the workspace's harness
+// lacks the capability it needs (e.g. workspace.fork on a harness with
+// capabilities.fork === false). Switching the workspace back to a harness
+// that has the capability makes the same stored row visible again with no
+// re-seed, no migration, and no data loss.
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from 'node:crypto'
@@ -17,6 +28,8 @@ import type {
   FooterActionScope,
   PromptDescriptor
 } from '../shared/types'
+import type { HarnessDescriptor } from '../shared/harness/types'
+import { resolveHarness } from './harness/registry'
 
 // ---------------------------------------------------------------------------
 // Row shapes from SQLite
@@ -154,15 +167,81 @@ export function listForWorkspace(workspaceId: string): FooterActionDescriptor[] 
 
 export function listMerged(workspaceId: string): FooterActionDescriptor[] {
   const db = getDb()
-  const ws = db.prepare('SELECT project_id FROM workspaces WHERE id = ?').get(workspaceId) as
-    | { project_id: string }
-    | undefined
+  const ws = db
+    .prepare('SELECT project_id, harness_id FROM workspaces WHERE id = ?')
+    .get(workspaceId) as { project_id: string; harness_id: string | null } | undefined
 
   const globals = listGlobal()
   const projectRows = ws ? listForProject(ws.project_id) : []
   const workspaceRows = listForWorkspace(workspaceId)
 
-  return [...globals, ...projectRows, ...workspaceRows]
+  const merged = [...globals, ...projectRows, ...workspaceRows]
+  const harness = resolveHarness(ws?.harness_id)
+  return filterActionsForHarness(merged, harness)
+}
+
+// ---------------------------------------------------------------------------
+// Harness capability gating (R8/U6)
+//
+// DATA, not if/else: each action_id that needs a capability to make sense
+// is a single entry in this table, mapping to a predicate over the
+// workspace's resolved HarnessDescriptor. Adding a harness-gated action
+// later is a one-line addition here, never a new branch in listMerged.
+//
+// An action_id that is NOT a key in this table is always allowed — this is
+// deliberate, not an oversight, and is what keeps every user-authored row
+// working regardless of which action_id they used. Two consequences worth
+// being explicit about:
+//
+//   1. terminal.sendInput is intentionally NOT gated here. Its action_id is
+//      generic (any text can be sent to any terminal), but a specific
+//      PAYLOAD like Claude's `/copy`/`/context`/`/clear` is not — those are
+//      Claude Code slash commands and are meaningless as literal text on a
+//      harness that doesn't understand them. Telling apart "Claude's own
+//      seeded /copy row" from "a user's hand-written sendInput row" would
+//      need a stored provenance marker, and footer_actions_* has no such
+//      column — adding one is a schema/data-migration decision this unit is
+//      explicitly scoped to avoid (see the module header and registry.ts's
+//      data-only-removal discipline for the same "additive, never
+//      destructive" principle applied elsewhere). So sendInput rows are
+//      left alone unconditionally: the safe failure mode is an inert
+//      slash-command chip on a foreign harness, never a silently deleted
+//      user row. A future unit that adds real per-row harness provenance
+//      (e.g. seeding stamps a `harnessId` onto rows it creates) can extend
+//      this table with a sendInput entry that checks that marker without
+//      touching any row that predates it.
+//   2. workspace.archive/workspace.rename and any other harness-agnostic
+//      action_id also fall through unfiltered by design — they need no
+//      capability from any harness.
+// ---------------------------------------------------------------------------
+
+type ActionGate = (harness: HarnessDescriptor) => boolean
+
+const FOOTER_ACTION_GATES: Record<string, ActionGate> = {
+  'workspace.fork': (h) => h.capabilities.fork,
+  'session.getUsage': (h) => h.capabilities.usage,
+  'session.getCost': (h) => h.capabilities.usage,
+  'footer.modelSelect': (h) => h.curated?.model !== undefined,
+  'footer.effortSelect': (h) => h.curated?.effort !== undefined
+}
+
+/**
+ * Filters a list of footer actions (any mix of scopes) down to the ones
+ * that make sense for `harness`. Pure — no DB access, no mutation of the
+ * input array or its elements — so it can be exercised directly against
+ * fixtures without needing a real SQLite DB or Electron. Never drops an
+ * action whose action_id isn't in FOOTER_ACTION_GATES; see that table's
+ * own header comment for why (chiefly: preserving every user-authored row,
+ * including hand-written terminal.sendInput rows, untouched).
+ */
+export function filterActionsForHarness(
+  actions: FooterActionDescriptor[],
+  harness: HarnessDescriptor
+): FooterActionDescriptor[] {
+  return actions.filter((action) => {
+    const gate = FOOTER_ACTION_GATES[action.actionId]
+    return gate ? gate(harness) : true
+  })
 }
 
 // ---------------------------------------------------------------------------

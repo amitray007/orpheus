@@ -22,6 +22,8 @@
 // shapes they satisfy.
 // ---------------------------------------------------------------------------
 
+import type { FooterActionDraft } from '../types'
+
 // ---------------------------------------------------------------------------
 // HarnessId
 // ---------------------------------------------------------------------------
@@ -205,6 +207,21 @@ export interface HarnessDescriptor {
    *  always-accept-custom-values contract. Undeclared (not just empty)
    *  entirely for a harness that curates none of the three. */
   curated?: { model?: CuratedField; effort?: CuratedField; permissionMode?: CuratedField }
+  /** Footer quick actions this harness ships with (R8/U6). Only consulted
+   *  when SEEDING a harness that has zero rows in `footer_actions_global`
+   *  for it — never used to rewrite or filter a user's existing rows (see
+   *  the data-only-removal discipline in src/main/harness/registry.ts's
+   *  header, which the same "additive, never destructive" spirit applies
+   *  to here). Populated for Claude in src/main/harness/claude/actions.ts
+   *  by reusing FooterActionDraft (src/shared/types.ts) rather than
+   *  inventing a parallel shape — one action-descriptor type for the whole
+   *  app, whether it comes from a DB row or a descriptor's defaults.
+   *  Capability GATING of already-stored rows (fork needs
+   *  capabilities.fork, usage needs capabilities.usage, model/effort
+   *  pickers need curated.model/curated.effort) is separate and lives in
+   *  src/main/footerActions.ts's action-id gate table — it runs at list
+   *  time against any row regardless of which harness (if any) seeded it. */
+  defaultActions?: FooterActionDraft[]
   /** Known-good CLI versions for this harness, used to gate features that
    *  depend on a minimum version or to warn on an untested one. Moves here
    *  from KNOWN_GOOD_VERSIONS (currently a module-level Set in

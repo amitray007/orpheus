@@ -47,6 +47,7 @@ const verifiers = [
   'verify-harness-registry.ts',
   'verify-harness-launch.ts',
   'verify-harness-curated.ts',
+  'verify-harness-actions.ts',
   // Runs under plain node, not bun — see verify-harness-settings.ts's own
   // header comment: it uses node:sqlite's DatabaseSync for a real in-memory
   // DB, and node:sqlite has no bun equivalent ("Could not resolve:
@@ -54,7 +55,13 @@ const verifiers = [
   // [label, command] tuple rather than a bare string so runVerifier() below
   // can dispatch it to `node --experimental-strip-types` instead of the
   // uniform `bun run scripts/<name>` every other entry uses.
-  ['verify-harness-settings.ts', ['node', '--experimental-strip-types']]
+  ['verify-harness-settings.ts', ['node', '--experimental-strip-types']],
+  // Same node:sqlite/DatabaseSync constraint as verify-harness-settings.ts
+  // above (this harness needs a real, working DB — see its own header
+  // comment for why the throws-if-called stub verify-harness-launch.ts uses
+  // doesn't suffice here) — dispatched via the same [label, command] tuple
+  // form to run under plain node instead of bun.
+  ['verify-harness-claude-launch.ts', ['node', '--experimental-strip-types']]
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {
