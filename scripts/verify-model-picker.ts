@@ -196,37 +196,76 @@ function baseInput(
     !neverConnected.some((m) => m.id === 'gpt-5-codex'),
     'provider never connected (absent from authFiles) -> routed model must be omitted'
   )
-
-  // The happy path: proxy running AND provider enabled AND healthy -> offered.
-  const healthy = buildSelectableModels(
-    baseInput({
-      routingProxy: {
-        enabled: true,
-        status: 'running',
-        authFiles: [{ provider: 'codex', health: 'ok' }]
-      },
-      providerConfigs: [codexConfig],
-      cliProxyModels
-    })
-  )
-  const offered = healthy.find((m) => m.id === 'gpt-5-codex')
-  assert.ok(offered, 'proxy running + provider healthy -> routed model must be offered')
-  assert.equal(offered!.available, true)
-  assert.equal(offered!.isClaude, false)
-  assert.equal(offered!.providerId, 'codex')
-  assert.equal(offered!.providerLabel, 'Codex (OpenAI)')
-  assert.equal(offered!.contextWindow, 400_000)
   console.log(
-    '✓ routed models are offered ONLY when proxy is running AND the account is connected+healthy'
+    '✓ routed models are omitted when the proxy is not running, the provider is disabled, ' +
+      'or the provider never connected'
   )
+
+  // RE-LAND(routing): the happy path below — proxy running AND provider
+  // enabled AND healthy -> routed model MUST be offered, plus follow-on
+  // assertions on .available/.isClaude/.providerId/.providerLabel/
+  // .contextWindow — is broken by construction under Phase 0
+  // (src/main/models/selectable.ts's PHASE0_ROUTING_SEVERED guard, commit
+  // d14115fb): buildSelectableModels returns Claude-only unconditionally, so
+  // no routed model can ever be found here. The three omission assertions
+  // above are NEGATIVE and still cover live behavior (nothing routed is
+  // ever offered, which is now trivially guaranteed AND still correct), so
+  // they stay live above this skip.
+  const SKIP_SECTION_2_ROUTED_HAPPY_PATH = true
+
+  if (SKIP_SECTION_2_ROUTED_HAPPY_PATH) {
+    console.log(
+      '⊘ SKIPPED (RE-LAND(routing)): §2 routed-happy-path offer assertions — buildSelectableModels ' +
+        'no longer returns routed entries (Phase 0 cut, commit d14115fb); re-enable when routing ' +
+        'returns harness-aware in Phase 6'
+    )
+  } else {
+    // The happy path: proxy running AND provider enabled AND healthy -> offered.
+    const healthy = buildSelectableModels(
+      baseInput({
+        routingProxy: {
+          enabled: true,
+          status: 'running',
+          authFiles: [{ provider: 'codex', health: 'ok' }]
+        },
+        providerConfigs: [codexConfig],
+        cliProxyModels
+      })
+    )
+    const offered = healthy.find((m) => m.id === 'gpt-5-codex')
+    assert.ok(offered, 'proxy running + provider healthy -> routed model must be offered')
+    assert.equal(offered!.available, true)
+    assert.equal(offered!.isClaude, false)
+    assert.equal(offered!.providerId, 'codex')
+    assert.equal(offered!.providerLabel, 'Codex (OpenAI)')
+    assert.equal(offered!.contextWindow, 400_000)
+    console.log(
+      '✓ routed models are offered ONLY when proxy is running AND the account is connected+healthy'
+    )
+  }
 }
 
 // ---------------------------------------------------------------------------
 // 3. A model whose account is unhealthy (health: 'error' or 'unknown') is
 //    NOT offered as a fresh selection.
+//
+// RE-LAND(routing): this asserts absence of a routed model, which is
+// trivially true under Phase 0 (buildSelectableModels is Claude-only
+// unconditionally — commit d14115fb) regardless of health, so it no longer
+// exercises the health gate this section is meant to prove (that gate is
+// dead code behind PHASE0_ROUTING_SEVERED). Skipped as a whole section —
+// no live half survives independent of the dead gating logic.
 // ---------------------------------------------------------------------------
 
-{
+const SKIP_SECTION_3_UNHEALTHY_ACCOUNT_OMITTED = true
+
+if (SKIP_SECTION_3_UNHEALTHY_ACCOUNT_OMITTED) {
+  console.log(
+    '⊘ SKIPPED (RE-LAND(routing)): §3 unhealthy-account-omitted assertions — buildSelectableModels ' +
+      'no longer returns routed entries (Phase 0 cut, commit d14115fb); re-enable when routing ' +
+      'returns harness-aware in Phase 6'
+  )
+} else {
   for (const health of ['error', 'unknown'] as const) {
     const result = buildSelectableModels(
       baseInput({
@@ -250,9 +289,27 @@ function baseInput(
 // ---------------------------------------------------------------------------
 // 4. An already-selected-but-now-unavailable model is still surfaced, marked
 //    unavailable — never silently dropped.
+//
+// RE-LAND(routing): Cases A and B below expect a ROUTED currentModelId
+// (grok-4.5 / gpt-5-codex) to be preserved, unavailable, by
+// buildSelectableModels — broken by construction under Phase 0 (commit
+// d14115fb): the entire "preserve an already-selected routed model"
+// preservation branch in selectable.ts's buildSelectableModels sits AFTER
+// the `if (PHASE0_ROUTING_SEVERED) return claudeEntries()` early return, so
+// it never runs at all — `preserved`/`stillThere` are always undefined.
+// Case C (a Claude currentModelId must not duplicate) reads no routed data
+// and stays live below, carved out of the skip.
 // ---------------------------------------------------------------------------
 
-{
+const SKIP_SECTION_4_ROUTED_PRESERVATION = true
+
+if (SKIP_SECTION_4_ROUTED_PRESERVATION) {
+  console.log(
+    '⊘ SKIPPED (RE-LAND(routing)): §4 Cases A/B — routed-currentModelId preservation — the ' +
+      'preservation branch in buildSelectableModels sits behind the Phase 0 early return and never ' +
+      'runs (Phase 0 cut, commit d14115fb); re-enable when routing returns harness-aware in Phase 6'
+  )
+} else {
   // Case A: the model is still known to the cliproxy cache (so its facts are
   // preserved) but its provider is now unhealthy/disconnected.
   const stillCached = buildSelectableModels(
@@ -288,9 +345,16 @@ function baseInput(
   assert.ok(stillThere, 'a stored routed selection must survive even a fully-down proxy')
   assert.equal(stillThere!.available, false)
   assert.equal(stillThere!.contextWindow, null, 'unknown facts stay null, never fabricated')
+  console.log(
+    '✓ an already-selected-but-now-unavailable ROUTED model is preserved (marked unavailable), ' +
+      'never silently dropped'
+  )
+}
 
+{
   // Case C: a Claude-model currentModelId must NOT get a duplicate/unavailable
-  // entry appended — it's already in the Claude group as available.
+  // entry appended — it's already in the Claude group as available. Reads no
+  // routed data — unaffected by the Phase 0 cut, stays live.
   const claudeCurrent = buildSelectableModels(baseInput({ currentModelId: 'claude-opus-4-8' }))
   assert.equal(
     claudeCurrent.filter((m) => m.id === 'claude-opus-4-8').length,
@@ -298,7 +362,7 @@ function baseInput(
     'a Claude currentModelId must not produce a second (unavailable) entry'
   )
   console.log(
-    '✓ an already-selected-but-now-unavailable model is preserved (marked unavailable), never silently dropped'
+    '✓ a Claude currentModelId never produces a duplicate/unavailable entry alongside its already-Claude selection'
   )
 }
 
@@ -360,9 +424,26 @@ function baseInput(
 // 6. Effort levels come from REAL data (thinking.levels via the cliproxy
 //    cache); a model with none yields effortLevels: null — never a fabricated
 //    generic list.
+//
+// RE-LAND(routing): the withLevels/withoutLevels routed-model lookups below
+// are broken by construction under Phase 0 (buildSelectableModels is
+// Claude-only unconditionally — commit d14115fb), so
+// withLevelsEntry/withoutLevelsEntry are always undefined. The Claude-entry
+// check (CLAUDE_BUILTIN_EFFORT_LEVELS wiring) is unaffected by the routing
+// cut — Claude entries are assembled by claudeEntries(), which runs before
+// the early return — and stays live below in its own block, reading off a
+// Claude-only buildSelectableModels() call.
 // ---------------------------------------------------------------------------
 
-{
+const SKIP_SECTION_6_ROUTED_EFFORT_LEVELS = true
+
+if (SKIP_SECTION_6_ROUTED_EFFORT_LEVELS) {
+  console.log(
+    '⊘ SKIPPED (RE-LAND(routing)): §6 routed-model effortLevels (with/without thinking.levels) — ' +
+      'buildSelectableModels no longer returns routed entries (Phase 0 cut, commit d14115fb); re-enable ' +
+      'when routing returns harness-aware in Phase 6'
+  )
+} else {
   const runningHealthy: RoutingProxyStatusInput = {
     enabled: true,
     status: 'running',
@@ -400,23 +481,30 @@ function baseInput(
     null,
     'a model with no reported thinking.levels must yield effortLevels: null, never a fabricated generic list'
   )
+  console.log(
+    '✓ effort levels come from real cliproxy thinking.levels data (routed models); a model with none ' +
+      'yields effortLevels: null, never fabricated'
+  )
+}
 
+{
   // Claude entries carry REAL per-model levels from the hand-maintained
   // CLAUDE_BUILTIN_EFFORT_LEVELS table (model-routing unit 11) — not a
   // blanket null and not a fabricated generic list. See
   // scripts/verify-effort-levels.ts for the full per-model assertions
   // (ladder order, the stale-selection guard, live per-model data); this
   // assertion just proves selectable.ts's Claude entries are wired to that
-  // table rather than left at the old hardcoded null.
-  const claudeEntry = withLevels.find((m) => m.isClaude)
+  // table rather than left at the old hardcoded null. Unaffected by the
+  // routing cut — claudeEntries() runs before the Phase 0 early return.
+  const claudeOnly = buildSelectableModels(baseInput())
+  const claudeEntry = claudeOnly.find((m) => m.isClaude)
   assert.ok(
     Array.isArray(claudeEntry!.effortLevels) && claudeEntry!.effortLevels!.length > 0,
     'Claude entries must carry real per-model effort levels from CLAUDE_BUILTIN_EFFORT_LEVELS, not null'
   )
-
   console.log(
-    '✓ effort levels come from real cliproxy thinking.levels data (routed models) and the builtin ' +
-      'per-model table (Claude models); a model with neither yields null, never fabricated'
+    '✓ Claude entries carry real per-model effort levels from the builtin table, not a fabricated ' +
+      'generic list'
   )
 }
 
@@ -727,25 +815,42 @@ function baseInput(
     entries.some((e) => e.modelId === 'gpt-5-codex'),
     'a successful refresh must populate the cache from the fake proxy response'
   )
+  console.log('✓ refreshCliProxyModelCache populates the cache from a fake proxy response')
 
-  const afterRefresh = buildSelectableModels(
-    baseInput({
-      routingProxy: {
-        enabled: true,
-        status: 'running',
-        authFiles: [{ provider: 'codex', health: 'ok' }]
-      },
-      providerConfigs: [{ providerId: 'codex', enabled: true }],
-      cliProxyModels: entries
-    })
-  )
-  assert.ok(
-    afterRefresh.some((m) => m.id === 'gpt-5-codex' && m.available),
-    'once the cache is populated by the on-demand refresh, the model becomes selectable — the issue-2 fix'
-  )
-  console.log(
-    '✓ refreshCliProxyModelCache populates the cache from a fake proxy response, making the model selectable'
-  )
+  // RE-LAND(routing): the on-demand refresh's actual PAYOFF — that a
+  // populated cache makes the model selectable via buildSelectableModels —
+  // is broken by construction under Phase 0 (buildSelectableModels is
+  // Claude-only unconditionally, commit d14115fb). The cache-population
+  // mechanism itself (asserted immediately above) is real and live; only the
+  // "and therefore it becomes selectable" payoff is dead code behind the
+  // Phase 0 early return.
+  const SKIP_SECTION_9_REFRESH_MAKES_SELECTABLE = true
+  if (SKIP_SECTION_9_REFRESH_MAKES_SELECTABLE) {
+    console.log(
+      '⊘ SKIPPED (RE-LAND(routing)): §9 "refresh populates cache -> model becomes selectable" payoff — ' +
+        'buildSelectableModels no longer returns routed entries (Phase 0 cut, commit d14115fb); re-enable ' +
+        'when routing returns harness-aware in Phase 6'
+    )
+  } else {
+    const afterRefresh = buildSelectableModels(
+      baseInput({
+        routingProxy: {
+          enabled: true,
+          status: 'running',
+          authFiles: [{ provider: 'codex', health: 'ok' }]
+        },
+        providerConfigs: [{ providerId: 'codex', enabled: true }],
+        cliProxyModels: entries
+      })
+    )
+    assert.ok(
+      afterRefresh.some((m) => m.id === 'gpt-5-codex' && m.available),
+      'once the cache is populated by the on-demand refresh, the model becomes selectable — the issue-2 fix'
+    )
+    console.log(
+      '✓ refreshCliProxyModelCache populates the cache from a fake proxy response, making the model selectable'
+    )
+  }
 
   // A failed fetch (every channel throws) must leave the existing cache
   // intact, never throw, and never wipe known facts.
@@ -932,6 +1037,16 @@ function baseInput(
   // field for that; the only inputs are the routing-proxy snapshot, provider
   // configs, provider descriptors, and the cliproxy cache — all sourced here
   // from the boot-time reclaim+refresh path.
+  //
+  // RE-LAND(routing): the routed-model-becomes-selectable payoff below is
+  // broken by construction under Phase 0 (buildSelectableModels is
+  // Claude-only unconditionally, commit d14115fb) — `postFix.some(id ===
+  // 'gpt-5-codex')` can never be true. Steps 0-2 above (withheld-while-empty,
+  // the proof-only reclaim, and authFiles actually being populated via
+  // fetchRoutingProxyAuthFiles) are all real, live mechanics untouched by the
+  // routing cut and are NOT skipped. The Claude-remains-offered half of Step
+  // 3 is also live (it's the offline guarantee, unaffected by Phase 0) and
+  // stays unskipped below.
   const postFix = buildSelectableModels(
     baseInput({
       routingProxy: { ...routingProxyRunning, authFiles },
@@ -939,19 +1054,29 @@ function baseInput(
       cliProxyModels: [{ modelId: 'gpt-5-codex', providerId: 'codex', context: 400_000 }]
     })
   )
-  assert.ok(
-    postFix.some((m) => m.id === 'gpt-5-codex' && m.available),
-    'THE FIX: once authFiles reports the provider healthy via the boot-time orphan-reclaim + ' +
-      'refreshAuthFiles path, the routed model becomes selectable — reproducing the user-reported ' +
-      "bug's resolution with no settings-page visit anywhere in this sequence"
-  )
+  const SKIP_STEP_3_ROUTED_MODEL_BECOMES_SELECTABLE = true
+  if (SKIP_STEP_3_ROUTED_MODEL_BECOMES_SELECTABLE) {
+    console.log(
+      '⊘ SKIPPED (RE-LAND(routing)): Step 3 "routed model becomes selectable post-fix" — ' +
+        'buildSelectableModels no longer returns routed entries (Phase 0 cut, commit d14115fb); ' +
+        're-enable when routing returns harness-aware in Phase 6'
+    )
+  } else {
+    assert.ok(
+      postFix.some((m) => m.id === 'gpt-5-codex' && m.available),
+      'THE FIX: once authFiles reports the provider healthy via the boot-time orphan-reclaim + ' +
+        'refreshAuthFiles path, the routed model becomes selectable — reproducing the user-reported ' +
+        "bug's resolution with no settings-page visit anywhere in this sequence"
+    )
+  }
   assert.ok(
     postFix.some((m) => m.isClaude),
     'Claude models remain offered alongside the newly-available routed model (offline guarantee intact)'
   )
   console.log(
-    '✓ END-TO-END: orphan-port reclaim -> authFiles populated -> routed model selectable, with no ' +
-      'settings-page visit involved anywhere in the sequence (reproduces + resolves the reported bug)'
+    '✓ END-TO-END (partial, offline-guarantee half): orphan-port reclaim -> authFiles populated -> ' +
+      'Claude models remain selectable throughout, with no settings-page visit involved anywhere in ' +
+      'the sequence'
   )
 }
 
@@ -1041,37 +1166,57 @@ function baseInput(
     1,
     'boot-time hydration must populate the in-memory cache from the persisted payload, with no network call'
   )
-
-  // THE FIRST models:listSelectable-equivalent call of this run.
-  const firstCallThisRun = buildSelectableModels(
-    baseInput({
-      routingProxy: {
-        enabled: true,
-        status: 'running',
-        authFiles: [{ provider: 'codex', health: 'ok' }]
-      },
-      providerConfigs: [{ providerId: 'codex', enabled: true }],
-      cliProxyModels: listCliProxyModelCacheEntries()
-    })
-  )
-  const routedEntry = firstCallThisRun.find((m) => m.id === 'gpt-5-codex')
-  assert.ok(
-    routedEntry && routedEntry.available,
-    'THE REPORTED BUG, FIXED: the FIRST models:listSelectable call after boot must already include ' +
-      'the routed model when a valid persisted cache exists — this assertion fails against pre-fix ' +
-      'behavior (in-memory-only cache, always empty at boot)'
-  )
-  assert.equal(routedEntry!.contextWindow, 400_000, 'persisted facts (context) must be preserved')
-  assert.deepEqual(
-    routedEntry!.effortLevels,
-    ['low', 'medium', 'high'],
-    'persisted facts (effort levels) must be preserved'
-  )
   console.log(
-    '✓ THE FIX: a persisted cache hydrates the in-memory cache at boot, so the FIRST ' +
-      'models:listSelectable call of a run already includes routed models (reproduces + resolves the ' +
-      'reported "still noticing delay" bug)'
+    '✓ boot-time hydration populates the in-memory cliproxy model cache from a persisted payload, ' +
+      'with no network call'
   )
+
+  // RE-LAND(routing): the actual PAYOFF this section is named for — that the
+  // FIRST models:listSelectable-equivalent call of a run already includes
+  // the hydrated routed model — is broken by construction under Phase 0
+  // (buildSelectableModels is Claude-only unconditionally, commit d14115fb).
+  // The hydration mechanism itself (asserted immediately above) is real and
+  // live; only the "and therefore it's selectable" payoff is dead code
+  // behind the Phase 0 early return.
+  const SKIP_SECTION_10_HYDRATION_MAKES_SELECTABLE = true
+  if (SKIP_SECTION_10_HYDRATION_MAKES_SELECTABLE) {
+    console.log(
+      '⊘ SKIPPED (RE-LAND(routing)): §10 "hydrated persisted cache -> first-call selectable" payoff — ' +
+        'buildSelectableModels no longer returns routed entries (Phase 0 cut, commit d14115fb); ' +
+        're-enable when routing returns harness-aware in Phase 6'
+    )
+  } else {
+    // THE FIRST models:listSelectable-equivalent call of this run.
+    const firstCallThisRun = buildSelectableModels(
+      baseInput({
+        routingProxy: {
+          enabled: true,
+          status: 'running',
+          authFiles: [{ provider: 'codex', health: 'ok' }]
+        },
+        providerConfigs: [{ providerId: 'codex', enabled: true }],
+        cliProxyModels: listCliProxyModelCacheEntries()
+      })
+    )
+    const routedEntry = firstCallThisRun.find((m) => m.id === 'gpt-5-codex')
+    assert.ok(
+      routedEntry && routedEntry.available,
+      'THE REPORTED BUG, FIXED: the FIRST models:listSelectable call after boot must already include ' +
+        'the routed model when a valid persisted cache exists — this assertion fails against pre-fix ' +
+        'behavior (in-memory-only cache, always empty at boot)'
+    )
+    assert.equal(routedEntry!.contextWindow, 400_000, 'persisted facts (context) must be preserved')
+    assert.deepEqual(
+      routedEntry!.effortLevels,
+      ['low', 'medium', 'high'],
+      'persisted facts (effort levels) must be preserved'
+    )
+    console.log(
+      '✓ THE FIX: a persisted cache hydrates the in-memory cache at boot, so the FIRST ' +
+        'models:listSelectable call of a run already includes routed models (reproduces + resolves the ' +
+        'reported "still noticing delay" bug)'
+    )
+  }
 
   setCliProxyModelCacheForTests(null)
 }
@@ -1082,6 +1227,14 @@ function baseInput(
 //    be offered, even though its facts survived hydration. Persistence
 //    supplies facts only, never availability (selectable.ts's gating is
 //    untouched by this fix).
+//
+// RE-LAND(routing): both `unhealthy`/`neverConnected` assertions check
+// ABSENCE of a routed model via buildSelectableModels, which is trivially
+// true under Phase 0 (Claude-only unconditionally, commit d14115fb)
+// regardless of health/authFiles — no longer exercising the live-health
+// gating this section is meant to prove (that gating is dead code behind
+// the early return). The hydration mechanism itself is real and stays live
+// as a standalone sanity check; the buildSelectableModels payoff is skipped.
 // ---------------------------------------------------------------------------
 
 {
@@ -1089,42 +1242,60 @@ function baseInput(
   hydrateCliProxyModelCacheFromPersisted({
     'grok-4.5': { context: 256_000, supportsReasoning: false, providerId: 'xai' }
   })
-  const entries = listCliProxyModelCacheEntries()
-
-  // Provider now reports unhealthy (e.g. token expired since the last run).
-  const unhealthy = buildSelectableModels(
-    baseInput({
-      routingProxy: {
-        enabled: true,
-        status: 'running',
-        authFiles: [{ provider: 'xai', health: 'error' }]
-      },
-      providerConfigs: [{ providerId: 'xai', enabled: true }],
-      cliProxyModels: entries
-    })
-  )
-  assert.ok(
-    !unhealthy.some((m) => m.id === 'grok-4.5' && m.available),
-    'a persisted model whose provider now reports unhealthy must NOT be offered as available — ' +
-      'persistence supplies facts only, never bypasses live health gating'
-  )
-
-  // Provider never connected at all this run (authFiles empty) — same rule.
-  const neverConnected = buildSelectableModels(
-    baseInput({
-      routingProxy: { enabled: true, status: 'running', authFiles: [] },
-      providerConfigs: [{ providerId: 'xai', enabled: true }],
-      cliProxyModels: entries
-    })
-  )
-  assert.ok(
-    !neverConnected.some((m) => m.id === 'grok-4.5' && m.available),
-    'a persisted model must not be offered when its provider has no live authFiles entry at all this run'
+  assert.equal(
+    listCliProxyModelCacheEntries().length,
+    1,
+    'sanity: hydration populates the in-memory cache regardless of the routing cut'
   )
   console.log(
-    '✓ persisted entries remain fully gated by LIVE authFiles health — an unhealthy/disconnected ' +
-      "provider's persisted models are never offered"
+    '✓ hydration populates the in-memory cliproxy model cache (sanity, unaffected by Phase 0)'
   )
+
+  const SKIP_SECTION_11_PERSISTED_STILL_GATED = true
+  if (SKIP_SECTION_11_PERSISTED_STILL_GATED) {
+    console.log(
+      '⊘ SKIPPED (RE-LAND(routing)): §11 persisted-entries-still-gated-by-live-health assertions — ' +
+        'buildSelectableModels no longer returns routed entries (Phase 0 cut, commit d14115fb); ' +
+        're-enable when routing returns harness-aware in Phase 6'
+    )
+  } else {
+    const entries = listCliProxyModelCacheEntries()
+
+    // Provider now reports unhealthy (e.g. token expired since the last run).
+    const unhealthy = buildSelectableModels(
+      baseInput({
+        routingProxy: {
+          enabled: true,
+          status: 'running',
+          authFiles: [{ provider: 'xai', health: 'error' }]
+        },
+        providerConfigs: [{ providerId: 'xai', enabled: true }],
+        cliProxyModels: entries
+      })
+    )
+    assert.ok(
+      !unhealthy.some((m) => m.id === 'grok-4.5' && m.available),
+      'a persisted model whose provider now reports unhealthy must NOT be offered as available — ' +
+        'persistence supplies facts only, never bypasses live health gating'
+    )
+
+    // Provider never connected at all this run (authFiles empty) — same rule.
+    const neverConnected = buildSelectableModels(
+      baseInput({
+        routingProxy: { enabled: true, status: 'running', authFiles: [] },
+        providerConfigs: [{ providerId: 'xai', enabled: true }],
+        cliProxyModels: entries
+      })
+    )
+    assert.ok(
+      !neverConnected.some((m) => m.id === 'grok-4.5' && m.available),
+      'a persisted model must not be offered when its provider has no live authFiles entry at all this run'
+    )
+    console.log(
+      '✓ persisted entries remain fully gated by LIVE authFiles health — an unhealthy/disconnected ' +
+        "provider's persisted models are never offered"
+    )
+  }
   setCliProxyModelCacheForTests(null)
 }
 
@@ -1132,6 +1303,10 @@ function baseInput(
 // 12. A disabled/removed provider's persisted models are not offered, even
 //    though the model's facts survived hydration from a run where that
 //    provider was still configured+enabled.
+//
+// RE-LAND(routing): same shape as §11 — both `disabled`/`removed` checks are
+// ABSENCE-via-buildSelectableModels, trivially true under Phase 0 regardless
+// of provider config. Hydration sanity stays live; the payoff is skipped.
 // ---------------------------------------------------------------------------
 
 {
@@ -1139,45 +1314,63 @@ function baseInput(
   hydrateCliProxyModelCacheFromPersisted({
     'gemini-3-pro': { context: 1_000_000, supportsReasoning: true, providerId: 'gemini' }
   })
-  const entries = listCliProxyModelCacheEntries()
-
-  // Provider disabled in stored config since the persisted payload was written.
-  const disabled = buildSelectableModels(
-    baseInput({
-      routingProxy: {
-        enabled: true,
-        status: 'running',
-        authFiles: [{ provider: 'gemini', health: 'ok' }]
-      },
-      providerConfigs: [{ providerId: 'gemini', enabled: false }],
-      cliProxyModels: entries
-    })
-  )
-  assert.ok(
-    !disabled.some((m) => m.id === 'gemini-3-pro' && m.available),
-    'a persisted model whose provider is now disabled in stored config must not be offered'
-  )
-
-  // Provider removed entirely (no stored config row at all).
-  const removed = buildSelectableModels(
-    baseInput({
-      routingProxy: {
-        enabled: true,
-        status: 'running',
-        authFiles: [{ provider: 'gemini', health: 'ok' }]
-      },
-      providerConfigs: [],
-      cliProxyModels: entries
-    })
-  )
-  assert.ok(
-    !removed.some((m) => m.id === 'gemini-3-pro' && m.available),
-    'a persisted model whose provider config row was removed entirely must not be offered'
+  assert.equal(
+    listCliProxyModelCacheEntries().length,
+    1,
+    'sanity: hydration populates the in-memory cache regardless of the routing cut'
   )
   console.log(
-    "✓ a disabled/removed provider's persisted models are not offered, even though their facts " +
-      'survived hydration'
+    '✓ hydration populates the in-memory cliproxy model cache (sanity, unaffected by Phase 0)'
   )
+
+  const SKIP_SECTION_12_DISABLED_REMOVED_PROVIDER = true
+  if (SKIP_SECTION_12_DISABLED_REMOVED_PROVIDER) {
+    console.log(
+      '⊘ SKIPPED (RE-LAND(routing)): §12 disabled/removed-provider persisted-model assertions — ' +
+        'buildSelectableModels no longer returns routed entries (Phase 0 cut, commit d14115fb); ' +
+        're-enable when routing returns harness-aware in Phase 6'
+    )
+  } else {
+    const entries = listCliProxyModelCacheEntries()
+
+    // Provider disabled in stored config since the persisted payload was written.
+    const disabled = buildSelectableModels(
+      baseInput({
+        routingProxy: {
+          enabled: true,
+          status: 'running',
+          authFiles: [{ provider: 'gemini', health: 'ok' }]
+        },
+        providerConfigs: [{ providerId: 'gemini', enabled: false }],
+        cliProxyModels: entries
+      })
+    )
+    assert.ok(
+      !disabled.some((m) => m.id === 'gemini-3-pro' && m.available),
+      'a persisted model whose provider is now disabled in stored config must not be offered'
+    )
+
+    // Provider removed entirely (no stored config row at all).
+    const removed = buildSelectableModels(
+      baseInput({
+        routingProxy: {
+          enabled: true,
+          status: 'running',
+          authFiles: [{ provider: 'gemini', health: 'ok' }]
+        },
+        providerConfigs: [],
+        cliProxyModels: entries
+      })
+    )
+    assert.ok(
+      !removed.some((m) => m.id === 'gemini-3-pro' && m.available),
+      'a persisted model whose provider config row was removed entirely must not be offered'
+    )
+    console.log(
+      "✓ a disabled/removed provider's persisted models are not offered, even though their facts " +
+        'survived hydration'
+    )
+  }
   setCliProxyModelCacheForTests(null)
 }
 
@@ -1224,29 +1417,53 @@ function baseInput(
   // buildSelectableModels just because they're stale) — staleness is
   // orthogonal to the offered/available decision entirely; only version
   // validity and live health gate that.
+  //
+  // RE-LAND(routing): the .available assertion below asserts through
+  // buildSelectableModels for a ROUTED model (gpt-5-codex), which is broken
+  // by construction under Phase 0 (src/main/models/selectable.ts's
+  // PHASE0_ROUTING_SEVERED guard, commit d14115fb) — buildSelectableModels
+  // returns Claude-only unconditionally, so a routed entry can never be
+  // found "available" here regardless of staleness. This is the ONLY part
+  // of §13 affected: 13a (version validity) and 13b (TTL staleness
+  // computation) above are pure functions untouched by Phase 0 and stay
+  // live. The hydration call itself (hydrateCliProxyModelCacheFromPersisted
+  // + listCliProxyModelCacheEntries) also stays live since it exercises the
+  // still-live persisted-cache machinery, not routing.
+  const SKIP_SECTION_13C_STALE_ROUTED_SERVED = true
+
   setCliProxyModelCacheForTests(null)
   hydrateCliProxyModelCacheFromPersisted({
     'gpt-5-codex': { context: 400_000, supportsReasoning: true, providerId: 'codex' }
   })
-  const staleButServed = buildSelectableModels(
-    baseInput({
-      routingProxy: {
-        enabled: true,
-        status: 'running',
-        authFiles: [{ provider: 'codex', health: 'ok' }]
-      },
-      providerConfigs: [{ providerId: 'codex', enabled: true }],
-      cliProxyModels: listCliProxyModelCacheEntries()
-    })
-  )
-  assert.ok(
-    staleButServed.some((m) => m.id === 'gpt-5-codex' && m.available),
-    'a stale-but-version-valid persisted entry must still be served immediately (available), not withheld ' +
-      'pending a background refresh'
-  )
-  console.log(
-    '✓ a stale (past-TTL) persisted entry is served immediately — staleness only triggers a background refresh, never blocks'
-  )
+  const entriesForStaleCheck = listCliProxyModelCacheEntries()
+
+  if (SKIP_SECTION_13C_STALE_ROUTED_SERVED) {
+    console.log(
+      '⊘ SKIPPED (RE-LAND(routing)): §13c stale-but-served ROUTED availability assertion — ' +
+        'buildSelectableModels no longer returns routed entries (Phase 0 cut, commit d14115fb); ' +
+        're-enable when routing returns harness-aware in Phase 6'
+    )
+  } else {
+    const staleButServed = buildSelectableModels(
+      baseInput({
+        routingProxy: {
+          enabled: true,
+          status: 'running',
+          authFiles: [{ provider: 'codex', health: 'ok' }]
+        },
+        providerConfigs: [{ providerId: 'codex', enabled: true }],
+        cliProxyModels: entriesForStaleCheck
+      })
+    )
+    assert.ok(
+      staleButServed.some((m) => m.id === 'gpt-5-codex' && m.available),
+      'a stale-but-version-valid persisted entry must still be served immediately (available), not withheld ' +
+        'pending a background refresh'
+    )
+    console.log(
+      '✓ a stale (past-TTL) persisted entry is served immediately — staleness only triggers a background refresh, never blocks'
+    )
+  }
   setCliProxyModelCacheForTests(null)
 }
 
@@ -1372,63 +1589,82 @@ function baseInput(
 //     buildSelectableModels (no persistedHealthyProviderIds param existed at
 //     all, so a 'starting' proxy with empty authFiles always omitted every
 //     routed model, full stop).
+//
+// RE-LAND(routing): every assertion in this section is a positive-or-negative
+// check on a ROUTED entry (gpt-5.6-terra) via buildSelectableModels, which is
+// broken by construction under Phase 0 (src/main/models/selectable.ts's
+// PHASE0_ROUTING_SEVERED guard, commit d14115fb) — the positive "must be
+// offered, available, provisional" assertion fails outright since no routed
+// entry can ever be found, and the negative "no-history -> not offered"
+// assertion would only be trivially true (nothing routed is ever offered,
+// full stop, regardless of persistedHealthyProviderIds), no longer proving
+// the startup-window gating logic this section exists to cover.
 // ---------------------------------------------------------------------------
 
 {
-  const providerConfigs: ProviderConfigInput[] = [{ providerId: 'codex', enabled: true }]
-  const cliProxyModels = [{ modelId: 'gpt-5.6-terra', providerId: 'codex', context: 200_000 }]
+  const SKIP_SECTION_16_STARTUP_WINDOW_FALLBACK = true
+  if (SKIP_SECTION_16_STARTUP_WINDOW_FALLBACK) {
+    console.log(
+      '⊘ SKIPPED (RE-LAND(routing)): §16 startup-window persisted-healthy-fallback assertions — ' +
+        'buildSelectableModels no longer returns routed entries (Phase 0 cut, commit d14115fb); ' +
+        're-enable when routing returns harness-aware in Phase 6'
+    )
+  } else {
+    const providerConfigs: ProviderConfigInput[] = [{ providerId: 'codex', enabled: true }]
+    const cliProxyModels = [{ modelId: 'gpt-5.6-terra', providerId: 'codex', context: 200_000 }]
 
-  const duringStartup = buildSelectableModels(
-    baseInput({
-      routingProxy: { enabled: true, status: 'starting', authFiles: [] },
-      providerConfigs,
-      cliProxyModels,
-      persistedHealthyProviderIds: new Set(['codex'])
-    })
-  )
-  const codexEntry = duringStartup.find((m) => m.id === 'gpt-5.6-terra')
-  assert.ok(
-    codexEntry,
-    'THE REPORTED BUG: a provider known-healthy last session must be offered during the proxy startup ' +
-      'window (status starting, authFiles still empty) — not held back until the first live authFiles tick'
-  )
-  assert.equal(
-    codexEntry!.available,
-    true,
-    'the startup-window fallback entry must be available: true'
-  )
-  assert.equal(
-    codexEntry!.provisional,
-    true,
-    'a startup-window fallback entry must be marked provisional — it is a pre-live-data optimisation, ' +
-      'not a live-confirmed health signal'
-  )
-  console.log(
-    '✓ (unit 09-polish) THE REPORTED BUG: a provider known-healthy last session is offered during the ' +
-      "proxy's startup window (status 'starting', authFiles still empty), marked provisional"
-  )
+    const duringStartup = buildSelectableModels(
+      baseInput({
+        routingProxy: { enabled: true, status: 'starting', authFiles: [] },
+        providerConfigs,
+        cliProxyModels,
+        persistedHealthyProviderIds: new Set(['codex'])
+      })
+    )
+    const codexEntry = duringStartup.find((m) => m.id === 'gpt-5.6-terra')
+    assert.ok(
+      codexEntry,
+      'THE REPORTED BUG: a provider known-healthy last session must be offered during the proxy startup ' +
+        'window (status starting, authFiles still empty) — not held back until the first live authFiles tick'
+    )
+    assert.equal(
+      codexEntry!.available,
+      true,
+      'the startup-window fallback entry must be available: true'
+    )
+    assert.equal(
+      codexEntry!.provisional,
+      true,
+      'a startup-window fallback entry must be marked provisional — it is a pre-live-data optimisation, ' +
+        'not a live-confirmed health signal'
+    )
+    console.log(
+      '✓ (unit 09-polish) THE REPORTED BUG: a provider known-healthy last session is offered during the ' +
+        "proxy's startup window (status 'starting', authFiles still empty), marked provisional"
+    )
 
-  // Without the persisted fallback (e.g. first-ever run, or nothing was
-  // ever recorded), the SAME startup-window state must still correctly
-  // withhold the model — this is not a blanket "offer everything while
-  // starting" softening, it's strictly gated on persisted history.
-  const duringStartupNoHistory = buildSelectableModels(
-    baseInput({
-      routingProxy: { enabled: true, status: 'starting', authFiles: [] },
-      providerConfigs,
-      cliProxyModels
-      // persistedHealthyProviderIds omitted entirely
-    })
-  )
-  assert.ok(
-    !duringStartupNoHistory.some((m) => m.id === 'gpt-5.6-terra'),
-    'without any persisted history, a provider must NOT be offered during the startup window — this is a ' +
-      'fallback for known-previously-healthy providers only, never a blanket startup softening'
-  )
-  console.log(
-    '✓ (unit 09-polish) without persisted history, the startup window offers nothing extra — the fallback ' +
-      'is strictly gated on prior-session data, not a blanket softening'
-  )
+    // Without the persisted fallback (e.g. first-ever run, or nothing was
+    // ever recorded), the SAME startup-window state must still correctly
+    // withhold the model — this is not a blanket "offer everything while
+    // starting" softening, it's strictly gated on persisted history.
+    const duringStartupNoHistory = buildSelectableModels(
+      baseInput({
+        routingProxy: { enabled: true, status: 'starting', authFiles: [] },
+        providerConfigs,
+        cliProxyModels
+        // persistedHealthyProviderIds omitted entirely
+      })
+    )
+    assert.ok(
+      !duringStartupNoHistory.some((m) => m.id === 'gpt-5.6-terra'),
+      'without any persisted history, a provider must NOT be offered during the startup window — this is a ' +
+        'fallback for known-previously-healthy providers only, never a blanket startup softening'
+    )
+    console.log(
+      '✓ (unit 09-polish) without persisted history, the startup window offers nothing extra — the fallback ' +
+        'is strictly gated on prior-session data, not a blanket softening'
+    )
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1437,151 +1673,185 @@ function baseInput(
 //     exists (healthy OR unhealthy), it alone decides, regardless of what
 //     was persisted. This is the "never let staleness win over live truth"
 //     invariant.
+//
+// RE-LAND(routing): all three sub-checks assert through buildSelectableModels
+// for a ROUTED entry (gpt-5.6-terra) — broken by construction under Phase 0
+// (src/main/models/selectable.ts's PHASE0_ROUTING_SEVERED guard, commit
+// d14115fb). The two negative checks (unhealthy overrides) would only be
+// trivially true now (nothing routed is ever offered, full stop), no longer
+// proving the live-overrides-persisted logic; the positive check
+// (liveEntry?.available) fails outright since no routed entry can be found.
 // ---------------------------------------------------------------------------
 
 {
-  const providerConfigs: ProviderConfigInput[] = [{ providerId: 'codex', enabled: true }]
-  const cliProxyModels = [{ modelId: 'gpt-5.6-terra', providerId: 'codex', context: 200_000 }]
+  const SKIP_SECTION_17_LIVE_OVERRIDES_PERSISTED = true
+  if (SKIP_SECTION_17_LIVE_OVERRIDES_PERSISTED) {
+    console.log(
+      '⊘ SKIPPED (RE-LAND(routing)): §17 live-authFiles-overrides-persisted assertions — ' +
+        'buildSelectableModels no longer returns routed entries (Phase 0 cut, commit d14115fb); ' +
+        're-enable when routing returns harness-aware in Phase 6'
+    )
+  } else {
+    const providerConfigs: ProviderConfigInput[] = [{ providerId: 'codex', enabled: true }]
+    const cliProxyModels = [{ modelId: 'gpt-5.6-terra', providerId: 'codex', context: 200_000 }]
 
-  // Proxy is already 'running' (past the startup window in status terms) but
-  // the LIVE authFiles entry for codex reports 'error' — persisted history
-  // said healthy, but live data must win: the model must NOT be offered.
-  const liveUnhealthyOverridesPersisted = buildSelectableModels(
-    baseInput({
-      routingProxy: {
-        enabled: true,
-        status: 'running',
-        authFiles: [{ provider: 'codex', health: 'error' }]
-      },
-      providerConfigs,
-      cliProxyModels,
-      persistedHealthyProviderIds: new Set(['codex'])
-    })
-  )
-  assert.ok(
-    !liveUnhealthyOverridesPersisted.some((m) => m.id === 'gpt-5.6-terra' && m.available),
-    'a LIVE authFiles entry reporting unhealthy must override a stale persisted-healthy record — staleness ' +
-      'must never win over live truth'
-  )
-  console.log(
-    '✓ (unit 09-polish) live authFiles reporting unhealthy OVERRIDES a stale persisted-healthy record'
-  )
+    // Proxy is already 'running' (past the startup window in status terms) but
+    // the LIVE authFiles entry for codex reports 'error' — persisted history
+    // said healthy, but live data must win: the model must NOT be offered.
+    const liveUnhealthyOverridesPersisted = buildSelectableModels(
+      baseInput({
+        routingProxy: {
+          enabled: true,
+          status: 'running',
+          authFiles: [{ provider: 'codex', health: 'error' }]
+        },
+        providerConfigs,
+        cliProxyModels,
+        persistedHealthyProviderIds: new Set(['codex'])
+      })
+    )
+    assert.ok(
+      !liveUnhealthyOverridesPersisted.some((m) => m.id === 'gpt-5.6-terra' && m.available),
+      'a LIVE authFiles entry reporting unhealthy must override a stale persisted-healthy record — staleness ' +
+        'must never win over live truth'
+    )
+    console.log(
+      '✓ (unit 09-polish) live authFiles reporting unhealthy OVERRIDES a stale persisted-healthy record'
+    )
 
-  // Same scenario but status still 'starting' with a live (already-arrived)
-  // unhealthy entry — proves the override applies during the startup window
-  // too, not just once status flips to 'running'.
-  const liveUnhealthyDuringStartup = buildSelectableModels(
-    baseInput({
-      routingProxy: {
-        enabled: true,
-        status: 'starting',
-        authFiles: [{ provider: 'codex', health: 'error' }]
-      },
-      providerConfigs,
-      cliProxyModels,
-      persistedHealthyProviderIds: new Set(['codex'])
-    })
-  )
-  assert.ok(
-    !liveUnhealthyDuringStartup.some((m) => m.id === 'gpt-5.6-terra' && m.available),
-    'a live unhealthy entry overrides persisted-healthy even while the proxy is still starting'
-  )
-  console.log(
-    '✓ (unit 09-polish) the live-overrides-persisted rule holds during the startup window too, not just ' +
-      "once status is 'running'"
-  )
+    // Same scenario but status still 'starting' with a live (already-arrived)
+    // unhealthy entry — proves the override applies during the startup window
+    // too, not just once status flips to 'running'.
+    const liveUnhealthyDuringStartup = buildSelectableModels(
+      baseInput({
+        routingProxy: {
+          enabled: true,
+          status: 'starting',
+          authFiles: [{ provider: 'codex', health: 'error' }]
+        },
+        providerConfigs,
+        cliProxyModels,
+        persistedHealthyProviderIds: new Set(['codex'])
+      })
+    )
+    assert.ok(
+      !liveUnhealthyDuringStartup.some((m) => m.id === 'gpt-5.6-terra' && m.available),
+      'a live unhealthy entry overrides persisted-healthy even while the proxy is still starting'
+    )
+    console.log(
+      '✓ (unit 09-polish) the live-overrides-persisted rule holds during the startup window too, not just ' +
+        "once status is 'running'"
+    )
 
-  // And the positive case for completeness: once a LIVE healthy entry
-  // arrives, the entry is offered as fully live (NOT provisional), even
-  // though it's also in the persisted set — live data, once present, is
-  // authoritative and the provisional flag must reflect that.
-  const liveHealthy = buildSelectableModels(
-    baseInput({
-      routingProxy: {
-        enabled: true,
-        status: 'running',
-        authFiles: [{ provider: 'codex', health: 'ok' }]
-      },
-      providerConfigs,
-      cliProxyModels,
-      persistedHealthyProviderIds: new Set(['codex'])
-    })
-  )
-  const liveEntry = liveHealthy.find((m) => m.id === 'gpt-5.6-terra')
-  assert.ok(liveEntry?.available, 'a live-healthy entry must be offered')
-  assert.equal(
-    liveEntry!.provisional,
-    false,
-    'once live authFiles data confirms health, the entry must NOT be marked provisional, even though it ' +
-      'also appears in the persisted-healthy set'
-  )
-  console.log(
-    '✓ (unit 09-polish) a live-confirmed-healthy entry is never marked provisional, even when it also ' +
-      'appears in the persisted set'
-  )
+    // And the positive case for completeness: once a LIVE healthy entry
+    // arrives, the entry is offered as fully live (NOT provisional), even
+    // though it's also in the persisted set — live data, once present, is
+    // authoritative and the provisional flag must reflect that.
+    const liveHealthy = buildSelectableModels(
+      baseInput({
+        routingProxy: {
+          enabled: true,
+          status: 'running',
+          authFiles: [{ provider: 'codex', health: 'ok' }]
+        },
+        providerConfigs,
+        cliProxyModels,
+        persistedHealthyProviderIds: new Set(['codex'])
+      })
+    )
+    const liveEntry = liveHealthy.find((m) => m.id === 'gpt-5.6-terra')
+    assert.ok(liveEntry?.available, 'a live-healthy entry must be offered')
+    assert.equal(
+      liveEntry!.provisional,
+      false,
+      'once live authFiles data confirms health, the entry must NOT be marked provisional, even though it ' +
+        'also appears in the persisted-healthy set'
+    )
+    console.log(
+      '✓ (unit 09-polish) a live-confirmed-healthy entry is never marked provisional, even when it also ' +
+        'appears in the persisted set'
+    )
+  }
 }
 
 // ---------------------------------------------------------------------------
 // 18. (model-routing unit 09-polish) Provider disabled/removed since the
 //     persisted payload was recorded -> the persisted entry must NOT be
 //     used, even during the startup window.
+//
+// RE-LAND(routing): every check in this section is ABSENCE-of-a-routed-entry
+// via buildSelectableModels (disabled / removed / outage-status), which is
+// trivially true under Phase 0 (src/main/models/selectable.ts's
+// PHASE0_ROUTING_SEVERED guard, commit d14115fb) regardless of provider
+// config or proxy status — no longer proving the specific gating this
+// section exists to cover (that gating is dead code behind the early
+// return).
 // ---------------------------------------------------------------------------
 
 {
-  const cliProxyModels = [{ modelId: 'gpt-5.6-terra', providerId: 'codex', context: 200_000 }]
+  const SKIP_SECTION_18_DISABLED_REMOVED_STARTUP_WINDOW = true
+  if (SKIP_SECTION_18_DISABLED_REMOVED_STARTUP_WINDOW) {
+    console.log(
+      '⊘ SKIPPED (RE-LAND(routing)): §18 disabled/removed/outage startup-window assertions — ' +
+        'buildSelectableModels no longer returns routed entries (Phase 0 cut, commit d14115fb); ' +
+        're-enable when routing returns harness-aware in Phase 6'
+    )
+  } else {
+    const cliProxyModels = [{ modelId: 'gpt-5.6-terra', providerId: 'codex', context: 200_000 }]
 
-  const disabled = buildSelectableModels(
-    baseInput({
-      routingProxy: { enabled: true, status: 'starting', authFiles: [] },
-      providerConfigs: [{ providerId: 'codex', enabled: false }],
-      cliProxyModels,
-      persistedHealthyProviderIds: new Set(['codex'])
-    })
-  )
-  assert.ok(
-    !disabled.some((m) => m.id === 'gpt-5.6-terra'),
-    'a provider disabled in stored config must not be resurrected by persisted startup-window history'
-  )
-
-  const removed = buildSelectableModels(
-    baseInput({
-      routingProxy: { enabled: true, status: 'starting', authFiles: [] },
-      providerConfigs: [], // no stored config row at all
-      cliProxyModels,
-      persistedHealthyProviderIds: new Set(['codex'])
-    })
-  )
-  assert.ok(
-    !removed.some((m) => m.id === 'gpt-5.6-terra'),
-    'a provider with no stored config row at all must not be resurrected by persisted startup-window history'
-  )
-  console.log(
-    '✓ (unit 09-polish) provider disabled/removed from config -> persisted startup-window history is not used'
-  )
-
-  // Master proxy-disabled case too: even with persisted history and a
-  // configured+enabled provider, an explicitly disabled/errored/stopped
-  // proxy must never be softened by the startup-window fallback — that
-  // fallback exists for a BRIEF startup gap, never for an affirmative outage.
-  for (const status of ['error', 'stopped', 'not_installed'] as const) {
-    const outage = buildSelectableModels(
+    const disabled = buildSelectableModels(
       baseInput({
-        routingProxy: { enabled: true, status, authFiles: [] },
-        providerConfigs: [{ providerId: 'codex', enabled: true }],
+        routingProxy: { enabled: true, status: 'starting', authFiles: [] },
+        providerConfigs: [{ providerId: 'codex', enabled: false }],
         cliProxyModels,
         persistedHealthyProviderIds: new Set(['codex'])
       })
     )
     assert.ok(
-      !outage.some((m) => m.id === 'gpt-5.6-terra'),
-      `status '${status}' must never be softened by the startup-window fallback — it is an affirmative ` +
-        'outage state, not a brief startup gap'
+      !disabled.some((m) => m.id === 'gpt-5.6-terra'),
+      'a provider disabled in stored config must not be resurrected by persisted startup-window history'
+    )
+
+    const removed = buildSelectableModels(
+      baseInput({
+        routingProxy: { enabled: true, status: 'starting', authFiles: [] },
+        providerConfigs: [], // no stored config row at all
+        cliProxyModels,
+        persistedHealthyProviderIds: new Set(['codex'])
+      })
+    )
+    assert.ok(
+      !removed.some((m) => m.id === 'gpt-5.6-terra'),
+      'a provider with no stored config row at all must not be resurrected by persisted startup-window history'
+    )
+    console.log(
+      '✓ (unit 09-polish) provider disabled/removed from config -> persisted startup-window history is not used'
+    )
+
+    // Master proxy-disabled case too: even with persisted history and a
+    // configured+enabled provider, an explicitly disabled/errored/stopped
+    // proxy must never be softened by the startup-window fallback — that
+    // fallback exists for a BRIEF startup gap, never for an affirmative outage.
+    for (const status of ['error', 'stopped', 'not_installed'] as const) {
+      const outage = buildSelectableModels(
+        baseInput({
+          routingProxy: { enabled: true, status, authFiles: [] },
+          providerConfigs: [{ providerId: 'codex', enabled: true }],
+          cliProxyModels,
+          persistedHealthyProviderIds: new Set(['codex'])
+        })
+      )
+      assert.ok(
+        !outage.some((m) => m.id === 'gpt-5.6-terra'),
+        `status '${status}' must never be softened by the startup-window fallback — it is an affirmative ` +
+          'outage state, not a brief startup gap'
+      )
+    }
+    console.log(
+      '✓ (unit 09-polish) an affirmative outage status (error/stopped/not_installed) is never softened by ' +
+        'the startup-window fallback, even with matching persisted history'
     )
   }
-  console.log(
-    '✓ (unit 09-polish) an affirmative outage status (error/stopped/not_installed) is never softened by ' +
-      'the startup-window fallback, even with matching persisted history'
-  )
 }
 
 // ---------------------------------------------------------------------------
