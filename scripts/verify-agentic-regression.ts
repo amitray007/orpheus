@@ -43,7 +43,9 @@ const verifiers = [
   'verify-effort-levels.ts',
   'verify-session-status.ts',
   'verify-non-claude-launch-behavior.ts',
-  'verify-model-picker.ts'
+  'verify-model-picker.ts',
+  'verify-harness-registry.ts',
+  'verify-harness-launch.ts'
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {

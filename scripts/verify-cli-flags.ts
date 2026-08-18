@@ -656,22 +656,73 @@ function reconcileFlagsExceptTargetForTest(
 
 // ---------------------------------------------------------------------------
 // Transport round-trip: the composer's join must survive a REAL zsh split via
-// the exact idiom shipped in resources/orpheus-claude.sh. This is the
-// highest-value test — it proves the wire format end-to-end, not just the
-// TypeScript half.
+// the ACTUAL SHIPPED SCRIPT — resources/harness-common.sh — not a hardcoded
+// copy of its splitting idiom. This is the highest-value test in this file:
+// it proves the wire format end-to-end against the real file, not just the
+// TypeScript half or a restatement of the shell snippet that can silently
+// drift from it.
+//
+// HISTORY: an earlier revision of this section exercised a HARDCODED COPY of
+// the shell splitting idiom, inline in this file, and still referenced the
+// pre-multi-harness env var name ORPHEUS_CLAUDE_FLAGS. Its own comment
+// claimed it was "the exact idiom shipped in resources/orpheus-claude.sh" —
+// but by the time of that claim the idiom had moved into
+// resources/harness-common.sh (sourced by orpheus-claude.sh), which reads
+// ORPHEUS_HARNESS_FLAGS with a legacy ORPHEUS_CLAUDE_FLAGS fallback. The
+// inline copy could no longer drift-detect against the real file (it WAS the
+// only copy of the idiom this test ever looked at) — exactly the "assert
+// behaviour, not source text" failure CLAUDE.md warns about. Fixed here by
+// sourcing the real file in a zsh subprocess and reading back the `flags`
+// array it produces, covering: the new env var name, the legacy-only
+// fallback, and both-set (new must win).
+//
+// harness-common.sh declares `local -a flags=()` at its own top level, which
+// requires FUNCTION scope in zsh (a bare top-level `local` is a syntax
+// error) — so it's sourced from inside a zsh function here, mirroring how
+// orpheus-claude.sh sources it from within its own top-level script body.
+//
+// ENV ISOLATION IS LOAD-BEARING, NOT STYLE: this very harness can itself be
+// run from inside an Orpheus-launched terminal, whose shell environment
+// already carries a real ORPHEUS_CLAUDE_FLAGS (and, once every launcher is
+// on the new name, ORPHEUS_HARNESS_FLAGS) from ITS OWN session. Spawning
+// with `env: { ...process.env, ... }` would leave that ambient value in
+// place for any case this test does NOT explicitly set, making the "empty"
+// and "legacy fallback" cases silently pass or fail based on whatever
+// terminal happens to run the suite rather than the script's real behavior.
+// `env -i` (spawned via `sh -c 'env -i ... zsh ...'`) starts every child from
+// a genuinely empty environment; only PATH (for zsh/coreutils to resolve)
+// and the specific ORPHEUS_* vars each case wants are added back explicitly.
 // ---------------------------------------------------------------------------
 
-function roundTripThroughZsh(tokens: string[]): string[] {
-  const joined = tokens.join(FLAG_DELIMITER)
-  const script = 'flags=("${(@ps:\\x1f:)ORPHEUS_CLAUDE_FLAGS}"); printf "%s\\n" "${flags[@]}"'
-  const out = execFileSync('zsh', ['-c', script], {
-    env: { ...process.env, ORPHEUS_CLAUDE_FLAGS: joined },
-    encoding: 'utf8'
-  })
-  // printf appends a trailing newline after the last element; drop the final
-  // empty segment from the split. If tokens is empty, joined is '', so the
-  // shell sees an empty (unquoted-inside-ps) array with a single empty
-  // element — guard that case separately below rather than here.
+const HARNESS_COMMON_PATH = new URL('../resources/harness-common.sh', import.meta.url).pathname
+
+// Sources the real resources/harness-common.sh with EXACTLY the given env
+// (plus a bare PATH so zsh itself resolves) and returns the resulting
+// `flags` array. `envOverrides` is the harness-relevant env for one case
+// (e.g. { ORPHEUS_HARNESS_FLAGS: '...' }) — nothing else is forwarded, so
+// this process's own ambient ORPHEUS_* vars can never leak into a case that
+// didn't ask for them.
+function flagsFromHarnessCommon(envOverrides: Record<string, string>): string[] {
+  const script = `test_it() { source "$HARNESS_COMMON_PATH"; printf '%s\\n' "\${flags[@]}"; }; test_it`
+  const out = execFileSync(
+    'env',
+    [
+      '-i',
+      `PATH=${process.env.PATH ?? ''}`,
+      `HARNESS_COMMON_PATH=${HARNESS_COMMON_PATH}`,
+      ...Object.entries(envOverrides).map(([k, v]) => `${k}=${v}`),
+      'zsh',
+      '-c',
+      script
+    ],
+    { encoding: 'utf8' }
+  )
+  // printf '%s\n' "${flags[@]}" appends a trailing newline after each
+  // element INCLUDING when the array is empty — zsh's printf still emits one
+  // bare newline for a zero-element array expansion (verified empirically:
+  // `out` is exactly '\n', not ''). So an empty `flags` array reads back as
+  // '\n' here, which must map to [], not [''].
+  if (out === '' || out === '\n') return []
   const lines = out.split('\n')
   if (lines[lines.length - 1] === '') lines.pop()
   return lines
@@ -701,7 +752,8 @@ function roundTripThroughZsh(tokens: string[]): string[] {
   ]
 
   for (const tokens of cases) {
-    const roundTripped = roundTripThroughZsh(tokens)
+    const joined = tokens.join(FLAG_DELIMITER)
+    const roundTripped = flagsFromHarnessCommon({ ORPHEUS_HARNESS_FLAGS: joined })
     assert.deepEqual(
       roundTripped,
       tokens,
@@ -709,21 +761,59 @@ function roundTripThroughZsh(tokens: string[]): string[] {
     )
   }
 
-  console.log('✓ transport: composer output round-trips through the real zsh splitter')
+  console.log(
+    '✓ transport: composer output round-trips through the REAL resources/harness-common.sh (ORPHEUS_HARNESS_FLAGS)'
+  )
 }
 
 {
-  // Empty flags: the composer emits '', and orpheus-claude.sh's own
-  // `[[ -n ... ]]` guard (not the splitter) is what keeps flags=() empty in
-  // that case — verified directly against the same guard used in the script.
-  const script =
-    'local -a flags=(); if [[ -n "${ORPHEUS_CLAUDE_FLAGS:-}" ]]; then flags=("${(@ps:\\x1f:)ORPHEUS_CLAUDE_FLAGS}"); fi; printf "%d\\n" "${#flags[@]}"'
-  const out = execFileSync('zsh', ['-c', script], {
-    env: { ...process.env, ORPHEUS_CLAUDE_FLAGS: '' },
-    encoding: 'utf8'
-  }).trim()
-  assert.equal(out, '0', 'empty ORPHEUS_CLAUDE_FLAGS must yield an empty flags array')
-  console.log('✓ transport: empty ORPHEUS_CLAUDE_FLAGS yields an empty flags array in the script')
+  // Legacy-only fallback: ORPHEUS_HARNESS_FLAGS unset, ORPHEUS_CLAUDE_FLAGS
+  // set — harness-common.sh's `: "${ORPHEUS_HARNESS_FLAGS:=${ORPHEUS_CLAUDE_FLAGS:-}}"`
+  // must still produce the correct flags array from the OLD name, for an
+  // old-not-yet-upgraded main process talking to a new wrapper script.
+  const tokens = ['--model', 'sonnet', '--permission-mode', 'default']
+  const roundTripped = flagsFromHarnessCommon({ ORPHEUS_CLAUDE_FLAGS: tokens.join(FLAG_DELIMITER) })
+  assert.deepEqual(
+    roundTripped,
+    tokens,
+    'legacy-only ORPHEUS_CLAUDE_FLAGS must still populate flags via the fallback'
+  )
+  console.log('✓ transport: legacy-only ORPHEUS_CLAUDE_FLAGS falls through to the same flags array')
+}
+
+{
+  // Both set: the new name must win over the legacy fallback (dual-emit
+  // ordering — the main process emits both, newest first; a rollback to an
+  // old wrapper reading the legacy name is the ONLY case that should ever
+  // see the old value used).
+  const newTokens = ['--model', 'opus']
+  const oldTokens = ['--model', 'sonnet']
+  const roundTripped = flagsFromHarnessCommon({
+    ORPHEUS_HARNESS_FLAGS: newTokens.join(FLAG_DELIMITER),
+    ORPHEUS_CLAUDE_FLAGS: oldTokens.join(FLAG_DELIMITER)
+  })
+  assert.deepEqual(
+    roundTripped,
+    newTokens,
+    'when both env vars are set, ORPHEUS_HARNESS_FLAGS (new) must win over ORPHEUS_CLAUDE_FLAGS (legacy)'
+  )
+  console.log(
+    '✓ transport: ORPHEUS_HARNESS_FLAGS wins over legacy ORPHEUS_CLAUDE_FLAGS when both are set'
+  )
+}
+
+{
+  // Empty/unset: neither env var set (a clean env, per the isolation note
+  // above) must yield an empty flags array — harness-common.sh's own
+  // `[[ -n "${ORPHEUS_HARNESS_FLAGS:-}" ]]` guard (not the splitter) is what
+  // keeps flags=() empty in that case.
+  const roundTripped = flagsFromHarnessCommon({})
+  assert.deepEqual(
+    roundTripped,
+    [],
+    'unset ORPHEUS_HARNESS_FLAGS/ORPHEUS_CLAUDE_FLAGS must yield []'
+  )
+  console.log('✓ transport: unset flags env vars yield an empty flags array in the real script')
 }
 
 // ---------------------------------------------------------------------------
