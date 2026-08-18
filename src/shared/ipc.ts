@@ -799,7 +799,7 @@ export interface InvokeChannelMap {
     res: HarnessSettings
   }
   'harness:settings:resolved': {
-    req: [{ harnessId: string; projectId?: string; workspaceId?: string }]
+    req: [{ harnessId: string; projectId?: string }]
     res: HarnessSettings
   }
 

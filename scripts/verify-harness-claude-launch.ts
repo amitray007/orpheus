@@ -7,6 +7,25 @@
 // curated fields (U3), with zero typed passthrough settings. Asserts
 // against the REAL exported function, not a restatement of its logic.
 //
+// DESIGN NOTE (post-permission-mode-removal, post-workspace-scope-removal):
+//   - permission-mode is no longer a curated concept (HarnessCuratedSettings
+//     has only `model`/`effort`) — it now lives as a seeded, user-editable
+//     default-arg row in CLAUDE_DEFAULT_ARGS
+//     (src/main/harness/claude/curated.ts), disabled by default. That row is
+//     NOT unconditionally injected into every launch — it only applies once
+//     surfaced as an enabled harness_settings arg row, same as any other user
+//     arg — so composeClaudeHarnessLaunch itself never emits
+//     `--permission-mode` from curated settings any more. The fixture in
+//     scenario 2 below therefore configures model+effort only, and asserts
+//     the two REMAINING curated tokens still emit in the old relative order
+//     (model -> effort — permission-mode was the middle token; removing it
+//     does not change model's or effort's order relative to each other).
+//   - harness_settings.scope is now `'global' | 'project'` only — the
+//     in-memory fixture DB's CHECK constraint below matches schema.ts's
+//     HARNESS_SETTINGS_SCOPE exactly, and there is no workspace-scope
+//     scenario left to assert (resolveHarnessSettings has no workspaceId
+//     parameter to layer through).
+//
 // RUNTIME CHOICE — plain `node --experimental-strip-types`, NOT `bun run`,
 // mirroring scripts/verify-harness-settings.ts exactly. launch.ts imports
 // resolveHarnessSettings from ../settings, which imports getDb() from
@@ -86,11 +105,13 @@ register('data:text/javascript,' + encodeURIComponent(hooks), import.meta.url)
 
 function createFreshDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:')
+  // scope CHECK matches schema.ts's HARNESS_SETTINGS_SCOPE = ['global',
+  // 'project'] exactly — workspace scope was removed.
   db.exec(`
     CREATE TABLE harness_settings (
       id TEXT PRIMARY KEY NOT NULL,
       harness_id TEXT NOT NULL,
-      scope TEXT NOT NULL CHECK (scope IN ('global', 'project', 'workspace')),
+      scope TEXT NOT NULL CHECK (scope IN ('global', 'project')),
       scope_id TEXT NOT NULL DEFAULT '',
       settings_json TEXT NOT NULL DEFAULT '{}',
       updated_at INTEGER NOT NULL
@@ -144,39 +165,46 @@ const { splitFlagString, FLAG_DELIMITER } = await import('../src/shared/cliFlags
 }
 
 // ---------------------------------------------------------------------------
-// 2. Curated model + effort + permission-mode produce the expected argv,
-//    IN ORDER, and model is read back on the HarnessLaunch.
+// 2. Curated model + effort produce the expected argv, IN ORDER, and model
+//    is read back on the HarnessLaunch. permission-mode is NOT part of this
+//    scenario any more — it is not a curated concept (see file header); it
+//    only reaches a launch as an enabled defaultArgs/user arg row, which
+//    scenario 3 already covers for user rows in general.
 // ---------------------------------------------------------------------------
 {
   createFreshDb()
   setHarnessSettings('claude', 'global', undefined, {
-    curated: { model: 'opus', effort: 'high', permissionMode: 'acceptEdits' }
+    curated: { model: 'opus', effort: 'high' }
   })
   const launch = composeClaudeHarnessLaunch('proj-1', 'ws-1')
   assert.deepEqual(
     splitFlagString(launch.flags),
-    ['--model', 'opus', '--permission-mode', 'acceptEdits', '--effort', 'high'],
-    // Order matches composeFlagTokens's own emission order (claudeSettings.ts
-    // :813 model, :821 permission-mode, :826 effort) — NOT the order the
-    // curated fields happen to be declared in. verify-harness-launch-parity
-    // asserts byte-equality against that emitter, so this is the order that
-    // is actually correct; an earlier revision of this assertion encoded
-    // model -> effort -> permission-mode and the parity gate caught it.
-    'curated fields must emit in model -> permission-mode -> effort order'
+    ['--model', 'opus', '--effort', 'high'],
+    // Order matches composeClaudeHarnessLaunch's own emission order
+    // (launch.ts: model then effort) — the same relative order
+    // composeFlagTokens used before permission-mode sat between them; with
+    // permission-mode gone from curated fields entirely, model -> effort is
+    // simply the full curated sequence now. verify-harness-launch-parity
+    // still asserts this against the old emitter's overlapping surface.
+    'curated fields must emit in model -> effort order'
   )
   assert.equal(launch.model, 'opus', 'model field must equal the resolved curated model value')
-  console.log('✓ curated model + effort + permission-mode produce the expected argv, in order')
+  console.log('✓ curated model + effort produce the expected argv, in order')
 }
 
 // ---------------------------------------------------------------------------
 // 3. User arg rows appear in declared order, AFTER curated ones. A bare
-//    flag (no value) emits just its key.
+//    flag (no value) emits just its key. This is also where a
+//    defaultArgs-style row (e.g. --permission-mode) would land once
+//    enabled — it is just another user arg row from this emitter's point of
+//    view; nothing about it is special-cased in launch.ts.
 // ---------------------------------------------------------------------------
 {
   createFreshDb()
   setHarnessSettings('claude', 'global', undefined, {
     curated: { model: 'sonnet' },
     args: [
+      { key: '--permission-mode', value: 'acceptEdits', enabled: true },
       { key: '--add-dir', value: '/tmp/foo', enabled: true },
       { key: '--verbose', enabled: true }
     ]
@@ -184,8 +212,8 @@ const { splitFlagString, FLAG_DELIMITER } = await import('../src/shared/cliFlags
   const launch = composeClaudeHarnessLaunch('proj-1', 'ws-1')
   assert.deepEqual(
     splitFlagString(launch.flags),
-    ['--model', 'sonnet', '--add-dir', '/tmp/foo', '--verbose'],
-    'user arg rows must follow curated ones, in declared order; a valueless row emits just its key'
+    ['--model', 'sonnet', '--permission-mode', 'acceptEdits', '--add-dir', '/tmp/foo', '--verbose'],
+    'user arg rows (including an enabled permission-mode default-arg row) must follow curated ones, in declared order; a valueless row emits just its key'
   )
   console.log(
     '✓ user arg rows appear after curated ones, in declared order; a bare flag emits only its key'
@@ -318,7 +346,7 @@ const { splitFlagString, FLAG_DELIMITER } = await import('../src/shared/cliFlags
 // 7b. Reachable-today proxy: with Claude's curated fields all flag-based,
 //     curatedEnv is always {} in practice, so the merge that actually
 //     happens at the composeClaudeHarnessLaunch level is scope layering
-//     among user rows — resolveHarnessSettings's own workspace-beats-global
+//     among user rows — resolveHarnessSettings's own project-beats-global
 //     precedence (asserted here to confirm curated-first layering doesn't
 //     interfere with it).
 // ---------------------------------------------------------------------------
@@ -327,14 +355,14 @@ const { splitFlagString, FLAG_DELIMITER } = await import('../src/shared/cliFlags
   setHarnessSettings('claude', 'global', undefined, {
     env: [{ key: 'SHARED_KEY', value: 'global-value', enabled: true }]
   })
-  setHarnessSettings('claude', 'workspace', 'ws-1', {
-    env: [{ key: 'SHARED_KEY', value: 'workspace-value', enabled: true }]
+  setHarnessSettings('claude', 'project', 'proj-1', {
+    env: [{ key: 'SHARED_KEY', value: 'project-value', enabled: true }]
   })
   const launch = composeClaudeHarnessLaunch('proj-1', 'ws-1')
   assert.deepEqual(
     launch.env,
-    { SHARED_KEY: 'workspace-value' },
-    'workspace-scope user row must win over global-scope user row beneath curated-first layering'
+    { SHARED_KEY: 'project-value' },
+    'project-scope user row must win over global-scope user row beneath curated-first layering'
   )
   console.log('✓ curated-first layering does not interfere with scope precedence among user rows')
 }

@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import type { HarnessSettings, HarnessSettingRow, HarnessSettingsScope } from '@shared/types'
+import type { HarnessArgRow } from '@shared/harness/types'
 
 // ---------------------------------------------------------------------------
 // Secret-like env key detection (Part 4 / R7/KTD4)
@@ -55,15 +56,14 @@ export function moveRow<T>(rows: readonly T[], index: number, direction: 'up' | 
 // Inherited-scope provenance
 // ---------------------------------------------------------------------------
 
-export const SCOPE_PRECEDENCE: readonly HarnessSettingsScope[] = ['global', 'project', 'workspace']
+export const SCOPE_PRECEDENCE: readonly HarnessSettingsScope[] = ['global', 'project']
 
 export interface HarnessScopeSettingsBundle {
   global: HarnessSettings
   project: HarnessSettings
-  workspace: HarnessSettings
 }
 
-export type CuratedFieldName = 'model' | 'effort' | 'permissionMode'
+export type CuratedFieldName = 'model' | 'effort'
 
 export interface HarnessProvenance {
   /** key -> the FIRST (lowest-precedence) scope whose stored row for that key
@@ -103,7 +103,7 @@ export function resolveProvenance(scopes: HarnessScopeSettingsBundle): HarnessPr
   const env = firstScopeForRows(byScope.map(([scope, s]) => [scope, s.env]))
 
   const curated: Partial<Record<CuratedFieldName, HarnessSettingsScope>> = {}
-  const curatedFields: CuratedFieldName[] = ['model', 'effort', 'permissionMode']
+  const curatedFields: CuratedFieldName[] = ['model', 'effort']
   for (const field of curatedFields) {
     for (const [scope, s] of byScope) {
       if (s.curated?.[field] !== undefined) {
@@ -130,4 +130,110 @@ export function setRowEnabled<T extends { enabled: boolean }>(
   enabled: boolean
 ): T[] {
   return rows.map((row, i) => (i === index ? { ...row, enabled } : row))
+}
+
+// ---------------------------------------------------------------------------
+// Harness-provided default args merge
+// ---------------------------------------------------------------------------
+
+/** One row in the args editor, with provenance for display: `fromDefault`
+ *  marks a row that currently matches a harness-provided default (whether
+ *  or not the user has ever touched it) so the UI can render a
+ *  harness-provided badge on it. */
+export interface DefaultArgRowDraft extends HarnessSettingRow {
+  fromDefault: boolean
+}
+
+/**
+ * Merges a harness descriptor's `defaultArgs` with a user's stored rows for
+ * the args editor at ONE scope, so a shipped default appears as a real,
+ * editable, visibly-marked row rather than an invisible launch-time prefix.
+ *
+ * IDENTITY: matched by `key`. This is the same identity `resolveHarnessSettings`
+ * (src/main/harness/settings.ts) already uses to merge args across scopes, so
+ * "which row is this" means the same thing everywhere in the args pipeline —
+ * a descriptor default and a user override are the same conceptual row
+ * exactly when they share a flag name. The one case this doesn't fit is a
+ * flag that legitimately repeats with different values (e.g. multiple
+ * `--add-dir`) — but no default arg needs that today (CLAUDE_DEFAULT_ARGS is
+ * a single `--permission-mode` row), and `key`-identity is what makes "the
+ * user edited/disabled the default" and "the user added an unrelated row
+ * with the same key" the same well-defined case rather than two.
+ *
+ * PRECEDENCE — never write a default into storage just for being displayed:
+ *  - A default whose key is NOT in `userRows` is synthesized as a draft row
+ *    (`fromDefault: true`) using the descriptor's own value/enabled — this
+ *    row does not exist in storage yet. If the user never touches it, calling
+ *    code must NOT persist it; onChange only fires from an explicit edit.
+ *  - A default whose key IS in `userRows` (edited OR merely toggled — any
+ *    user-authored row with that key) is rendered using the STORED row's
+ *    value/enabled, not the descriptor's, and is still marked `fromDefault:
+ *    true` (it still originated from a harness default, so the UI keeps
+ *    showing where it came from) — so a later descriptor change can never
+ *    clobber what the user set.
+ *  - Any user row whose key matches no current default is passed through
+ *    unmarked (`fromDefault: false`) — ordinary user-authored rows, and also
+ *    what a REMOVED descriptor default becomes (inert data, never deleted).
+ *
+ * ORDER: defaults first (in descriptor order), then the user's own
+ * non-default rows in their stored order — matches the existing args-editor
+ * convention (baseline rows before ad hoc additions) and keeps order stable
+ * across re-renders regardless of where in `userRows` an edited default
+ * happens to sit.
+ */
+export function mergeDefaultArgs(
+  defaultArgs: readonly HarnessArgRow[] | undefined,
+  userRows: readonly HarnessSettingRow[] | undefined
+): DefaultArgRowDraft[] {
+  const defaults = defaultArgs ?? []
+  const rows = userRows ?? []
+  const userByKey = new Map(rows.map((row) => [row.key, row]))
+  const defaultKeys = new Set(defaults.map((d) => d.key))
+
+  const merged: DefaultArgRowDraft[] = defaults.map((def) => {
+    const userRow = userByKey.get(def.key)
+    return userRow
+      ? { ...userRow, fromDefault: true }
+      : { key: def.key, value: def.value, enabled: def.enabled, fromDefault: true }
+  })
+
+  for (const row of rows) {
+    if (!defaultKeys.has(row.key)) merged.push({ ...row, fromDefault: false })
+  }
+
+  return merged
+}
+
+/**
+ * Inverse of the display-time merge: given the args editor's current rows
+ * (post-edit, as emitted by the row editor's onChange — plain
+ * key/value/enabled, no display-only provenance) and the harness's
+ * defaults, returns exactly what should be PERSISTED to
+ * `HarnessSettings.args` — the untouched-default half of
+ * `mergeDefaultArgs`'s contract enforced on the write path.
+ *
+ * A row is written to storage only when it differs from the descriptor
+ * default sharing its key (or isn't a default at all). A row that's still
+ * value-for-value identical to its descriptor default is dropped rather
+ * than round-tripped into storage, so a user who never touched a default
+ * keeps writing `{}`/no row for it, and a future change to the descriptor's
+ * own default still reaches them. Takes plain HarnessSettingRow[] (not
+ * DefaultArgRowDraft[]) deliberately — this runs on the editor's onChange
+ * output, which has already dropped the display-only `fromDefault`/`id`
+ * fields; re-deriving "is this a default" from `key` against `defaultArgs`
+ * here is the single source of truth, not a flag threaded through the UI.
+ */
+export function draftsToStoredRows(
+  rows: readonly HarnessSettingRow[],
+  defaultArgs: readonly HarnessArgRow[] | undefined
+): HarnessSettingRow[] {
+  const defaultByKey = new Map((defaultArgs ?? []).map((d) => [d.key, d]))
+  const result: HarnessSettingRow[] = []
+  for (const row of rows) {
+    const def = defaultByKey.get(row.key)
+    const matchesDefault = def && def.value === row.value && def.enabled === row.enabled
+    if (matchesDefault) continue
+    result.push(row)
+  }
+  return result
 }

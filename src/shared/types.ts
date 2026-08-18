@@ -1,4 +1,4 @@
-import type { HarnessId, HarnessCapabilities, CuratedField } from './harness/types'
+import type { HarnessId, HarnessCapabilities, CuratedField, HarnessArgRow } from './harness/types'
 
 // ---------------------------------------------------------------------------
 // Updates
@@ -3401,7 +3401,7 @@ export interface IconPackCatalogResult {
 // drifts, and update both together.
 // ---------------------------------------------------------------------------
 
-export type HarnessSettingsScope = 'global' | 'project' | 'workspace'
+export type HarnessSettingsScope = 'global' | 'project'
 
 export type HarnessSettingRow = {
   key: string
@@ -3429,6 +3429,21 @@ export type HarnessSettings = {
 export interface HarnessSummary {
   id: HarnessId
   label: string
+  /** Executable name probed on PATH, e.g. 'claude' — see
+   *  HarnessDescriptor.binary. Used by the Settings UI's harness picker to
+   *  render the resolved command preview (binary + enabled default args). */
+  binary: string
   capabilities: HarnessCapabilities
-  curated?: { model?: CuratedField; effort?: CuratedField; permissionMode?: CuratedField }
+  /** Phosphor icon name for the harness picker — see HarnessDescriptor.icon
+   *  in src/shared/harness/types.ts. Absent means the picker falls back to a
+   *  generic icon. */
+  icon?: string
+  /** Harness-provided default CLI args (e.g. Claude's `--permission-mode`),
+   *  seeded into the args editor as visibly-marked, user-editable rows — see
+   *  HarnessDescriptor.defaultArgs. Never written into a user's stored
+   *  settings just for being displayed; the renderer merges these with the
+   *  user's own rows at read time (see harnessSettingsLogic.ts's
+   *  mergeDefaultArgs). */
+  defaultArgs?: HarnessArgRow[]
+  curated?: { model?: CuratedField; effort?: CuratedField }
 }

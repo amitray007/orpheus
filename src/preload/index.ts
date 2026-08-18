@@ -997,12 +997,8 @@ const api = {
       settings: HarnessSettings
     ): Promise<HarnessSettings> =>
       invoke('harness:settings:set', { harnessId, scope, scopeId, settings }),
-    getResolvedSettings: (
-      harnessId: string,
-      projectId?: string,
-      workspaceId?: string
-    ): Promise<HarnessSettings> =>
-      invoke('harness:settings:resolved', { harnessId, projectId, workspaceId })
+    getResolvedSettings: (harnessId: string, projectId?: string): Promise<HarnessSettings> =>
+      invoke('harness:settings:resolved', { harnessId, projectId })
   },
   aliases: {
     list: (): Promise<ModelAliasesState> => invoke('aliases:list'),

@@ -317,17 +317,17 @@ const { sync, planSync } = await import('../src/main/db/engine.ts')
         )
         .run(),
     /CHECK constraint failed/,
-    'scope must be constrained to global|project|workspace'
+    'scope must be constrained to global|project'
   )
 
-  // insert rows at all three scopes (global uses the '' sentinel, per the
-  // schema comment) for TWO different harnesses, and assert they all coexist
+  // insert rows at both scopes (global uses the '' sentinel, per the schema
+  // comment) for TWO different harnesses, and assert they all coexist.
+  // Workspace scope was deliberately removed — two layers, not three.
   hsdb
     .prepare(
       `INSERT INTO harness_settings (id, harness_id, scope, scope_id, settings_json, updated_at) VALUES
         ('g1', 'claude', 'global', '', '{"a":1}', 1),
         ('p1', 'claude', 'project', 'proj-1', '{"b":2}', 2),
-        ('w1', 'claude', 'workspace', 'ws-1', '{"c":3}', 3),
         ('g2', 'other-harness', 'global', '', '{"d":4}', 4)`
     )
     .run()
@@ -339,10 +339,9 @@ const { sync, planSync } = await import('../src/main/db/engine.ts')
     [
       { harness_id: 'claude', scope: 'global', scope_id: '', settings_json: '{"a":1}' },
       { harness_id: 'other-harness', scope: 'global', scope_id: '', settings_json: '{"d":4}' },
-      { harness_id: 'claude', scope: 'project', scope_id: 'proj-1', settings_json: '{"b":2}' },
-      { harness_id: 'claude', scope: 'workspace', scope_id: 'ws-1', settings_json: '{"c":3}' }
+      { harness_id: 'claude', scope: 'project', scope_id: 'proj-1', settings_json: '{"b":2}' }
     ],
-    'rows at all three scopes, across two harnesses, must coexist'
+    'rows at both scopes, across two harnesses, must coexist'
   )
 
   // the unique index enforces the real (harness_id, scope, scope_id) key —
@@ -363,7 +362,7 @@ const { sync, planSync } = await import('../src/main/db/engine.ts')
   // settings_json defaults to '{}' when unspecified
   hsdb
     .prepare(
-      `INSERT INTO harness_settings (id, harness_id, scope, scope_id, updated_at) VALUES ('w2', 'claude', 'workspace', 'ws-2', 5)`
+      `INSERT INTO harness_settings (id, harness_id, scope, scope_id, updated_at) VALUES ('w2', 'claude', 'project', 'proj-2', 5)`
     )
     .run()
   assert.equal(

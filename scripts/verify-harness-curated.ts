@@ -3,25 +3,38 @@
 //
 // Multi-harness migration, unit U3 — BEHAVIOR guard for
 // src/main/harness/claude/curated.ts's builders (buildCuratedArgs,
-// buildCuratedEnv) and Claude's three curated CuratedField values
-// (CLAUDE_CURATED.model/effort/permissionMode).
+// buildCuratedEnv) and Claude's TWO curated CuratedField values
+// (CLAUDE_CURATED.model/effort).
+//
+// DESIGN NOTE (post-permission-mode-removal): permission-mode is no longer a
+// curated concept. It was a Claude CLI flag promoted to a cross-harness
+// field, but Codex expresses the same intent as `--ask-for-approval never
+// --sandbox danger-full-access`, Copilot as `--allow-all`, Gemini as `-y` —
+// different argv shapes, not one field with different values. It now lives
+// as a seeded, user-editable default-arg row in CLAUDE_DEFAULT_ARGS
+// (`--permission-mode acceptEdits`, `enabled: false` since it is
+// security-relevant and opt-in), not as a CuratedField. See curated.ts's own
+// header and CuratedField's doc comment in shared/harness/types.ts for the
+// full rationale. This file therefore asserts model/effort only, plus the
+// new CLAUDE_DEFAULT_ARGS row, and no longer imports
+// CLAUDE_CURATED_PERMISSION_MODE (removed — it doesn't exist any more).
 //
 // IMPORTABILITY: curated.ts imports only from src/shared/harness/types.ts
 // and src/shared/types.ts — both pure, Electron-free modules with no chain
 // to './db' or './workspaces'. So buildCuratedArgs/buildCuratedEnv and the
-// three CLAUDE_CURATED_* fields are imported directly below, with NO
+// CLAUDE_CURATED_* fields are imported directly below, with NO
 // mock.module() stubbing — unlike verify-harness-registry.ts/
 // verify-non-claude-launch-behavior.ts, which must stub electron/db/
 // workspaces because they import registry.ts/claudeSettings.ts (both of
 // which DO chain to electron). This script only reaches into that chain for
 // ONE thing: assertion 5 below calls the REAL composeFlagTokens (from
-// claudeSettings.ts) to prove the '--model'/'--effort'/'--permission-mode'
-// literals in curated.ts are not just internally-consistent but actually
-// match what Claude's own launch composition emits today. That one call
-// needs the same mock.module() precedent as verify-harness-registry.ts
-// (electron / db/index.ts / workspaces.ts stubbed, thrown-if-called) since
-// composeFlagTokens is called with workspaceId undefined, which
-// short-circuits before any DB/workspace lookup.
+// claudeSettings.ts) to prove the '--model'/'--effort' literals in
+// curated.ts are not just internally-consistent but actually match what
+// Claude's own launch composition emits today. That one call needs the same
+// mock.module() precedent as verify-harness-registry.ts (electron / db/
+// index.ts / workspaces.ts stubbed, thrown-if-called) since composeFlagTokens
+// is called with workspaceId undefined, which short-circuits before any
+// DB/workspace lookup.
 //
 // Covers (per the task brief's scenario list):
 //   1. A curated option value produces the right [flag, value] / {env: value}.
@@ -32,10 +45,14 @@
 //      TYPE level (see the comment above the commented-out invalid literal)
 //      since CuratedField is a discriminated union that makes the "both"
 //      shape a compile error, not a runtime case a builder has to handle.
-//   5. Claude's three curated fields are populated (model/effort/
-//      permissionMode all present, all flag-based, all allowCustom: true)
-//      and their flag strings match composeFlagTokens's actual emitted
-//      tokens for the same settings.
+//   4b. The new `{configFlag, configKey}` emission form (Codex's
+//      `-c model_reasoning_effort="high"`) — buildCuratedArgs emits exactly
+//      two tokens: configFlag, then `${configKey}=${value}`.
+//   5. Claude's two curated fields are populated (model/effort, both
+//      flag-based, all allowCustom: true) and their flag strings match
+//      composeFlagTokens's actual emitted tokens for the same settings.
+//   6. CLAUDE_DEFAULT_ARGS seeds the permission-mode row, disabled by
+//      default (the anti-drift replacement for the removed curated concept).
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert/strict'
@@ -49,7 +66,7 @@ import {
   CLAUDE_CURATED,
   CLAUDE_CURATED_EFFORT,
   CLAUDE_CURATED_MODEL,
-  CLAUDE_CURATED_PERMISSION_MODE
+  CLAUDE_DEFAULT_ARGS
 } from '../src/main/harness/claude/curated.ts'
 
 // Minimal-but-complete ClaudeGlobalSettings fixture, same shape/defaults as
@@ -246,8 +263,10 @@ function baseSettings(overrides: Partial<ClaudeGlobalSettings> = {}): ClaudeGlob
 // ---------------------------------------------------------------------------
 // 4. A field with both flag and env is rejected — at the type level.
 //
-// CuratedField = { options; allowCustom: true } & ({ flag; env?: never } |
-// { flag?: never; env }). The commented-out literal below is the actual
+// CuratedField = { options; allowCustom: true } & ({ flag; env?: never;
+// configKey?: never; configFlag?: never } | { flag?: never; env;
+// configKey?: never; configFlag?: never } | { flag?: never; env?: never;
+// configKey; configFlag }). The commented-out literal below is the actual
 // evidence for this assertion: it must NOT type-check. `bun run typecheck`
 // (which this repo's CI treats as a hard gate, and which this harness's own
 // caller — scripts/verify-agentic-regression.ts — runs in a sibling step)
@@ -265,13 +284,46 @@ console.log(
 )
 
 // ---------------------------------------------------------------------------
-// 5. Claude's three curated fields are populated and match composeFlagTokens.
+// 4b. The `{configFlag, configKey}` emission form (Codex's
+// `-c model_reasoning_effort="high"`) — a synthetic field emits exactly two
+// tokens: configFlag, then `${configKey}=${value}`.
+// ---------------------------------------------------------------------------
+
+{
+  const configField: CuratedField = {
+    configFlag: '-c',
+    configKey: 'model_reasoning_effort',
+    options: ['low', 'medium', 'high'],
+    allowCustom: true
+  }
+  assert.deepEqual(
+    buildCuratedArgs(configField, 'high'),
+    ['-c', 'model_reasoning_effort=high'],
+    'a configFlag/configKey field must emit [configFlag, `${configKey}=${value}`]'
+  )
+  assert.deepEqual(
+    buildCuratedEnv(configField, 'high'),
+    {},
+    'a configFlag/configKey field must never emit env (it has no `env` key)'
+  )
+  assert.deepEqual(
+    buildCuratedArgs(configField, ''),
+    [],
+    'a configFlag/configKey field with an empty value must still degrade to []'
+  )
+
+  console.log(
+    '✓ the {configFlag, configKey} emission form produces [configFlag, `key=value`] (Codex-style -c flag)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 5. Claude's two curated fields are populated and match composeFlagTokens.
 // ---------------------------------------------------------------------------
 
 {
   assert.ok(CLAUDE_CURATED.model, 'CLAUDE_CURATED.model must be populated')
   assert.ok(CLAUDE_CURATED.effort, 'CLAUDE_CURATED.effort must be populated')
-  assert.ok(CLAUDE_CURATED.permissionMode, 'CLAUDE_CURATED.permissionMode must be populated')
 
   for (const [name, field] of Object.entries(CLAUDE_CURATED) as [string, CuratedField][]) {
     assert.equal(field.allowCustom, true, `${name}.allowCustom must be literal true`)
@@ -302,7 +354,7 @@ console.log(
   )
 
   console.log(
-    '✓ Claude curated fields are populated: model/effort/permissionMode, all flag-based, allowCustom true'
+    '✓ Claude curated fields are populated: model/effort, both flag-based, allowCustom true'
   )
   console.log(
     '✓ CLAUDE_CURATED_MODEL/EFFORT.options are derived from the canonical shared arrays, not duplicated'
@@ -312,6 +364,10 @@ console.log(
 // Assertion 5b: the flag strings match composeFlagTokens's REAL output —
 // needs the electron-chain stub, same technique as
 // verify-harness-registry.ts / verify-non-claude-launch-behavior.ts.
+// Anti-drift coverage now spans model and effort only — permission-mode is
+// no longer a curated concept (see the file header), so composeFlagTokens's
+// '--permission-mode' emission is exercised by verify-harness-launch-parity.ts
+// instead, against CLAUDE_DEFAULT_ARGS/the old settings column, not here.
 {
   const mainDir = new URL('../src/main/', import.meta.url)
   const abs = (rel: string): string => new URL(rel, mainDir).pathname
@@ -331,8 +387,7 @@ console.log(
   const { composeFlagTokens } = await import('../src/main/claudeSettings.ts')
   const settings = baseSettings({
     model: 'opus',
-    effort: 'high',
-    permissionMode: 'acceptEdits'
+    effort: 'high'
   })
 
   const tokens = composeFlagTokens(settings, undefined, settings, [], [])
@@ -351,16 +406,32 @@ console.log(
   )
   assert.equal(tokens[effortIdx + 1], 'high')
 
-  const permIdx = tokens.indexOf(CLAUDE_CURATED_PERMISSION_MODE.flag)
-  assert.ok(
-    permIdx >= 0,
-    `composeFlagTokens must emit ${CLAUDE_CURATED_PERMISSION_MODE.flag} when permissionMode is set`
-  )
-  assert.equal(tokens[permIdx + 1], 'acceptEdits')
-
   console.log(
-    "✓ curated.ts's --model/--effort/--permission-mode flag strings match composeFlagTokens's real emitted tokens"
+    "✓ curated.ts's --model/--effort flag strings match composeFlagTokens's real emitted tokens"
   )
+}
+
+// ---------------------------------------------------------------------------
+// 6. CLAUDE_DEFAULT_ARGS seeds the permission-mode row, disabled by default.
+//
+// This is the replacement for the removed CLAUDE_CURATED_PERMISSION_MODE:
+// permission-mode is now a plain, user-editable HarnessArgRow rather than a
+// typed cross-harness concept. Seeded `enabled: false` deliberately — it is
+// security-relevant (skips permission prompts), so the user must opt in
+// rather than discover after the fact that Orpheus turned it on for them.
+// ---------------------------------------------------------------------------
+
+{
+  assert.equal(CLAUDE_DEFAULT_ARGS.length, 1, 'exactly one seeded default arg row today')
+  const [row] = CLAUDE_DEFAULT_ARGS
+  assert.equal(row.key, '--permission-mode', 'the seeded row must be the permission-mode flag')
+  assert.equal(row.value, 'acceptEdits')
+  assert.equal(
+    row.enabled,
+    false,
+    'permission-mode must ship disabled by default — the user opts in'
+  )
+  console.log('✓ CLAUDE_DEFAULT_ARGS seeds --permission-mode acceptEdits, disabled by default')
 }
 
 console.log('\nAll harness-curated assertions passed.')

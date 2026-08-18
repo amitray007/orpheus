@@ -8,6 +8,17 @@
 // setHarnessSettings, resolveHarnessSettings), not a restatement of their
 // logic.
 //
+// DESIGN NOTE (post-workspace-scope-removal): HarnessSettingsScope is now
+// `'global' | 'project'` — workspace scope was removed. resolveHarnessSettings
+// takes only (harnessId, projectId?); there is no workspaceId parameter at
+// all (not even an ignored one — see settings.ts's own doc comment: "a
+// parameter that silently does nothing is worse than one that does not
+// exist"). This file therefore asserts two-tier (global -> project)
+// precedence only. The scope_id `''` sentinel round-trip and the upsert
+// row-count assertions are UNCHANGED from before the scope change — they
+// guard real storage bugs unrelated to how many scopes exist — so they are
+// kept verbatim.
+//
 // RUNTIME CHOICE — plain `node --experimental-strip-types`, NOT `bun run`.
 // settings.ts imports getDb() from ../db, which statically imports
 // better-sqlite3 + electron's `app`. Two constraints rule out the
@@ -93,12 +104,14 @@ function createFreshDb(): InstanceType<typeof Database> {
   // Minimal real table, matching schema.ts's harness_settings TableDef
   // exactly (columns, defaults, CHECK, unique index) rather than a
   // hand-simplified stand-in, so this harness exercises the same SQL shape
-  // settings.ts runs against in production.
+  // settings.ts runs against in production. CHECK now allows only
+  // ('global', 'project') — 'workspace' was removed from
+  // HARNESS_SETTINGS_SCOPE in schema.ts.
   db.exec(`
     CREATE TABLE harness_settings (
       id TEXT PRIMARY KEY NOT NULL,
       harness_id TEXT NOT NULL,
-      scope TEXT NOT NULL CHECK (scope IN ('global', 'project', 'workspace')),
+      scope TEXT NOT NULL CHECK (scope IN ('global', 'project')),
       scope_id TEXT NOT NULL DEFAULT '',
       settings_json TEXT NOT NULL DEFAULT '{}',
       updated_at INTEGER NOT NULL
@@ -133,12 +146,7 @@ function rowCount(db: InstanceType<typeof Database>): number {
     'missing project row -> {}'
   )
   assert.deepEqual(
-    getHarnessSettings('claude', 'workspace', 'ws-1'),
-    {},
-    'missing workspace row -> {}'
-  )
-  assert.deepEqual(
-    resolveHarnessSettings('claude', 'proj-1', 'ws-1'),
+    resolveHarnessSettings('claude', 'proj-1'),
     {},
     'resolveHarnessSettings with nothing configured anywhere -> {}'
   )
@@ -175,15 +183,15 @@ function rowCount(db: InstanceType<typeof Database>): number {
 // ---------------------------------------------------------------------------
 {
   const db = createFreshDb()
-  setHarnessSettings('claude', 'workspace', 'ws-1', { curated: { model: 'opus' } })
-  setHarnessSettings('claude', 'workspace', 'ws-1', { curated: { model: 'sonnet' } })
+  setHarnessSettings('claude', 'project', 'proj-1', { curated: { model: 'opus' } })
+  setHarnessSettings('claude', 'project', 'proj-1', { curated: { model: 'sonnet' } })
   assert.equal(
     rowCount(db),
     1,
     'a second write to the same key must UPDATE, not insert a duplicate'
   )
   assert.deepEqual(
-    getHarnessSettings('claude', 'workspace', 'ws-1'),
+    getHarnessSettings('claude', 'project', 'proj-1'),
     { curated: { model: 'sonnet' } },
     'the second write must win'
   )
@@ -200,7 +208,7 @@ function rowCount(db: InstanceType<typeof Database>): number {
     args: [{ key: 'verbose', enabled: true }],
     env: [{ key: 'ANTHROPIC_LOG', value: 'debug', enabled: true }]
   })
-  const resolved = resolveHarnessSettings('claude', 'proj-1', 'ws-1')
+  const resolved = resolveHarnessSettings('claude', 'proj-1')
   assert.deepEqual(
     resolved,
     {
@@ -215,7 +223,8 @@ function rowCount(db: InstanceType<typeof Database>): number {
 
 // ---------------------------------------------------------------------------
 // 5. Layering: project overrides ONE key -> project wins for it, other
-//    global keys survive.
+//    global keys survive. Project scope is now the FINAL/highest-precedence
+//    layer (workspace scope was removed).
 // ---------------------------------------------------------------------------
 {
   createFreshDb()
@@ -225,14 +234,14 @@ function rowCount(db: InstanceType<typeof Database>): number {
   setHarnessSettings('claude', 'project', 'proj-1', {
     curated: { model: 'sonnet' }
   })
-  const resolved = resolveHarnessSettings('claude', 'proj-1', 'ws-1')
+  const resolved = resolveHarnessSettings('claude', 'proj-1')
   assert.deepEqual(
     resolved.curated,
     { model: 'sonnet', effort: 'high' },
     'project must override model but leave the global effort untouched'
   )
   // A different project must NOT see the override.
-  const otherProject = resolveHarnessSettings('claude', 'proj-2', 'ws-2')
+  const otherProject = resolveHarnessSettings('claude', 'proj-2')
   assert.deepEqual(
     otherProject.curated,
     { model: 'opus', effort: 'high' },
@@ -244,24 +253,7 @@ function rowCount(db: InstanceType<typeof Database>): number {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Layering: workspace overrides -> beats both global and project.
-// ---------------------------------------------------------------------------
-{
-  createFreshDb()
-  setHarnessSettings('claude', 'global', undefined, { curated: { model: 'opus' } })
-  setHarnessSettings('claude', 'project', 'proj-1', { curated: { model: 'sonnet' } })
-  setHarnessSettings('claude', 'workspace', 'ws-1', { curated: { model: 'haiku' } })
-  const resolved = resolveHarnessSettings('claude', 'proj-1', 'ws-1')
-  assert.deepEqual(
-    resolved.curated,
-    { model: 'haiku' },
-    'workspace must win over both project and global'
-  )
-  console.log('✓ workspace overrides beat both project and global')
-}
-
-// ---------------------------------------------------------------------------
-// 7. A disabled row is excluded from resolved output but preserved in
+// 6. A disabled row is excluded from resolved output but preserved in
 //    storage.
 // ---------------------------------------------------------------------------
 {
@@ -272,7 +264,7 @@ function rowCount(db: InstanceType<typeof Database>): number {
       { key: 'debug', enabled: false }
     ]
   })
-  const resolved = resolveHarnessSettings('claude', 'proj-1', 'ws-1')
+  const resolved = resolveHarnessSettings('claude', 'proj-1')
   assert.deepEqual(
     resolved.args,
     [{ key: 'verbose', enabled: true }],
@@ -298,11 +290,11 @@ function rowCount(db: InstanceType<typeof Database>): number {
 }
 
 // ---------------------------------------------------------------------------
-// 8. args/env array layering semantics: merge-by-key, not whole-array
+// 7. args/env array layering semantics: merge-by-key, not whole-array
 //    replacement. A project-scope row with a NEW key is appended after the
 //    global rows (order preserved); a project-scope row with an EXISTING
 //    key replaces that entry in place (including its position); a
-//    workspace-scope `enabled: false` override of a global `enabled: true`
+//    project-scope `enabled: false` override of a global `enabled: true`
 //    row suppresses it from the resolved output without deleting either
 //    scope's stored copy.
 // ---------------------------------------------------------------------------
@@ -315,45 +307,41 @@ function rowCount(db: InstanceType<typeof Database>): number {
     ]
   })
   setHarnessSettings('claude', 'project', 'proj-1', {
-    // Overrides the existing 'add-dir' key's value, and introduces a new
-    // 'strict' key.
+    // Overrides the existing 'add-dir' key's value, introduces a new
+    // 'strict' key, AND suppresses the global 'verbose' flag for this one
+    // project without deleting it from global storage.
     args: [
       { key: 'add-dir', value: '/project/dir', enabled: true },
-      { key: 'strict', enabled: true }
+      { key: 'strict', enabled: true },
+      { key: 'verbose', enabled: false }
     ]
   })
-  setHarnessSettings('claude', 'workspace', 'ws-1', {
-    // Suppresses the global 'verbose' flag for this one workspace without
-    // deleting it from global storage.
-    args: [{ key: 'verbose', enabled: false }]
-  })
 
-  const resolved = resolveHarnessSettings('claude', 'proj-1', 'ws-1')
+  const resolved = resolveHarnessSettings('claude', 'proj-1')
   assert.deepEqual(
     resolved.args,
     [
       { key: 'add-dir', value: '/project/dir', enabled: true },
       { key: 'strict', enabled: true }
     ],
-    'merge-by-key: verbose suppressed by workspace, add-dir value replaced by project (position preserved), strict appended'
+    'merge-by-key: verbose suppressed by project, add-dir value replaced (position preserved), strict appended'
   )
 
-  // A sibling workspace under the SAME project (no workspace-scope
-  // override) must still see 'verbose' from global, proving the suppression
-  // is workspace-scoped, not a global mutation.
-  const sibling = resolveHarnessSettings('claude', 'proj-1', 'ws-2')
+  // A sibling project (no override of its own) must still see 'verbose' from
+  // global, proving the suppression is project-scoped, not a global
+  // mutation.
+  const sibling = resolveHarnessSettings('claude', 'proj-2')
   assert.deepEqual(
     sibling.args,
     [
       { key: 'verbose', enabled: true },
-      { key: 'add-dir', value: '/project/dir', enabled: true },
-      { key: 'strict', enabled: true }
+      { key: 'add-dir', value: '/global/dir', enabled: true }
     ],
-    'a sibling workspace with no override of its own must still see the global verbose flag'
+    'a sibling project with no override of its own must still see the global verbose flag'
   )
 
-  // Global storage itself must still list 'debug'/'verbose' as enabled —
-  // the workspace override must not have mutated the global row.
+  // Global storage itself must still list 'verbose'/'add-dir' as before —
+  // the project override must not have mutated the global row.
   const globalStored = getHarnessSettings('claude', 'global') as HarnessSettings
   assert.deepEqual(
     globalStored.args,
@@ -361,10 +349,10 @@ function rowCount(db: InstanceType<typeof Database>): number {
       { key: 'verbose', enabled: true },
       { key: 'add-dir', value: '/global/dir', enabled: true }
     ],
-    "the workspace-scope suppression of 'verbose' must not mutate the stored global row"
+    "the project-scope suppression of 'verbose' must not mutate the stored global row"
   )
   console.log(
-    '✓ args/env layering is merge-by-key (order preserved, later scope wins per key, storage untouched)'
+    '✓ args/env layering is merge-by-key (order preserved, project wins per key, storage untouched)'
   )
 }
 

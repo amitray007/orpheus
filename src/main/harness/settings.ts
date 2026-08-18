@@ -22,7 +22,7 @@ import { getDb } from '../db'
 // missing/undefined scopeId always round-trips as the same '' row.
 // ---------------------------------------------------------------------------
 
-export type HarnessSettingsScope = 'global' | 'project' | 'workspace'
+export type HarnessSettingsScope = 'global' | 'project'
 
 export type HarnessSettingRow = {
   key: string
@@ -33,7 +33,6 @@ export type HarnessSettingRow = {
 export type HarnessCuratedSettings = {
   model?: string
   effort?: string
-  permissionMode?: string
 }
 
 export type HarnessSettings = {
@@ -188,17 +187,18 @@ function mergeCurated(
 }
 
 /**
- * Resolve the effective settings for a workspace by layering global ->
- * project -> workspace scopes (later wins per key). Missing rows at every
- * scope resolve to `{}`, never a throw. The returned args/env arrays have
- * disabled rows already excluded — callers building launch composition
- * never need to filter again.
+ * Resolve the effective settings by layering global -> project (later wins
+ * per key). Missing rows at either scope resolve to `{}`, never a throw. The
+ * returned args/env arrays have disabled rows already excluded — callers
+ * building launch composition never need to filter again.
+ *
+ * Two scopes, not three: workspace scope was removed deliberately (see
+ * HARNESS_SETTINGS_SCOPE in src/main/db/schema.ts). There is no vestigial
+ * workspaceId parameter, because a parameter that silently does nothing is
+ * worse than one that does not exist — a caller passing it would reasonably
+ * expect a workspace layer to apply.
  */
-export function resolveHarnessSettings(
-  harnessId: string,
-  projectId?: string,
-  workspaceId?: string
-): HarnessSettings {
+export function resolveHarnessSettings(harnessId: string, projectId?: string): HarnessSettings {
   // The scope ids are OPTIONAL and each layer is skipped independently. The
   // global layer ALWAYS applies — it has no id to be missing — so a caller
   // with no project/workspace context still gets the user's global settings.
@@ -210,11 +210,10 @@ export function resolveHarnessSettings(
   // and settings that appear saved in the UI but never take effect.
   const global = getHarnessSettings(harnessId, 'global')
   const project = projectId ? getHarnessSettings(harnessId, 'project', projectId) : {}
-  const workspace = workspaceId ? getHarnessSettings(harnessId, 'workspace', workspaceId) : {}
 
-  const args = mergeRowsByKey([global.args, project.args, workspace.args])
-  const env = mergeRowsByKey([global.env, project.env, workspace.env])
-  const curated = mergeCurated([global.curated, project.curated, workspace.curated])
+  const args = mergeRowsByKey([global.args, project.args])
+  const env = mergeRowsByKey([global.env, project.env])
+  const curated = mergeCurated([global.curated, project.curated])
 
   const resolved: HarnessSettings = {}
   const resolvedArgs = enabledOnly(args)

@@ -19,15 +19,29 @@
 //
 // So parity is asserted over the OVERLAPPING SURFACE — the settings
 // expressible in BOTH systems:
-//   - curated model / effort / permission-mode
+//   - curated model / effort
 //   - session continuity (--resume, --session-id, --fork-session)
 //   - user-supplied CLI flags and env vars
 // For each fixture: seed the old storage, seed the EQUIVALENT new storage,
 // assert the two outputs are byte-identical.
 //
 // Where the two cannot agree by design, the difference is asserted
-// EXPLICITLY with its reason (see the typed-passthrough divergence case at
-// the bottom). A gate that quietly tolerates drift is worse than no gate.
+// EXPLICITLY with its reason (see the typed-passthrough divergence case and
+// the permission-mode divergence case at the bottom). A gate that quietly
+// tolerates drift is worse than no gate.
+//
+// PERMISSION-MODE IS NO LONGER PART OF THE OVERLAPPING SURFACE. It was
+// removed as a curated concept (see curated.ts's header and CuratedField's
+// doc comment in shared/harness/types.ts: Codex/Copilot/Gemini each express
+// the same intent as a different argv shape, not one field with different
+// values). The OLD emitter (composeFlagTokens) still unconditionally emits
+// `--permission-mode` from claude_global_settings.permission_mode /
+// planModeDefault whenever it isn't 'default' — that column and that
+// behavior were not removed from the old system, only the NEW system's
+// typed concept for it was. So fixtures below no longer set permission_mode
+// on the old side (keeping the two sides on the surface they still share),
+// and the dedicated divergence case at the bottom pins the gap explicitly
+// rather than the gate silently going quiet on it.
 //
 // ORDERING IS PART OF THE CONTRACT. Both emitters place tokens as
 // curated/typed -> session -> user custom flags. The old one appends custom
@@ -253,21 +267,25 @@ function assertParity(label: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Curated model + effort + permission-mode.
-//    The three concepts Orpheus still curates (KTD3). Asserts exact token
-//    ORDER, not just presence — these lead the argv on both paths.
+// 2. Curated model + effort.
+//    The two concepts Orpheus still curates (KTD3 minus permission-mode —
+//    see the file header). Asserts exact token ORDER, not just presence —
+//    these lead the argv on both paths. permission_mode is deliberately left
+//    at its 'default' fixture value on the OLD side here so this scenario
+//    stays on the surface both emitters still share; the dedicated
+//    divergence case at the bottom of this file covers what happens when
+//    permission_mode is actually set on the old side.
 // ---------------------------------------------------------------------------
 {
   const db = createFreshDb()
   seedWorkspace(db)
   setGlobal(db, 'model', 'opus')
   setGlobal(db, 'effort', 'high')
-  setGlobal(db, 'permission_mode', 'acceptEdits')
   setHarnessSettings('claude', 'global', undefined, {
-    curated: { model: 'opus', effort: 'high', permissionMode: 'acceptEdits' }
+    curated: { model: 'opus', effort: 'high' }
   })
-  assertParity('curated trio')
-  console.log('✓ curated model/effort/permission-mode: identical flags and model field')
+  assertParity('curated pair')
+  console.log('✓ curated model/effort: identical flags and model field')
 }
 
 // ---------------------------------------------------------------------------
@@ -414,6 +432,64 @@ function assertParity(label: string): void {
     'a user env row must reproduce what the typed passthrough used to do'
   )
   console.log('✓ typed-passthrough divergence is by design, and user rows can express the same')
+}
+
+// ---------------------------------------------------------------------------
+// 9. THE PERMISSION-MODE DIVERGENCE — asserted, not hidden.
+//    permission-mode was REMOVED as a curated concept (see the file header
+//    and curated.ts's own header: it is a Claude flag whose equivalent on
+//    Codex/Copilot/Gemini is a structurally different argv shape, not one
+//    field with different values). The OLD system's column
+//    (claude_global_settings.permission_mode) and its unconditional emission
+//    in composeFlagTokens were NOT touched by that change — only the NEW
+//    system's typed concept for it was removed. So setting permission_mode
+//    on the old side now makes the two emitters genuinely disagree: the old
+//    one still emits `--permission-mode acceptEdits` from that column; the
+//    new one emits it ONLY if an enabled `--permission-mode` arg row exists
+//    in harness_settings (e.g. the user opts into the seeded
+//    CLAUDE_DEFAULT_ARGS row) — nothing about permission_mode automatically
+//    carries over from the old column any more.
+//
+//    This fixture pins that gap explicitly, the same pattern as the typed-
+//    passthrough divergence above, so a future "restore parity" attempt has
+//    to delete an assertion that explains why not to — and proves the gap
+//    is bridgeable: an equivalent enabled arg row on the new side reproduces
+//    the old flag exactly.
+// ---------------------------------------------------------------------------
+{
+  const db = createFreshDb()
+  seedWorkspace(db)
+  setGlobal(db, 'model', 'sonnet')
+  setGlobal(db, 'permission_mode', 'acceptEdits')
+  setHarnessSettings('claude', 'global', undefined, { curated: { model: 'sonnet' } })
+
+  const oldLaunch = composeClaudeLaunch(PROJECT_ID, WORKSPACE_ID)
+  const newLaunch = composeClaudeHarnessLaunch(PROJECT_ID, WORKSPACE_ID)
+
+  assert.ok(
+    oldLaunch.flags.includes('--permission-mode'),
+    'sanity: the old emitter still emits --permission-mode from claude_global_settings.permission_mode'
+  )
+  assert.ok(
+    !newLaunch.flags.includes('--permission-mode'),
+    'BY DESIGN (permission-mode is no longer curated): the new emitter emits nothing for permission_mode unless an arg row is enabled'
+  )
+
+  // ...and the user CAN express it — the seeded CLAUDE_DEFAULT_ARGS row
+  // enabled reproduces the old flag exactly, which is what makes the gap
+  // acceptable rather than a silent behavior loss.
+  setHarnessSettings('claude', 'global', undefined, {
+    curated: { model: 'sonnet' },
+    args: [{ key: '--permission-mode', value: 'acceptEdits', enabled: true }]
+  })
+  const withArgRow = composeClaudeHarnessLaunch(PROJECT_ID, WORKSPACE_ID)
+  assert.ok(
+    withArgRow.flags.includes('--permission-mode'),
+    'an enabled --permission-mode arg row must reproduce what the old curated concept used to do'
+  )
+  console.log(
+    '✓ permission-mode divergence is by design, and an enabled default-arg row can express the same'
+  )
 }
 
 console.log('\nAll harness launch-parity assertions passed.')

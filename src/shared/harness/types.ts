@@ -152,10 +152,42 @@ export type HarnessLaunch = {
 // explicit literal-`true` field (rather than being implied) so a reader of
 // a HarnessDescriptor sees the "always accept custom" contract stated right
 // on the data, not only in this comment.
+//
+// EMISSION FORMS — a harness expresses the same concept in genuinely
+// different argv shapes, so the descriptor declares HOW, not just WHAT:
+//   flag        `--model opus`                     (Claude)
+//   env         VIBE_ACTIVE_MODEL=opus             (a harness with no flag)
+//   configKey   `-c model_reasoning_effort="high"` (Codex)
+// The three are mutually exclusive per field — a union, so a descriptor that
+// sets two is a compile error rather than a runtime branch nobody wrote.
+//
+// This is deliberately NOT a fixed set of flag names. An earlier revision
+// modelled permission-mode as a curated concept because Claude has
+// `--permission-mode`; but Codex says `--ask-for-approval never --sandbox
+// danger-full-access`, Copilot says `--allow-all`, Gemini says `-y`. Those
+// are not one field with different values, they are different argv shapes,
+// and they belong in defaultArgs. Only model and effort survived that test:
+// every target harness either has them or cleanly omits them, AND Orpheus
+// reads them back for its own UI (TUI tree, CLI display, footer pickers),
+// which is what earns a concept typed status rather than being a plain row.
 export type CuratedField = { options: string[]; allowCustom: true } & (
-  | { flag: string; env?: never }
-  | { flag?: never; env: string }
+  | { flag: string; env?: never; configKey?: never; configFlag?: never }
+  | { flag?: never; env: string; configKey?: never; configFlag?: never }
+  // configFlag is the carrier (Codex's `-c`), configKey the setting name.
+  // Emitted as two tokens: [configFlag, `${configKey}=${value}`].
+  | { flag?: never; env?: never; configKey: string; configFlag: string }
 )
+
+// One CLI argument as a structured row rather than a fragment of a command
+// string. `value` absent means a bare flag (`--verbose`); present means the
+// flag takes a value and both tokens are emitted. `enabled: false` keeps a
+// row in storage while excluding it from the launch, so a user can park a
+// flag without retyping it later.
+export type HarnessArgRow = {
+  key: string
+  value?: string
+  enabled: boolean
+}
 
 // ---------------------------------------------------------------------------
 // HarnessDescriptor
@@ -189,6 +221,27 @@ export interface HarnessDescriptor {
   /** What this harness supports — see HarnessCapabilities. UI must gate on
    *  these fields, never on `id`. */
   capabilities: HarnessCapabilities
+  /** Icon name for the harness picker, as a Phosphor icon identifier the
+   *  renderer maps to a component. A plain string (not an imported icon)
+   *  because src/shared must not reach into the renderer — the picker owns
+   *  the name->component mapping, this file owns only the identity. */
+  icon?: string
+  /** Default CLI args this harness ships with — Claude's
+   *  `--dangerously-skip-permissions`, Codex's `--ask-for-approval never
+   *  --sandbox danger-full-access`, Gemini's `-y`. THIS is where a
+   *  harness-specific flag belongs; it is the reason permission-mode is not
+   *  a curated concept.
+   *
+   *  These SEED as real, user-editable rows marked harness-provided rather
+   *  than being an unconditional prefix. A user can disable or override a
+   *  shipped default and see where it came from, and a later descriptor
+   *  update can add a new default without clobbering their edits — neither
+   *  of which works if defaults are an opaque, non-negotiable prefix.
+   *
+   *  Structured rows, never one command string: a security-relevant flag
+   *  (skip-permissions, danger-full-access) must stay individually visible
+   *  and toggleable rather than buried in free text nobody audits. */
+  defaultArgs?: HarnessArgRow[]
   /** Which settings UI sections apply to this harness, as section ids (a
    *  string array rather than an enum: the set of sections is owned by the
    *  renderer's settings UI, not by this shared harness-descriptor type, and
@@ -200,13 +253,17 @@ export interface HarnessDescriptor {
   /** Composes this harness's launch payload (flags/settingsJson/env/model)
    *  for a given project/workspace. See ComposeHarnessLaunch. */
   composeLaunch: ComposeHarnessLaunch
-  /** The three curated concepts (KTD3) — model, effort, permission-mode —
-   *  this harness exposes, each optional (a harness may lack any of the
-   *  three; e.g. a harness with no reasoning-effort control simply omits
-   *  `effort`). See CuratedField above for the flag/env exclusivity and the
-   *  always-accept-custom-values contract. Undeclared (not just empty)
-   *  entirely for a harness that curates none of the three. */
-  curated?: { model?: CuratedField; effort?: CuratedField; permissionMode?: CuratedField }
+  /** The two curated concepts — model and effort — this harness exposes,
+   *  each optional (a harness with no reasoning-effort control simply omits
+   *  `effort`). See CuratedField above for the emission forms, the mutual
+   *  exclusivity, and the always-accept-custom-values contract. Undeclared
+   *  entirely for a harness that curates neither.
+   *
+   *  Deliberately only these two: they are the concepts Orpheus itself reads
+   *  BACK (TUI tree frame, CLI display, footer model/effort pickers), which
+   *  is what justifies a typed field over an ordinary arg row. Anything
+   *  Orpheus merely forwards belongs in defaultArgs or user rows. */
+  curated?: { model?: CuratedField; effort?: CuratedField }
   /** Footer quick actions this harness ships with (R8/U6). Only consulted
    *  when SEEDING a harness that has zero rows in `footer_actions_global`
    *  for it — never used to rewrite or filter a user's existing rows (see

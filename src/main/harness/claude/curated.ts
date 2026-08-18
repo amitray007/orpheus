@@ -28,26 +28,8 @@
 // instead of silently drifting.
 // ---------------------------------------------------------------------------
 
-import type { CuratedField } from '../../../shared/harness/types'
-import {
-  CLAUDE_EFFORT_VALUES,
-  CLAUDE_MODEL_OPTIONS,
-  type ClaudePermissionMode
-} from '../../../shared/types'
-
-// ClaudePermissionMode has no shared canonical VALUES array (unlike
-// CLAUDE_EFFORT_VALUES) — it's a small, closed, rarely-changing union
-// declared once in src/shared/types.ts. Restating its four members here as
-// a typed tuple (rather than importing a values array that doesn't exist)
-// keeps this file honest to "reuse what's canonical" while not inventing a
-// new shared export purely for a one-off internal list; if a second harness
-// ever needs the same list, promote this to a shared array at that point.
-const CLAUDE_PERMISSION_MODES: readonly ClaudePermissionMode[] = [
-  'default',
-  'acceptEdits',
-  'plan',
-  'bypassPermissions'
-]
+import type { CuratedField, HarnessArgRow } from '../../../shared/harness/types'
+import { CLAUDE_EFFORT_VALUES, CLAUDE_MODEL_OPTIONS } from '../../../shared/types'
 
 export const CLAUDE_CURATED_MODEL: CuratedField = {
   flag: '--model',
@@ -61,16 +43,9 @@ export const CLAUDE_CURATED_EFFORT: CuratedField = {
   allowCustom: true
 }
 
-export const CLAUDE_CURATED_PERMISSION_MODE: CuratedField = {
-  flag: '--permission-mode',
-  options: [...CLAUDE_PERMISSION_MODES],
-  allowCustom: true
-}
-
 export const CLAUDE_CURATED = {
   model: CLAUDE_CURATED_MODEL,
-  effort: CLAUDE_CURATED_EFFORT,
-  permissionMode: CLAUDE_CURATED_PERMISSION_MODE
+  effort: CLAUDE_CURATED_EFFORT
 }
 
 // ---------------------------------------------------------------------------
@@ -88,8 +63,23 @@ export const CLAUDE_CURATED = {
  * `options`; that list is a UI suggestion set only.
  */
 export function buildCuratedArgs(field: CuratedField | undefined, value: string): string[] {
-  if (!field || !field.flag || !value) return []
-  return [field.flag, value]
+  if (!field || !value) return []
+  // Flag form — Claude's `--model opus`.
+  if (field.flag) return [field.flag, value]
+  // Config-override form — Codex's `-c model_reasoning_effort="high"`. Two
+  // argv tokens, the carrier flag then a single key=value token, NOT three:
+  // `-c` takes one argument and the `=` is part of it.
+  //
+  // The value is passed through verbatim rather than quoted. Quoting is a
+  // SHELL concern, and these tokens never transit a shell — they are joined
+  // with 0x1F and split back into argv by the wrapper (see cliFlags.ts's
+  // FLAG_DELIMITER rationale), so adding quotes here would send literal
+  // quote characters to the binary.
+  if (field.configFlag && field.configKey) {
+    return [field.configFlag, `${field.configKey}=${value}`]
+  }
+  // Env form (or an unset field) contributes no argv — see buildCuratedEnv.
+  return []
 }
 
 /**
@@ -105,3 +95,24 @@ export function buildCuratedEnv(
   if (!field || !field.env || !value) return {}
   return { [field.env]: value }
 }
+
+// ---------------------------------------------------------------------------
+// Default args
+// ---------------------------------------------------------------------------
+
+/**
+ * The CLI args Claude ships with. `--permission-mode` lives HERE, not as a
+ * curated concept: it is a Claude flag, and the same intent is
+ * `--ask-for-approval never --sandbox danger-full-access` on Codex,
+ * `--allow-all` on Copilot, `-y` on Gemini. Those are different argv shapes,
+ * not one field with different values, so modelling them as a shared typed
+ * field was wrong — see CuratedField's header in shared/harness/types.ts.
+ *
+ * Seeded as an editable row rather than an unconditional prefix, and
+ * disabled by default: it is security-relevant, so the user opts in rather
+ * than discovering after the fact that Orpheus turned permission prompts off
+ * for them.
+ */
+export const CLAUDE_DEFAULT_ARGS: HarnessArgRow[] = [
+  { key: '--permission-mode', value: 'acceptEdits', enabled: false }
+]

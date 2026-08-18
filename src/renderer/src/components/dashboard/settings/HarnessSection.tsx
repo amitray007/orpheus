@@ -5,16 +5,18 @@ import type {
   HarnessSettings,
   HarnessSettingRow,
   HarnessSettingsScope,
-  ProjectRecord,
-  WorkspaceRecord
+  ProjectRecord
 } from '@shared/types'
 import type { CuratedField } from '@shared/harness/types'
-import { Plus, Trash, CaretUp, CaretDown } from '@phosphor-icons/react'
+import { Plus, Trash, CaretUp, CaretDown, Question } from '@phosphor-icons/react'
 import { SettingRow, SegmentedControl, Select, Toggle, Eyebrow, SecretInput } from './primitives'
+import { IconByName } from '../footer/iconMap'
 import {
   isSecretLikeKey,
   moveRow,
   resolveProvenance,
+  mergeDefaultArgs,
+  draftsToStoredRows,
   type CuratedFieldName,
   type HarnessScopeSettingsBundle
 } from './harnessSettingsLogic'
@@ -25,23 +27,106 @@ import {
 // Data-driven from harness:list — no hardcoded 'claude' anywhere in this
 // component. A second harness needs no new code here, only a second
 // HarnessDescriptor in src/main/harness/registry.ts. Orpheus curates exactly
-// three concepts per harness (model/effort/permissionMode) and otherwise
-// ships zero default args/env — everything else is untyped user-supplied
+// two concepts per harness (model/effort) and otherwise ships zero-or-more
+// default args (visibly-marked, user-editable rows — see mergeDefaultArgs)
+// plus zero default env — everything else is untyped user-supplied
 // passthrough, edited via the row editors below.
+//
+// SCOPE: global + project only. Workspace scope was removed deliberately —
+// see HARNESS_SETTINGS_SCOPE in src/main/db/schema.ts.
 // ---------------------------------------------------------------------------
 
 const EMPTY_SETTINGS: HarnessSettings = {}
 
 const SCOPE_OPTIONS: ReadonlyArray<{ value: HarnessSettingsScope; label: string }> = [
   { value: 'global', label: 'Global' },
-  { value: 'project', label: 'Project' },
-  { value: 'workspace', label: 'Workspace' }
+  { value: 'project', label: 'Project' }
 ]
 
 function scopeChipLabel(scope: HarnessSettingsScope): string {
-  if (scope === 'global') return 'global'
-  if (scope === 'project') return 'project'
-  return 'workspace'
+  return scope === 'global' ? 'global' : 'project'
+}
+
+// ---------------------------------------------------------------------------
+// Harness picker — a command list, not a special-cased single-harness UI.
+// Reference: a preset picker where each row reads
+// "[icon] [Name] ............ [the actual command it runs]" — see the
+// redesign rationale in the task brief. Renders every harness from
+// harness:list (today just Claude), each with its resolved command preview
+// (binary + its own harness-provided default args, at descriptor defaults —
+// the picker previews what a FRESH install of this harness would run, not
+// the current scope's edited settings) so the row reads as "this is the
+// command this harness runs," matching CliFlagsPreview's "claude <flags>"
+// convention in primitives.tsx.
+// ---------------------------------------------------------------------------
+
+/** Builds the resolved command preview for a harness's OWN shipped defaults
+ *  — binary followed by its enabled default args, flag+value pairs in
+ *  order. Pure string assembly, no dependency on the currently-edited
+ *  scope's settings (that's a live edited-command concern the args editor
+ *  below already covers via HarnessRowEditor). */
+function harnessCommandPreview(harness: HarnessSummary): string {
+  const tokens: string[] = [harness.binary]
+  for (const arg of harness.defaultArgs ?? []) {
+    if (!arg.enabled) continue
+    tokens.push(arg.key)
+    if (arg.value) tokens.push(arg.value)
+  }
+  return tokens.join(' ')
+}
+
+interface HarnessPickerProps {
+  harnesses: HarnessSummary[]
+  selectedId: string
+  onSelect: (id: string) => void
+}
+
+function HarnessPicker({ harnesses, selectedId, onSelect }: HarnessPickerProps): React.JSX.Element {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Harness"
+      className="bg-surface-raised border border-border-default rounded-lg divide-y divide-border-default/60 overflow-hidden"
+    >
+      {harnesses.map((harness) => {
+        const selected = harness.id === selectedId
+        return (
+          <button
+            key={harness.id}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            onClick={() => onSelect(harness.id)}
+            className={[
+              'w-full flex items-center gap-3 px-4 py-3 text-left transition-colors duration-150 cursor-pointer',
+              selected ? 'bg-accent/10' : 'hover:bg-surface-overlay'
+            ].join(' ')}
+          >
+            <span
+              className={[
+                'flex items-center justify-center w-6 h-6 rounded-md flex-shrink-0',
+                selected ? 'bg-accent/20 text-accent' : 'bg-surface-overlay text-text-muted'
+              ].join(' ')}
+            >
+              {harness.icon ? <IconByName name={harness.icon} size={14} /> : <Question size={14} />}
+            </span>
+            <span
+              className={[
+                'text-sm font-medium flex-shrink-0',
+                selected ? 'text-text-primary' : 'text-text-secondary'
+              ].join(' ')}
+            >
+              {harness.label}
+            </span>
+            <span className="flex-1 min-w-0 border-b border-dotted border-border-default/50 mx-1" />
+            <span className="text-xs font-mono text-text-muted overflow-x-auto whitespace-nowrap flex-shrink-0">
+              {harnessCommandPreview(harness)}
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -126,14 +211,20 @@ function CuratedFieldPicker({
 
 interface RowDraft extends HarnessSettingRow {
   id: string
+  /** Display-only: this row currently matches a harness-provided default
+   *  (see mergeDefaultArgs). Never sent through onChange — the editor emits
+   *  plain key/value/enabled, and the caller re-derives which rows are
+   *  defaults (via draftsToStoredRows) rather than trusting a flag threaded
+   *  back out through the UI. */
+  fromDefault?: boolean
 }
 
-function toDrafts(rows: HarnessSettingRow[] | undefined): RowDraft[] {
-  return (rows ?? []).map((r) => ({ ...r, id: crypto.randomUUID() }))
+function toDrafts(rows: readonly (HarnessSettingRow & { fromDefault?: boolean })[]): RowDraft[] {
+  return rows.map((r) => ({ ...r, id: crypto.randomUUID() }))
 }
 
 interface HarnessRowEditorProps {
-  rows: HarnessSettingRow[] | undefined
+  rows: readonly (HarnessSettingRow & { fromDefault?: boolean })[]
   onChange: (rows: HarnessSettingRow[]) => void
   keyPlaceholder: string
   valuePlaceholder: string
@@ -158,9 +249,14 @@ function HarnessRowEditor({
   // Render-time sync from external prop changes — never fights an
   // in-progress edit, only resyncs when the incoming value actually diverges
   // from local state (same discipline as CliFlagsEditor's prevValueRef).
-  const externalKey = JSON.stringify(rows ?? [])
+  // Compared on the same key/value/enabled/fromDefault projection on both
+  // sides (not raw `rows`, which may carry an `id` — synthesized fresh per
+  // toDrafts call — that would never match and force a resync every render).
+  const externalKey = JSON.stringify(
+    rows.map(({ key, value, enabled, fromDefault }) => ({ key, value, enabled, fromDefault }))
+  )
   const localKey = JSON.stringify(
-    drafts.map(({ key, value, enabled }) => ({ key, value, enabled }))
+    drafts.map(({ key, value, enabled, fromDefault }) => ({ key, value, enabled, fromDefault }))
   )
   if (externalKey !== localKey) {
     setDrafts(toDrafts(rows))
@@ -242,6 +338,14 @@ function HarnessRowEditor({
               placeholder={keyPlaceholder}
               className="w-40 px-2.5 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text"
             />
+            {row.fromDefault && (
+              <span
+                title={`${row.key || 'This flag'} ships as a default for this harness`}
+                className="text-[10px] leading-none font-medium text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-1 flex-shrink-0"
+              >
+                harness default
+              </span>
+            )}
             {useSecretInput ? (
               <SecretInput
                 value={row.value ?? ''}
@@ -273,7 +377,12 @@ function HarnessRowEditor({
               type="button"
               onClick={() => removeRow(idx)}
               className="text-text-muted hover:text-red-400 transition-colors flex-shrink-0"
-              aria-label="Remove row"
+              aria-label={row.fromDefault ? 'Reset to harness default' : 'Remove row'}
+              title={
+                row.fromDefault
+                  ? 'Resets to this harness’s shipped default rather than deleting it permanently'
+                  : undefined
+              }
             >
               <Trash size={13} />
             </button>
@@ -302,12 +411,9 @@ export function HarnessSection(): React.JSX.Element | null {
   const [scope, setScope] = useState<HarnessSettingsScope>('global')
   const [projects, setProjects] = useState<ProjectRecord[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string>('')
-  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([])
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('')
 
   const [globalSettings, setGlobalSettings] = useState<HarnessSettings>(EMPTY_SETTINGS)
   const [projectSettings, setProjectSettings] = useState<HarnessSettings>(EMPTY_SETTINGS)
-  const [workspaceSettings, setWorkspaceSettings] = useState<HarnessSettings>(EMPTY_SETTINGS)
 
   useEffect(() => {
     let cancelled = false
@@ -330,35 +436,20 @@ export function HarnessSection(): React.JSX.Element | null {
     }
   }, [])
 
-  useEffect(() => {
-    if (!selectedProjectId) return
-    let cancelled = false
-    window.api.workspaces
-      .listForProject(selectedProjectId, { scope: 'active' })
-      .then((list) => {
-        if (!cancelled) setWorkspaces(list)
-      })
-      .catch(console.error)
-    return () => {
-      cancelled = true
-    }
-  }, [selectedProjectId])
-
-  // Reset the workspace list/selection as soon as the project selection
-  // changes, in the SAME handler that changes selectedProjectId — not a
-  // reactive effect keyed on selectedProjectId, which would call setState
-  // synchronously inside an effect body (react-hooks/set-state-in-effect).
-  function selectProject(id: string): void {
-    setSelectedProjectId(id)
-    setSelectedWorkspaceId('')
-    setWorkspaces([])
+  // Reset the project selection as soon as scope leaves 'project', in the
+  // SAME handler that changes scope — not a reactive effect keyed on scope,
+  // which would call setState synchronously inside an effect body
+  // (react-hooks/set-state-in-effect).
+  function selectScope(next: HarnessSettingsScope): void {
+    setScope(next)
+    if (next === 'global') setSelectedProjectId('')
   }
 
-  // Fetch global+project+workspace settings for the selected harness in
-  // parallel whenever the harness or the project/workspace selection
-  // changes — the provenance resolver (harnessSettingsLogic.ts) needs all
-  // three layers regardless of which scope is currently being edited, so
-  // "which scope is a value inherited from" can be shown correctly.
+  // Fetch global+project settings for the selected harness in parallel
+  // whenever the harness or the project selection changes — the provenance
+  // resolver (harnessSettingsLogic.ts) needs both layers regardless of
+  // which scope is currently being edited, so "which scope is a value
+  // inherited from" can be shown correctly.
   useEffect(() => {
     if (!selectedHarnessId) return
     let cancelled = false
@@ -378,59 +469,47 @@ export function HarnessSection(): React.JSX.Element | null {
     } else {
       // Deferred to a microtask (not a direct call in the effect body) so
       // this reset goes through the same async-callback shape as the fetch
-      // branches above — see react-hooks/set-state-in-effect.
+      // branch above — see react-hooks/set-state-in-effect.
       Promise.resolve().then(() => {
         if (!cancelled) setProjectSettings(EMPTY_SETTINGS)
-      })
-    }
-    if (selectedWorkspaceId) {
-      window.api.harness
-        .getSettings(selectedHarnessId, 'workspace', selectedWorkspaceId)
-        .then((s) => {
-          if (!cancelled) setWorkspaceSettings(s)
-        })
-        .catch(console.error)
-    } else {
-      Promise.resolve().then(() => {
-        if (!cancelled) setWorkspaceSettings(EMPTY_SETTINGS)
       })
     }
     return () => {
       cancelled = true
     }
-  }, [selectedHarnessId, selectedProjectId, selectedWorkspaceId])
+  }, [selectedHarnessId, selectedProjectId])
 
   const selectedHarness = harnesses?.find((h) => h.id === selectedHarnessId) ?? null
 
-  const scopeSettings: HarnessSettings =
-    scope === 'global' ? globalSettings : scope === 'project' ? projectSettings : workspaceSettings
+  const scopeSettings: HarnessSettings = scope === 'global' ? globalSettings : projectSettings
 
-  const scopeId =
-    scope === 'project'
-      ? selectedProjectId
-      : scope === 'workspace'
-        ? selectedWorkspaceId
-        : undefined
+  const scopeId = scope === 'project' ? selectedProjectId : undefined
 
   const provenance = useMemo(
     () =>
       resolveProvenance({
         global: globalSettings,
-        project: projectSettings,
-        workspace: workspaceSettings
+        project: projectSettings
       } satisfies HarnessScopeSettingsBundle),
-    [globalSettings, projectSettings, workspaceSettings]
+    [globalSettings, projectSettings]
+  )
+
+  // Harness-provided defaultArgs merged with the scope's stored rows — see
+  // mergeDefaultArgs's doc comment for the identity/precedence contract.
+  // Recomputed whenever the selected harness or scope's stored args change.
+  const mergedArgs = useMemo(
+    () => mergeDefaultArgs(selectedHarness?.defaultArgs, scopeSettings.args),
+    [selectedHarness, scopeSettings.args]
   )
 
   function persist(next: HarnessSettings): void {
     if (!selectedHarnessId) return
-    if (scope !== 'global' && !scopeId) return
+    if (scope === 'project' && !scopeId) return
     window.api.harness
       .setSettings(selectedHarnessId, scope, scopeId, next)
       .then((saved) => {
         if (scope === 'global') setGlobalSettings(saved)
-        else if (scope === 'project') setProjectSettings(saved)
-        else setWorkspaceSettings(saved)
+        else setProjectSettings(saved)
       })
       .catch((err) => console.error('[harness] setSettings failed', err))
   }
@@ -443,7 +522,11 @@ export function HarnessSection(): React.JSX.Element | null {
   }
 
   function setArgs(rows: HarnessSettingRow[]): void {
-    persist({ ...scopeSettings, args: rows })
+    // Re-derive which rows still match the harness's own defaults and drop
+    // those before persisting — see draftsToStoredRows: a default the user
+    // never actually changed must not be written into storage just because
+    // it was displayed.
+    persist({ ...scopeSettings, args: draftsToStoredRows(rows, selectedHarness?.defaultArgs) })
   }
 
   function setEnv(rows: HarnessSettingRow[]): void {
@@ -458,44 +541,32 @@ export function HarnessSection(): React.JSX.Element | null {
     <section className="flex flex-col gap-6">
       <div>
         <Eyebrow className="mb-3">Harness</Eyebrow>
+        <HarnessPicker
+          harnesses={harnesses}
+          selectedId={selectedHarnessId}
+          onSelect={setSelectedHarnessId}
+        />
+      </div>
+
+      <div>
+        <Eyebrow className="mb-3">Scope</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5 divide-y divide-border-default/60">
-          {harnesses.length > 1 && (
-            <SettingRow label="Harness" description="Which coding-agent CLI to configure.">
-              <Select
-                options={harnesses.map((h) => ({ value: h.id, label: h.label }))}
-                value={selectedHarnessId}
-                onChange={setSelectedHarnessId}
-                ariaLabel="Harness"
-              />
-            </SettingRow>
-          )}
           <SettingRow label="Scope" description="Which layer these settings apply to.">
             <SegmentedControl<HarnessSettingsScope>
               options={SCOPE_OPTIONS}
               value={scope}
-              onChange={setScope}
+              onChange={selectScope}
               ariaLabel="Scope"
             />
           </SettingRow>
-          {scope !== 'global' && (
+          {scope === 'project' && (
             <SettingRow label="Project" description="Which project this scope applies to.">
               <Select
                 options={projects.map((p) => ({ value: p.id, label: p.name }))}
                 value={selectedProjectId}
-                onChange={selectProject}
+                onChange={setSelectedProjectId}
                 ariaLabel="Project"
                 placeholder="Choose a project"
-              />
-            </SettingRow>
-          )}
-          {scope === 'workspace' && selectedProjectId && (
-            <SettingRow label="Workspace" description="Which workspace this scope applies to.">
-              <Select
-                options={workspaces.map((w) => ({ value: w.id, label: w.name }))}
-                value={selectedWorkspaceId}
-                onChange={setSelectedWorkspaceId}
-                ariaLabel="Workspace"
-                placeholder="Choose a workspace"
               />
             </SettingRow>
           )}
@@ -535,22 +606,6 @@ export function HarnessSection(): React.JSX.Element | null {
                       />
                     </SettingRow>
                   )}
-                  {selectedHarness.curated.permissionMode && (
-                    <SettingRow
-                      label="Permission mode"
-                      mapsTo={fieldMapsTo(selectedHarness.curated.permissionMode)}
-                    >
-                      <CuratedFieldPicker
-                        field={selectedHarness.curated.permissionMode}
-                        value={scopeSettings.curated?.permissionMode ?? ''}
-                        onChange={(v) => setCurated('permissionMode', v)}
-                        ariaLabel="Permission mode"
-                        inheritedFrom={
-                          scope !== 'global' ? provenance.curated.permissionMode : undefined
-                        }
-                      />
-                    </SettingRow>
-                  )}
                 </div>
               </div>
             )}
@@ -566,7 +621,7 @@ export function HarnessSection(): React.JSX.Element | null {
                   />
                 )}
                 <HarnessRowEditor
-                  rows={scopeSettings.args}
+                  rows={mergedArgs}
                   onChange={setArgs}
                   keyPlaceholder="--flag"
                   valuePlaceholder="value (optional)"
@@ -588,7 +643,7 @@ export function HarnessSection(): React.JSX.Element | null {
                   />
                 )}
                 <HarnessRowEditor
-                  rows={scopeSettings.env}
+                  rows={scopeSettings.env ?? []}
                   onChange={setEnv}
                   keyPlaceholder="ENV_VAR_NAME"
                   valuePlaceholder="value"
@@ -606,8 +661,20 @@ export function HarnessSection(): React.JSX.Element | null {
   )
 }
 
+/** Renders a curated field's `mapsTo` chip across all three CuratedField
+ *  emission forms (flag / env / configFlag+configKey — see CuratedField's
+ *  header in src/shared/harness/types.ts). The configFlag/configKey form has
+ *  no single CLI token — Codex's `-c model_reasoning_effort="high"` is two
+ *  tokens, carrier then `key=value` — so it's rendered as
+ *  "-c model_reasoning_effort" (carrier + key, no value placeholder) rather
+ *  than picking one token and dropping the other. */
 function fieldMapsTo(field: CuratedField): string {
-  return 'flag' in field && field.flag ? field.flag : 'env' in field && field.env ? field.env : ''
+  if ('flag' in field && field.flag) return field.flag
+  if ('env' in field && field.env) return field.env
+  if ('configFlag' in field && field.configFlag && 'configKey' in field && field.configKey) {
+    return `${field.configFlag} ${field.configKey}`
+  }
+  return ''
 }
 
 /** Small muted note listing which keys at the CURRENT scope are actually

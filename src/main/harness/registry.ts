@@ -27,7 +27,7 @@
 
 import type { HarnessDescriptor, HarnessId } from '../../shared/harness/types'
 import { composeClaudeLaunch } from '../claudeSettings'
-import { CLAUDE_CURATED } from './claude/curated'
+import { CLAUDE_CURATED, CLAUDE_DEFAULT_ARGS } from './claude/curated'
 import { CLAUDE_DEFAULT_ACTIONS } from './claude/actions'
 
 // Known-good `claude --version` strings, used by sessionState.ts to warn
@@ -44,6 +44,11 @@ const CLAUDE_DESCRIPTOR: HarnessDescriptor = {
   label: 'Claude Code',
   binary: 'claude',
   wrapperScript: 'orpheus-claude.sh',
+  // Phosphor icon name for the harness picker (renderer maps name->component
+  // via footer/iconMap.tsx's IconByName — see HarnessSection.tsx). 'Terminal'
+  // reads clearly as "a CLI you run", distinct from the Robot/Sparkle icons
+  // already used elsewhere for AI-flavored UI.
+  icon: 'Terminal',
   capabilities: {
     // sessionState.ts watches ~/.claude/sessions/<pid>.json (SESSIONS_DIR,
     // this file's sibling module) for live busy/idle/waiting status.
@@ -117,11 +122,16 @@ const CLAUDE_DESCRIPTOR: HarnessDescriptor = {
   // comment in src/shared/harness/types.ts) — a direct pass-through, no
   // reshaping, no cast needed.
   composeLaunch: composeClaudeLaunch,
-  // U3's curated concepts — model/effort/permission-mode. See
-  // src/main/harness/claude/curated.ts for the values (reused from
-  // src/shared/types.ts's CLAUDE_MODEL_OPTIONS/CLAUDE_EFFORT_VALUES, not
-  // duplicated) and the flag verification against composeFlagTokens.
+  // U3's curated concepts — model/effort. See src/main/harness/claude/curated.ts
+  // for the values (reused from src/shared/types.ts's
+  // CLAUDE_MODEL_OPTIONS/CLAUDE_EFFORT_VALUES, not duplicated) and the flag
+  // verification against composeFlagTokens.
   curated: CLAUDE_CURATED,
+  // Claude's shipped default arg (--permission-mode, disabled by default —
+  // see CLAUDE_DEFAULT_ARGS's doc comment). Seeded into the Settings UI's
+  // args editor as a visible, user-editable row rather than an invisible
+  // launch-time prefix.
+  defaultArgs: CLAUDE_DEFAULT_ARGS,
   // R8/U6's seed data — see src/main/harness/claude/actions.ts's header for
   // why this is not yet wired into any seeding call site.
   defaultActions: CLAUDE_DEFAULT_ACTIONS,

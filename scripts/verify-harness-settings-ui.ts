@@ -4,10 +4,11 @@
 // Behavior guard for the harness settings UI's pure logic module
 // (src/renderer/src/components/dashboard/settings/harnessSettingsLogic.ts,
 // U8, multi-harness architecture plan). Asserts against the REAL exported
-// functions (isSecretLikeKey, moveRow, resolveProvenance), not a restatement
-// of their logic or a grep over component source text — see CLAUDE.md:
-// "Assert behaviour, not source text... Extract the logic into a directly-
-// callable pure function and call it."
+// functions (isSecretLikeKey, moveRow, resolveProvenance, mergeDefaultArgs,
+// draftsToStoredRows), not a restatement of their logic or a grep over
+// component source text — see CLAUDE.md: "Assert behaviour, not source
+// text... Extract the logic into a directly-callable pure function and call
+// it."
 //
 // RUNTIME CHOICE — plain `bun run`, not `node --experimental-strip-types`.
 // harnessSettingsLogic.ts has zero SQLite/native/Electron dependencies (pure
@@ -24,8 +25,21 @@ import {
   isSecretLikeKey,
   moveRow,
   resolveProvenance,
+  mergeDefaultArgs,
+  draftsToStoredRows,
   type HarnessScopeSettingsBundle
 } from '../src/renderer/src/components/dashboard/settings/harnessSettingsLogic'
+import type { HarnessArgRow } from '../src/shared/harness/types'
+
+/** Strip the display-only `fromDefault` marker, leaving the stored row shape.
+ *  A destructure-to-omit (`({ fromDefault: _f, ...r }) => r`) reads fine but
+ *  trips no-unused-vars here — this repo's config has no underscore
+ *  exemption, and adding one for a test file is the wrong lever. */
+function toStoredShape<T extends { fromDefault?: boolean }>(row: T): Omit<T, 'fromDefault'> {
+  const copy = { ...row }
+  delete copy.fromDefault
+  return copy
+}
 
 // ---------------------------------------------------------------------------
 // isSecretLikeKey
@@ -77,19 +91,28 @@ console.log('✓ moveRow: reorders correctly, boundary/out-of-range no-ops confi
 
 // ---------------------------------------------------------------------------
 // resolveProvenance
+//
+// Two scopes only — global + project. Workspace scope was removed
+// deliberately (see HARNESS_SETTINGS_SCOPE in src/main/db/schema.ts), and
+// permissionMode is no longer a curated concept (it's a Claude flag now
+// seeded as a defaultArgs row — see CuratedField's header in
+// src/shared/harness/types.ts) — neither belongs in this bundle anymore.
 // ---------------------------------------------------------------------------
 
 const layered: HarnessScopeSettingsBundle = {
   global: {
-    args: [{ key: '--verbose', value: undefined, enabled: true }],
+    args: [
+      { key: '--verbose', value: undefined, enabled: true },
+      { key: '--permission-mode', value: 'acceptEdits', enabled: false }
+    ],
     env: [{ key: 'ANTHROPIC_LOG', value: 'debug', enabled: true }],
     curated: { model: 'claude-opus-4-7' }
   },
   project: {
-    args: [{ key: '--add-dir', value: '/repo', enabled: true }]
-  },
-  workspace: {
-    args: [{ key: '--verbose', value: undefined, enabled: false }],
+    args: [
+      { key: '--add-dir', value: '/repo', enabled: true },
+      { key: '--verbose', value: undefined, enabled: false }
+    ],
     curated: { model: 'claude-sonnet-4-7', effort: 'high' }
   }
 }
@@ -100,7 +123,7 @@ const provenance = resolveProvenance(layered)
 assert.equal(provenance.env.get('ANTHROPIC_LOG'), 'global')
 // A key introduced at project only -> reports 'project'.
 assert.equal(provenance.args.get('--add-dir'), 'project')
-// A key set at global AND overridden at workspace -> provenance still
+// A key set at global AND overridden at project -> provenance still
 // reports the FIRST (lowest-precedence) scope that introduced it — 'global'
 // — since provenance answers "where did this row come from", not "which
 // scope currently wins" (that's resolveHarnessSettings' job, a different
@@ -110,14 +133,141 @@ assert.equal(provenance.args.get('--verbose'), 'global')
 assert.equal(provenance.args.get('--never-set'), undefined)
 assert.equal(provenance.env.get('--never-set'), undefined)
 
-// Curated: model set at both global and workspace -> reports 'global' (first
+// Curated: model set at both global and project -> reports 'global' (first
 // scope to introduce it, same "where did this come from" semantics).
 assert.equal(provenance.curated.model, 'global')
-// Curated: effort set at workspace only -> reports 'workspace'.
-assert.equal(provenance.curated.effort, 'workspace')
-// Curated: permissionMode never set anywhere -> absent.
-assert.equal(provenance.curated.permissionMode, undefined)
+// Curated: effort set at project only -> reports 'project'.
+assert.equal(provenance.curated.effort, 'project')
+// Curated field names are now exactly 'model' | 'effort' — permissionMode is
+// not a key of HarnessProvenance['curated'] at all anymore (a compile-time
+// guarantee, not just a runtime absence), so there is nothing to assert for
+// it here beyond that this file compiles.
 
 console.log('✓ resolveProvenance: layered scenario resolves the correct introducing scope')
+
+// ---------------------------------------------------------------------------
+// mergeDefaultArgs / draftsToStoredRows — the defaultArgs seeding contract
+// (task item 2): a shipped default must appear as a real, user-editable,
+// visibly-marked row; a user edit or disable must stick; nothing gets
+// written to storage just for being displayed; a NEW descriptor default
+// must reach a user who already has custom rows.
+// ---------------------------------------------------------------------------
+
+const CLAUDE_LIKE_DEFAULTS: HarnessArgRow[] = [
+  { key: '--permission-mode', value: 'acceptEdits', enabled: false }
+]
+
+// 1. Untouched default: no user row for this key at all -> appears with the
+//    descriptor's own value/enabled, marked fromDefault, and — the write-path
+//    half of the contract — draftsToStoredRows drops it (nothing persisted
+//    just because it was displayed).
+{
+  const merged = mergeDefaultArgs(CLAUDE_LIKE_DEFAULTS, undefined)
+  assert.deepEqual(merged, [
+    { key: '--permission-mode', value: 'acceptEdits', enabled: false, fromDefault: true }
+  ])
+  const persisted = draftsToStoredRows(merged.map(toStoredShape), CLAUDE_LIKE_DEFAULTS)
+  assert.deepEqual(persisted, [], 'an untouched default must not be written to storage')
+}
+
+// 2. User override wins: the user's stored row for the default's key has a
+//    DIFFERENT value than the descriptor default -> the merge shows the
+//    user's value (not the descriptor's), still marked fromDefault (it still
+//    originated from a default), and persists because it now differs.
+{
+  const userRows = [{ key: '--permission-mode', value: 'plan', enabled: true }]
+  const merged = mergeDefaultArgs(CLAUDE_LIKE_DEFAULTS, userRows)
+  assert.deepEqual(merged, [
+    { key: '--permission-mode', value: 'plan', enabled: true, fromDefault: true }
+  ])
+  const persisted = draftsToStoredRows(merged.map(toStoredShape), CLAUDE_LIKE_DEFAULTS)
+  assert.deepEqual(persisted, [{ key: '--permission-mode', value: 'plan', enabled: true }])
+}
+
+// 3. User-disabled default stays disabled: descriptor ships it enabled:false
+//    already, but exercise the inverse — descriptor default enabled, user
+//    explicitly disables it -> disabled sticks through the merge AND persists
+//    (differs from the descriptor's enabled:true).
+{
+  const enabledDefaults: HarnessArgRow[] = [{ key: '--verbose', value: undefined, enabled: true }]
+  const userRows = [{ key: '--verbose', value: undefined, enabled: false }]
+  const merged = mergeDefaultArgs(enabledDefaults, userRows)
+  assert.deepEqual(merged, [
+    { key: '--verbose', value: undefined, enabled: false, fromDefault: true }
+  ])
+  const persisted = draftsToStoredRows(merged.map(toStoredShape), enabledDefaults)
+  assert.deepEqual(
+    persisted,
+    [{ key: '--verbose', value: undefined, enabled: false }],
+    'a user-disabled default must persist the override, not be dropped'
+  )
+}
+
+// 4. A NEW descriptor default appears for a user who already has unrelated
+//    custom rows: the new default is prepended (defaults first, in
+//    descriptor order) and the user's own rows follow, unmarked.
+{
+  const userRows = [{ key: '--add-dir', value: '/repo', enabled: true }]
+  const merged = mergeDefaultArgs(CLAUDE_LIKE_DEFAULTS, userRows)
+  assert.deepEqual(merged, [
+    { key: '--permission-mode', value: 'acceptEdits', enabled: false, fromDefault: true },
+    { key: '--add-dir', value: '/repo', enabled: true, fromDefault: false }
+  ])
+}
+
+// 5. No defaultArgs at all (a harness that ships none) -> user rows pass
+//    through untouched and unmarked, never a crash on undefined.
+{
+  const userRows = [{ key: '--add-dir', value: '/repo', enabled: true }]
+  const merged = mergeDefaultArgs(undefined, userRows)
+  assert.deepEqual(merged, [
+    { key: '--add-dir', value: '/repo', enabled: true, fromDefault: false }
+  ])
+}
+
+console.log(
+  '✓ mergeDefaultArgs/draftsToStoredRows: untouched/override/disable/new-default/no-defaults all correct'
+)
+
+// ---------------------------------------------------------------------------
+// MUTATION TEST — deliberately break the "don't clobber a user override"
+// guarantee and confirm the assertion above actually catches it. This
+// exercises the exact failure CLAUDE.md warns about: an assertion never
+// tried against a mutation is one you don't know works.
+// ---------------------------------------------------------------------------
+
+function mutatedMergeDefaultArgsClobbersOverride(
+  defaultArgs: readonly HarnessArgRow[] | undefined,
+  userRows: readonly { key: string; value?: string; enabled: boolean }[] | undefined
+): { key: string; value?: string; enabled: boolean; fromDefault: boolean }[] {
+  // BUG: always uses the descriptor's own value/enabled, ignoring any
+  // matching user row entirely — this is the exact "later descriptor change
+  // clobbers a user's edit" regression task item 2 forbids.
+  const defaults = defaultArgs ?? []
+  const rows = userRows ?? []
+  const defaultKeys = new Set(defaults.map((d) => d.key))
+  const merged = defaults.map((def) => ({ ...def, fromDefault: true }))
+  for (const row of rows) {
+    if (!defaultKeys.has(row.key)) merged.push({ ...row, fromDefault: false })
+  }
+  return merged
+}
+
+{
+  const userRows = [{ key: '--permission-mode', value: 'plan', enabled: true }]
+  const mutatedResult = mutatedMergeDefaultArgsClobbersOverride(CLAUDE_LIKE_DEFAULTS, userRows)
+  let threw = false
+  try {
+    assert.deepEqual(mutatedResult, [
+      { key: '--permission-mode', value: 'plan', enabled: true, fromDefault: true }
+    ])
+  } catch (err) {
+    threw = true
+    console.log('  mutation caught (expected failure):', (err as Error).message.split('\n')[0])
+  }
+  assert.ok(threw, 'MUTATION TEST FAILED TO FAIL: the clobbering bug went undetected')
+}
+
+console.log('✓ mutation test: a clobbering merge is correctly caught as a failing assertion')
 
 console.log('\nharness settings UI logic verification passed')

@@ -132,7 +132,7 @@ export function composeClaudeHarnessLaunch(
   // independently — crucially it ALWAYS reads the global layer, so a call with
   // neither id still composes the user's global settings rather than a bare
   // invocation.
-  const resolved = resolveHarnessSettings(HARNESS_ID, projectId, workspaceId)
+  const resolved = resolveHarnessSettings(HARNESS_ID, projectId)
   const curated = resolved.curated ?? {}
 
   const flagTokens: string[] = [
@@ -143,7 +143,6 @@ export function composeClaudeHarnessLaunch(
     // asserts byte-equality between the two and a reordering here is a real
     // (if subtle) behavior change in the composed argv.
     ...buildCuratedArgs(CLAUDE_CURATED.model, claudeModelFlagValue(curated.model)),
-    ...buildCuratedArgs(CLAUDE_CURATED.permissionMode, curated.permissionMode ?? ''),
     ...buildCuratedArgs(CLAUDE_CURATED.effort, curated.effort ?? ''),
     ...claudeSessionArgs(workspaceId),
     ...userArgTokens(resolved.args)
@@ -152,7 +151,7 @@ export function composeClaudeHarnessLaunch(
   const curatedEnv: Record<string, string> = {
     ...buildCuratedEnv(CLAUDE_CURATED.model, curated.model ?? ''),
     ...buildCuratedEnv(CLAUDE_CURATED.effort, curated.effort ?? ''),
-    ...buildCuratedEnv(CLAUDE_CURATED.permissionMode, curated.permissionMode ?? '')
+    ...buildCuratedEnv(CLAUDE_CURATED.effort, curated.effort ?? '')
   }
   const env = applyUserEnvRows(curatedEnv, resolved.env)
 

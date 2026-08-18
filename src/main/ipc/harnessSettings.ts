@@ -22,7 +22,10 @@ function toSummary(descriptor: (typeof HARNESSES)[number]): HarnessSummary {
   return {
     id: descriptor.id,
     label: descriptor.label,
+    binary: descriptor.binary,
     capabilities: descriptor.capabilities,
+    icon: descriptor.icon,
+    defaultArgs: descriptor.defaultArgs,
     curated: descriptor.curated
   }
 }
@@ -39,7 +42,7 @@ export function registerHarnessSettingsIpc(): void {
     return getHarnessSettings(harnessId, scope, scopeId)
   })
 
-  handle('harness:settings:resolved', (_e, { harnessId, projectId, workspaceId }) =>
-    resolveHarnessSettings(harnessId, projectId, workspaceId)
+  handle('harness:settings:resolved', (_e, { harnessId, projectId }) =>
+    resolveHarnessSettings(harnessId, projectId)
   )
 }

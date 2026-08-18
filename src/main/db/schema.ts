@@ -42,7 +42,11 @@ const PROVIDER_AUTH_METHOD = ['oauth', 'apiKey', 'openaiCompatible'] as const
 // three-tier layering as claude_global_settings/claude_project_settings/
 // claude_workspace_settings, but generalized to any harness_id rather than
 // one fixed Claude table per scope.
-const HARNESS_SETTINGS_SCOPE = ['global', 'project', 'workspace'] as const
+// Global + project only — deliberately NOT workspace. Three layers was more
+// than the product needs: per-workspace launch config is rare, and each extra
+// layer costs a merge step, a UI scope, and a provenance case. Adding it back
+// later is a schema change plus a merge case, not a redesign.
+const HARNESS_SETTINGS_SCOPE = ['global', 'project'] as const
 const AUTOMATION_TRIGGER_KIND = ['schedule', 'event'] as const
 const AUTOMATION_SCOPE_KIND = ['app', 'project', 'workspace'] as const
 const AUTOMATION_IDEMPOTENCY = ['none', 'keyed', 'natural'] as const
