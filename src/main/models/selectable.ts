@@ -44,6 +44,18 @@ import { listCliProxyModelCacheEntries } from './sources/cliproxy'
 export const CLAUDE_PROVIDER_ID = 'claude'
 const CLAUDE_PROVIDER_LABEL = 'Claude'
 
+/** Phase 0 of the multi-harness migration severed launch-side CLIProxyAPI
+ *  routing, so buildSelectableModels() below must return Claude-only. This
+ *  is a `const` (not an inline `true` literal) deliberately: a bare
+ *  `if (true) return` or unconditional `return` makes TypeScript stop
+ *  flow-narrowing the dormant code that follows, turning its real
+ *  `string | undefined` guards into spurious type errors — verified
+ *  empirically. Routing through a named const keeps narrowing intact while
+ *  still being unconditionally true. Phase 6 re-lands routing by deleting
+ *  the `if (PHASE0_ROUTING_SEVERED) return claudeEntries()` guard (and,
+ *  optionally, this const) in buildSelectableModels(). */
+const PHASE0_ROUTING_SEVERED = true
+
 /** Minimal shape of a routing-proxy snapshot this module needs — a subset of
  *  RoutingProxySnapshot, kept narrow so this stays a plain-data dependency
  *  rather than importing the electron-touching manager module. */
@@ -277,15 +289,31 @@ function providerLabelFor(providerId: string, descriptors: ProviderDescriptorInp
 }
 
 /**
- * Assemble the full selectable-model list: Claude (always, first, always
- * available) followed by every routed model the proxy currently reports,
- * gated on proxy-running + provider-healthy (or, during the startup window
- * only, the unit-09-polish persisted-availability fallback — see
- * persistedAvailabilityFor). If `currentModelId` names a routed model that
- * didn't make the cut, it's appended at the end marked unavailable rather
- * than dropped.
+ * Assemble the full selectable-model list. As of Phase 0 of the multi-harness
+ * migration, this is Claude only — CLAUDE_MODEL_OPTIONS, always, unconditionally
+ * available (see claudeEntries()). Phase 0 severed launch-side CLIProxyAPI
+ * routing, so a routed model can no longer be launched even if the proxy
+ * reports it as healthy; offering it in the picker would be a broken
+ * affordance. The routed-model assembly (proxy-running + provider-healthy
+ * gating, the unit-09-polish persisted-availability startup fallback, and
+ * "never drop a workspace's stored selection" preservation) still exists
+ * below, verbatim, but is dead code — unreachable behind the early return.
+ * It is the intended re-land site for Phase 6, which restores routing
+ * harness-aware by deleting that early return.
  */
 export function buildSelectableModels(input: BuildSelectableModelsInput): SelectableModel[] {
+  // Phase 0 (multi-harness migration): launch-side CLIProxyAPI routing is
+  // severed, so routed models must not be selectable — the launch path can
+  // no longer route to them. Everything below this branch is the Phase 6
+  // re-land site, preserved byte-identical; Phase 6 restores it by deleting
+  // this guard (do not delete, rewrite, or "clean up" the dormant code
+  // below). Written as `if (const-true) return` rather than a bare `return`
+  // so TypeScript keeps flow-narrowing the dormant block below (a bare early
+  // `return` makes TS stop narrowing unreachable code, turning real
+  // `string | undefined` guards below into spurious type errors — verified
+  // empirically).
+  if (PHASE0_ROUTING_SEVERED) return claudeEntries()
+
   const result: SelectableModel[] = claudeEntries()
 
   const serving = proxyIsServing(input.routingProxy)
