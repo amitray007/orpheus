@@ -191,39 +191,30 @@ function baseSettings(overrides: Partial<ClaudeGlobalSettings> = {}): ClaudeGlob
 // ---------------------------------------------------------------------------
 
 {
-  // Reference identity: today CLAUDE_DESCRIPTOR.composeLaunch IS
-  // composeClaudeLaunch, not a wrapper around it.
-  assert.equal(
+  // U9 CUTOVER — this assertion used to require reference identity with
+  // composeClaudeLaunch, which was correct for Phase 1: the descriptor
+  // delegated straight through, and identity was the cheapest proof that no
+  // reshaping had crept in between them.
+  //
+  // The descriptor now composes from harness_settings instead, so identity
+  // is deliberately false. The comparison it protected did not disappear —
+  // it moved somewhere stronger: scripts/verify-harness-launch-parity.ts
+  // drives BOTH emitters over shared fixtures with a real DB and asserts
+  // byte-equality across the surface they share, plus explicit pinned
+  // assertions for the places they now differ on purpose. Re-adding an
+  // identity check here would fail by construction and prove nothing.
+  assert.notEqual(
     CLAUDE_DESCRIPTOR.composeLaunch,
     composeClaudeLaunch,
-    'CLAUDE_DESCRIPTOR.composeLaunch must be composeClaudeLaunch itself (one-line delegation)'
+    'post-cutover the descriptor must NOT delegate to composeClaudeLaunch — see verify-harness-launch-parity.ts for the comparison that replaced this'
   )
-  console.log('✓ CLAUDE_DESCRIPTOR.composeLaunch is reference-identical to composeClaudeLaunch')
-
-  // Output deep-equality across several representative settings shapes —
-  // the load-bearing assertion, since it holds regardless of whether
-  // composeLaunch stays a direct reference or later becomes a wrapper.
-  const fixtures: ClaudeGlobalSettings[] = [
-    baseSettings(),
-    baseSettings({ model: 'opus', permissionMode: 'acceptEdits' }),
-    baseSettings({
-      alwaysThinking: true,
-      outputStyle: 'explanatory',
-      customEnvVars: { FOO: 'bar' },
-      customCliFlags: ['--append-system-prompt', 'be terse and kind']
-    })
-  ]
-  for (const settings of fixtures) {
-    const viaDescriptor = CLAUDE_DESCRIPTOR.composeLaunch(undefined, undefined, settings)
-    const viaDirect = composeClaudeLaunch(undefined, undefined, settings)
-    assert.deepEqual(
-      viaDescriptor,
-      viaDirect,
-      `composeLaunch output must deep-equal composeClaudeLaunch output for model=${settings.model || '(default)'}`
-    )
-  }
+  assert.equal(
+    typeof CLAUDE_DESCRIPTOR.composeLaunch,
+    'function',
+    'the descriptor must still expose a callable composeLaunch'
+  )
   console.log(
-    '✓ CLAUDE_DESCRIPTOR.composeLaunch output is deep-equal to composeClaudeLaunch output across fixtures'
+    '✓ post-cutover: composeLaunch is the harness emitter, not composeClaudeLaunch (parity is asserted in verify-harness-launch-parity.ts)'
   )
 }
 

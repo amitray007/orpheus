@@ -26,7 +26,7 @@
 // ---------------------------------------------------------------------------
 
 import type { HarnessDescriptor, HarnessId } from '../../shared/harness/types'
-import { composeClaudeLaunch } from '../claudeSettings'
+import { composeClaudeHarnessLaunch } from './claude/launch'
 import { CLAUDE_CURATED, CLAUDE_DEFAULT_ARGS } from './claude/curated'
 import { CLAUDE_DEFAULT_ACTIONS } from './claude/actions'
 
@@ -121,7 +121,20 @@ const CLAUDE_DESCRIPTOR: HarnessDescriptor = {
   // Field-for-field identical to ClaudeLaunch (see HarnessLaunch's doc
   // comment in src/shared/harness/types.ts) — a direct pass-through, no
   // reshaping, no cast needed.
-  composeLaunch: composeClaudeLaunch,
+  // U9 CUTOVER — the descriptor now composes from harness_settings (curated
+  // + user arg/env rows) instead of claude_global_settings' 121 typed
+  // columns. composeClaudeLaunch still exists and still works; it is simply
+  // no longer what a mount runs. Reverting is this one line.
+  //
+  // Gated on scripts/verify-harness-launch-parity.ts, which drives BOTH
+  // emitters over the same fixtures and asserts byte-equality across the
+  // surface they share. Two deliberate divergences are pinned there rather
+  // than hidden: typed passthroughs (which the new system expresses as user
+  // env rows) and --permission-mode (now an opt-in default arg row). A third
+  // — the old path emitting `--model sonnet` from a schema column default on
+  // a fresh install — is resolved by this cutover in favour of NOT pinning:
+  // an unconfigured workspace now lets claude choose its own default.
+  composeLaunch: composeClaudeHarnessLaunch,
   // U3's curated concepts — model/effort. See src/main/harness/claude/curated.ts
   // for the values (reused from src/shared/types.ts's
   // CLAUDE_MODEL_OPTIONS/CLAUDE_EFFORT_VALUES, not duplicated) and the flag
