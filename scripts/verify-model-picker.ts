@@ -56,8 +56,10 @@ import {
   type AuthFilesDeps
 } from '../src/main/routingProxy/authFiles.ts'
 import {
-  reclaimOrphanRoutingProxyPort,
-  type OrphanReclaimDeps
+  reclaimProvenOrphan,
+  isSameVariantRoutingProxy,
+  type ListenerInspectionDeps,
+  type ListeningProcess
 } from '../src/main/routingProxy/orphan.ts'
 import {
   claudeFallbackModels,
@@ -825,21 +827,85 @@ function baseInput(
     '✓ (pre-populate sanity) routed model correctly withheld while authFiles is empty; Claude still offered'
   )
 
-  // Step 1: simulate reclaimOrphanRoutingProxyPort() finding + killing an
-  // orphan process holding the port (the fix's new boot-time step) — proves
-  // the reclaim function itself reports what the caller needs to decide to
-  // proceed to a fresh start(), without touching anything settings-page-related.
-  const orphanDeps: OrphanReclaimDeps = {
-    tcpProbe: async () => true, // something (the orphan) is listening
-    listPortOwners: async () => [55555], // its PID, discoverable via lsof
-    killPid: () => {},
+  // Step 1: simulate reclaimProvenOrphan() finding + killing an orphan
+  // process holding the port (the fix's new boot-time step) — proves the
+  // reclaim function itself reports what the caller needs to decide to
+  // proceed to a fresh start(), without touching anything
+  // settings-page-related. reclaimProvenOrphan only kills what it can PROVE
+  // is exactly one same-variant listener (executablePath === binary AND
+  // argv containing `-config <config>`) — so the fake listener here must
+  // actually satisfy isSameVariantRoutingProxy, or the (correct, safety-
+  // motivated) refusal would make this assertion fail.
+  const binary = '/Applications/Orpheus Dev.app/Contents/Resources/routing-proxy/cliproxyapi'
+  const config = '/Users/test/Library/Application Support/Orpheus Dev/routing-proxy/config.yaml'
+  const orphanListener: ListeningProcess = {
+    pid: 55555,
+    executablePath: binary,
+    argv: [binary, '-config', config]
+  }
+  assert.equal(
+    isSameVariantRoutingProxy(orphanListener, binary, config),
+    true,
+    'sanity: the fake orphan listener must actually prove same-variant, or this test is not exercising ' +
+      'the proof-only reclaim path at all'
+  )
+  let stillListening = true
+  const orphanDeps: ListenerInspectionDeps = {
+    listListeners: async () => (stillListening ? [orphanListener] : []),
+    signalProcess: () => {
+      stillListening = false // SIGTERM "succeeds" — the orphan releases the port
+    },
     sleep: async () => {}
   }
-  const reclaim = await reclaimOrphanRoutingProxyPort('127.0.0.1', 18765, orphanDeps)
+  const reclaim = await reclaimProvenOrphan(18765, binary, config, orphanDeps)
   assert.equal(
     reclaim.reclaimed,
     true,
-    "the orphan-port case (the reported bug's actual root cause) must be detected and reclaimed"
+    "the orphan-port case (the reported bug's actual root cause) must be detected and reclaimed once " +
+      'it is PROVEN to be exactly one same-variant listener'
+  )
+  assert.deepEqual(reclaim.killedPids, [55555], 'reclaim must report the pid it signalled')
+
+  // Step 1b: THE SAFETY PROPERTY the new proof-only API introduces over the
+  // old one — a listener that CANNOT be proven same-variant (wrong
+  // executablePath, e.g. some unrelated process that happens to be bound to
+  // the port) must never be signalled. The old tcpProbe/listPortOwners API
+  // killed whatever held the port on nothing more than "something is
+  // listening"; this is the regression guard that behavior is gone.
+  const foreignListener: ListeningProcess = {
+    pid: 424242,
+    executablePath: '/usr/bin/some-other-process',
+    argv: ['/usr/bin/some-other-process']
+  }
+  assert.equal(
+    isSameVariantRoutingProxy(foreignListener, binary, config),
+    false,
+    'sanity: the foreign listener must NOT prove same-variant'
+  )
+  let foreignSignalled = false
+  const foreignDeps: ListenerInspectionDeps = {
+    listListeners: async () => [foreignListener],
+    signalProcess: () => {
+      foreignSignalled = true
+    },
+    sleep: async () => {}
+  }
+  const foreignReclaim = await reclaimProvenOrphan(18765, binary, config, foreignDeps)
+  assert.equal(
+    foreignReclaim.reclaimed,
+    false,
+    'a listener that cannot be proven same-variant must NEVER be reclaimed — this is the safety ' +
+      'tightening the new API introduces over the old probe-and-kill behavior'
+  )
+  assert.equal(
+    foreignSignalled,
+    false,
+    'signalProcess must never be called against an unproven (foreign) listener'
+  )
+  assert.deepEqual(foreignReclaim.killedPids, [], 'nothing must be reported as killed')
+  console.log(
+    '✓ THE PROOF-ONLY SAFETY PROPERTY: a listener that cannot be proven same-variant is never signalled ' +
+      'or reclaimed, even though something is definitely listening on the port'
   )
 
   // Step 2: after reclaim, a fresh child is spawned (manager.ts's start(),
@@ -898,19 +964,18 @@ function baseInput(
 // ---------------------------------------------------------------------------
 
 {
-  const noOrphanDeps: OrphanReclaimDeps = {
-    tcpProbe: async () => false, // nothing listening at all — proxy fully down
-    listPortOwners: async () => {
-      throw new Error('must not even be called when tcpProbe already says nothing is listening')
-    },
-    killPid: () => {
-      throw new Error('must never kill anything when nothing is listening')
+  const binary = '/Applications/Orpheus Dev.app/Contents/Resources/routing-proxy/cliproxyapi'
+  const config = '/Users/test/Library/Application Support/Orpheus Dev/routing-proxy/config.yaml'
+  const noOrphanDeps: ListenerInspectionDeps = {
+    listListeners: async () => [], // nothing listening at all — proxy fully down
+    signalProcess: () => {
+      throw new Error('must never signal anything when nothing is listening')
     },
     sleep: async () => {
       throw new Error('must never sleep when nothing is listening')
     }
   }
-  const reclaim = await reclaimOrphanRoutingProxyPort('127.0.0.1', 18765, noOrphanDeps)
+  const reclaim = await reclaimProvenOrphan(18765, binary, config, noOrphanDeps)
   assert.equal(reclaim.reclaimed, false, 'nothing to reclaim when the proxy is fully unreachable')
 
   const claudeOnly = buildSelectableModels(
