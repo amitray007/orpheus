@@ -11,7 +11,6 @@ import type {
   ProjectRecord,
   WorkspaceRecord
 } from '../src/shared/types.ts'
-import type { ClaudeLaunch } from '../src/main/claudeSettings.ts'
 import type { HarnessLaunch } from '../src/shared/harness/types.ts'
 import { bootControlRegistry } from '../src/main/controlPlane/boot.ts'
 import { createConfiguredControlRegistry } from '../src/main/controlPlane/configuredRegistry.ts'
@@ -134,28 +133,12 @@ let now = 1_000
 const audits: WorkspaceControlAuditRecord[] = []
 const updates: ClaudeWorkspaceSettingsOverrides[] = []
 
-function composeLaunch(projectId?: string, workspaceId?: string): ClaudeLaunch {
-  composeCalls++
-  assert.equal(projectId, 'project-1')
-  assert.ok(workspaceId === workspace.id || workspaceId === sibling.id)
-  const targetSettings = workspaceId === workspace.id ? workspaceSettings : siblingSettings
-  const model =
-    targetSettings.overrides.model ?? projectSettings.overrides.model ?? globalSettings.model
-  const effort =
-    targetSettings.overrides.effort ?? projectSettings.overrides.effort ?? globalSettings.effort
-  const tokens = model ? ['--model', model] : []
-  if (effort !== 'auto') tokens.push('--effort', effort)
-  return { flags: tokens.join(FLAG_DELIMITER), settingsJson: '', env: {}, model }
-}
-
-// A2 (support-multi-harness) — the composeHarnessLaunch seam
-// (SettingsResourceServiceDeps), exercised by settingsResourceService.ts's
-// effectiveForWorkspace in place of composeLaunch. Mirrors composeLaunch's
-// own model/effort resolution above (same fixture data, same precedence)
-// but returns the structured HarnessLaunch shape, and increments the same
-// composeCalls counter — effectiveForWorkspace calls exactly one of
-// composeLaunch/composeHarnessLaunch per invocation, and this file's
-// `assert.equal(composeCalls, 1)` checks that call-once contract.
+// The composeHarnessLaunch seam (SettingsResourceServiceDeps), exercised by
+// settingsResourceService.ts's effectiveForWorkspace. Returns the structured
+// HarnessLaunch shape (model/effort as real fields, not flags to grep), and
+// increments composeCalls — effectiveForWorkspace calls this exactly once
+// per invocation, and this file's `assert.equal(composeCalls, 1)` checks
+// that call-once contract.
 function composeHarnessLaunch(
   _harnessId: string | undefined,
   projectId?: string,
@@ -195,7 +178,6 @@ const serviceDeps = {
     projectId === 'project-1' ? projectSettings : { projectId, overrides: {}, updatedAt: 0 },
   getWorkspaceSettings: (workspaceId) =>
     workspaceId === workspace.id ? workspaceSettings : siblingSettings,
-  composeLaunch,
   composeHarnessLaunch,
   updateWorkspaceSettings: (workspaceId, patch) => {
     assert.equal(workspaceId, workspace.id)

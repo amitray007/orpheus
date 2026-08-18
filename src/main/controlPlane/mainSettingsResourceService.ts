@@ -1,4 +1,4 @@
-import { composeClaudeLaunch, getClaudeGlobalSettings } from '../claudeSettings'
+import { getClaudeGlobalSettings } from '../claudeSettings'
 import { getClaudeProjectSettings } from '../claudeProjectSettings'
 import {
   getClaudeWorkspaceSettings,
@@ -24,9 +24,8 @@ export function createMainSettingsResourceService(): SettingsResourceService {
     getGlobalSettings: getClaudeGlobalSettings,
     getProjectSettings: getClaudeProjectSettings,
     getWorkspaceSettings: getClaudeWorkspaceSettings,
-    composeLaunch: composeClaudeLaunch,
-    // A2 (support-multi-harness): resolveHarness never throws and falls
-    // back to the Claude descriptor for a missing/unknown harnessId — see
+    // resolveHarness never throws and falls back to the Claude descriptor
+    // for a missing/unknown harnessId — see
     // SettingsResourceServiceDeps.composeHarnessLaunch's doc comment for why
     // this seam exists instead of settingsResourceService.ts importing
     // resolveHarness directly.
