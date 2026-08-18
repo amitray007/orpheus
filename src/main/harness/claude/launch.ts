@@ -2,8 +2,10 @@
 // src/main/harness/claude/launch.ts
 //
 // U4 of the multi-harness migration plan: produces a `HarnessLaunch` for
-// Claude from ONLY two sources — U3's curated fields (model/effort/
-// permission-mode) and U2's generic harness_settings rows (resolveHarnessSettings).
+// Claude from THREE sources — U3's curated fields (model/effort/
+// permission-mode), U2's generic harness_settings rows
+// (resolveHarnessSettings), and U5's session-continuity tokens
+// (claudeSessionArgs, ./session.ts).
 //
 // KTD2 — ZERO TYPED PASSTHROUGH SETTINGS. This is the whole point of this
 // file. It does NOT read `claude_global_settings`, does NOT import anything
@@ -15,7 +17,12 @@
 // Nothing else is hardcoded or maintained by Orpheus." Do not add a single
 // hardcoded flag/env emission here beyond the three curated fields; that
 // would silently reintroduce the 94-column maintenance burden this unit
-// exists to kill.
+// exists to kill. Session continuity (U5) is a DELIBERATE exception to
+// "nothing else is hardcoded": it isn't one of the 94 passthrough settings
+// at all — it's Orpheus's own workspace<->transcript identity bookkeeping
+// (claudeSessionId/forkedFromSessionId live on the workspace row, not in
+// claude_global_settings), gated behind capabilities.resume/fork exactly
+// because it does NOT generalize to every harness. See session.ts's header.
 //
 // NOT WIRED YET. Nothing calls this module — the registry's Claude
 // descriptor still points `composeLaunch` at composeClaudeLaunch (see
@@ -29,6 +36,7 @@ import type { HarnessLaunch } from '../../../shared/harness/types'
 import { FLAG_DELIMITER } from '../../../shared/cliFlags'
 import { resolveHarnessSettings, type HarnessSettingRow } from '../settings'
 import { CLAUDE_CURATED, buildCuratedArgs, buildCuratedEnv } from './curated'
+import { claudeSessionArgs } from './session'
 
 const HARNESS_ID = 'claude'
 
@@ -45,15 +53,26 @@ const HARNESS_ID = 'claude'
  *      app-read-back concepts (KTD3) and always take the front of the argv/
  *      env so a user's custom rows can be read, visually, as "everything
  *      after the curated trio."
- *   2. THEN USER ARG ROWS, in their resolveHarnessSettings-declared order
+ *   2. THEN SESSION-CONTINUITY TOKENS (U5), via claudeSessionArgs —
+ *      `--resume`/`--session-id`/`--fork-session`. Placed here to match
+ *      composeClaudeLaunch's own order exactly: composeFlagTokens
+ *      (src/main/claudeSettings.ts) calls pushSessionContinuityFlags AFTER
+ *      all of its typed curated flags (model, effort, permission-mode,
+ *      fallback-model, etc.) and BEFORE customCliFlags are appended. This
+ *      emitter has no fallback-model or other typed passthrough (KTD2), so
+ *      "after curated, before user rows" is the direct equivalent —
+ *      required for U7's byte-equality parity gate, where ordering counts.
+ *   3. THEN USER ARG ROWS, in their resolveHarnessSettings-declared order
  *      (global rows first, then project-introduced keys, then
  *      workspace-introduced keys — see settings.ts's mergeRowsByKey doc
  *      comment). A bare row (`value` undefined) emits just its key, e.g. a
- *      user adding `--verbose` with no value.
- *   3. THEN USER ENV ROWS, same ordering rule, layered on top of curated
+ *      user adding `--verbose` with no value. Mirrors customCliFlags being
+ *      the last thing appended in composeFlagTokens, so a user's override
+ *      still wins by last-flag-wins in claude's own parser.
+ *   4. THEN USER ENV ROWS, same ordering rule, layered on top of curated
  *      env — see the ENV-KEY COLLISION note below for precedence when a
  *      user row's key matches a curated field's env key.
- *   4. `settingsJson` — ONLY emitted from user-supplied settings-json rows.
+ *   5. `settingsJson` — ONLY emitted from user-supplied settings-json rows.
  *      HarnessSettings (settings.ts) has no settings-json row kind yet — no
  *      row `key`/`value` shape maps to "this goes into --settings" today,
  *      unlike args/env which are explicit sibling arrays. Until that shape
@@ -95,6 +114,7 @@ export function composeClaudeHarnessLaunch(
     ...buildCuratedArgs(CLAUDE_CURATED.model, curated.model ?? ''),
     ...buildCuratedArgs(CLAUDE_CURATED.effort, curated.effort ?? ''),
     ...buildCuratedArgs(CLAUDE_CURATED.permissionMode, curated.permissionMode ?? ''),
+    ...claudeSessionArgs(workspaceId),
     ...userArgTokens(resolved.args)
   ]
 

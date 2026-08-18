@@ -42,15 +42,31 @@ export function getDb() {
 
 const hooks = `
 const dbStubUrl = ${JSON.stringify('data:text/javascript,' + encodeURIComponent(dbStubSource))}
+const electronStubUrl = ${JSON.stringify('data:text/javascript,' + encodeURIComponent('export const app = {}\nexport const BrowserWindow = {}\n'))}
 
 export async function resolve(specifier, context, nextResolve) {
   if (specifier === 'electron') {
-    return { url: 'data:text/javascript,export const app = {}', shortCircuit: true }
+    // Both app and BrowserWindow are needed: settings.ts reaches electron
+    // via ./db (app), and session.ts reaches it via workspaces.ts
+    // (BrowserWindow, for its change broadcasts). Neither is called on the
+    // paths this harness exercises — they exist only to satisfy the linker.
+    // (No backticks in this comment: the whole hook is a template literal.)
+    return { url: electronStubUrl, shortCircuit: true }
   }
-  // Match settings.ts's own relative specifier ('../db') exactly, resolved
-  // against ITS parent URL — settings.ts lives under src/main/harness/, the
-  // same directory launch.ts's own '../settings' import resolves into.
-  if (specifier === '../db' && context.parentURL && context.parentURL.includes('/src/main/harness/')) {
+  // Redirect EVERY relative import of the db directory to the stub, from any
+  // parent — not just settings.ts's own '../db'. src/main/db is a DIRECTORY
+  // module (db/index.ts), and node's ESM resolver rejects a directory import
+  // outright (ERR_UNSUPPORTED_DIR_IMPORT) rather than falling back to
+  // index.ts the way bundler resolution does. So any module in this import
+  // graph that reaches the DB has to be intercepted here, not only the one
+  // this harness set out to test: session.ts pulls in workspaces.ts, which
+  // sits in src/main/ and imports './db' — a different specifier AND a
+  // different parent directory than settings.ts's '../db'. Matching on the
+  // resolved basename instead of one literal specifier keeps this working as
+  // the harness module's import graph grows.
+  // (Plain string compare rather than a regex: this hook is serialized into a
+  // data: URL, where a regex literal's slashes do not survive encoding.)
+  if (specifier === './db' || specifier === '../db') {
     return { url: dbStubUrl, shortCircuit: true }
   }
   try {
@@ -83,6 +99,24 @@ function createFreshDb(): InstanceType<typeof Database> {
   db.exec(
     `CREATE UNIQUE INDEX idx_harness_settings_key ON harness_settings (harness_id, scope, scope_id)`
   )
+  // session.ts (U5) reads the workspace row for claude_session_id / cwd /
+  // forked_from_session_id, so the launch path now touches this table too.
+  // Only the columns getWorkspace's row→record mapping actually selects are
+  // needed — this is a launch-composition harness, not a workspaces one.
+  db.exec(`
+    CREATE TABLE workspaces (
+      id TEXT PRIMARY KEY NOT NULL,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'idle',
+      name_is_auto INTEGER NOT NULL DEFAULT 1,
+      claude_session_id TEXT,
+      forked_from_session_id TEXT,
+      harness_id TEXT NOT NULL DEFAULT 'claude'
+    )
+  `)
   ;(
     globalThis as unknown as { __HARNESS_CLAUDE_LAUNCH_TEST_DB__: unknown }
   ).__HARNESS_CLAUDE_LAUNCH_TEST_DB__ = db
