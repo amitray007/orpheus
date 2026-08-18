@@ -45,7 +45,16 @@ const verifiers = [
   'verify-non-claude-launch-behavior.ts',
   'verify-model-picker.ts',
   'verify-harness-registry.ts',
-  'verify-harness-launch.ts'
+  'verify-harness-launch.ts',
+  'verify-harness-curated.ts',
+  // Runs under plain node, not bun — see verify-harness-settings.ts's own
+  // header comment: it uses node:sqlite's DatabaseSync for a real in-memory
+  // DB, and node:sqlite has no bun equivalent ("Could not resolve:
+  // 'node:sqlite'" under `bun run`, verified empirically). Listed as a
+  // [label, command] tuple rather than a bare string so runVerifier() below
+  // can dispatch it to `node --experimental-strip-types` instead of the
+  // uniform `bun run scripts/<name>` every other entry uses.
+  ['verify-harness-settings.ts', ['node', '--experimental-strip-types']]
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {
@@ -71,11 +80,20 @@ function run(label: string, command: readonly [string, ...string[]]): void {
   console.log(`✓ ${label} (${Math.round(performance.now() - startedAt)} ms)`)
 }
 
+function runVerifier(entry: (typeof verifiers)[number]): void {
+  if (typeof entry === 'string') {
+    run(entry, ['bun', 'run', `scripts/${entry}`])
+    return
+  }
+  const [label, command] = entry
+  run(label, [...command, `scripts/${label}`] as [string, ...string[]])
+}
+
 // The two bundled transports are shared by multiple verifiers. Build each once
 // for the whole suite instead of hiding duplicate builds inside focused tests.
 run('build agent transports', ['bun', 'run', 'build:agents'])
 for (const verifier of verifiers) {
-  run(verifier, ['bun', 'run', `scripts/${verifier}`])
+  runVerifier(verifier)
 }
 
 console.log(`\nAgentic regression suite passed (${verifiers.length} focused verifiers).`)
