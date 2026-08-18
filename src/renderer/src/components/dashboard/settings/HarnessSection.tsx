@@ -7,17 +7,15 @@ import type {
   HarnessSettingsScope,
   ProjectRecord
 } from '@shared/types'
-import type { CuratedField } from '@shared/harness/types'
 import { Plus, Trash, CaretUp, CaretDown, Question } from '@phosphor-icons/react'
 import { SettingRow, SegmentedControl, Select, Toggle, Eyebrow, SecretInput } from './primitives'
-import { IconByName } from '../footer/iconMap'
+import { ProviderIcon, isKnownProviderIconId } from '@/components/ProviderIcon'
 import {
   isSecretLikeKey,
   moveRow,
   resolveProvenance,
   mergeDefaultArgs,
   draftsToStoredRows,
-  type CuratedFieldName,
   type HarnessScopeSettingsBundle
 } from './harnessSettingsLogic'
 
@@ -26,11 +24,21 @@ import {
 //
 // Data-driven from harness:list — no hardcoded 'claude' anywhere in this
 // component. A second harness needs no new code here, only a second
-// HarnessDescriptor in src/main/harness/registry.ts. Orpheus curates exactly
-// two concepts per harness (model/effort) and otherwise ships zero-or-more
-// default args (visibly-marked, user-editable rows — see mergeDefaultArgs)
-// plus zero default env — everything else is untyped user-supplied
-// passthrough, edited via the row editors below.
+// HarnessDescriptor in src/main/harness/registry.ts. This section ships
+// zero-or-more default args (visibly-marked, user-editable rows — see
+// mergeDefaultArgs) plus zero default env — everything else is untyped
+// user-supplied passthrough, edited via the row editors below.
+//
+// NO CURATED MODEL/EFFORT UI HERE, DELIBERATELY: a descriptor may still
+// declare `curated` (HarnessDescriptor.curated in src/main/harness/registry.ts
+// — the flag/env/configFlag shape a harness expresses model/effort with,
+// e.g. Claude's `--model`), and the launch path (buildCuratedArgs/
+// buildCuratedEnv, src/main/harness/claude/curated.ts + launch.ts) still
+// reads it. That knowledge just isn't rendered as a picker in THIS section
+// anymore — a user who wants to pin a model adds `--model` as an ordinary
+// arg row below, like any other flag. Quick actions (and later, per-harness
+// UI) are expected to read `curated` directly rather than through a control
+// here.
 //
 // SCOPE: global + project only. Workspace scope was removed deliberately —
 // see HARNESS_SETTINGS_SCOPE in src/main/db/schema.ts.
@@ -108,7 +116,11 @@ function HarnessPicker({ harnesses, selectedId, onSelect }: HarnessPickerProps):
                 selected ? 'bg-accent/20 text-accent' : 'bg-surface-overlay text-text-muted'
               ].join(' ')}
             >
-              {harness.icon ? <IconByName name={harness.icon} size={14} /> : <Question size={14} />}
+              {harness.icon && isKnownProviderIconId(harness.icon) ? (
+                <ProviderIcon providerId={harness.icon} size={14} />
+              ) : (
+                <Question size={14} />
+              )}
             </span>
             <span
               className={[
@@ -125,77 +137,6 @@ function HarnessPicker({ harnesses, selectedId, onSelect }: HarnessPickerProps):
           </button>
         )
       })}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// CuratedFieldPicker — Select + reveal-on-'custom' free-text input, driven by
-// a CuratedField's `options` array rather than a hardcoded list (mirrors
-// primitives.tsx's ModelPicker pattern, generalized to any curated field).
-// ---------------------------------------------------------------------------
-
-interface CuratedFieldPickerProps {
-  field: CuratedField
-  value: string
-  onChange: (v: string) => void
-  ariaLabel: string
-  inheritedFrom?: HarnessSettingsScope
-}
-
-function CuratedFieldPicker({
-  field,
-  value,
-  onChange,
-  ariaLabel,
-  inheritedFrom
-}: CuratedFieldPickerProps): React.JSX.Element {
-  const options = useMemo(
-    () => [
-      ...field.options.map((o) => ({ value: o, label: o })),
-      { value: 'custom', label: 'Custom…' }
-    ],
-    [field.options]
-  )
-  const isKnown = value === '' || field.options.includes(value)
-  const [showCustom, setShowCustom] = useState(!isKnown && value !== '')
-  const [customValue, setCustomValue] = useState(!isKnown ? value : '')
-  const selectValue = !isKnown && showCustom ? 'custom' : value
-
-  function handleSelect(v: string): void {
-    if (v === 'custom') {
-      setShowCustom(true)
-      return
-    }
-    setShowCustom(false)
-    onChange(v)
-  }
-
-  return (
-    <div className="flex flex-col gap-1.5 items-end w-56">
-      {inheritedFrom && value === '' && (
-        <span className="text-xs text-text-muted italic">from {scopeChipLabel(inheritedFrom)}</span>
-      )}
-      <Select
-        options={options}
-        value={selectValue || '__unset'}
-        onChange={handleSelect}
-        ariaLabel={ariaLabel}
-        placeholder="Inherited"
-      />
-      {showCustom && (
-        <input
-          aria-label={`Custom ${ariaLabel}`}
-          value={customValue}
-          onChange={(e) => setCustomValue(e.target.value)}
-          onBlur={() => {
-            const v = customValue.trim()
-            if (v) onChange(v)
-          }}
-          placeholder="custom value"
-          className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus:border-accent/50 transition-colors duration-150 font-mono"
-        />
-      )}
     </div>
   )
 }
@@ -514,13 +455,6 @@ export function HarnessSection(): React.JSX.Element | null {
       .catch((err) => console.error('[harness] setSettings failed', err))
   }
 
-  function setCurated(field: CuratedFieldName, value: string): void {
-    persist({
-      ...scopeSettings,
-      curated: { ...scopeSettings.curated, [field]: value || undefined }
-    })
-  }
-
   function setArgs(rows: HarnessSettingRow[]): void {
     // Re-derive which rows still match the harness's own defaults and drop
     // those before persisting — see draftsToStoredRows: a default the user
@@ -580,36 +514,6 @@ export function HarnessSection(): React.JSX.Element | null {
       ) : (
         selectedHarness && (
           <>
-            {selectedHarness.curated && (
-              <div>
-                <Eyebrow className="mb-3">Curated</Eyebrow>
-                <div className="bg-surface-raised border border-border-default rounded-lg px-5 divide-y divide-border-default/60">
-                  {selectedHarness.curated.model && (
-                    <SettingRow label="Model" mapsTo={fieldMapsTo(selectedHarness.curated.model)}>
-                      <CuratedFieldPicker
-                        field={selectedHarness.curated.model}
-                        value={scopeSettings.curated?.model ?? ''}
-                        onChange={(v) => setCurated('model', v)}
-                        ariaLabel="Model"
-                        inheritedFrom={scope !== 'global' ? provenance.curated.model : undefined}
-                      />
-                    </SettingRow>
-                  )}
-                  {selectedHarness.curated.effort && (
-                    <SettingRow label="Effort" mapsTo={fieldMapsTo(selectedHarness.curated.effort)}>
-                      <CuratedFieldPicker
-                        field={selectedHarness.curated.effort}
-                        value={scopeSettings.curated?.effort ?? ''}
-                        onChange={(v) => setCurated('effort', v)}
-                        ariaLabel="Effort"
-                        inheritedFrom={scope !== 'global' ? provenance.curated.effort : undefined}
-                      />
-                    </SettingRow>
-                  )}
-                </div>
-              </div>
-            )}
-
             <div>
               <Eyebrow className="mb-3">Arguments</Eyebrow>
               <div className="bg-surface-raised border border-border-default rounded-lg p-5">
@@ -659,22 +563,6 @@ export function HarnessSection(): React.JSX.Element | null {
       )}
     </section>
   )
-}
-
-/** Renders a curated field's `mapsTo` chip across all three CuratedField
- *  emission forms (flag / env / configFlag+configKey — see CuratedField's
- *  header in src/shared/harness/types.ts). The configFlag/configKey form has
- *  no single CLI token — Codex's `-c model_reasoning_effort="high"` is two
- *  tokens, carrier then `key=value` — so it's rendered as
- *  "-c model_reasoning_effort" (carrier + key, no value placeholder) rather
- *  than picking one token and dropping the other. */
-function fieldMapsTo(field: CuratedField): string {
-  if ('flag' in field && field.flag) return field.flag
-  if ('env' in field && field.env) return field.env
-  if ('configFlag' in field && field.configFlag && 'configKey' in field && field.configKey) {
-    return `${field.configFlag} ${field.configKey}`
-  }
-  return ''
 }
 
 /** Small muted note listing which keys at the CURRENT scope are actually

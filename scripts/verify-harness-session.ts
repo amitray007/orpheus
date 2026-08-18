@@ -58,14 +58,21 @@ export function getDb() {
 }
 `
 
-// Real resolveHarness signature/shape, test-controlled return value. Default
-// mirrors Claude's real descriptor (resume: true, fork: true) so scenarios
-// that don't touch capabilities get real, unchanged behavior.
+// session.ts reads Claude's capabilities from its LEAF module
+// (claude/curated.ts's CLAUDE_CAPABILITIES), not via resolveHarness — going
+// through the registry made a harness module depend on the registry that
+// composes it, closing a launch -> session -> registry -> launch cycle that
+// check:arch rejects. So the stub intercepts './curated', not '../registry'.
+//
+// Default mirrors Claude's real capabilities (resume: true, fork: true) so
+// scenarios that don't touch them get real, unchanged behavior.
 const registryStubSource = `
-export function resolveHarness(id) {
-  const caps = globalThis.__HARNESS_SESSION_TEST_CAPS__ ?? { resume: true, fork: true }
-  return { id: id ?? 'claude', capabilities: caps }
-}
+export const CLAUDE_CAPABILITIES = new Proxy({}, {
+  get(_t, prop) {
+    const caps = globalThis.__HARNESS_SESSION_TEST_CAPS__ ?? { resume: true, fork: true }
+    return caps[prop]
+  }
+})
 `
 
 const hooks = `
@@ -97,7 +104,7 @@ export async function resolve(specifier, context, nextResolve) {
   // session.ts's own relative specifier for the registry module — see this
   // file's header for why this is intercepted (capability-gating control,
   // not a DB dependency).
-  if (specifier === '../registry' && context.parentURL && context.parentURL.endsWith('/src/main/harness/claude/session.ts')) {
+  if (specifier === './curated' && context.parentURL && context.parentURL.endsWith('/src/main/harness/claude/session.ts')) {
     return { url: registryStubUrl, shortCircuit: true }
   }
   try {

@@ -27,7 +27,7 @@
 
 import type { HarnessDescriptor, HarnessId } from '../../shared/harness/types'
 import { composeClaudeHarnessLaunch } from './claude/launch'
-import { CLAUDE_CURATED, CLAUDE_DEFAULT_ARGS } from './claude/curated'
+import { CLAUDE_CAPABILITIES, CLAUDE_CURATED, CLAUDE_DEFAULT_ARGS } from './claude/curated'
 import { CLAUDE_DEFAULT_ACTIONS } from './claude/actions'
 
 // Known-good `claude --version` strings, used by sessionState.ts to warn
@@ -44,59 +44,14 @@ const CLAUDE_DESCRIPTOR: HarnessDescriptor = {
   label: 'Claude Code',
   binary: 'claude',
   wrapperScript: 'orpheus-claude.sh',
-  // Phosphor icon name for the harness picker (renderer maps name->component
-  // via footer/iconMap.tsx's IconByName — see HarnessSection.tsx). 'Terminal'
-  // reads clearly as "a CLI you run", distinct from the Robot/Sparkle icons
-  // already used elsewhere for AI-flavored UI.
-  icon: 'Terminal',
-  capabilities: {
-    // sessionState.ts watches ~/.claude/sessions/<pid>.json (SESSIONS_DIR,
-    // this file's sibling module) for live busy/idle/waiting status.
-    structuredStatus: true,
-    // Every claude session writes ~/.claude/projects/<encoded-cwd>/*.jsonl —
-    // the app's authoritative transcript store (see CLAUDE.md's Session
-    // domain-model paragraph; parsed by claudeActivityWindow.ts, etc.).
-    transcript: true,
-    // claudeSettings.ts's pushSessionContinuityFlags emits `--resume
-    // <sessionId>` once a workspace's .jsonl exists.
-    resume: true,
-    // Real, wired feature: workspace.fork (src/main/actions/workspace.ts's
-    // handleFork) clones a workspace and claudeSettings.ts's
-    // pushSessionContinuityFlags emits `--session-id <new-uuid> --resume
-    // <parent-uuid> --fork-session` on first launch of the fork. Distinct
-    // from plain resume (branches history under a NEW id instead of
-    // continuing the same one).
-    fork: true,
-    // Real, wired feature: claudeActivityWindow.ts parses claude's own
-    // transcript .jsonl files for per-line token counts and rolls them into
-    // ClaudeActivityWindowResult (tokenTotal, per-model activity), surfaced
-    // in the renderer's dashboard pulse data (usePulseData.ts) via the
-    // `claude:activityWindow` IPC channel (src/shared/ipc.ts:402).
-    usage: true,
-    // orpheusNotify.ts installs managed hooks into ~/.claude/settings.json
-    // (SessionStart, etc.) — see CLAUDE.md's "Hooks are dormant enrichment"
-    // paragraph: the hook plumbing itself is real and live, even though
-    // status is no longer decided by hook events post Phase-2-cutover.
-    hooks: true,
-    // claudeSettings.ts's composeClaudeLaunch produces `settingsJson` for
-    // ORPHEUS_CLAUDE_SETTINGS_JSON, consumed by resources/orpheus-claude.sh
-    // via `claude --settings <json>`.
-    inlineSettingsJson: true,
-    // Describes what the HARNESS supports, not whether routing is currently
-    // wired for it — those are different questions. Claude Code has a real
-    // model picker (ClaudeGlobalSettings.model / --model) and is the one
-    // harness whose traffic CAN be routed through the model-routing proxy
-    // for non-Claude model ids (src/main/modelRouting.ts). Phase 0 severed
-    // launch-side routing for Claude itself — applyModelRouting is a
-    // byte-for-byte no-op whenever the resolved model IS a Claude model
-    // (modelRouting.ts:10-14's ToS invariant) — but that's a statement about
-    // which requests get routed, not about whether the harness supports
-    // model selection/routing as a capability. `true` is correct here.
-    // P1.7 will assert this is the ONLY descriptor with modelRouting: true,
-    // which is a statement about the future non-Claude harnesses (Codex
-    // CLI/Gemini CLI), not a contradiction of Claude having the capability.
-    modelRouting: true
-  },
+  // Provider icon id for the harness picker — renderer resolves this via
+  // ProviderIcon.tsx's KnownProviderIconId (src/renderer/src/components/
+  // ProviderIcon.tsx), which renders the official Claude brand mark. Kept a
+  // plain string here (not the renderer's union type) because src/shared
+  // must not import renderer code — the name->component mapping stays in
+  // the renderer, which falls back gracefully for an id it doesn't know.
+  icon: 'claude',
+  capabilities: CLAUDE_CAPABILITIES,
   // Real SectionId values from the renderer's settings UI (see
   // src/renderer/src/components/dashboard/SettingsView.tsx's `SectionId`
   // type and its `claude-*` tab registrations) — not invented. `src/main`

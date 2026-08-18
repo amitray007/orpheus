@@ -28,9 +28,7 @@ import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import { getWorkspace } from '../../workspaces'
 import { encodePathToClaudeDir } from '../../claudeProjectDir'
-import { resolveHarness } from '../registry'
-
-const HARNESS_ID = 'claude'
+import { CLAUDE_CAPABILITIES } from './curated'
 
 // One-way-true cache for session JSONL existence checks, mirroring
 // claudeSettings.ts's sessionJsonlExistsCache exactly (same key shape, same
@@ -98,7 +96,11 @@ function sessionJsonlExists(cwd: string, sessionId: string): boolean {
  * pushSessionContinuityFlags's early-return behavior.
  */
 export function claudeSessionArgs(workspaceId?: string): string[] {
-  const capabilities = resolveHarness(HARNESS_ID).capabilities
+  // Read Claude's own capabilities from its leaf module rather than via
+  // resolveHarness(): a harness module asking the REGISTRY about itself is
+  // what created the launch -> session -> registry -> launch cycle that
+  // check:arch rejects. Same values, no cycle.
+  const capabilities = CLAUDE_CAPABILITIES
   if (!capabilities.resume) return []
   if (!workspaceId) return []
 

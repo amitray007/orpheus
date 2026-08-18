@@ -28,7 +28,11 @@
 // instead of silently drifting.
 // ---------------------------------------------------------------------------
 
-import type { CuratedField, HarnessArgRow } from '../../../shared/harness/types'
+import type {
+  CuratedField,
+  HarnessArgRow,
+  HarnessCapabilities
+} from '../../../shared/harness/types'
 import { CLAUDE_EFFORT_VALUES, CLAUDE_MODEL_OPTIONS } from '../../../shared/types'
 
 export const CLAUDE_CURATED_MODEL: CuratedField = {
@@ -116,3 +120,68 @@ export function buildCuratedEnv(
 export const CLAUDE_DEFAULT_ARGS: HarnessArgRow[] = [
   { key: '--permission-mode', value: 'acceptEdits', enabled: false }
 ]
+
+// ---------------------------------------------------------------------------
+// Capabilities
+// ---------------------------------------------------------------------------
+
+/**
+ * What Claude Code supports. Declared HERE rather than inline in
+ * registry.ts to keep the module graph acyclic: session.ts needs Claude's
+ * own capabilities to gate resume/fork, and reaching them through
+ * resolveHarness() made session.ts depend on the registry, which depends on
+ * launch.ts, which depends on session.ts — a cycle check:arch rejects.
+ *
+ * A harness module asking the registry about ITSELF was the design smell
+ * behind that cycle. Its own facts belong in its own leaf module; the
+ * registry composes them into a descriptor, and nothing inside the harness
+ * needs to ask the registry who it is.
+ */
+export const CLAUDE_CAPABILITIES: HarnessCapabilities = {
+  // sessionState.ts watches ~/.claude/sessions/<pid>.json (SESSIONS_DIR,
+  // this file's sibling module) for live busy/idle/waiting status.
+  structuredStatus: true,
+  // Every claude session writes ~/.claude/projects/<encoded-cwd>/*.jsonl —
+  // the app's authoritative transcript store (see CLAUDE.md's Session
+  // domain-model paragraph; parsed by claudeActivityWindow.ts, etc.).
+  transcript: true,
+  // claudeSettings.ts's pushSessionContinuityFlags emits `--resume
+  // <sessionId>` once a workspace's .jsonl exists.
+  resume: true,
+  // Real, wired feature: workspace.fork (src/main/actions/workspace.ts's
+  // handleFork) clones a workspace and claudeSettings.ts's
+  // pushSessionContinuityFlags emits `--session-id <new-uuid> --resume
+  // <parent-uuid> --fork-session` on first launch of the fork. Distinct
+  // from plain resume (branches history under a NEW id instead of
+  // continuing the same one).
+  fork: true,
+  // Real, wired feature: claudeActivityWindow.ts parses claude's own
+  // transcript .jsonl files for per-line token counts and rolls them into
+  // ClaudeActivityWindowResult (tokenTotal, per-model activity), surfaced
+  // in the renderer's dashboard pulse data (usePulseData.ts) via the
+  // `claude:activityWindow` IPC channel (src/shared/ipc.ts:402).
+  usage: true,
+  // orpheusNotify.ts installs managed hooks into ~/.claude/settings.json
+  // (SessionStart, etc.) — see CLAUDE.md's "Hooks are dormant enrichment"
+  // paragraph: the hook plumbing itself is real and live, even though
+  // status is no longer decided by hook events post Phase-2-cutover.
+  hooks: true,
+  // claudeSettings.ts's composeClaudeLaunch produces `settingsJson` for
+  // ORPHEUS_CLAUDE_SETTINGS_JSON, consumed by resources/orpheus-claude.sh
+  // via `claude --settings <json>`.
+  inlineSettingsJson: true,
+  // Describes what the HARNESS supports, not whether routing is currently
+  // wired for it — those are different questions. Claude Code has a real
+  // model picker (ClaudeGlobalSettings.model / --model) and is the one
+  // harness whose traffic CAN be routed through the model-routing proxy
+  // for non-Claude model ids (src/main/modelRouting.ts). Phase 0 severed
+  // launch-side routing for Claude itself — applyModelRouting is a
+  // byte-for-byte no-op whenever the resolved model IS a Claude model
+  // (modelRouting.ts:10-14's ToS invariant) — but that's a statement about
+  // which requests get routed, not about whether the harness supports
+  // model selection/routing as a capability. `true` is correct here.
+  // P1.7 will assert this is the ONLY descriptor with modelRouting: true,
+  // which is a statement about the future non-Claude harnesses (Codex
+  // CLI/Gemini CLI), not a contradiction of Claude having the capability.
+  modelRouting: true
+}
