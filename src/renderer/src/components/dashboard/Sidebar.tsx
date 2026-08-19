@@ -27,6 +27,12 @@ import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
+import { useHarnessForWorkspace } from '@/lib/harnessStore'
+import {
+  shouldUseTranscriptDerivedTitle,
+  shouldUseTranscriptDerivedFreshness,
+  shouldClaimLiveActivity
+} from '@shared/harness/capabilityGating'
 import { useUiState } from '@/lib/uiStateStore'
 import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { useInlineRename } from '@/lib/useInlineRename'
@@ -240,8 +246,14 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   onClose,
   onTogglePin
 }: WorkspaceRowProps): React.JSX.Element {
+  // This workspace's harness descriptor — gates every transcript-derived /
+  // structured-status readout below on real capabilities instead of
+  // assuming Claude (C4, support-multi-harness). See
+  // src/shared/harness/capabilityGating.ts for the pure decisions.
+  const harness = useHarnessForWorkspace(workspace.harnessId)
   // Subscribe to this workspace's key only — no re-render on other workspaces
-  const activity = useWorkspaceActivity(workspace.id)
+  const rawActivity = useWorkspaceActivity(workspace.id)
+  const activity = shouldClaimLiveActivity(harness.capabilities) ? rawActivity : undefined
   const isBusy = activity === 'working'
   const isClosed = workspace.closedAt !== null
   const liveActivityAt = useWorkspaceActivityTime(workspace.id)
@@ -253,9 +265,10 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const sidebarBoundsRef = useSidebarBounds()
 
-  const sessionTitle = workspace.claudeSessionId
-    ? (sessionTitleBySessionId.get(workspace.claudeSessionId) ?? null)
-    : null
+  const sessionTitle =
+    workspace.claudeSessionId && shouldUseTranscriptDerivedTitle(harness.capabilities)
+      ? (sessionTitleBySessionId.get(workspace.claudeSessionId) ?? null)
+      : null
 
   const dn = resolveWorkspaceName({ workspace, terminalTitle, sessionTitle })
   const displayName = dn.text
@@ -298,9 +311,10 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     if (!willCommit) onCancelRename()
   }
 
-  const mtimeActivityAt = workspace.claudeSessionId
-    ? (sessionMtimeBySessionId.get(workspace.claudeSessionId) ?? null)
-    : null
+  const mtimeActivityAt =
+    workspace.claudeSessionId && shouldUseTranscriptDerivedFreshness(harness.capabilities)
+      ? (sessionMtimeBySessionId.get(workspace.claudeSessionId) ?? null)
+      : null
   const { relativeTime, isVeryOld } = computeWorkspaceFreshness(
     liveActivityAt,
     mtimeActivityAt,

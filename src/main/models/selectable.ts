@@ -5,15 +5,37 @@
 // This is the ONE place "what models can a workspace pick from right now?"
 // is decided. Two groups:
 //
-//   1. Claude — ALWAYS present, ALWAYS first, unconditionally `available`.
-//      This is the offline guarantee: even with the routing proxy fully
-//      disabled/stopped/unreachable, Claude must still be a full, selectable
-//      list (see verify-model-picker.ts assertion 1). Sourced from
+//   1. The BASE catalog for the workspace's own harness. For Claude — ALWAYS
+//      present, ALWAYS first, unconditionally `available`. This is the
+//      offline guarantee: even with the routing proxy fully disabled/
+//      stopped/unreachable, Claude must still be a full, selectable list
+//      (see verify-model-picker.ts assertion 1). Sourced from
 //      CLAUDE_MODEL_OPTIONS (src/shared/types.ts) — the same enumerable list
 //      every existing picker (WorkspaceDrawer/SettingsDrawer/DropdownChip)
 //      already renders from, now surfaced through IPC instead of imported
 //      directly by renderer code (part B of this unit removes those direct
-//      imports).
+//      imports). (C3, support-multi-harness) For a NON-Claude harness, the
+//      base catalog instead comes from that harness's OWN descriptor —
+//      `descriptor.curated?.model?.options`, threaded in by the IPC layer as
+//      `input.harnessModelOptions` — never CLAUDE_MODEL_OPTIONS. A harness
+//      that declares no `curated.model` yields no models at all (an empty
+//      list), never a Claude fallback and never a fabricated one — see
+//      harnessEntries()'s own doc comment for exactly which SelectableModel
+//      fields are real vs. deliberately left null for a non-Claude harness.
+//
+//   2. Routed — only offered when ALL of: the proxy is enabled AND running,
+//      the owning provider account is connected AND healthy (cross-
+//      referenced against the routing-proxy snapshot's authFiles by provider
+//      id), AND the model is known to the cliproxy model source's cache
+//      (i.e. CLIProxyAPI's own model-definitions endpoint reported it for
+//      that provider channel). A model whose provider is disabled/
+//      unhealthy/disconnected is simply omitted from the offered list...
+//      UNLESS `currentModelId` names it, in which case it is still included
+//      with `available: false` — a workspace's stored setting must never be
+//      silently dropped from the picker just because its backend went
+//      offline (see part A's "never lose the user's setting" requirement).
+//      Dead code today (see PHASE0_ROUTING_SEVERED below) — group 1 above is
+//      the whole picker until Phase 6.
 //
 //   2. Routed — only offered when ALL of: the proxy is enabled AND running,
 //      the owning provider account is connected AND healthy (cross-
@@ -212,6 +234,44 @@ export interface BuildSelectableModelsInput {
    *  (see effortPickerOptions.ts's clampEffortToSupportedLevel for that,
    *  which this unit must not touch). */
   currentEffort?: string
+  /** (C3, support-multi-harness) The BASE model list for the workspace's
+   *  own harness, sourced from that harness's descriptor —
+   *  `descriptor.curated?.model?.options` — resolved by the IPC layer
+   *  (src/main/ipc/models.ts) and passed in as plain data, same contract as
+   *  every other harness-derived field on this input (this module stays
+   *  electron-free/DB-free; it never resolves a harness descriptor itself).
+   *
+   *  UNDEFINED means "resolve the Claude descriptor's own list" — i.e. the
+   *  CLAUDE_MODEL_OPTIONS default — so every pre-C3 call site (which never
+   *  set this field) keeps behaving byte-identically. This is NOT the same
+   *  as an empty array: `[]` means a REAL harness that curates zero models
+   *  (declares no `curated.model` at all) and must yield an empty list, not
+   *  fall back to Claude's. The IPC layer is responsible for making that
+   *  distinction (it passes `undefined` only for the Claude harness itself,
+   *  and `[]` for a harness whose descriptor omits `curated.model`). */
+  harnessModelOptions?: string[]
+  /** (C3) True iff the resolved harness for this call IS the Claude
+   *  descriptor. Threaded in (rather than re-derived from
+   *  harnessModelOptions' shape) so the Claude-specific per-model
+   *  metadata — providerId/providerLabel/isClaude/effortLevels sourced from
+   *  CLAUDE_BUILTIN_EFFORT_LEVELS — is only ever applied to entries that
+   *  are actually Claude's own catalog, never guessed from "the option list
+   *  happens to look like Claude's". Defaults to true (byte-identical to
+   *  pre-C3 behavior) when omitted, matching harnessId's own "omitted means
+   *  claude" convention in src/main/ipc/models.ts. */
+  isClaudeHarness?: boolean
+  /** (C3) Display label for a non-Claude harness's provider group, e.g.
+   *  "Codex CLI" — the harness descriptor's own `label`. Unused when
+   *  isClaudeHarness is true (Claude's own CLAUDE_PROVIDER_LABEL always
+   *  wins there). Falls back to `harnessId` itself if omitted, mirroring
+   *  providerLabelFor's own descriptor-miss fallback below. */
+  harnessLabel?: string
+  /** (C3) The resolved harness's id, e.g. 'claude' or 'codex-cli' — used as
+   *  SelectableModel.providerId for a non-Claude harness's own models
+   *  (grouping the picker by harness, the only axis that exists for a
+   *  harness with no provider-routing concept at all). Unused when
+   *  isClaudeHarness is true. */
+  harnessId?: string
 }
 
 function claudeEntries(
@@ -268,6 +328,65 @@ function claudeEntries(
       provisional: false
     }
   })
+}
+
+/**
+ * (C3, support-multi-harness) Non-Claude harness entries — the base model
+ * list comes from `input.harnessModelOptions` (the harness descriptor's own
+ * `curated.model.options`, resolved by the IPC layer), with the SAME
+ * add/hide/order overlay and hidden-but-selected invariant claudeEntries
+ * already applies, so a non-Claude harness's picker behaves identically in
+ * every respect except WHERE its base catalog comes from.
+ *
+ * Every non-id field is deliberately minimal, never fabricated:
+ *   - label: the id itself — a generic harness descriptor's CuratedField is
+ *     `options: string[]`, a bare id list with no per-option label/metadata
+ *     (unlike CLAUDE_MODEL_OPTIONS' {value,label} pairs), so there is no
+ *     richer label to source one from.
+ *   - providerId/providerLabel: the harness's own id/label — grouping by
+ *     harness, the only axis a harness with no provider-routing concept
+ *     has. Falls back to the bare id when no label was threaded in.
+ *   - isClaude: always false — see BuildSelectableModelsInput's own doc
+ *     comment on why this must never be fabricated true for a foreign
+ *     harness's catalog (DropdownChip.tsx's live-`/model`-injection gate
+ *     reads this field directly).
+ *   - contextWindow: null — unknown, never invented, matching Claude's own
+ *     entries above.
+ *   - effortLevels: always null. A generic harness descriptor has no
+ *     PER-MODEL effort ladder concept at all (curated.effort.options, when
+ *     present, is one flat list for the whole harness, not keyed per model
+ *     the way CLAUDE_BUILTIN_EFFORT_LEVELS is) — inventing a per-model
+ *     ladder by reusing that flat list would misrepresent it as real
+ *     per-model data. The effort footer chip already treats a null
+ *     effortLevels as "no reasoning-effort control for this model" and
+ *     hides itself accordingly (DropdownChip.tsx) — the correct, non-
+ *     fabricating outcome for a harness that hasn't declared per-model
+ *     levels.
+ *   - provisional: always false — this list has no live/health gating at
+ *     all (that concept belongs to the dead routed-model code below
+ *     PHASE0_ROUTING_SEVERED), so nothing here is ever "provisionally"
+ *     available.
+ */
+function harnessEntries(
+  harnessModelOptions: string[],
+  harnessId: string,
+  harnessLabel: string | undefined,
+  curatedModelOptions: CuratedFieldOptionsOverlay | undefined,
+  currentModelId: string | undefined
+): SelectableModel[] {
+  const orderedIds = resolveCuratedOptions(harnessModelOptions, curatedModelOptions, currentModelId)
+  const providerLabel = harnessLabel ?? harnessId
+  return orderedIds.map((id) => ({
+    id,
+    label: id,
+    providerId: harnessId,
+    providerLabel,
+    isClaude: false,
+    available: true,
+    contextWindow: null,
+    effortLevels: null,
+    provisional: false
+  }))
 }
 
 /**
@@ -360,17 +479,53 @@ function providerLabelFor(providerId: string, descriptors: ProviderDescriptorInp
 }
 
 /**
+ * (C3, support-multi-harness) Resolves the BASE catalog entries — before the
+ * dead routed-model code below ever runs — for whichever harness this call
+ * is scoped to. `input.isClaudeHarness` defaults to true (undefined means
+ * "the pre-C3 caller, always Claude"), so every existing call site that
+ * never set the new C3 fields gets claudeEntries() exactly as before: this
+ * function is a pure dispatch, not a behavior change for Claude.
+ *
+ * For a non-Claude harness, `input.harnessModelOptions` is REQUIRED to be an
+ * array (never undefined) by the time it reaches here — the IPC layer
+ * resolves "this harness's descriptor declares no curated.model" to `[]`,
+ * not `undefined` (see BuildSelectableModelsInput's own doc comment on that
+ * field). An empty array here correctly yields an empty picker rather than
+ * falling back to Claude's list.
+ */
+function baseEntries(input: BuildSelectableModelsInput): SelectableModel[] {
+  if (input.isClaudeHarness === false) {
+    return harnessEntries(
+      input.harnessModelOptions ?? [],
+      input.harnessId ?? 'unknown',
+      input.harnessLabel,
+      input.curatedModelOptions,
+      input.currentModelId
+    )
+  }
+  return claudeEntries(
+    input.curatedModelOptions,
+    input.currentModelId,
+    input.curatedEffortOptions,
+    input.currentEffort
+  )
+}
+
+/**
  * Assemble the full selectable-model list. As of Phase 0 of the multi-harness
- * migration, this is Claude only — CLAUDE_MODEL_OPTIONS, always, unconditionally
- * available (see claudeEntries()). Phase 0 severed launch-side CLIProxyAPI
- * routing, so a routed model can no longer be launched even if the proxy
- * reports it as healthy; offering it in the picker would be a broken
- * affordance. The routed-model assembly (proxy-running + provider-healthy
- * gating, the unit-09-polish persisted-availability startup fallback, and
- * "never drop a workspace's stored selection" preservation) still exists
- * below, verbatim, but is dead code — unreachable behind the early return.
- * It is the intended re-land site for Phase 6, which restores routing
- * harness-aware by deleting that early return.
+ * migration, this is the workspace's own harness's BASE catalog only — see
+ * baseEntries() for the Claude-vs-non-Claude dispatch, unconditionally
+ * available. Phase 0 severed launch-side CLIProxyAPI routing, so a routed
+ * model can no longer be launched even if the proxy reports it as healthy;
+ * offering it in the picker would be a broken affordance. The routed-model
+ * assembly (proxy-running + provider-healthy gating, the unit-09-polish
+ * persisted-availability startup fallback, and "never drop a workspace's
+ * stored selection" preservation) still exists below, verbatim, but is dead
+ * code — unreachable behind the early return, and Claude-only in shape (it
+ * was never extended for a non-Claude base catalog — that is Phase 6's
+ * concern, alongside re-landing routing itself). It is the intended re-land
+ * site for Phase 6, which restores routing harness-aware by deleting that
+ * early return.
  */
 export function buildSelectableModels(input: BuildSelectableModelsInput): SelectableModel[] {
   // Phase 0 (multi-harness migration): launch-side CLIProxyAPI routing is
@@ -384,20 +539,10 @@ export function buildSelectableModels(input: BuildSelectableModelsInput): Select
   // `string | undefined` guards below into spurious type errors — verified
   // empirically).
   if (PHASE0_ROUTING_SEVERED) {
-    return claudeEntries(
-      input.curatedModelOptions,
-      input.currentModelId,
-      input.curatedEffortOptions,
-      input.currentEffort
-    )
+    return baseEntries(input)
   }
 
-  const result: SelectableModel[] = claudeEntries(
-    input.curatedModelOptions,
-    input.currentModelId,
-    input.curatedEffortOptions,
-    input.currentEffort
-  )
+  const result: SelectableModel[] = baseEntries(input)
 
   const serving = proxyIsServing(input.routingProxy)
   const seenRoutedIds = new Set<string>()

@@ -29,6 +29,8 @@ import { useWorkbenchApi, type WorkbenchApi } from '../workbench/workbenchReduce
 import { WorkbenchTabStrip } from '../workbench/WorkbenchTabStrip'
 import { DEFAULT_WORKBENCH_WIDTH } from '../../lib/workbenchStore'
 import { WorkspaceSettingsPopover } from './WorkspaceSettingsPopover'
+import { useHarnessForWorkspace } from '@/lib/harnessStore'
+import { shouldFetchUsageDetails } from '@shared/harness/capabilityGating'
 
 // ---------------------------------------------------------------------------
 // Short token helper — same as contextLabel but without the " ctx" suffix.
@@ -221,6 +223,13 @@ export function WorkspaceTitleBar({
   // Git status for the details popover
   const gitStatus = useGitStatus(workspace.id)
 
+  // This workspace's harness descriptor — gates the usage/cost hover-card
+  // fetches below (session.getUsage/session.getCost are USAGE-capability
+  // actions; a harness without capabilities.usage has no such data source —
+  // see openDetailsPopover's usage/cost blocks and
+  // src/shared/harness/capabilityGating.ts's shouldFetchUsageDetails).
+  const harness = useHarnessForWorkspace(workspace.harnessId)
+
   // Dirty ("Restart to apply") state — surfaced in the title-hover details
   // popover instead of the (removed) gear's WorkspaceDrawer. Mirrors the
   // polling + push pattern WorkspaceDrawer (preserved, no longer mounted)
@@ -291,12 +300,24 @@ export function WorkspaceTitleBar({
       ? `${workspace.worktreeParentCwd}\n↳ worktree: ${workspace.cwd}`
       : workspace.cwd
 
+    // session.getUsage/session.getCost are USAGE-capability actions (see
+    // src/main/footerActions.ts's FOOTER_ACTION_GATES, which gates the
+    // footer ROW listing on the same flag) — a harness without
+    // capabilities.usage has no such data source. costLoading only turns
+    // true when the cost fetch is actually going to fire below; otherwise
+    // the popover renders cost as not-applicable (no field) instead of a
+    // spinner that never resolves. contextLoading still turns true
+    // unconditionally: getContextBudget (below) is a SEPARATE,
+    // non-actions IPC call independent of usage capability and always
+    // fires — only the NESTED session.getUsage call inside its .then() is
+    // usage-gated.
+    const canFetchUsage = shouldFetchUsageDetails(harness.capabilities)
     const initialProps: DetailsCardProps = {
       pr: prToCard(pr ?? null),
       git: gitStatus ? gitStatusToCard(gitStatus) : undefined,
       cwd: cwdDisplay,
       contextLoading: true,
-      costLoading: true,
+      costLoading: canFetchUsage,
       isDirty
     }
     showDetailsCard(workspace.id, detailsButtonRef.current, initialProps)
@@ -317,6 +338,17 @@ export function WorkspaceTitleBar({
         if (!result) return
         if (workspace.claudeSessionId !== null) {
           contextBudgetCache.set(cacheKey, result)
+        }
+        if (!canFetchUsage) {
+          // No usage data source for this harness — render the context
+          // budget alone (no token/pct breakdown) rather than firing
+          // session.getUsage and rendering whatever it happens to return.
+          updateDetails({
+            model: result.modelLabel,
+            contextText: formatContextText(null, result.contextBudget),
+            contextLoading: false
+          })
+          return
         }
         // Fetch usage too so we can compose "1.2k / 200k · 85%"
         return window.api.actions
@@ -342,6 +374,11 @@ export function WorkspaceTitleBar({
       })
 
     // ── Async: cost ──────────────────────────────────────────────────────────
+    // Gated on capabilities.usage — see canFetchUsage above. Skipped
+    // entirely (not fired-and-shown-empty) for a harness with no usage/cost
+    // data source; costLoading was never set true for that case (see
+    // initialProps above), so the popover renders cost as not-applicable.
+    if (!canFetchUsage) return
     window.api.actions
       .invoke({ id: 'session.getCost', params: {}, workspaceId: workspace.id }, 'workspace-details')
       .then((result) => {

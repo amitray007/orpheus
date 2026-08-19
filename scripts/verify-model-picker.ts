@@ -2505,4 +2505,219 @@ function mutatedCacheKeyIgnoresScope(params: SelectableModelsParams): string {
   )
 }
 
+// ---------------------------------------------------------------------------
+// C3 (support-multi-harness) — the BASE model catalog now comes from the
+// workspace's own harness DESCRIPTOR (curated.model.options), not
+// unconditionally from CLAUDE_MODEL_OPTIONS. buildSelectableModels' new
+// isClaudeHarness/harnessModelOptions/harnessLabel/harnessId fields are
+// plain data (see BuildSelectableModelsInput's own doc comment) — the IPC
+// layer (src/main/ipc/models.ts) resolves the real descriptor and threads
+// its curated.model.options in here; this harness exercises that dispatch
+// (baseEntries()) directly, offline.
+// ---------------------------------------------------------------------------
+
+{
+  // 1. Claude's list is UNCHANGED from today when isClaudeHarness/
+  // harnessModelOptions are entirely omitted (the pre-C3 call shape) — the
+  // main regression net for this unit, pinned explicitly against
+  // CLAUDE_MODEL_OPTIONS' own order/ids/every non-id field.
+  const result = buildSelectableModels(baseInput())
+  assert.deepEqual(
+    result.map((m) => m.id),
+    CLAUDE_MODEL_OPTIONS.map((o) => o.value),
+    'C3: omitting the new harness fields must reproduce CLAUDE_MODEL_OPTIONS exactly, in order'
+  )
+  for (const entry of result) {
+    assert.equal(entry.providerId, 'claude', 'C3: Claude entries must keep providerId claude')
+    assert.equal(entry.providerLabel, 'Claude', 'C3: Claude entries must keep providerLabel Claude')
+    assert.equal(entry.isClaude, true, 'C3: Claude entries must keep isClaude true')
+    assert.equal(entry.available, true, 'C3: Claude entries must stay available')
+  }
+  console.log(
+    '✓ C3: Claude picker byte-identical when the new harness fields are omitted (isClaudeHarness/harnessModelOptions untouched)'
+  )
+}
+
+{
+  // 1b. Same pin, but with isClaudeHarness explicitly true (mirrors the IPC
+  // layer's actual call for a workspace resolved to the Claude descriptor)
+  // — must be indistinguishable from omitting it entirely.
+  const explicit = buildSelectableModels(baseInput({ isClaudeHarness: true }))
+  const omitted = buildSelectableModels(baseInput())
+  assert.deepEqual(
+    explicit,
+    omitted,
+    'C3: isClaudeHarness: true must produce the exact same result as omitting the field'
+  )
+  console.log('✓ C3: isClaudeHarness: true is equivalent to omitting the field')
+}
+
+{
+  // 2. A harness declaring DIFFERENT curated.model.options yields THOSE
+  // instead of Claude's list — proves the base catalog is genuinely
+  // descriptor-sourced, not just Claude's list relabeled.
+  const result = buildSelectableModels(
+    baseInput({
+      isClaudeHarness: false,
+      harnessModelOptions: ['gpt-5-codex', 'gpt-5-codex-mini'],
+      harnessId: 'codex-cli',
+      harnessLabel: 'Codex CLI'
+    })
+  )
+  assert.deepEqual(
+    result.map((m) => m.id),
+    ['gpt-5-codex', 'gpt-5-codex-mini'],
+    'C3: a non-Claude harness must offer exactly its own descriptor options, not Claude models'
+  )
+  assert.ok(
+    !result.some((m) => CLAUDE_MODEL_OPTIONS.some((o) => o.value === m.id)),
+    'C3: a non-Claude harness catalog must not leak any Claude model id'
+  )
+  for (const entry of result) {
+    assert.equal(entry.providerId, 'codex-cli', 'C3: non-Claude entries group by harness id')
+    assert.equal(entry.providerLabel, 'Codex CLI', 'C3: non-Claude entries use the harness label')
+    assert.equal(
+      entry.isClaude,
+      false,
+      'C3: a non-Claude harness catalog must never claim isClaude: true'
+    )
+    assert.equal(
+      entry.effortLevels,
+      null,
+      'C3: a non-Claude harness has no per-model effort ladder — must stay null, never fabricated'
+    )
+    assert.equal(entry.contextWindow, null, 'C3: contextWindow must not be fabricated')
+  }
+  console.log(
+    '✓ C3: a harness declaring its own curated.model.options yields those, grouped/labeled by harness, isClaude false, no fabricated metadata'
+  )
+}
+
+{
+  // 3. A harness declaring NO curated.model at all must yield NO models —
+  // not an empty Claude list, not a fabricated one. Modeled as
+  // harnessModelOptions: [] (exactly what the IPC layer passes when
+  // descriptor.curated?.model is undefined — see collectSelectableInput's
+  // `descriptor.curated?.model?.options ?? []`).
+  const result = buildSelectableModels(
+    baseInput({
+      isClaudeHarness: false,
+      harnessModelOptions: [],
+      harnessId: 'no-model-cli',
+      harnessLabel: 'No-Model CLI'
+    })
+  )
+  assert.deepEqual(result, [], 'C3: a harness with no curated.model must yield an empty picker')
+  console.log(
+    '✓ C3: a harness declaring no curated.model yields no models (empty, not Claude, not fabricated)'
+  )
+}
+
+{
+  // 4. The curated OVERLAY still applies on top of a non-Claude harness's
+  // base list — add/hide/order, same as Claude's.
+  const result = buildSelectableModels(
+    baseInput({
+      isClaudeHarness: false,
+      harnessModelOptions: ['model-a', 'model-b'],
+      harnessId: 'codex-cli',
+      harnessLabel: 'Codex CLI',
+      curatedModelOptions: { add: ['model-c'], hide: ['model-a'], order: ['model-c', 'model-b'] }
+    })
+  )
+  assert.deepEqual(
+    result.map((m) => m.id),
+    ['model-c', 'model-b'],
+    'C3: the curated overlay (add/hide/order) must apply on top of a non-Claude harness base list exactly as it does for Claude'
+  )
+  console.log(
+    '✓ C3: curated overlay (add/hide/order) applies on top of a non-Claude harness base list'
+  )
+}
+
+{
+  // 5. HIDDEN-BUT-SELECTED survives for a non-Claude harness too.
+  const result = buildSelectableModels(
+    baseInput({
+      isClaudeHarness: false,
+      harnessModelOptions: ['model-a', 'model-b'],
+      harnessId: 'codex-cli',
+      harnessLabel: 'Codex CLI',
+      curatedModelOptions: { hide: ['model-a'] },
+      currentModelId: 'model-a'
+    })
+  )
+  assert.ok(
+    result.some((m) => m.id === 'model-a'),
+    'C3: a hidden-but-currently-selected model on a non-Claude harness must still appear'
+  )
+  console.log('✓ C3: hidden-but-selected invariant holds for a non-Claude harness base list')
+}
+
+// ---------------------------------------------------------------------------
+// C3 MUTATION TESTS — deliberately break each rule above, confirm a real
+// behavioral assertion actually fails against it.
+// ---------------------------------------------------------------------------
+
+{
+  // Mutation A: base list ignores the descriptor and falls back to Claude's
+  // constant (simulated: caller asks for a non-Claude harness's list, but
+  // the assertion checks against what a broken implementation that ignored
+  // isClaudeHarness/harnessModelOptions would have returned — Claude's own
+  // list).
+  const result = buildSelectableModels(
+    baseInput({
+      isClaudeHarness: false,
+      harnessModelOptions: ['model-a'],
+      harnessId: 'codex-cli',
+      harnessLabel: 'Codex CLI'
+    })
+  )
+  assertMutationCaughtB4(() => {
+    assert.deepEqual(
+      result.map((m) => m.id),
+      CLAUDE_MODEL_OPTIONS.map((o) => o.value),
+      'a base list that fell back to Claude would match CLAUDE_MODEL_OPTIONS exactly'
+    )
+  }, 'base list ignoring the descriptor and falling back to Claude (simulated via a Claude-shaped expectation against the real, correct result)')
+}
+
+{
+  // Mutation B: a no-curated-model harness yields Claude's list instead of
+  // empty.
+  const result = buildSelectableModels(
+    baseInput({ isClaudeHarness: false, harnessModelOptions: [], harnessId: 'no-model-cli' })
+  )
+  assertMutationCaughtB4(() => {
+    assert.ok(
+      result.length > 0,
+      'a no-curated-model harness that wrongly fell back to Claude would be non-empty'
+    )
+  }, 'no-curated-model harness yielding a non-empty (Claude) list instead of truly empty')
+}
+
+{
+  // Mutation C: overlay-on-top ordering broken (asserting the overlay's
+  // order was ignored, against the real, correctly-ordered result).
+  const result = buildSelectableModels(
+    baseInput({
+      isClaudeHarness: false,
+      harnessModelOptions: ['model-a', 'model-b'],
+      harnessId: 'codex-cli',
+      curatedModelOptions: { order: ['model-b', 'model-a'] }
+    })
+  )
+  assertMutationCaughtB4(() => {
+    assert.deepEqual(
+      result.map((m) => m.id),
+      ['model-a', 'model-b'],
+      'the unordered (descriptor-order) list would put model-a first, not model-b'
+    )
+  }, 'overlay order applied to a non-Claude harness base list being ignored')
+}
+
+console.log(
+  '✓ C3 mutation tests: descriptor-ignoring fallback to Claude, no-curated-model harness yielding a non-empty list, and overlay ordering being ignored are all correctly caught as failing assertions'
+)
+
 console.log('\nAll model-picker assertions passed.')

@@ -28,6 +28,7 @@ import {
 import { listProviderConfigs } from '../routingProxy/providers/storage'
 import { PROVIDERS } from '../routingProxy/providers/registry'
 import { resolveHarnessSettings } from '../harness/settings'
+import { resolveHarness } from '../harness/registry'
 import { handle } from './handle'
 
 // Hard cap on the bounded first-call wait below. The measured cost of a full
@@ -60,6 +61,16 @@ function collectSelectableInput(
   // than throwing or silently resolving an empty/wrong scope.
   const harnessId = scope?.harnessId ?? 'claude'
   const resolved = resolveHarnessSettings(harnessId, scope?.projectId)
+  // (C3, support-multi-harness) The BASE model catalog now comes from the
+  // resolved HARNESS DESCRIPTOR, not unconditionally from Claude's own
+  // constant — resolveHarness() never throws, always returns a usable
+  // descriptor (falls back to Claude for an unknown/stale id), mirroring
+  // every other resolveHarness call site in src/main/ipc/*.ts. selectable.ts
+  // must stay electron-free/DB-free, so only the resolved descriptor's
+  // PLAIN DATA (curated.model.options, its id, its label) crosses into
+  // BuildSelectableModelsInput — never the descriptor object itself.
+  const descriptor = resolveHarness(harnessId)
+  const isClaudeHarness = descriptor.id === 'claude'
   return {
     routingProxy: {
       enabled: snapshot.enabled,
@@ -85,7 +96,18 @@ function collectSelectableInput(
     // overlay object, same as every other field on this input.
     curatedModelOptions: resolved.curatedOptions?.model,
     curatedEffortOptions: resolved.curatedOptions?.effort,
-    currentEffort: scope?.currentEffort
+    currentEffort: scope?.currentEffort,
+    // (C3) isClaudeHarness is left `undefined` for the Claude descriptor
+    // itself (not `true`) — selectable.ts's baseEntries() treats
+    // `!== false` as "Claude", so this preserves the exact pre-C3 code path
+    // (claudeEntries(), no new branch taken at all) whenever the resolved
+    // harness is Claude, which is the byte-identical regression net. Only a
+    // genuinely non-Claude descriptor sets this to `false` and threads the
+    // rest of the C3 fields.
+    isClaudeHarness: isClaudeHarness ? undefined : false,
+    harnessModelOptions: isClaudeHarness ? undefined : (descriptor.curated?.model?.options ?? []),
+    harnessLabel: isClaudeHarness ? undefined : descriptor.label,
+    harnessId: isClaudeHarness ? undefined : descriptor.id
   }
 }
 

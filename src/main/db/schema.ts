@@ -846,7 +846,21 @@ export const schema: SchemaDef = {
       position: INTEGER_NOT_NULL,
       created_at: INTEGER_NOT_NULL,
       updated_at: INTEGER_NOT_NULL,
-      prompts_json: 'TEXT'
+      prompts_json: 'TEXT',
+      // C5 (support-multi-harness): provenance for a SEEDED row — which
+      // harness's descriptor.defaultActions produced it. Nullable, no
+      // default, and deliberately bare 'TEXT' (not notNull) so the engine's
+      // plain ADD COLUMN backfills every pre-existing row with NULL — no
+      // data step required for the backfill itself (see engine.ts's
+      // addColumn: a nullable column with no default is filled NULL by
+      // SQLite automatically). NULL is the load-bearing meaning here, not
+      // an absent/TODO value: "user-authored, or seeded before this column
+      // existed — applies to every harness, filtered by no gate." Only a
+      // row inserted by C5's per-harness seeding (footerActions.ts's
+      // seedDefaultFooterActionsForHarness) ever gets a non-NULL value, and
+      // that value is always a real HarnessId, never guessed or inferred
+      // from a row's action_id/label after the fact.
+      harness_id: 'TEXT'
     }
   },
 

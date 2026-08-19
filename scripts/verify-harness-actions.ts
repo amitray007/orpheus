@@ -302,16 +302,23 @@ const ALL_EIGHT_ACTIONS: FooterActionDescriptor[] = [
 }
 
 // ---------------------------------------------------------------------------
-// 6. No data migration: seeding is untouched — CLAUDE_DEFAULT_ACTIONS is
-//    pure data (not wired into seedDefaultFooterActions/resetToDefaults),
-//    and filterActionsForHarness never mutates its input.
+// 6. C5 (support-multi-harness) UPDATE: CLAUDE_DEFAULT_ACTIONS is now the
+//    CANONICAL 11-row list (drift-resolved against the real, shipped
+//    footerActions.ts DEFAULT_SEEDS — see that file's own header for the
+//    full resolution) and IS wired into per-harness seeding
+//    (seedDefaultFooterActionsForHarness in footerActions.ts) — this
+//    assertion previously pinned the OLD, pre-C5 8-row/unwired state; see
+//    scripts/verify-footer-actions.ts for the seeding-behavior coverage
+//    (per-harness idempotency, provenance stamping, mutation tests).
+//    filterActionsForHarness itself remains pure/non-mutating, still
+//    asserted here.
 // ---------------------------------------------------------------------------
 
 {
   assert.equal(
     CLAUDE_DEFAULT_ACTIONS.length,
-    8,
-    'CLAUDE_DEFAULT_ACTIONS should describe exactly the 8 production rows'
+    11,
+    'CLAUDE_DEFAULT_ACTIONS should describe exactly the 11 production rows (drift-resolved, C5)'
   )
   const claudeDescriptor = HARNESSES.find((h: HarnessDescriptor) => h.id === 'claude')
   assert.ok(claudeDescriptor, 'claude descriptor must exist in HARNESSES')
@@ -329,7 +336,7 @@ const ALL_EIGHT_ACTIONS: FooterActionDescriptor[] = [
     'filterActionsForHarness must not mutate its input array/elements'
   )
   console.log(
-    '✓ defaultActions is pure seed data (not wired into any seeder) and filtering never mutates input'
+    '✓ CLAUDE_DEFAULT_ACTIONS is the canonical 11-row list (now wired into per-harness seeding, C5) and filtering never mutates input'
   )
 }
 

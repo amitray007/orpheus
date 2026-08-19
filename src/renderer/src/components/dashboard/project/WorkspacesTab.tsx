@@ -9,7 +9,7 @@ import {
   GitMerge
 } from '@phosphor-icons/react'
 import { WorktreeBadge } from '../WorktreeBadge'
-import type { WorkspaceRecord } from '@shared/types'
+import type { HarnessSummary, WorkspaceRecord } from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
@@ -22,6 +22,8 @@ import { useWorkspaceTitle, getTitleSnapshot } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { useDebouncedValue } from '@/lib/useDebouncedValue'
 import { useInlineRename } from '@/lib/useInlineRename'
+import { useHarnessList, resolveHarnessSummary } from '@/lib/harnessStore'
+import { canMissingSessionIdImplyWaiting } from '@shared/harness/capabilityGating'
 
 // ---------------------------------------------------------------------------
 // Project body — active workspaces on the left, sessions on the right, recent
@@ -53,8 +55,20 @@ const FILTER_OPTIONS: ReadonlyArray<{ value: ActivityFilterKey; label: string }>
  * activity data. Mirrors the persisted-status branch of deriveGroup in
  * WorkspacesView.tsx but intentionally excludes 'done' (not tracked in
  * persisted status — only known via live activity events).
+ *
+ * `harness` gates the "no claudeSessionId yet -> waiting" read the same way
+ * deriveGroup does: that inference is only honest for a transcript-capable
+ * harness (Claude), where an absent session id really does mean "hasn't
+ * started." A transcript-incapable harness can never populate
+ * claudeSessionId at all, so the same check would be a permanent, not
+ * transient, false read — canMissingSessionIdImplyWaiting short-circuits
+ * straight to 'waiting' for that case instead, without treating the missing
+ * id as a real signal. ActivityFilterKey has no fifth "unknown" option (that
+ * would be a filter-dropdown UI change, out of scope here), so the target
+ * value is unchanged — see src/shared/harness/capabilityGating.ts.
  */
-function statusToGroup(ws: WorkspaceRecord): ActivityFilterKey {
+function statusToGroup(ws: WorkspaceRecord, harness: HarnessSummary): ActivityFilterKey {
+  if (!canMissingSessionIdImplyWaiting(harness.capabilities)) return 'waiting'
   if (!ws.claudeSessionId) return 'waiting'
   if (ws.status === 'attention' || ws.status === 'awaiting_input') return 'in_review'
   if (ws.status === 'in_progress') return 'in_progress'
@@ -500,11 +514,14 @@ export function WorkspacesTab({
   }, [menu, projectId, onArchiveWorkspace, onToggleWorkspacePin, beginRename])
 
   // Filter active workspaces by activity group and search term.
+  const { harnesses } = useHarnessList()
   const filtered = useMemo(() => {
     let out = active
 
     if (activityFilter !== 'all') {
-      out = out.filter((ws) => statusToGroup(ws) === activityFilter)
+      out = out.filter(
+        (ws) => statusToGroup(ws, resolveHarnessSummary(harnesses, ws.harnessId)) === activityFilter
+      )
     }
 
     if (debouncedSearch) {
@@ -527,7 +544,7 @@ export function WorkspacesTab({
     }
 
     return out
-  }, [active, activityFilter, debouncedSearch, sessionStats])
+  }, [active, activityFilter, debouncedSearch, sessionStats, harnesses])
 
   const activeSorted = useMemo(() => {
     const copy = [...filtered]

@@ -49,6 +49,13 @@ const verifiers = [
   'verify-harness-launch.ts',
   'verify-harness-curated.ts',
   'verify-harness-actions.ts',
+  // C4 (support-multi-harness) — pure gating decisions in
+  // src/shared/harness/capabilityGating.ts, consumed by Sidebar.tsx/
+  // WorkspacesView.tsx/WorkspacesTab.tsx/WorkspaceTitleBar.tsx, plus the
+  // fallback-fix half of the unit (harnessStore.ts's loading/unknown-id
+  // fallback must grant no capabilities). No SQLite/native dependency —
+  // runs under plain bun like verify-harness-curated.ts above.
+  'verify-harness-capability-gating.ts',
   // Runs under plain node, not bun — see verify-harness-settings.ts's own
   // header comment: it uses node:sqlite's DatabaseSync for a real in-memory
   // DB, and node:sqlite has no bun equivalent ("Could not resolve:
@@ -93,7 +100,20 @@ const verifiers = [
   // ./db short-circuited to inline stub modules) rather than mock.module(),
   // which is Bun-only and cannot combine with node:sqlite in any one
   // runtime — see verify-workspace-harness-create.ts's own header.
-  ['verify-workspace-harness-create.ts', ['node', '--experimental-strip-types']]
+  ['verify-workspace-harness-create.ts', ['node', '--experimental-strip-types']],
+  // C5 (support-multi-harness) — the per-harness footer-action SEEDING half
+  // of the unit: footerActions.ts's seedDefaultFooterActions/
+  // seedDefaultFooterActionsForHarness/seedDefaultFooterActionsForAllHarnesses,
+  // the new harness_id provenance column, and the terminal.sendInput
+  // provenance gate, exercised end-to-end through listMerged() against a
+  // real footer_actions_global/_project/_workspace + workspaces + projects
+  // schema. Same node:sqlite/DatabaseSync constraint as the other
+  // node-dispatched entries above (needs a real DB with a working
+  // db.transaction() shim — see this file's own header for why
+  // filterActionsForHarness's pure GATING logic is covered separately by
+  // verify-harness-actions.ts, which stays on the plain-bun path since it
+  // never touches SQLite).
+  ['verify-footer-actions.ts', ['node', '--experimental-strip-types']]
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {

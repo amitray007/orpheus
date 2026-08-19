@@ -110,7 +110,7 @@ import type { TerminalSendKeyDescriptor } from '../shared/types'
 import type { SplitTree, PaneLayout, TerminalRect, TerminalMountResult } from '../shared/types'
 import { bootActions, setTerminalAddonRef, registerWebContentsCleanup } from './actions/index'
 import { evictAccumulator } from './actions/session'
-import { seedDefaultFooterActions } from './footerActions'
+import { seedDefaultFooterActions, seedDefaultFooterActionsForAllHarnesses } from './footerActions'
 import { refreshModelsDevCache } from './models/registry'
 import {
   startDiagnostics,
@@ -3416,6 +3416,21 @@ if (!app.requestSingleInstanceLock()) {
         seedDefaultFooterActions()
       } catch (err) {
         console.error('[footerActions] failed to seed defaults:', redactErrorForLog(err))
+      }
+      // C5 (support-multi-harness): additive per-harness seeding — seeds a
+      // harness's own defaultActions the first time footer_actions_global
+      // has zero rows stamped for that harness id, independent of the
+      // whole-table check above. A no-op for Claude on every boot after the
+      // first (its rows are already stamped from the seed above); this is
+      // what makes a SECOND harness's defaults appear without a data
+      // migration once one is registered.
+      try {
+        seedDefaultFooterActionsForAllHarnesses()
+      } catch (err) {
+        console.error(
+          '[footerActions] failed to seed per-harness defaults:',
+          redactErrorForLog(err)
+        )
       }
 
       // Refresh model context/pricing from models.dev — fire-and-forget, never

@@ -14,6 +14,9 @@ import { useWorkspaceActivity, getActivitySnapshot } from '@/lib/activityStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
+import { useHarnessList, resolveHarnessSummary } from '@/lib/harnessStore'
+import type { HarnessSummary } from '@shared/types'
+import { canMissingSessionIdImplyWaiting } from '@shared/harness/capabilityGating'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -69,14 +72,35 @@ function usePrivacyMode(): boolean {
 
 type GroupKey = 'in_review' | 'in_progress' | 'done' | 'waiting'
 
-function deriveGroup(ws: WorkspaceRecord, activity: WorkspaceActivityDetail | undefined): GroupKey {
+function deriveGroup(
+  ws: WorkspaceRecord,
+  activity: WorkspaceActivityDetail | undefined,
+  harness: HarnessSummary
+): GroupKey {
   // Live activity wins
   if (activity === 'attention') return 'in_review'
   if (activity === 'working') return 'in_progress'
   if (activity === 'ready') return 'done'
   if (activity === 'idle') return 'waiting'
 
-  // No live activity — if workspace was never activated (no claude session), it's just waiting.
+  // No live activity. "No claude session yet" only means "just waiting to
+  // start" for a harness that CAN eventually produce one (Claude): the
+  // session id shows up once the first transcript is written, and the
+  // workspace correctly moves out of 'waiting' when it does. A transcript-
+  // incapable harness will NEVER populate claudeSessionId, so this signal
+  // means nothing for it either way — checking it first (as the
+  // transcript-capable branch does below) would coincidentally still land
+  // on 'waiting', but for the WRONG reason (mistaking "no transcript
+  // capability" for "hasn't started"). GroupKey has no fifth "unknown"
+  // bucket to route to instead (that's a real UI change — a new kanban
+  // column — out of scope for capability gating), so this branch is kept
+  // separate and short-circuits straight to the same 'waiting' value
+  // WITHOUT consulting claudeSessionId or ws.status (both of which are
+  // themselves transcript/structuredStatus-derived and thus meaningless
+  // here) — see src/shared/harness/capabilityGating.ts's
+  // canMissingSessionIdImplyWaiting.
+  if (!canMissingSessionIdImplyWaiting(harness.capabilities)) return 'waiting'
+
   if (!ws.claudeSessionId) return 'waiting'
 
   // Workspace has run before — fall back to persisted status.
@@ -361,6 +385,7 @@ export function WorkspacesView({
   // re-fetch).  Cards don't jump columns mid-task — that would be jarring — so
   // the trade-off is deliberate: per-card glyphs are live, column placement is
   // stable until the next workspace-list refresh.
+  const { harnesses } = useHarnessList()
   const grouped = useMemo<Record<GroupKey, WorkspaceRecord[]>>(() => {
     const snapshot = getActivitySnapshot()
     const result: Record<GroupKey, WorkspaceRecord[]> = {
@@ -370,11 +395,12 @@ export function WorkspacesView({
       waiting: []
     }
     for (const ws of activeWorkspaces) {
-      const g = deriveGroup(ws, snapshot.get(ws.id))
+      const harness = resolveHarnessSummary(harnesses, ws.harnessId)
+      const g = deriveGroup(ws, snapshot.get(ws.id), harness)
       result[g].push(ws)
     }
     return result
-  }, [activeWorkspaces])
+  }, [activeWorkspaces, harnesses])
 
   const totalWorkspaces = Object.values(grouped).reduce((sum, col) => sum + col.length, 0)
 

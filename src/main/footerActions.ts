@@ -29,13 +29,15 @@ import type {
   PromptDescriptor
 } from '../shared/types'
 import type { HarnessDescriptor } from '../shared/harness/types'
-import { resolveHarness } from './harness/registry'
+import { resolveHarness, HARNESSES } from './harness/registry'
+import { CLAUDE_DEFAULT_ACTIONS } from './harness/claude/actions'
 
 // ---------------------------------------------------------------------------
 // Row shapes from SQLite
 // ---------------------------------------------------------------------------
 
-type GlobalRow = {
+// Fields shared by all three footer_actions_* tables.
+type BaseRow = {
   id: string
   label: string
   icon: string | null
@@ -48,8 +50,15 @@ type GlobalRow = {
   prompts_json: string | null
 }
 
-type ProjectRow = GlobalRow & { project_id: string }
-type WorkspaceRow = GlobalRow & { workspace_id: string }
+// C5: harness_id exists ONLY on footer_actions_global (see schema.ts's own
+// column comment) — NULL for every row that predates this column and for
+// every user-authored row. footer_actions_project/_workspace have NO such
+// column at all (project/workspace-scope rows are always user/prompt-
+// authored, never harness-seeded), so ProjectRow/WorkspaceRow below
+// deliberately extend BaseRow, not GlobalRow, and never carry this field.
+type GlobalRow = BaseRow & { harness_id: string | null }
+type ProjectRow = BaseRow & { project_id: string }
+type WorkspaceRow = BaseRow & { workspace_id: string }
 
 // ---------------------------------------------------------------------------
 // Row → descriptor mapping
@@ -97,6 +106,10 @@ function fromGlobalRow(row: GlobalRow): FooterActionDescriptor {
     position: row.position,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // C5: threaded through even when NULL — filterActionsForHarness's
+    // terminal.sendInput gate reads this field directly (undefined/null
+    // both mean "applies everywhere", see that gate's own comment).
+    harnessId: row.harness_id,
     ...(prompts ? { prompts } : {})
   }
 }
@@ -181,7 +194,7 @@ export function listMerged(workspaceId: string): FooterActionDescriptor[] {
 }
 
 // ---------------------------------------------------------------------------
-// Harness capability gating (R8/U6)
+// Harness capability gating (R8/U6, extended by C5)
 //
 // DATA, not if/else: each action_id that needs a capability to make sense
 // is a single entry in this table, mapping to a predicate over the
@@ -193,23 +206,16 @@ export function listMerged(workspaceId: string): FooterActionDescriptor[] {
 // working regardless of which action_id they used. Two consequences worth
 // being explicit about:
 //
-//   1. terminal.sendInput is intentionally NOT gated here. Its action_id is
-//      generic (any text can be sent to any terminal), but a specific
-//      PAYLOAD like Claude's `/copy`/`/context`/`/clear` is not — those are
-//      Claude Code slash commands and are meaningless as literal text on a
-//      harness that doesn't understand them. Telling apart "Claude's own
-//      seeded /copy row" from "a user's hand-written sendInput row" would
-//      need a stored provenance marker, and footer_actions_* has no such
-//      column — adding one is a schema/data-migration decision this unit is
-//      explicitly scoped to avoid (see the module header and registry.ts's
-//      data-only-removal discipline for the same "additive, never
-//      destructive" principle applied elsewhere). So sendInput rows are
-//      left alone unconditionally: the safe failure mode is an inert
-//      slash-command chip on a foreign harness, never a silently deleted
-//      user row. A future unit that adds real per-row harness provenance
-//      (e.g. seeding stamps a `harnessId` onto rows it creates) can extend
-//      this table with a sendInput entry that checks that marker without
-//      touching any row that predates it.
+//   1. terminal.sendInput is now gated (C5), but ONLY via `action.harnessId`
+//      — never via the predicate signature every other gate uses. A
+//      Claude-seeded `/copy`/`/context`/`/clear`/`/compact`/`/cost` row is
+//      meaningless as literal text on a harness that doesn't understand it,
+//      but a user's HAND-WRITTEN sendInput row (harnessId: null/undefined,
+//      because create() never sets it) must never be filtered — the load-
+//      bearing safety property this whole unit exists to protect. See
+//      sendInputPassesHarnessGate below for the actual rule: absent
+//      provenance always passes; stamped provenance passes only for the
+//      matching, currently-resolved harness.
 //   2. workspace.archive/workspace.rename and any other harness-agnostic
 //      action_id also fall through unfiltered by design — they need no
 //      capability from any harness.
@@ -225,13 +231,37 @@ const FOOTER_ACTION_GATES: Record<string, ActionGate> = {
   'footer.effortSelect': (h) => h.curated?.effort !== undefined
 }
 
+const ACTION_TERMINAL_SEND_INPUT = 'terminal.sendInput'
+
+/**
+ * C5's provenance gate for terminal.sendInput rows — separate from
+ * FOOTER_ACTION_GATES because it depends on the ROW (its stamped
+ * harnessId), not just the target harness, unlike every capability gate
+ * above. NULL/undefined harnessId (a user-authored row, or any row seeded
+ * before this column existed) ALWAYS passes — this is the one rule
+ * protecting existing data, and is asserted directly by
+ * scripts/verify-footer-actions.ts's mutation tests. A stamped harnessId
+ * passes only when it matches the WORKSPACE's resolved harness id, so a
+ * Claude-seeded `/copy` row is hidden on a Codex workspace but still shows
+ * on every Claude workspace, exactly like before this column existed.
+ */
+function sendInputPassesHarnessGate(
+  action: FooterActionDescriptor,
+  harness: HarnessDescriptor
+): boolean {
+  const provenance = action.harnessId
+  if (provenance === null || provenance === undefined) return true
+  return provenance === harness.id
+}
+
 /**
  * Filters a list of footer actions (any mix of scopes) down to the ones
  * that make sense for `harness`. Pure — no DB access, no mutation of the
  * input array or its elements — so it can be exercised directly against
  * fixtures without needing a real SQLite DB or Electron. Never drops an
- * action whose action_id isn't in FOOTER_ACTION_GATES; see that table's
- * own header comment for why (chiefly: preserving every user-authored row,
+ * action whose action_id isn't in FOOTER_ACTION_GATES (and, for
+ * terminal.sendInput, whose harnessId is null/undefined) — see the header
+ * comment above for why (chiefly: preserving every user-authored row,
  * including hand-written terminal.sendInput rows, untouched).
  */
 export function filterActionsForHarness(
@@ -239,6 +269,9 @@ export function filterActionsForHarness(
   harness: HarnessDescriptor
 ): FooterActionDescriptor[] {
   return actions.filter((action) => {
+    if (action.actionId === ACTION_TERMINAL_SEND_INPUT) {
+      return sendInputPassesHarnessGate(action, harness)
+    }
     const gate = FOOTER_ACTION_GATES[action.actionId]
     return gate ? gate(harness) : true
   })
@@ -265,11 +298,17 @@ export function create(
       .prepare('SELECT COALESCE(MAX(position), -1) AS m FROM footer_actions_global')
       .get() as { m: number }
     const position = draft.position ?? maxRow.m + 1
+    // C5: a user-created row (this function, called from the Settings UI's
+    // "Add action" flow) never carries a draft.harnessId — every caller of
+    // create() predates that field. NULL here is correct AND load-bearing:
+    // it is exactly what makes a hand-written row immune to
+    // sendInputPassesHarnessGate above. Only seedDefaultFooterActionsForHarness
+    // (below) ever passes a real harness id, via its own direct INSERT.
     db.prepare(
       `
       INSERT INTO footer_actions_global
-        (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json, harness_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
     ).run(
       id,
@@ -281,7 +320,8 @@ export function create(
       position,
       now,
       now,
-      promptsJson
+      promptsJson,
+      draft.harnessId ?? null
     )
     return fromGlobalRow(
       db.prepare('SELECT * FROM footer_actions_global WHERE id = ?').get(id) as GlobalRow
@@ -444,7 +484,7 @@ export function update(id: string, patch: Partial<FooterActionDraft>): FooterAct
   throw new Error(`Footer action not found: ${id}`)
 }
 
-function applyPatch(row: GlobalRow, patch: Partial<FooterActionDraft>, now: number): GlobalRow {
+function applyPatch<T extends BaseRow>(row: T, patch: Partial<FooterActionDraft>, now: number): T {
   return {
     ...row,
     label: patch.label ?? row.label,
@@ -495,12 +535,49 @@ export function reorder(
 }
 
 // ---------------------------------------------------------------------------
-// First-install seed
-// Inserts the default global footer actions when the table is empty.
-// Idempotent: skips entirely if any row already exists.
+// First-install seed (C5, support-multi-harness: per-harness)
+//
+// DRIFT RESOLUTION: this module used to carry its OWN hardcoded 11-row
+// DEFAULT_SEEDS list, independent of (and already diverged from) Claude's
+// descriptor.defaultActions in harness/claude/actions.ts, which nothing
+// read. That duplication is gone — CLAUDE_DEFAULT_ACTIONS is now the single
+// canonical list (see that file's own header for why it, not this module,
+// owns Claude's defaults), and this module seeds generically from
+// `descriptor.defaultActions` for whichever harness needs it.
+//
+// TWO SEED PATHS, deliberately kept separate:
+//
+//   1. seedDefaultFooterActions() — the ORIGINAL first-install seeder,
+//      UNCHANGED in observable behavior: still a single bulk `count === 0`
+//      check against the whole table, still inserts Claude's rows (now
+//      sourced from CLAUDE_DEFAULT_ACTIONS instead of a parallel literal),
+//      still a total no-op the instant footer_actions_global has ANY row.
+//      This is the byte-identical guarantee for every existing install:
+//      someone who already has the 11 seeded (or since-customised) rows
+//      keeps seeing exactly those, untouched, forever — this function
+//      cannot run again for them. The ONE new behavior: rows it inserts on
+//      a genuinely fresh install are now stamped harness_id = 'claude',
+//      whereas a pre-C5 install's rows stay NULL (this function never
+//      retroactively stamps an existing row — see the schema column's own
+//      comment for why NULL must never be backfilled after the fact).
+//
+//   2. seedDefaultFooterActionsForHarness(harnessId) — the NEW, additive
+//      per-harness seeder. For a NON-Claude harness, checks the count of
+//      rows stamped for THAT specific harness_id (not the whole table), so
+//      it correctly seeds a second harness's defaults even on an install
+//      that already has Claude's (or a user's customised) rows sitting in
+//      the table. For CLAUDE specifically it ALSO respects the whole-table
+//      check (see this function's own doc comment for why: a pre-C5
+//      install's rows are NULL-provenance, not 'claude'-stamped, so the
+//      per-harness check alone would seed 11 more Claude rows on top of an
+//      existing user's 11 — a real bug this special case exists to
+//      prevent). Called once per known harness at boot (see index.ts's boot
+//      sequence) — a harness with defaultActions already seeded is a
+//      no-op; a harness with no defaultActions declared is also a no-op
+//      (nothing to seed). Never touches, reorders, or deletes any row
+//      belonging to a DIFFERENT harness_id (including NULL) — strictly
+//      additive INSERTs, appended after the current max position.
 // ---------------------------------------------------------------------------
-
-const ACTION_TERMINAL_SEND_INPUT = 'terminal.sendInput'
 
 const DEFAULT_SEEDS: Array<{
   label: string
@@ -509,93 +586,14 @@ const DEFAULT_SEEDS: Array<{
   params: Record<string, unknown>
   visibleWhen: FooterActionDescriptor['visibleWhen']
   prompts?: PromptDescriptor[]
-}> = [
-  {
-    label: 'Fork',
-    icon: 'GitFork',
-    actionId: 'workspace.fork',
-    params: {},
-    visibleWhen: 'always'
-  },
-  {
-    label: '/copy',
-    icon: 'Clipboard',
-    actionId: ACTION_TERMINAL_SEND_INPUT,
-    params: { text: '/copy', submit: true },
-    visibleWhen: 'idle'
-  },
-  {
-    label: '/context',
-    icon: 'Brain',
-    actionId: ACTION_TERMINAL_SEND_INPUT,
-    params: { text: '/context', submit: true },
-    visibleWhen: 'always'
-  },
-  {
-    label: '/clear',
-    icon: 'Eraser',
-    actionId: ACTION_TERMINAL_SEND_INPUT,
-    params: { text: '/clear', submit: true },
-    visibleWhen: 'idle'
-  },
-  {
-    label: '/compact',
-    icon: 'ArrowsInLineHorizontal',
-    actionId: ACTION_TERMINAL_SEND_INPUT,
-    params: { text: '/compact', submit: true },
-    visibleWhen: 'idle'
-  },
-  {
-    label: '/cost',
-    icon: 'CurrencyDollar',
-    actionId: ACTION_TERMINAL_SEND_INPUT,
-    params: { text: '/cost', submit: true },
-    visibleWhen: 'always'
-  },
-  {
-    label: 'Model',
-    icon: 'Robot',
-    actionId: 'footer.modelSelect',
-    params: {},
-    visibleWhen: 'always'
-  },
-  {
-    label: 'Effort',
-    icon: 'Sliders',
-    actionId: 'footer.effortSelect',
-    params: {},
-    visibleWhen: 'always'
-  },
-  {
-    label: 'Archive',
-    icon: 'Archive',
-    actionId: 'workspace.archive',
-    params: {},
-    visibleWhen: 'idle'
-  },
-  {
-    label: 'Rename',
-    icon: 'PencilSimple',
-    actionId: 'workspace.rename',
-    params: {},
-    visibleWhen: 'idle',
-    prompts: [
-      {
-        key: 'name',
-        label: 'New name',
-        placeholder: 'Workspace name',
-        default: '{workspaceName}'
-      }
-    ]
-  },
-  {
-    label: 'Context',
-    icon: 'Gauge',
-    actionId: 'session.getUsage',
-    params: {},
-    visibleWhen: 'always'
-  }
-]
+}> = CLAUDE_DEFAULT_ACTIONS.map((draft) => ({
+  label: draft.label,
+  icon: draft.icon ?? null,
+  actionId: draft.actionId,
+  params: draft.params,
+  visibleWhen: draft.visibleWhen,
+  ...(draft.prompts ? { prompts: draft.prompts } : {})
+}))
 
 export function seedDefaultFooterActions(): void {
   const db = getDb()
@@ -608,8 +606,8 @@ export function seedDefaultFooterActions(): void {
   const now = Date.now()
   const insert = db.prepare(`
     INSERT INTO footer_actions_global
-      (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json, harness_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const seedTx = db.transaction(() => {
@@ -624,13 +622,121 @@ export function seedDefaultFooterActions(): void {
         idx,
         now,
         now,
-        seed.prompts ? JSON.stringify(seed.prompts) : null
+        seed.prompts ? JSON.stringify(seed.prompts) : null,
+        'claude'
       )
     })
   })
   seedTx()
 
   console.log('[footerActions] seeded', DEFAULT_SEEDS.length, 'default global footer actions')
+}
+
+/**
+ * C5's additive per-harness seeder. Seeds `harnessId`'s
+ * descriptor.defaultActions into footer_actions_global, stamped with that
+ * harness id, ONLY when zero rows are currently stamped for it — checked
+ * via `WHERE harness_id = ?`, never the whole-table count
+ * seedDefaultFooterActions() above uses. This is what lets a SECOND
+ * harness's defaults get seeded on an install that already has Claude's (or
+ * a user's customised) rows: the whole-table count is non-zero, but no row
+ * yet carries this harness's id.
+ *
+ * CLAUDE IS SPECIAL-CASED to ALSO respect the whole-table check
+ * seedDefaultFooterActions() uses (not just its own per-harness-id check).
+ * Reason: every pre-C5 install's 11 Claude rows are NULL-provenance (they
+ * predate this column — see the schema column's own comment), so the
+ * per-harness `WHERE harness_id = 'claude'` count for such an install is
+ * ZERO even though the table is full of Claude's own rows. Without this
+ * special case, this function would "correctly" see no claude-stamped rows
+ * and seed 11 MORE on top of an existing user's 11 — a real duplication
+ * bug, caught by scripts/verify-footer-actions.ts's assertion 4 (an
+ * existing user's row count must be unchanged; this is exactly what
+ * exercising it against a real pre-C5-shaped fixture surfaced during
+ * development). Claude was always "the whole-table harness" before this
+ * column existed, so its seeding boundary must stay the whole-table check;
+ * a GENUINELY new harness (never seeded before this column existed, so its
+ * absence from the table is real, not a stale/un-stamped artifact) is the
+ * only case where the narrower per-harness-id check is correct.
+ *
+ * Never touches an existing row of any provenance (matching or not) —
+ * INSERT only, appended after the current global max position, exactly
+ * like create()'s own append behavior. A harness with no `defaultActions`
+ * declared, or whose `defaultActions` is an empty array, is a correct
+ * no-op: seeding nothing is not an error.
+ */
+export function seedDefaultFooterActionsForHarness(harnessId: string): void {
+  const descriptor = resolveHarness(harnessId)
+  const defaults = descriptor.defaultActions
+  if (!defaults || defaults.length === 0) return
+
+  const db = getDb()
+
+  if (descriptor.id === 'claude') {
+    // See this function's own header comment: Claude's seeding boundary is
+    // the WHOLE TABLE, matching seedDefaultFooterActions()'s own gate,
+    // because a pre-C5 install's 11 rows are NULL-provenance, not
+    // 'claude'-stamped, and must never be seeded over.
+    const wholeTableCount = (
+      db.prepare('SELECT COUNT(*) AS c FROM footer_actions_global').get() as { c: number }
+    ).c
+    if (wholeTableCount > 0) return
+  }
+
+  const existing = (
+    db
+      .prepare('SELECT COUNT(*) AS c FROM footer_actions_global WHERE harness_id = ?')
+      .get(descriptor.id) as { c: number }
+  ).c
+  if (existing > 0) return // this harness already has its seeded rows
+
+  const now = Date.now()
+  const maxRow = db
+    .prepare('SELECT COALESCE(MAX(position), -1) AS m FROM footer_actions_global')
+    .get() as { m: number }
+  const insert = db.prepare(`
+    INSERT INTO footer_actions_global
+      (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json, harness_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+
+  const seedTx = db.transaction(() => {
+    defaults.forEach((draft, idx) => {
+      insert.run(
+        randomUUID(),
+        draft.label,
+        draft.icon ?? null,
+        draft.actionId,
+        JSON.stringify(draft.params ?? {}),
+        draft.visibleWhen,
+        maxRow.m + 1 + idx,
+        now,
+        now,
+        draft.prompts ? JSON.stringify(draft.prompts) : null,
+        descriptor.id
+      )
+    })
+  })
+  seedTx()
+
+  console.log(
+    '[footerActions] seeded',
+    defaults.length,
+    `default global footer actions for harness '${descriptor.id}'`
+  )
+}
+
+/**
+ * Seeds every KNOWN harness's defaults (see seedDefaultFooterActionsForHarness's
+ * own idempotency contract) — the boot-time entry point index.ts calls
+ * alongside seedDefaultFooterActions(), so a build that registers a second
+ * harness later seeds it automatically without a data-migration step. Order
+ * follows HARNESSES' own declaration order; harmless to re-run every boot.
+ */
+export function seedDefaultFooterActionsForAllHarnesses(): void {
+  for (const descriptor of HARNESSES) {
+    seedDefaultFooterActionsForHarness(descriptor.id)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -641,5 +747,12 @@ export function resetToDefaults(): void {
   const db = getDb()
   db.prepare('DELETE FROM footer_actions_global').run()
   seedDefaultFooterActions()
+  // C5: re-seed every OTHER known harness's defaults too — the DELETE above
+  // wiped a non-Claude harness's seeded rows same as Claude's, and without
+  // this they would silently vanish from "Reset to defaults" instead of
+  // coming back. seedDefaultFooterActions() only ever seeds Claude
+  // (matching its pre-C5 behavior exactly), so this is what actually
+  // restores a second harness's rows.
+  seedDefaultFooterActionsForAllHarnesses()
   console.log('[footerActions] reset to defaults complete')
 }

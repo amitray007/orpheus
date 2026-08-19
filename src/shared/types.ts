@@ -2232,6 +2232,17 @@ export type FooterActionDescriptor = {
   updatedAt: number
   /** Prompts to show before invoking (e.g. ask for new workspace name). */
   prompts?: PromptDescriptor[]
+  /** (C5, support-multi-harness) Which harness's descriptor.defaultActions
+   *  seeded this row, e.g. 'claude' — GLOBAL scope only (footer_actions_
+   *  project/_workspace rows are always user/prompt-authored, never
+   *  harness-seeded, so this is always undefined for those). `null`/
+   *  undefined means user-authored, OR a row seeded before this field
+   *  existed — either way it applies to EVERY harness and is never filtered
+   *  by harness at list time (see footerActions.ts's FOOTER_ACTION_GATES
+   *  entry for 'terminal.sendInput'). Only footerActions.ts's per-harness
+   *  seeder ever sets this to a real harness id; it must never be guessed
+   *  or backfilled onto an existing row after the fact. */
+  harnessId?: string | null
 }
 
 export type FooterActionDraft = Omit<
