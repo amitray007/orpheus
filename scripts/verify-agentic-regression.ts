@@ -133,7 +133,17 @@ const verifiers = [
   // node:child_process intercept (passthrough — real tmux still runs) to
   // observe the composed launch without racing scrubSecretEnvironment's
   // post-creation cleanup of the session's stored environment table.
-  ['verify-tmux-host-composition.ts', ['node', '--experimental-strip-types']]
+  ['verify-tmux-host-composition.ts', ['node', '--experimental-strip-types']],
+  // support-multi-harness follow-up — settingsSectionGating.ts's pure
+  // decision (isSectionIdApplicable/filterSectionGroup/
+  // resolveActiveSectionId), consumed by SettingsView.tsx to hide Claude-
+  // only settings sections for a harness that doesn't declare them. Uses
+  // mock.module() (Bun-only) to import the REAL registry.ts HARNESSES array
+  // for the Claude regression net — same technique/constraint as
+  // verify-harness-actions.ts and verify-harness-capability-gating.ts
+  // above, so this stays on the plain-bun dispatch path, not the
+  // node:sqlite tuple form the surrounding entries use.
+  'verify-settings-section-gating.ts'
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {

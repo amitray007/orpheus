@@ -1,6 +1,12 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import type { Icon } from '@phosphor-icons/react'
+import { useHarnessList } from '@/lib/harnessStore'
+import {
+  filterSectionGroup,
+  isSectionIdApplicable,
+  resolveActiveSectionId
+} from '@shared/harness/settingsSectionGating'
 import {
   Gear,
   MagnifyingGlass,
@@ -229,11 +235,20 @@ interface SectionDef {
 interface SectionGroup {
   label: string
   sections: SectionDef[]
+  /** Whether this group's sections are harness-owned and therefore subject
+   *  to settingsSectionGating.ts's registered-harness filter (support-
+   *  multi-harness) — true for Claude's group, false for Orpheus's
+   *  app-level group, which always renders every section regardless of
+   *  which harness(es) are registered. See settingsSectionGating.ts's own
+   *  header for why this is a per-GROUP structural flag rather than an
+   *  id-naming-convention check. */
+  gated: boolean
 }
 
 const GROUPS: SectionGroup[] = [
   {
     label: 'Orpheus',
+    gated: false,
     sections: [
       // First entry is the default landing section — Orpheus → General.
       // (Keeps the existing 'orpheus-appearance' id so the searchIndex and
@@ -379,6 +394,7 @@ const GROUPS: SectionGroup[] = [
   },
   {
     label: 'Claude',
+    gated: true,
     sections: [
       { id: 'claude-general', label: 'General', icon: Gear, Component: ClaudeGeneralSection },
       { id: 'claude-display', label: 'Display', icon: Monitor, Component: ClaudeDisplaySection },
@@ -428,11 +444,68 @@ export function SettingsView({ section }: { section?: SectionId }): React.JSX.El
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
 
+  // Harness capability gating (support-multi-harness) — hides a group whose
+  // sections no REGISTERED harness declares (e.g. the 11 claude-* sections
+  // for a harness that doesn't use Claude's own settings.json shape — see
+  // settingsSectionGating.ts's header for the full "why the whole group,
+  // and why gated on the REGISTERED set rather than any single active
+  // harness" rationale). `harnesses` defaults to `[]` while harness:list is
+  // still loading — filterSectionGroup's own fail-open default (an empty
+  // `harnesses` array) means every section shows during that window, so
+  // there is no flash of a truncated nav before the real list resolves.
+  const { harnesses } = useHarnessList()
+  const visibleGroups = useMemo(() => {
+    // NOT deriving the group LABEL from HarnessSummary.label here, despite
+    // that being the mechanically "more correct" long-term shape (GROUPS
+    // itself is still a hand-authored, harness-agnostic-in-name structure —
+    // a real per-harness GROUPS build is a bigger change than this unit's
+    // scope). Concretely: Claude's real descriptor label is 'Claude Code'
+    // (registry.ts), but GROUPS' own hardcoded group label is the shorter
+    // 'Claude' — deriving the label now would SILENTLY change that string
+    // for the only registered harness today, directly contradicting "the
+    // settings page must look and behave EXACTLY as today" with only
+    // Claude registered. Filtering which SECTIONS show is this unit's
+    // actual bug fix; renaming a group label with no second harness yet to
+    // justify the rename is a cosmetic change nothing asked for and the
+    // regression net explicitly forbids. Left as GROUPS' own static label;
+    // revisit when a second harness's group actually needs a name.
+    return GROUPS.map((group) => {
+      const { visibleSections } = filterSectionGroup(
+        group.sections,
+        (s) => s.id,
+        harnesses,
+        group.gated
+      )
+      return { ...group, sections: visibleSections }
+    }).filter((group) => group.sections.length > 0)
+  }, [harnesses])
+
   const allSections = GROUPS.flatMap((g) => g.sections)
-  const active = allSections.find((s) => s.id === activeId) ?? allSections[0]
+  const visibleActiveId = resolveActiveSectionId(activeId, visibleGroups, (s) => s.id) as SectionId
+  const active = allSections.find((s) => s.id === visibleActiveId) ?? allSections[0]
   const ActiveComponent = active.Component
 
-  const results = query.trim() ? searchSettings(query, SETTINGS_SEARCH_INDEX) : []
+  // Filter the search INDEX (not the results) by the same section gate —
+  // otherwise a search could surface a result pointing at a section
+  // GroupedNav has already hidden (~106 of 163 index entries are tagged
+  // sectionGroup: 'Claude', all reachable through claude-* sectionIds).
+  // Filtering the index rather than post-filtering results also means the
+  // matcher's own dedup/scoring never considers a hidden entry to begin
+  // with. Each SettingsSearchEntry already carries `sectionGroup: 'Claude'
+  // | 'Orpheus'` — the SAME per-group gated/ungated split GROUPS' own
+  // `gated` flag encodes, checked directly rather than re-deriving it from
+  // the section id (which id-based lookup this file's redesign specifically
+  // avoids — see settingsSectionGating.ts's header). `useMemo` keyed on
+  // `harnesses` (not `query`) — cheap relative to the search itself and
+  // avoids recomputing on every keystroke.
+  const searchableIndex = useMemo(
+    () =>
+      SETTINGS_SEARCH_INDEX.filter(
+        (e) => e.sectionGroup !== 'Claude' || isSectionIdApplicable(e.sectionId, harnesses)
+      ),
+    [harnesses]
+  )
+  const results = query.trim() ? searchSettings(query, searchableIndex) : []
 
   // Re-navigate when the deep-link target changes (e.g. the sidebar update
   // control is clicked again while Settings is already open). Mirroring the
@@ -524,7 +597,7 @@ export function SettingsView({ section }: { section?: SectionId }): React.JSX.El
         {query.trim() ? (
           <SearchResults results={results} query={query} onSelect={selectResult} />
         ) : (
-          <GroupedNav groups={GROUPS} activeId={activeId} onSelect={setActiveId} />
+          <GroupedNav groups={visibleGroups} activeId={visibleActiveId} onSelect={setActiveId} />
         )}
       </nav>
 

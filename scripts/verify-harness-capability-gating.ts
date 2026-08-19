@@ -98,7 +98,7 @@ const ALL_FALSE: HarnessCapabilities = {
 }
 
 function makeSummary(id: string, capabilities: HarnessCapabilities): HarnessSummary {
-  return { id, label: id, binary: id, capabilities }
+  return { id, label: id, binary: id, capabilities, settingsSections: [] }
 }
 
 // ---------------------------------------------------------------------------

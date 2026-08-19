@@ -3518,4 +3518,10 @@ export interface HarnessSummary {
    *  mergeDefaultArgs). */
   defaultArgs?: HarnessArgRow[]
   curated?: { model?: CuratedField; effort?: CuratedField }
+  /** Which Settings UI section ids this harness's own settings live in —
+   *  see HarnessDescriptor.settingsSections in src/shared/harness/types.ts.
+   *  Used by SettingsView.tsx (via src/shared/harness/
+   *  settingsSectionGating.ts's isSectionIdApplicable) to hide a
+   *  Claude-only section for a harness that doesn't declare it. */
+  settingsSections: string[]
 }

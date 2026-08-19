@@ -59,7 +59,18 @@ const UNKNOWN_CAPABILITIES_SUMMARY: HarnessSummary = {
     inlineSettingsJson: false,
     modelRouting: false
   },
-  icon: 'claude'
+  icon: 'claude',
+  // settingsSections: [] (not the real Claude descriptor's 11 ids) — this
+  // fallback is NOT what SettingsView.tsx's per-registered-harness gating
+  // consumes (that reads useHarnessList()'s full array directly, never
+  // resolveHarnessSummary's per-workspace fallback), but the field is
+  // required on HarnessSummary and an empty array is the fail-open choice
+  // consistent with settingsSectionGating.ts's own default: a harness that
+  // CLAIMS no section ids hides nothing (isSectionIdApplicable treats an
+  // id no harness claims as harness-agnostic/always-shown), matching this
+  // constant's "claim nothing you cannot back" discipline for a fallback
+  // that isn't backed by a real descriptor.
+  settingsSections: []
   // defaultArgs/curated intentionally omitted (both optional on
   // HarnessSummary) — a caller resolving against this fallback only for
   // capabilities/id/label never needed them, and fabricating curated

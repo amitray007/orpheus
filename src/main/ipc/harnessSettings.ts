@@ -26,7 +26,8 @@ function toSummary(descriptor: (typeof HARNESSES)[number]): HarnessSummary {
     capabilities: descriptor.capabilities,
     icon: descriptor.icon,
     defaultArgs: descriptor.defaultArgs,
-    curated: descriptor.curated
+    curated: descriptor.curated,
+    settingsSections: descriptor.settingsSections
   }
 }
 
