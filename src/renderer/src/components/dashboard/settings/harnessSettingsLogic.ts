@@ -8,7 +8,12 @@
 // logic into a directly-callable pure function and call it").
 // ---------------------------------------------------------------------------
 
-import type { HarnessSettings, HarnessSettingRow, HarnessSettingsScope } from '@shared/types'
+import type {
+  HarnessSettings,
+  HarnessSettingRow,
+  HarnessSettingsScope,
+  CuratedFieldOptionsOverlay
+} from '@shared/types'
 import type { HarnessArgRow } from '@shared/harness/types'
 
 // ---------------------------------------------------------------------------
@@ -326,4 +331,191 @@ export function summarizeEnvRows(rows: readonly { key: string }[]): string {
   const count = rows.filter((r) => r.key.trim() !== '').length
   if (count === 0) return 'No variables'
   return `${count} variable${count === 1 ? '' : 's'}`
+}
+
+// ---------------------------------------------------------------------------
+// Models/Effort option-list editors (B3, support-multi-harness)
+// ---------------------------------------------------------------------------
+//
+// The Models/Effort sections edit HarnessSettings.curatedOptions — a
+// per-field {add,hide,order} OVERLAY onto a descriptor's shipped `options`
+// (see CuratedFieldOptionsOverlay's doc comment in src/main/harness/settings.ts
+// and src/shared/harness/curatedOptions.ts's resolver for the full
+// rationale). The editor works over a DRAFT ROW LIST — the resolved,
+// ordered option set with per-row hidden/custom flags — the same
+// "draft rows are the single source of truth while editing, converted to
+// storage shape only at Save" pattern draftsToStoredRows/mergeDefaultArgs
+// already establish for the Arguments editor above.
+
+/** One row in the Models/Effort editor: a resolved option value plus
+ *  display-only provenance (`custom`: not in the descriptor's own list, so
+ *  the UI can render the non-blocking warning chip) and editable state
+ *  (`hidden`). Order in the array IS the order — no separate index field,
+ *  matching HarnessRowEditor's args/env row convention of "array order is
+ *  the persisted order". */
+export interface CuratedOptionRowDraft {
+  value: string
+  /** True when `value` is not present in the descriptor's own `options` —
+   *  i.e. it only exists because of `overlay.add` (or, for the currently
+   *  selected value, because resolveCuratedOptions reinstated it after a
+   *  hide). Purely informational for the warning chip; never blocks saving
+   *  or editing, matching CuratedField.allowCustom's "never validates
+   *  against options" contract. */
+  custom: boolean
+  hidden: boolean
+  /** True when `value` is the field's current selection (HarnessCuratedSettings
+   *  .model/.effort). A hidden-but-selected row must still render — see
+   *  resolveCuratedOptions — and the editor marks it so the UI can explain
+   *  why a "hidden" row is still visible instead of leaving that
+   *  unexplained. */
+  selected: boolean
+}
+
+/**
+ * Builds the Models/Effort editor's draft rows.
+ *
+ * DELIBERATELY DOES NOT CALL resolveCuratedOptions for the row set itself —
+ * that function's whole job is to produce the PICKER's list, which correctly
+ * DROPS a hidden-and-unselected value entirely (nothing to show a user
+ * choosing a model). The Settings EDITOR needs the opposite: hidden rows
+ * must still be listed (with their toggle showing "off") so the user has
+ * something to flip back on — "hide beats delete, reversible" only holds if
+ * there's a visible switch to reverse it with. So this builds the editor's
+ * row set from `descriptorOptions` + `overlay.add` directly (every value the
+ * overlay could possibly be talking about), independent of hide, then
+ * annotates each with hidden/custom/selected and applies `order` for
+ * display — the same three concerns resolveCuratedOptions applies, just
+ * without ever discarding a row over `hide`.
+ *
+ * `custom` is derived from `descriptorOptions`, NOT from `overlay.add` —
+ * kept consistent with the resolver's own convention (a value can be
+ * "custom" without being in `add`, e.g. a legacy selection from a
+ * since-changed descriptor that this function also folds in via
+ * `selectedValue`, mirroring resolveCuratedOptions' own reinstatement path).
+ */
+export function buildCuratedOptionRows(
+  descriptorOptions: readonly string[],
+  overlay: CuratedFieldOptionsOverlay | undefined,
+  selectedValue: string | undefined
+): CuratedOptionRowDraft[] {
+  const descriptorSet = new Set(descriptorOptions)
+  const hideSet = new Set(overlay?.hide ?? [])
+
+  // Every value the editor must be able to show: descriptor options, plus
+  // whatever the overlay's `add` introduced, plus (mirroring
+  // resolveCuratedOptions' own reinstatement) the current selection even if
+  // it belongs to neither set — a legacy value must still get a row to
+  // display, not just survive invisibly.
+  const working = [...descriptorOptions]
+  const seen = new Set(working)
+  for (const value of overlay?.add ?? []) {
+    if (seen.has(value)) continue
+    working.push(value)
+    seen.add(value)
+  }
+  if (selectedValue && !seen.has(selectedValue)) {
+    working.push(selectedValue)
+    seen.add(selectedValue)
+  }
+
+  // Apply `order` for DISPLAY ordering only — never as a filter. Same
+  // "named first, then the rest in relative order, unknown names ignored"
+  // rule as resolveCuratedOptions' own order step.
+  const order = overlay?.order ?? []
+  let ordered = working
+  if (order.length > 0) {
+    const remaining = new Set(working)
+    const front: string[] = []
+    for (const value of order) {
+      if (!remaining.has(value)) continue
+      front.push(value)
+      remaining.delete(value)
+    }
+    ordered = [...front, ...working.filter((value) => remaining.has(value))]
+  }
+
+  return ordered.map((value) => ({
+    value,
+    custom: !descriptorSet.has(value),
+    hidden: hideSet.has(value),
+    selected: value === selectedValue
+  }))
+}
+
+/**
+ * Inverse of buildCuratedOptionRows: given the editor's current draft rows
+ * (post add/hide-toggle/reorder) and the descriptor's own `options`, derives
+ * exactly what should be PERSISTED as this field's CuratedFieldOptionsOverlay.
+ *
+ *  - `add`: every draft row's value not present in `descriptorOptions` —
+ *    i.e. every `custom` row, regardless of the `custom` flag on the row
+ *    object itself (which is display-only and re-derived here, not trusted
+ *    — same discipline as draftsToStoredRows re-deriving "is this a
+ *    default" from `key` rather than trusting a threaded-through flag).
+ *  - `hide`: every draft row currently marked hidden.
+ *  - `order`: the full draft row order, VALUES ONLY — always written
+ *    (never omitted) whenever any row exists, because order is a property
+ *    of the whole list and there is no "default" order to fall back to
+ *    once the user has touched this editor at all; a partial order would
+ *    be ambiguous with "no opinion" per resolveCuratedOptions' semantics.
+ *
+ * An empty `rows` array (nothing left after removing every custom addition,
+ * theoretically) or a draft that produces an all-empty overlay collapses to
+ * `undefined` rather than persisting `{}` — matching mergeCuratedOptions'
+ * per-field-absence convention: an empty overlay object is NOT the same as
+ * "no opinion" once merged across scopes (an empty {} would still win over
+ * an earlier scope's real overlay), so this must not manufacture one.
+ */
+export function draftRowsToOverlay(
+  rows: readonly CuratedOptionRowDraft[],
+  descriptorOptions: readonly string[]
+): CuratedFieldOptionsOverlay | undefined {
+  if (rows.length === 0) return undefined
+
+  const descriptorSet = new Set(descriptorOptions)
+  const add = rows.filter((r) => !descriptorSet.has(r.value)).map((r) => r.value)
+  const hide = rows.filter((r) => r.hidden).map((r) => r.value)
+  const order = rows.map((r) => r.value)
+
+  const overlay: CuratedFieldOptionsOverlay = {}
+  if (add.length > 0) overlay.add = add
+  if (hide.length > 0) overlay.hide = hide
+  if (order.length > 0) overlay.order = order
+
+  return Object.keys(overlay).length > 0 ? overlay : undefined
+}
+
+/**
+ * Does `draftRows` differ from `loadedRows` (the rows last loaded from — or
+ * saved to — storage)? Compares value/hidden/order (position in the array
+ * IS the order, so array index participates in the comparison via JSON
+ * stringification of the whole sequence) — `custom`/`selected` are
+ * display-only derivations and deliberately excluded, so a value merely
+ * changing custom/selected status (e.g. because the user picked a different
+ * model elsewhere) never reads as an unsaved change in THIS editor.
+ */
+export function curatedOptionsRowsDirty(
+  loadedRows: readonly CuratedOptionRowDraft[],
+  draftRows: readonly CuratedOptionRowDraft[]
+): boolean {
+  const project = (r: CuratedOptionRowDraft): string => JSON.stringify({ v: r.value, h: r.hidden })
+  return loadedRows.map(project).join(' ') !== draftRows.map(project).join(' ')
+}
+
+/** "N shown, M hidden" (or "Default list") — the Models/Effort sections'
+ *  populated summary line, same "never blank" convention as
+ *  summarizeArgRows/summarizeEnvRows. "Default list" specifically means
+ *  every row is unmodified descriptor output with nothing hidden and
+ *  nothing custom — not merely "hidden count is zero" — so a user who only
+ *  reordered rows (still descriptor-only, still nothing hidden) sees that
+ *  reflected rather than a misleading "Default list". */
+export function summarizeCuratedOptionRows(rows: readonly CuratedOptionRowDraft[]): string {
+  if (rows.length === 0) return 'Default list'
+  const hiddenCount = rows.filter((r) => r.hidden).length
+  const shownCount = rows.length - hiddenCount
+  const customCount = rows.filter((r) => r.custom).length
+  if (hiddenCount === 0 && customCount === 0) return 'Default list'
+  const parts = [`${shownCount} shown`]
+  if (hiddenCount > 0) parts.push(`${hiddenCount} hidden`)
+  return parts.join(', ')
 }

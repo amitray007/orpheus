@@ -15,7 +15,9 @@ import {
   CaretRight,
   Question,
   ArrowCounterClockwise,
-  Rocket
+  Rocket,
+  Warning,
+  EyeSlash
 } from '@phosphor-icons/react'
 import { SettingRow, SegmentedControl, Select, Toggle, Eyebrow, SecretInput } from './primitives'
 import { ProviderIcon, isKnownProviderIconId } from '@/components/ProviderIcon'
@@ -29,7 +31,12 @@ import {
   composedCommandPreview,
   summarizeArgRows,
   summarizeEnvRows,
-  type HarnessScopeSettingsBundle
+  buildCuratedOptionRows,
+  draftRowsToOverlay,
+  curatedOptionsRowsDirty,
+  summarizeCuratedOptionRows,
+  type HarnessScopeSettingsBundle,
+  type CuratedOptionRowDraft
 } from './harnessSettingsLogic'
 
 // ---------------------------------------------------------------------------
@@ -329,6 +336,149 @@ function HarnessRowEditor({
 }
 
 // ---------------------------------------------------------------------------
+// CuratedOptionsEditor — the Models/Effort option-list editor (B3,
+// support-multi-harness). Edits HarnessSettings.curatedOptions.model/.effort
+// (an {add,hide,order} overlay onto CuratedField.options — see
+// CuratedFieldOptionsOverlay's doc comment in src/main/harness/settings.ts)
+// via draft rows built/persisted through buildCuratedOptionRows/
+// draftRowsToOverlay (harnessSettingsLogic.ts), the same
+// draft-rows-are-the-source-of-truth-until-Save shape HarnessRowEditor uses
+// above.
+//
+// FULLY CONTROLLED, same discipline as HarnessRowEditor — no internal row
+// state, every mutation reported straight up via onChange. The parent
+// (HarnessSection) owns draftModelRows/draftEffortRows exactly like it owns
+// draftArgs/draftEnv, which is what keeps the SEAM comment's "collapsing
+// unmounts safely" invariant true for these sections too.
+// ---------------------------------------------------------------------------
+
+interface CuratedOptionsEditorProps {
+  rows: readonly CuratedOptionRowDraft[]
+  onChange: (rows: CuratedOptionRowDraft[]) => void
+  addPlaceholder: string
+  addAriaLabel: string
+}
+
+function CuratedOptionsEditor({
+  rows,
+  onChange,
+  addPlaceholder,
+  addAriaLabel
+}: CuratedOptionsEditorProps): React.JSX.Element {
+  const [newValue, setNewValue] = useState('')
+
+  function toggleHidden(idx: number): void {
+    onChange(rows.map((r, i) => (i === idx ? { ...r, hidden: !r.hidden } : r)))
+  }
+
+  function removeRow(idx: number): void {
+    onChange(rows.filter((_, i) => i !== idx))
+  }
+
+  function move(idx: number, direction: 'up' | 'down'): void {
+    onChange(moveRow(rows, idx, direction))
+  }
+
+  function addValue(): void {
+    const trimmed = newValue.trim()
+    if (!trimmed) return
+    if (rows.some((r) => r.value === trimmed)) {
+      // Already present (descriptor-known or previously added) — just clear
+      // the input rather than creating a duplicate row.
+      setNewValue('')
+      return
+    }
+    onChange([...rows, { value: trimmed, custom: true, hidden: false, selected: false }])
+    setNewValue('')
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      {rows.map((row, idx) => (
+        <div key={row.value} className="flex items-center gap-1.5">
+          <div className="flex flex-col gap-0.5 flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => move(idx, 'up')}
+              disabled={idx === 0}
+              aria-label="Move up"
+              className="w-4 h-2.5 flex items-center justify-center text-text-muted hover:text-text-primary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <CaretUp size={9} weight="bold" />
+            </button>
+            <button
+              type="button"
+              onClick={() => move(idx, 'down')}
+              disabled={idx === rows.length - 1}
+              aria-label="Move down"
+              className="w-4 h-2.5 flex items-center justify-center text-text-muted hover:text-text-primary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <CaretDown size={9} weight="bold" />
+            </button>
+          </div>
+          <Toggle
+            value={!row.hidden}
+            onChange={() => toggleHidden(idx)}
+            ariaLabel={`Show ${row.value}`}
+          />
+          <span className="flex-1 min-w-0 px-2.5 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary font-mono truncate">
+            {row.value}
+          </span>
+          {row.hidden && row.selected && (
+            <span
+              title="This value is hidden but stays visible because it's currently selected"
+              className="text-[10px] leading-none font-medium text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-1 flex-shrink-0 flex items-center gap-1"
+            >
+              <EyeSlash size={10} weight="bold" />
+              hidden, in use
+            </span>
+          )}
+          {row.custom && (
+            <span
+              title={`"${row.value}" is not in this harness's known option list — it will be used as-is`}
+              className="text-[10px] leading-none font-medium text-amber-400 bg-amber-400/10 border border-amber-400/20 rounded px-1.5 py-1 flex-shrink-0 flex items-center gap-1"
+            >
+              <Warning size={10} weight="bold" />
+              custom
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => removeRow(idx)}
+            className="text-text-muted hover:text-red-400 transition-colors flex-shrink-0"
+            aria-label={`Remove ${row.value}`}
+          >
+            <Trash size={13} />
+          </button>
+        </div>
+      ))}
+      <div className="flex items-center gap-1.5">
+        <Plus size={12} weight="bold" className="text-text-muted flex-shrink-0 ml-[22px]" />
+        <input
+          type="text"
+          aria-label={addAriaLabel}
+          value={newValue}
+          onChange={(e) => setNewValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') addValue()
+          }}
+          placeholder={addPlaceholder}
+          className="flex-1 min-w-0 px-2.5 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text"
+        />
+        <button
+          type="button"
+          onClick={addValue}
+          disabled={!newValue.trim()}
+          className="text-xs px-2.5 py-1.5 rounded-md text-accent hover:opacity-80 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+        >
+          Add
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // CollapsibleSection — shared shell for every settings panel below the
 // Launch preview (Arguments, Environment, and B3's forthcoming Models/Effort
 // sections). Renders an eyebrow-style header button with a populated summary
@@ -447,6 +597,12 @@ export function HarnessSection(): React.JSX.Element | null {
   // from props; that resync was the bug (see HarnessRowEditor's header).
   const [draftArgs, setDraftArgs] = useState<RowDraft[]>([])
   const [draftEnv, setDraftEnv] = useState<RowDraft[]>([])
+  // Models/Effort option-list drafts (B3) — same seed-once-per-context-change,
+  // parent-owned-source-of-truth discipline as draftArgs/draftEnv above (see
+  // the SEAM comment on CollapsibleSection: these editors are fully
+  // controlled, so unmounting a collapsed section never discards an edit).
+  const [draftModelRows, setDraftModelRows] = useState<CuratedOptionRowDraft[]>([])
+  const [draftEffortRows, setDraftEffortRows] = useState<CuratedOptionRowDraft[]>([])
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
 
@@ -579,6 +735,20 @@ export function HarnessSection(): React.JSX.Element | null {
       const mergedArgs = mergeDefaultArgs(selectedHarness?.defaultArgs, scopeSettings.args)
       setDraftArgs(toDrafts(mergedArgs))
       setDraftEnv(toDrafts(scopeSettings.env ?? []))
+      setDraftModelRows(
+        buildCuratedOptionRows(
+          selectedHarness?.curated?.model?.options ?? [],
+          scopeSettings.curatedOptions?.model,
+          scopeSettings.curated?.model
+        )
+      )
+      setDraftEffortRows(
+        buildCuratedOptionRows(
+          selectedHarness?.curated?.effort?.options ?? [],
+          scopeSettings.curatedOptions?.effort,
+          scopeSettings.curated?.effort
+        )
+      )
       setSaveError(null)
       // Default expansion, computed once per genuine context change (same
       // cadence as the draft reseed above) rather than reactively — see
@@ -618,13 +788,38 @@ export function HarnessSection(): React.JSX.Element | null {
   )
   const loadedEnv = useMemo(() => toDrafts(scopeSettings.env ?? []), [scopeSettings.env])
 
+  // Same "reactive LOADED baseline, reseed-on-context-change DRAFT" split as
+  // loadedArgs/loadedEnv above, applied to the Models/Effort option lists.
+  const loadedModelRows = useMemo(
+    () =>
+      buildCuratedOptionRows(
+        selectedHarness?.curated?.model?.options ?? [],
+        scopeSettings.curatedOptions?.model,
+        scopeSettings.curated?.model
+      ),
+    [selectedHarness, scopeSettings.curatedOptions?.model, scopeSettings.curated?.model]
+  )
+  const loadedEffortRows = useMemo(
+    () =>
+      buildCuratedOptionRows(
+        selectedHarness?.curated?.effort?.options ?? [],
+        scopeSettings.curatedOptions?.effort,
+        scopeSettings.curated?.effort
+      ),
+    [selectedHarness, scopeSettings.curatedOptions?.effort, scopeSettings.curated?.effort]
+  )
+
   const argsDirty = hasUnsavedChanges(loadedArgs, draftArgs)
   const envDirty = hasUnsavedChanges(loadedEnv, draftEnv)
-  const isDirty = argsDirty || envDirty
+  const modelRowsDirty = curatedOptionsRowsDirty(loadedModelRows, draftModelRows)
+  const effortRowsDirty = curatedOptionsRowsDirty(loadedEffortRows, draftEffortRows)
+  const isDirty = argsDirty || envDirty || modelRowsDirty || effortRowsDirty
 
   function discard(): void {
     setDraftArgs(loadedArgs)
     setDraftEnv(loadedEnv)
+    setDraftModelRows(loadedModelRows)
+    setDraftEffortRows(loadedEffortRows)
     setSaveError(null)
   }
 
@@ -644,13 +839,29 @@ export function HarnessSection(): React.JSX.Element | null {
       .map(({ key, value, enabled }) => ({ key, value, enabled }))
     // Spread the existing settings — NOT a fresh { args, env } object — so
     // `curated` (still persisted, even though this UI no longer edits it;
-    // see the file header) survives the round trip untouched. Both args and
-    // env go in ONE setSettings call: they live in a single settings_json
-    // blob, so two separate writes would race.
+    // see the file header) survives the round trip untouched. Args, env, AND
+    // curatedOptions go in ONE setSettings call: they live in a single
+    // settings_json blob, so separate writes would race.
+    const nextModelOverlay = draftRowsToOverlay(
+      draftModelRows,
+      selectedHarness?.curated?.model?.options ?? []
+    )
+    const nextEffortOverlay = draftRowsToOverlay(
+      draftEffortRows,
+      selectedHarness?.curated?.effort?.options ?? []
+    )
+    const nextCuratedOptions: HarnessSettings['curatedOptions'] =
+      nextModelOverlay || nextEffortOverlay
+        ? {
+            ...(nextModelOverlay ? { model: nextModelOverlay } : {}),
+            ...(nextEffortOverlay ? { effort: nextEffortOverlay } : {})
+          }
+        : undefined
     const next: HarnessSettings = {
       ...scopeSettings,
       args: draftsToStoredRows(namedArgs, selectedHarness?.defaultArgs),
-      env: namedEnv
+      env: namedEnv,
+      curatedOptions: nextCuratedOptions
     }
     setSaving(true)
     setSaveError(null)
@@ -778,6 +989,38 @@ export function HarnessSection(): React.JSX.Element | null {
                 addLabel="Add variable"
               />
             </CollapsibleSection>
+
+            {selectedHarness.curated?.model && (
+              <CollapsibleSection
+                title="Models"
+                summary={summarizeCuratedOptionRows(draftModelRows)}
+                open={openSections.has('models')}
+                onToggle={() => toggleSection('models')}
+              >
+                <CuratedOptionsEditor
+                  rows={draftModelRows}
+                  onChange={setDraftModelRows}
+                  addPlaceholder="model id"
+                  addAriaLabel="Add model"
+                />
+              </CollapsibleSection>
+            )}
+
+            {selectedHarness.curated?.effort && (
+              <CollapsibleSection
+                title="Effort"
+                summary={summarizeCuratedOptionRows(draftEffortRows)}
+                open={openSections.has('effort')}
+                onToggle={() => toggleSection('effort')}
+              >
+                <CuratedOptionsEditor
+                  rows={draftEffortRows}
+                  onChange={setDraftEffortRows}
+                  addPlaceholder="effort level"
+                  addAriaLabel="Add effort level"
+                />
+              </CollapsibleSection>
+            )}
 
             <SaveBar
               isDirty={isDirty}

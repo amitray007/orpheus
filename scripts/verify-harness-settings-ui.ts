@@ -31,8 +31,14 @@ import {
   composedCommandPreview,
   summarizeArgRows,
   summarizeEnvRows,
-  type HarnessScopeSettingsBundle
+  buildCuratedOptionRows,
+  draftRowsToOverlay,
+  curatedOptionsRowsDirty,
+  summarizeCuratedOptionRows,
+  type HarnessScopeSettingsBundle,
+  type CuratedOptionRowDraft
 } from '../src/renderer/src/components/dashboard/settings/harnessSettingsLogic'
+import { resolveCuratedOptions } from '../src/shared/harness/curatedOptions'
 import type { HarnessArgRow } from '../src/shared/harness/types'
 
 /** Strip the display-only `fromDefault` marker, leaving the stored row shape.
@@ -562,6 +568,354 @@ function mutatedSummarizeArgRowsCountsBlankRows(
 
   console.log(
     '✓ mutation test: a summary that counts blank rows is correctly caught as a failing assertion'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// resolveCuratedOptions (B3, support-multi-harness) — the pure resolver
+// behind the Models/Effort settings editors. Asserts every rule from its own
+// doc comment: dedupe on add, hide-except-selected (THE invariant), order
+// with unknown-name tolerance, and total/no-op behavior.
+// ---------------------------------------------------------------------------
+
+const DESCRIPTOR_MODELS = ['opus', 'sonnet', 'haiku']
+
+// 1. No overlay at all -> descriptor options returned BY REFERENCE (true
+//    no-op), matching mergeCuratedModelEffort's same-reference convention.
+{
+  const result = resolveCuratedOptions(DESCRIPTOR_MODELS, undefined)
+  assert.equal(result, DESCRIPTOR_MODELS, 'no overlay must return the exact same array reference')
+}
+
+// 2. An entirely-empty overlay ({}) is also a no-op by reference.
+{
+  const result = resolveCuratedOptions(DESCRIPTOR_MODELS, {})
+  assert.equal(result, DESCRIPTOR_MODELS, 'an empty overlay object must also be a true no-op')
+}
+
+// 3. ADD: a new value is appended; a value that duplicates an existing
+//    descriptor option is NOT appended a second time.
+{
+  const result = resolveCuratedOptions(DESCRIPTOR_MODELS, {
+    add: ['my-finetune', 'opus']
+  })
+  assert.deepEqual(
+    result,
+    ['opus', 'sonnet', 'haiku', 'my-finetune'],
+    'add appends new values and dedupes an add that already exists in descriptorOptions'
+  )
+}
+
+// 4. HIDE: a hidden value is removed from the resolved list when it is NOT
+//    the current selection.
+{
+  const result = resolveCuratedOptions(DESCRIPTOR_MODELS, { hide: ['haiku'] })
+  assert.deepEqual(result, ['opus', 'sonnet'], 'a hidden, unselected value must be removed')
+}
+
+// 5. THE INVARIANT: a hidden value that IS the current selection must still
+//    appear in the resolved list — hiding never hides the active selection.
+{
+  const result = resolveCuratedOptions(DESCRIPTOR_MODELS, { hide: ['haiku'] }, 'haiku')
+  assert.deepEqual(
+    result,
+    ['opus', 'sonnet', 'haiku'],
+    'HIDDEN-BUT-SELECTED INVARIANT: a hidden value that is currently selected must still appear'
+  )
+}
+
+// 5b. The same invariant when the selected value isn't even in
+//     descriptorOptions/add at all (a legacy selection from a since-changed
+//     descriptor) — still must be surfaced, not silently dropped.
+{
+  const result = resolveCuratedOptions(
+    DESCRIPTOR_MODELS,
+    { hide: ['legacy-model'] },
+    'legacy-model'
+  )
+  assert.ok(
+    result.includes('legacy-model'),
+    'a selected value absent from descriptorOptions AND add must still be surfaced'
+  )
+}
+
+// 6. ORDER: named values come first in the given order; unnamed values keep
+//    their relative position after them.
+{
+  const result = resolveCuratedOptions(DESCRIPTOR_MODELS, { order: ['haiku', 'opus'] })
+  assert.deepEqual(
+    result,
+    ['haiku', 'opus', 'sonnet'],
+    'order brings named values to the front in the given order; the rest keep relative order'
+  )
+}
+
+// 7. ORDER naming a value that no longer exists (hidden, or never existed)
+//    must be ignored, not throw.
+{
+  const result = resolveCuratedOptions(DESCRIPTOR_MODELS, {
+    hide: ['haiku'],
+    order: ['haiku', 'sonnet', 'nonexistent']
+  })
+  assert.deepEqual(
+    result,
+    ['sonnet', 'opus'],
+    'order entries naming a hidden or nonexistent value must be silently skipped, not throw'
+  )
+}
+
+// 8. Combined: add + hide + order all applied together, in that documented
+//    order (add, then hide-except-selected, then order).
+{
+  const result = resolveCuratedOptions(
+    DESCRIPTOR_MODELS,
+    { add: ['my-finetune'], hide: ['haiku'], order: ['my-finetune', 'sonnet'] },
+    undefined
+  )
+  assert.deepEqual(
+    result,
+    ['my-finetune', 'sonnet', 'opus'],
+    'add + hide + order compose correctly: haiku hidden, my-finetune added and ordered first'
+  )
+}
+
+console.log(
+  '✓ resolveCuratedOptions: no-op, dedupe-on-add, hide, hidden-but-selected invariant (twice), order, unknown-order-name-ignored, and combined all correct'
+)
+
+// ---------------------------------------------------------------------------
+// MUTATION TESTS — resolveCuratedOptions. Each deliberately breaks one rule
+// and confirms a real behavioral assertion (the exact expectation a correct
+// implementation must satisfy) actually fails against it.
+// ---------------------------------------------------------------------------
+
+function assertMutationCaught(run: () => void, label: string): void {
+  let threw = false
+  try {
+    run()
+  } catch (err) {
+    threw = true
+    console.log(
+      `  mutation caught (expected failure) [${label}]:`,
+      (err as Error).message.split('\n')[0]
+    )
+  }
+  assert.ok(threw, `MUTATION TEST FAILED TO FAIL: ${label} went undetected`)
+}
+
+// Mutation A: hide the selected value anyway (breaks THE invariant).
+function mutatedResolveHidesSelected(
+  descriptorOptions: readonly string[],
+  hide: string[] | undefined
+): string[] {
+  const hideSet = new Set(hide ?? [])
+  return descriptorOptions.filter((v) => !hideSet.has(v)) // BUG: no selectedValue exception
+}
+assertMutationCaught(() => {
+  assert.deepEqual(
+    mutatedResolveHidesSelected(DESCRIPTOR_MODELS, ['haiku']),
+    ['opus', 'sonnet', 'haiku'],
+    'a hidden-but-selected value must still appear'
+  )
+}, 'hiding the selected value')
+
+// Mutation B: ignore `order` entirely.
+function mutatedResolveIgnoresOrder(descriptorOptions: readonly string[]): string[] {
+  return [...descriptorOptions] // BUG: order overlay never applied
+}
+assertMutationCaught(() => {
+  assert.deepEqual(
+    mutatedResolveIgnoresOrder(DESCRIPTOR_MODELS),
+    ['haiku', 'opus', 'sonnet'],
+    'order must reorder the resolved list'
+  )
+}, 'ignoring order')
+
+// Mutation C: drop the dedupe on add (append even if already present).
+function mutatedResolveNoDedupeOnAdd(
+  descriptorOptions: readonly string[],
+  add: string[] | undefined
+): string[] {
+  return [...descriptorOptions, ...(add ?? [])] // BUG: no seen-set guard
+}
+assertMutationCaught(() => {
+  assert.deepEqual(
+    mutatedResolveNoDedupeOnAdd(DESCRIPTOR_MODELS, ['opus']),
+    DESCRIPTOR_MODELS,
+    'adding a value that already exists in descriptorOptions must not duplicate it'
+  )
+}, 'dropping the add dedupe')
+
+// Mutation D: merge overlays across scopes instead of the whole-field
+// replace the Settings UI relies on (this exercises the SAME rule
+// verify-harness-settings.ts's mutation test #9 covers at the storage
+// layer — repeated here against the UI-facing draft/overlay round trip via
+// draftRowsToOverlay, so the rule is pinned on both sides of the boundary).
+{
+  const projectOnlyOverlay = draftRowsToOverlay(
+    [
+      { value: 'sonnet', custom: false, hidden: false, selected: false },
+      { value: 'opus', custom: false, hidden: false, selected: false }
+    ],
+    DESCRIPTOR_MODELS
+  )
+  assert.deepEqual(
+    projectOnlyOverlay,
+    { order: ['sonnet', 'opus'] },
+    'draftRowsToOverlay must produce the WHOLE overlay for a field, not a partial delta to merge with another scope'
+  )
+}
+
+// Mutation E: buildCuratedOptionRows built naively on top of
+// resolveCuratedOptions (the FIRST implementation this file caught during
+// development) — a hidden-and-unselected value would be silently absent
+// from the editor's row list entirely, with no toggle left to un-hide it.
+// This is a real bug this harness caught before it shipped: resolver output
+// is correct for a PICKER (drop what shouldn't be offered) but wrong for the
+// EDITOR (must keep every overlay-addressable value visible, hidden or not).
+function mutatedBuildCuratedOptionRowsDropsHiddenRows(
+  descriptorOptions: readonly string[],
+  hide: string[] | undefined
+): string[] {
+  const hideSet = new Set(hide ?? [])
+  return descriptorOptions.filter((v) => !hideSet.has(v)) // BUG: matches resolveCuratedOptions, not the editor's contract
+}
+assertMutationCaught(() => {
+  assert.deepEqual(
+    mutatedBuildCuratedOptionRowsDropsHiddenRows(DESCRIPTOR_MODELS, ['haiku']),
+    ['opus', 'sonnet', 'haiku'],
+    'the editor must keep listing a hidden-and-unselected value so it can be un-hidden'
+  )
+}, 'editor dropping a hidden row entirely')
+
+console.log(
+  '✓ mutation tests: hidden-but-selected, order, add-dedupe, whole-field-replace, and editor-drops-hidden-rows all correctly caught as failures when broken'
+)
+
+// ---------------------------------------------------------------------------
+// buildCuratedOptionRows / draftRowsToOverlay — the Settings UI's editor
+// draft-row round trip (harnessSettingsLogic.ts), mirroring
+// mergeDefaultArgs/draftsToStoredRows' display<->storage contract above but
+// for the Models/Effort option-list editors.
+// ---------------------------------------------------------------------------
+
+// 1. No overlay, no selection: every row is a plain, non-custom,
+//    non-hidden, unselected descriptor option, in descriptor order.
+{
+  const rows = buildCuratedOptionRows(DESCRIPTOR_MODELS, undefined, undefined)
+  assert.deepEqual(rows, [
+    { value: 'opus', custom: false, hidden: false, selected: false },
+    { value: 'sonnet', custom: false, hidden: false, selected: false },
+    { value: 'haiku', custom: false, hidden: false, selected: false }
+  ])
+}
+
+// 2. A hidden, unselected row is marked hidden but still present when it IS
+//    the selection (round-tripping the resolver's own invariant into the
+//    row shape the editor renders).
+{
+  const rows = buildCuratedOptionRows(DESCRIPTOR_MODELS, { hide: ['haiku'] }, 'haiku')
+  const haikuRow = rows.find((r) => r.value === 'haiku')
+  assert.ok(haikuRow, 'a hidden-but-selected value must still produce a row')
+  assert.deepEqual(haikuRow, { value: 'haiku', custom: false, hidden: true, selected: true })
+}
+
+// 3. A custom (add-only) value is marked custom: true.
+{
+  const rows = buildCuratedOptionRows(DESCRIPTOR_MODELS, { add: ['my-finetune'] }, undefined)
+  const customRow = rows.find((r) => r.value === 'my-finetune')
+  assert.deepEqual(customRow, {
+    value: 'my-finetune',
+    custom: true,
+    hidden: false,
+    selected: false
+  })
+}
+
+// 4. Round trip: rows built from an overlay, converted back via
+//    draftRowsToOverlay, produce an equivalent overlay (order is always
+//    written once the editor has any rows — see draftRowsToOverlay's doc
+//    comment on why `order` is unconditional). The editor's row set keeps
+//    the HIDDEN row too (buildCuratedOptionRows deliberately does not drop
+//    hidden rows the way resolveCuratedOptions' picker-facing output does —
+//    see that function's own doc comment — so the user has a visible toggle
+//    to un-hide 'haiku', and its position survives in `order`).
+{
+  const overlay: CuratedOptionRowDraft[] = buildCuratedOptionRows(
+    DESCRIPTOR_MODELS,
+    { add: ['my-finetune'], hide: ['haiku'], order: ['my-finetune', 'sonnet'] },
+    undefined
+  )
+  assert.deepEqual(
+    overlay.map((r) => r.value),
+    ['my-finetune', 'sonnet', 'opus', 'haiku'],
+    'the editor must still list a hidden row (haiku) so it can be un-hidden'
+  )
+  assert.equal(
+    overlay.find((r) => r.value === 'haiku')?.hidden,
+    true,
+    'haiku must be marked hidden in the editor row, not omitted'
+  )
+  const rebuilt = draftRowsToOverlay(overlay, DESCRIPTOR_MODELS)
+  assert.deepEqual(rebuilt, {
+    add: ['my-finetune'],
+    hide: ['haiku'],
+    order: ['my-finetune', 'sonnet', 'opus', 'haiku']
+  })
+}
+
+// 5. Empty rows -> undefined overlay (never persists an empty {} object,
+//    which would win over an earlier scope's real overlay after merge).
+{
+  assert.equal(draftRowsToOverlay([], DESCRIPTOR_MODELS), undefined)
+}
+
+console.log(
+  '✓ buildCuratedOptionRows/draftRowsToOverlay: plain/hidden-but-selected/custom rows and the overlay round trip all correct'
+)
+
+// ---------------------------------------------------------------------------
+// curatedOptionsRowsDirty / summarizeCuratedOptionRows
+// ---------------------------------------------------------------------------
+
+{
+  const loaded: CuratedOptionRowDraft[] = [
+    { value: 'opus', custom: false, hidden: false, selected: true },
+    { value: 'sonnet', custom: false, hidden: false, selected: false }
+  ]
+  assert.equal(
+    curatedOptionsRowsDirty(
+      loaded,
+      loaded.map((r) => ({ ...r }))
+    ),
+    false
+  )
+  assert.equal(
+    curatedOptionsRowsDirty(loaded, [{ ...loaded[0], hidden: true }, loaded[1]]),
+    true,
+    'a hide toggle must read as dirty'
+  )
+  assert.equal(
+    curatedOptionsRowsDirty(loaded, [loaded[1], loaded[0]]),
+    true,
+    'a reorder must read as dirty'
+  )
+
+  assert.equal(summarizeCuratedOptionRows([]), 'Default list')
+  assert.equal(
+    summarizeCuratedOptionRows([{ value: 'opus', custom: false, hidden: false, selected: true }]),
+    'Default list',
+    'an untouched, all-visible, non-custom row list summarizes as the default'
+  )
+  assert.equal(
+    summarizeCuratedOptionRows([
+      { value: 'opus', custom: false, hidden: false, selected: true },
+      { value: 'sonnet', custom: false, hidden: true, selected: false }
+    ]),
+    '1 shown, 1 hidden'
+  )
+  console.log(
+    '✓ curatedOptionsRowsDirty/summarizeCuratedOptionRows: dirty detection and summary line both correct'
   )
 }
 

@@ -356,4 +356,110 @@ function rowCount(db: InstanceType<typeof Database>): number {
   )
 }
 
+// ---------------------------------------------------------------------------
+// 8. curatedOptions round-trip: a stored {add,hide,order} overlay survives
+//    a plain get/set cycle untouched.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    curatedOptions: {
+      model: { add: ['my-finetune'], hide: ['claude-3-5-haiku'], order: ['opus', 'sonnet'] }
+    }
+  })
+  const readBack = getHarnessSettings('claude', 'global')
+  assert.deepEqual(
+    readBack,
+    {
+      curatedOptions: {
+        model: { add: ['my-finetune'], hide: ['claude-3-5-haiku'], order: ['opus', 'sonnet'] }
+      }
+    },
+    'a stored curatedOptions overlay must round-trip byte-for-byte'
+  )
+  console.log('✓ curatedOptions: stored overlay round-trips through get/set unchanged')
+}
+
+// ---------------------------------------------------------------------------
+// 9. curatedOptions LAYERING: field-level whole-value replacement, NOT
+//    merge-by-key like args/env. A project-scope overlay for a field
+//    REPLACES the global overlay for that SAME field entirely (its add/hide
+//    /order arrays are never combined with the global scope's), while a
+//    field the project scope has NO opinion about still falls back to the
+//    global overlay untouched.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    curatedOptions: {
+      model: { order: ['opus', 'sonnet'] },
+      effort: { hide: ['low'] }
+    }
+  })
+  setHarnessSettings('claude', 'project', 'proj-1', {
+    // Project expresses an opinion about `model` only — a DIFFERENT,
+    // non-overlapping overlay (order reversed) — and says nothing about
+    // `effort` at all.
+    curatedOptions: {
+      model: { order: ['sonnet', 'opus'] }
+    }
+  })
+  const resolved = resolveHarnessSettings('claude', 'proj-1')
+  assert.deepEqual(
+    resolved.curatedOptions,
+    {
+      model: { order: ['sonnet', 'opus'] },
+      effort: { hide: ['low'] }
+    },
+    'project model overlay must REPLACE the global one wholesale (not merge order arrays); untouched effort falls back to global'
+  )
+  // A sibling project with no override of its own sees only the global
+  // overlays, proving the replacement was project-scoped.
+  const sibling = resolveHarnessSettings('claude', 'proj-2')
+  assert.deepEqual(
+    sibling.curatedOptions,
+    {
+      model: { order: ['opus', 'sonnet'] },
+      effort: { hide: ['low'] }
+    },
+    'a sibling project with no override of its own must still see the global curatedOptions'
+  )
+  console.log(
+    '✓ curatedOptions layering: project REPLACES a field wholesale (not merged across scopes); untouched fields fall back to global'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 10. curatedOptions survives a partial write: setting args alone at a scope
+//     that already has a curatedOptions overlay must not drop it (mirrors
+//     assertion 6's "disabled row preserved in storage" discipline, applied
+//     to a sibling top-level key via the same whole-object HarnessSettings
+//     upsert setHarnessSettings performs).
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    curatedOptions: { model: { hide: ['claude-3-5-haiku'] } }
+  })
+  // Read-modify-write, the same pattern the Settings UI's save() follows
+  // (spread existing settings, only replace the fields being edited) —
+  // NOT a fresh { args: [...] } object, which would be a real regression
+  // this assertion is specifically here to catch.
+  const existing = getHarnessSettings('claude', 'global')
+  setHarnessSettings('claude', 'global', undefined, {
+    ...existing,
+    args: [{ key: 'verbose', enabled: true }]
+  })
+  const readBack = getHarnessSettings('claude', 'global')
+  assert.deepEqual(
+    readBack,
+    {
+      curatedOptions: { model: { hide: ['claude-3-5-haiku'] } },
+      args: [{ key: 'verbose', enabled: true }]
+    },
+    "writing args at a scope must not drop that scope's existing curatedOptions overlay"
+  )
+  console.log('✓ curatedOptions survives a partial write (args added) at the same scope')
+}
+
 console.log('\nAll harness-settings assertions passed.')

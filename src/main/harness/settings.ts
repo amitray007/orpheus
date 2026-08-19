@@ -35,10 +35,65 @@ export type HarnessCuratedSettings = {
   effort?: string
 }
 
+/** One curated field's user overlay onto a descriptor's shipped `options`
+ *  list (CuratedField.options, src/shared/harness/types.ts) — the DATA
+ *  shape B3 (support-multi-harness) adds so a user can add a value the
+ *  descriptor doesn't ship, hide ones they never use, and reorder their
+ *  favourites to the top, all WITHOUT touching `curated` (the currently
+ *  SELECTED model/effort value, above — unrelated field, unrelated
+ *  semantics).
+ *
+ *  OVERLAY, NOT REPLACEMENT — this is the load-bearing design choice.
+ *  `add`/`hide`/`order` store a DELTA against the descriptor's live
+ *  `options`, not a copied, frozen snapshot of the resolved list. The same
+ *  reasoning as `defaultArgs` seeding into the args editor as real,
+ *  editable rows rather than an opaque prefix (see HarnessDescriptor's own
+ *  doc comment): a frozen full-list copy would silently stop tracking the
+ *  descriptor the moment it ships a new model, permanently hiding
+ *  anything added after the user's copy was taken. A delta re-plays
+ *  cleanly against whatever `options` the running build currently has.
+ *  See resolveCuratedOptions (src/shared/harness/curatedOptions.ts) for the
+ *  exact algorithm that re-plays this delta into a final ordered list. */
+export type CuratedFieldOptionsOverlay = {
+  /** Extra values to append that the descriptor's `options` doesn't ship
+   *  (a fine-tune id, a model released after this build). Arbitrary
+   *  strings — matches CuratedField.allowCustom's "never validates against
+   *  options" contract; the UI shows a non-blocking warning chip for one
+   *  that isn't in the descriptor list, it never refuses it. */
+  add?: string[]
+  /** Values to exclude from the resolved list. Hide, never delete: a
+   *  descriptor-shipped option a user hides today may be exactly what they
+   *  want back tomorrow, and — the single most important invariant of this
+   *  type — a hidden value that is CURRENTLY SELECTED (HarnessCuratedSettings
+   *  .model/.effort resolves to it) must still appear in the resolved list,
+   *  or the user loses the ability to see what they're actually running. */
+  hide?: string[]
+  /** Explicit ordering: values named here come first, in this order;
+   *  anything not named keeps its relative position after them. Naming a
+   *  value that no longer exists (removed from the descriptor, or hidden)
+   *  is ignored rather than thrown — order is advisory over whatever the
+   *  final set turns out to be, not a hard list that must exactly match. */
+  order?: string[]
+}
+
+/** Per-harness, per-scope user curation of the model/effort OPTION LISTS —
+ *  sibling to `curated` above, not a replacement for it. `curated.model` is
+ *  "which model is selected"; `curatedOptions.model` is "which models does
+ *  the picker even offer, and in what order". Both fields can be undefined
+ *  independently (a harness with curated.model set but no curatedOptions
+ *  override just uses the descriptor's `options` as-is). Keyed by the same
+ *  CuratedFieldName ('model' | 'effort') the rest of this codebase already
+ *  uses (see CuratedFieldName in harnessSettingsLogic.ts). */
+export type HarnessCuratedOptionsSettings = {
+  model?: CuratedFieldOptionsOverlay
+  effort?: CuratedFieldOptionsOverlay
+}
+
 export type HarnessSettings = {
   args?: HarnessSettingRow[]
   env?: HarnessSettingRow[]
   curated?: HarnessCuratedSettings
+  curatedOptions?: HarnessCuratedOptionsSettings
 }
 
 function normalizeScopeId(scope: HarnessSettingsScope, scopeId?: string): string {
@@ -215,6 +270,45 @@ function mergeCurated(
   return merged
 }
 
+// curatedOptions LAYERING DECISION — field-level whole-value replacement,
+// NOT mergeRowsByKey's merge-by-key. This deliberately diverges from how
+// args/env layer across scopes, and the divergence is the point, not an
+// oversight — read this before "fixing" it to look more like args/env.
+//
+// args/env merge BY KEY because each row is an independent, addressable
+// unit (one flag, one env var) and a project adding ONE extra row on top of
+// a global baseline is exactly what a user expects. A curatedOptions
+// overlay for one field (add/hide/order) is not a bag of independent rows —
+// it's ONE coherent editorial decision about the whole options list for
+// that field. "Global says [opus, sonnet], project reorders to [sonnet,
+// opus]" has no sane per-key merge: order is inherently a property of the
+// WHOLE list, not of any single entry, so there is nothing to merge
+// key-by-key. The only well-defined operation once a more specific scope
+// expresses ANY opinion about a field's overlay is "this scope's overlay
+// for this field wins entirely" — same precedent as mergeCurated (above)
+// for the plain curated.model/curated.effort SELECTED value, just applied
+// one level down at the {add,hide,order} bundle granularity instead of the
+// scalar-value granularity.
+//
+// Mechanics: process scopes in precedence order; whichever scope defines an
+// overlay for a given field (model/effort) LAST wins for that field, taken
+// as-is (the whole {add,hide,order} object, not merged with an earlier
+// scope's overlay for the same field). A scope with no opinion about a
+// field (key absent, not merely empty) leaves an earlier scope's overlay
+// for that field untouched — so a project overriding ONLY `effort` does not
+// erase a global `model` overlay, exactly mirroring mergeCurated's
+// per-key-spread behavior one level down.
+function mergeCuratedOptions(
+  layers: Array<HarnessCuratedOptionsSettings | undefined>
+): HarnessCuratedOptionsSettings | undefined {
+  let merged: HarnessCuratedOptionsSettings | undefined
+  for (const layer of layers) {
+    if (!layer) continue
+    merged = { ...merged, ...layer }
+  }
+  return merged
+}
+
 /**
  * Resolve the effective settings by layering global -> project (later wins
  * per key). Missing rows at either scope resolve to `{}`, never a throw. The
@@ -243,6 +337,7 @@ export function resolveHarnessSettings(harnessId: string, projectId?: string): H
   const args = mergeRowsByKey([global.args, project.args])
   const env = mergeRowsByKey([global.env, project.env])
   const curated = mergeCurated([global.curated, project.curated])
+  const curatedOptions = mergeCuratedOptions([global.curatedOptions, project.curatedOptions])
 
   const resolved: HarnessSettings = {}
   const resolvedArgs = enabledOnly(args)
@@ -250,5 +345,6 @@ export function resolveHarnessSettings(harnessId: string, projectId?: string): H
   if (resolvedArgs) resolved.args = resolvedArgs
   if (resolvedEnv) resolved.env = resolvedEnv
   if (curated) resolved.curated = curated
+  if (curatedOptions) resolved.curatedOptions = curatedOptions
   return resolved
 }

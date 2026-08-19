@@ -3417,10 +3417,28 @@ export type HarnessCuratedSettings = {
   permissionMode?: string
 }
 
+/** Renderer-safe mirror of CuratedFieldOptionsOverlay
+ *  (src/main/harness/settings.ts) — kept field-for-field identical on
+ *  purpose, see that file for the overlay-not-replacement rationale and the
+ *  hidden-but-selected invariant. */
+export type CuratedFieldOptionsOverlay = {
+  add?: string[]
+  hide?: string[]
+  order?: string[]
+}
+
+/** Renderer-safe mirror of HarnessCuratedOptionsSettings
+ *  (src/main/harness/settings.ts). */
+export type HarnessCuratedOptionsSettings = {
+  model?: CuratedFieldOptionsOverlay
+  effort?: CuratedFieldOptionsOverlay
+}
+
 export type HarnessSettings = {
   args?: HarnessSettingRow[]
   env?: HarnessSettingRow[]
   curated?: HarnessCuratedSettings
+  curatedOptions?: HarnessCuratedOptionsSettings
 }
 
 /** Renderer-safe projection of a HarnessDescriptor (src/main/harness/registry.ts)
