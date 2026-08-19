@@ -22,8 +22,13 @@ import { useWorkspaceTitle, getTitleSnapshot } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { useDebouncedValue } from '@/lib/useDebouncedValue'
 import { useInlineRename } from '@/lib/useInlineRename'
-import { useHarnessList, resolveHarnessSummary } from '@/lib/harnessStore'
-import { canMissingSessionIdImplyWaiting } from '@shared/harness/capabilityGating'
+import { useHarnessList, useHarnessForWorkspace, resolveHarnessSummary } from '@/lib/harnessStore'
+import {
+  canMissingSessionIdImplyWaiting,
+  shouldClaimLiveActivity,
+  shouldUseTranscriptDerivedTitle,
+  messageCountForWorkspace
+} from '@shared/harness/capabilityGating'
 
 // ---------------------------------------------------------------------------
 // Project body — active workspaces on the left, sessions on the right, recent
@@ -142,14 +147,25 @@ const WorkspaceNameCell = memo(function WorkspaceNameCell({
   commitRename,
   setRenamingId
 }: WorkspaceNameCellProps): React.JSX.Element {
+  // This workspace's harness descriptor — gates the activity dot and
+  // transcript-derived title below on real capabilities instead of assuming
+  // Claude (D1, support-multi-harness). See Sidebar.tsx's WorkspaceSubRow for
+  // the reference shape and src/shared/harness/capabilityGating.ts for the
+  // pure decisions.
+  const harness = useHarnessForWorkspace(ws.harnessId)
   // Subscribe to this workspace's key only — re-renders only when this key changes.
-  const activity = useWorkspaceActivity(ws.id)
+  const rawActivity = useWorkspaceActivity(ws.id)
+  const activity = shouldClaimLiveActivity(harness.capabilities) ? rawActivity : undefined
   const terminalTitle = useWorkspaceTitle(ws.id)
   const isPinned = ws.pinnedAt !== null
+  const sessionTitle =
+    ws.claudeSessionId && shouldUseTranscriptDerivedTitle(harness.capabilities)
+      ? (sessionStats[ws.claudeSessionId]?.title ?? null)
+      : null
   const dn = resolveWorkspaceName({
     workspace: ws,
     terminalTitle,
-    sessionTitle: ws.claudeSessionId ? (sessionStats[ws.claudeSessionId]?.title ?? null) : null
+    sessionTitle
   })
   return (
     <span className="flex items-center gap-2 min-w-0">
@@ -436,11 +452,6 @@ export function WorkspacesTab({
     }
   }, [projectId])
 
-  function messageCountForWorkspace(ws: WorkspaceRecord): number | null {
-    if (!ws.claudeSessionId) return null
-    return sessionStats[ws.claudeSessionId]?.messageCount ?? null
-  }
-
   function openMenu(e: React.MouseEvent, ws: WorkspaceRecord): void {
     e.stopPropagation()
     e.preventDefault()
@@ -531,12 +542,14 @@ export function WorkspacesTab({
       // which is the right trigger. Live title updates will apply on next search.
       const titleSnapshot = getTitleSnapshot()
       out = out.filter((ws) => {
+        const wsHarness = resolveHarnessSummary(harnesses, ws.harnessId)
         const dn = resolveWorkspaceName({
           workspace: ws,
           terminalTitle: titleSnapshot.get(ws.id) ?? null,
-          sessionTitle: ws.claudeSessionId
-            ? (sessionStats[ws.claudeSessionId]?.title ?? null)
-            : null
+          sessionTitle:
+            ws.claudeSessionId && shouldUseTranscriptDerivedTitle(wsHarness.capabilities)
+              ? (sessionStats[ws.claudeSessionId]?.title ?? null)
+              : null
         }).text.toLowerCase()
         const basename = ws.cwd.split('/').pop()?.toLowerCase() ?? ''
         return dn.includes(q) || basename.includes(q)
@@ -551,15 +564,25 @@ export function WorkspacesTab({
     copy.sort((a, b) => {
       let cmp: number
       if (activeSortBy === 'messages') {
-        cmp = nullsLastCmp(messageCountForWorkspace(a), messageCountForWorkspace(b))
+        cmp = nullsLastCmp(
+          messageCountForWorkspace(
+            a,
+            sessionStats,
+            resolveHarnessSummary(harnesses, a.harnessId).capabilities
+          ),
+          messageCountForWorkspace(
+            b,
+            sessionStats,
+            resolveHarnessSummary(harnesses, b.harnessId).capabilities
+          )
+        )
       } else {
         cmp = nullsLastCmp(a.lastOpenedAt, b.lastOpenedAt)
       }
       return activeSortDir === 'asc' ? cmp : -cmp
     })
     return copy
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, activeSortBy, activeSortDir, sessionStats])
+  }, [filtered, activeSortBy, activeSortDir, sessionStats, harnesses])
 
   const activePaginated = useMemo(
     () => activeSorted.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE),
@@ -595,7 +618,15 @@ export function WorkspacesTab({
         width: '70px',
         align: 'right',
         sortable: true,
-        render: (ws) => <MessageCountCell count={messageCountForWorkspace(ws)} />
+        render: (ws) => (
+          <MessageCountCell
+            count={messageCountForWorkspace(
+              ws,
+              sessionStats,
+              resolveHarnessSummary(harnesses, ws.harnessId).capabilities
+            )}
+          />
+        )
       },
       {
         key: 'lastOpenedAt',
@@ -613,7 +644,7 @@ export function WorkspacesTab({
         render: (ws) => <WorkspaceActionsButton onClick={(e) => openMenu(e, ws)} />
       }
     ],
-    [renamingId, rename.value, rename.setValue, sessionStats, commitRename]
+    [renamingId, rename.value, rename.setValue, sessionStats, commitRename, harnesses]
   )
 
   // Whether the raw workspace list (before any filtering) has any entries.

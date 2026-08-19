@@ -47,7 +47,8 @@ import {
   shouldUseTranscriptDerivedFreshness,
   shouldClaimLiveActivity,
   canMissingSessionIdImplyWaiting,
-  shouldFetchUsageDetails
+  shouldFetchUsageDetails,
+  messageCountForWorkspace
 } from '../src/shared/harness/capabilityGating.ts'
 import { resolveHarnessSummary, isHarnessIdKnown } from '../src/renderer/src/lib/harnessStore.ts'
 import { CLAUDE_CAPABILITIES } from '../src/main/harness/claude/curated.ts'
@@ -110,6 +111,15 @@ function testClaudeEquivalence(): void {
     true,
     "Claude must still fire the usage/cost hover-card fetches (today's behavior)"
   )
+  assert.equal(
+    messageCountForWorkspace(
+      { claudeSessionId: 'sess-1' },
+      { 'sess-1': { messageCount: 42 } },
+      CLAUDE_CAPABILITIES
+    ),
+    42,
+    "Claude must still resolve the Msgs-column count from sessionStats (today's behavior)"
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +173,15 @@ function testFallbackGrantsNothing(): void {
   assert.equal(shouldClaimLiveActivity(unknownSummary.capabilities), false)
   assert.equal(canMissingSessionIdImplyWaiting(unknownSummary.capabilities), false)
   assert.equal(shouldFetchUsageDetails(unknownSummary.capabilities), false)
+  assert.equal(
+    messageCountForWorkspace(
+      { claudeSessionId: 'sess-1' },
+      { 'sess-1': { messageCount: 42 } },
+      unknownSummary.capabilities
+    ),
+    null,
+    'an unknown/fallback harness must not resolve a Msgs-column count'
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +215,33 @@ function testTranscriptGate(): void {
     canMissingSessionIdImplyWaiting(withoutTranscript),
     false,
     'a transcript-incapable harness can NEVER populate a session id — that absence must not be read as a real signal'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 3b. transcript: false — Msgs-column count degradation (WorkspacesTab.tsx's
+//     messageCountForWorkspace, D1 support-multi-harness).
+// ---------------------------------------------------------------------------
+
+function testMessageCountGate(): void {
+  const withTranscript: HarnessCapabilities = { ...ALL_FALSE, transcript: true }
+  const withoutTranscript: HarnessCapabilities = { ...ALL_FALSE, transcript: false }
+  const stats = { 'sess-1': { messageCount: 42 } }
+
+  assert.equal(
+    messageCountForWorkspace({ claudeSessionId: 'sess-1' }, stats, withTranscript),
+    42,
+    'a transcript-capable harness with a populated sessionStats entry must resolve its message count'
+  )
+  assert.equal(
+    messageCountForWorkspace({ claudeSessionId: 'sess-1' }, stats, withoutTranscript),
+    null,
+    'a transcript-incapable harness must not resolve a Msgs-column count even if sessionStats happens to hold a value'
+  )
+  assert.equal(
+    messageCountForWorkspace({ claudeSessionId: null }, stats, withTranscript),
+    null,
+    'no claudeSessionId yet must resolve to null regardless of capability (nothing to look up)'
   )
 }
 
@@ -234,6 +280,7 @@ function testUsageGate(): void {
 testClaudeEquivalence()
 testFallbackGrantsNothing()
 testTranscriptGate()
+testMessageCountGate()
 testStructuredStatusGate()
 testUsageGate()
 

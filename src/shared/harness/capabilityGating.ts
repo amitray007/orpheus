@@ -101,6 +101,30 @@ export function canMissingSessionIdImplyWaiting(capabilities: HarnessCapabilitie
 // Usage-gated hover-card calls (WorkspaceTitleBar.tsx's Details popover)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Transcript-gated message count (WorkspacesTab.tsx's Msgs column)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves the Msgs-column count for a workspace, gated the same way as
+ * shouldUseTranscriptDerivedTitle: a harness without `capabilities.transcript`
+ * never writes a parseable on-disk transcript, so any messageCount already
+ * sitting in the sessionStats map under this workspace's claudeSessionId (if
+ * one somehow exists) is not an honest transcript-derived count and must not
+ * be shown. Takes the raw ws/sessionStats shape directly (rather than the
+ * full WorkspaceRecord type) so this module stays free of a dependency on
+ * ../types — see this file's header for why that isolation matters.
+ */
+export function messageCountForWorkspace(
+  ws: { claudeSessionId: string | null },
+  sessionStats: Record<string, { messageCount: number | null }>,
+  capabilities: HarnessCapabilities
+): number | null {
+  if (!shouldUseTranscriptDerivedTitle(capabilities)) return null
+  if (!ws.claudeSessionId) return null
+  return sessionStats[ws.claudeSessionId]?.messageCount ?? null
+}
+
 /**
  * Whether the usage/cost hover-card calls (session.getUsage,
  * session.getCost) should fire at all for this workspace's harness. A
