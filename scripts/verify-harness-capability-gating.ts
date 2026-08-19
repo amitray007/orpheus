@@ -52,6 +52,18 @@
 //             own the underlying Claude CLI flag (shouldShowLocoToggle,
 //             same file).
 //      All three are asserted unchanged for Claude.
+//   9. G2 (support-multi-harness follow-up) — two sites skipped when their
+//      gated siblings were fixed:
+//        G2a — CollapsedProjectList.tsx's project hover-popover workspace
+//              dot (ProjectTile's handleMouseEnter) read the activity store
+//              ungated, unlike Sidebar.tsx's already-gated row dot.
+//        G2b — WorkspacesView.tsx's WorkspaceCard read session.title/
+//              lastUserMessagePreview (transcript-derived) and fell back to
+//              ws.status (structuredStatus-derived) both ungated.
+//      Both replicate the exact decision the component now makes (using the
+//      same shouldClaimLiveActivity / shouldUseTranscriptDerivedTitle gates
+//      as everywhere else) since the .tsx itself isn't unit-testable — see
+//      CLAUDE.md's "assert behaviour, not source text".
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert/strict'
@@ -481,6 +493,178 @@ function testE3Mutation(): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 9a. G2a — CollapsedProjectList.tsx's popover workspace dot. Replicates
+//     ProjectTile's handleMouseEnter: `shouldClaimLiveActivity(...) ?
+//     activityMap.get(w.id) : undefined`, then toPopoverState's own
+//     undefined/'archived' -> 'idle' fold (copied inline here since
+//     toPopoverState is a tiny component-local function, not exported).
+// ---------------------------------------------------------------------------
+
+type PopoverState = 'working' | 'ready' | 'idle' | 'attention' | 'archived'
+
+function toPopoverState(detail: WorkspaceActivityDetailLike | undefined): PopoverState {
+  if (!detail || detail === 'archived') return 'idle'
+  return detail
+}
+
+type WorkspaceActivityDetailLike = 'working' | 'attention' | 'ready' | 'idle' | 'archived'
+
+function popoverStateFor(
+  capabilities: HarnessCapabilities,
+  rawActivity: WorkspaceActivityDetailLike | undefined
+): PopoverState {
+  const gated = shouldClaimLiveActivity(capabilities) ? rawActivity : undefined
+  return toPopoverState(gated)
+}
+
+function testG2aCollapsedPopoverActivityGate(): void {
+  const withStatus: HarnessCapabilities = { ...ALL_FALSE, structuredStatus: true }
+  const withoutStatus: HarnessCapabilities = { ...ALL_FALSE, structuredStatus: false }
+
+  assert.equal(
+    popoverStateFor(withStatus, 'working'),
+    'working',
+    'a structuredStatus-capable harness must show its real live activity in the popover dot'
+  )
+  assert.equal(
+    popoverStateFor(withoutStatus, 'working'),
+    'idle',
+    'a structuredStatus-incapable harness must not have a stale/unowned activity store value ' +
+      'rendered as if it were live in the popover dot — falls back to idle'
+  )
+  assert.equal(
+    popoverStateFor(CLAUDE_CAPABILITIES, 'attention'),
+    'attention',
+    'G2a regression net: Claude popover dot behavior is unchanged'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 9b. G2b — WorkspacesView.tsx's WorkspaceCard: transcript-derived title/
+//     prompt AND the structuredStatus-derived fallback activity, gated as a
+//     whole expression (not just the live half).
+// ---------------------------------------------------------------------------
+
+function cardSessionTitleFor(
+  capabilities: HarnessCapabilities,
+  sessionTitle: string | null
+): string | null {
+  return shouldUseTranscriptDerivedTitle(capabilities) ? sessionTitle : null
+}
+
+function cardUserPromptFor(
+  capabilities: HarnessCapabilities,
+  lastUserMessagePreview: string | null
+): string | null {
+  return shouldUseTranscriptDerivedTitle(capabilities) ? lastUserMessagePreview : null
+}
+
+function cardEffectiveActivityFor(
+  capabilities: HarnessCapabilities,
+  liveActivity: WorkspaceActivityDetailLike | undefined,
+  persistedFallback: WorkspaceActivityDetailLike
+): WorkspaceActivityDetailLike {
+  if (!shouldClaimLiveActivity(capabilities)) return 'idle'
+  return liveActivity ?? persistedFallback
+}
+
+function testG2bWorkspaceCardGates(): void {
+  const withBoth: HarnessCapabilities = { ...ALL_FALSE, transcript: true, structuredStatus: true }
+  const withNeither: HarnessCapabilities = {
+    ...ALL_FALSE,
+    transcript: false,
+    structuredStatus: false
+  }
+
+  assert.equal(cardSessionTitleFor(withBoth, 'Refactor auth'), 'Refactor auth')
+  assert.equal(
+    cardSessionTitleFor(withNeither, 'Refactor auth'),
+    null,
+    'a transcript-incapable harness must not show a transcript-derived card title'
+  )
+
+  assert.equal(cardUserPromptFor(withBoth, 'fix the login bug'), 'fix the login bug')
+  assert.equal(
+    cardUserPromptFor(withNeither, 'fix the login bug'),
+    null,
+    'a transcript-incapable harness must not show a transcript-derived prompt preview'
+  )
+
+  assert.equal(cardEffectiveActivityFor(withBoth, 'working', 'idle'), 'working')
+  assert.equal(
+    cardEffectiveActivityFor(withBoth, undefined, 'attention'),
+    'attention',
+    'no live activity yet falls back to the persisted-status glyph when the harness IS capable'
+  )
+  assert.equal(
+    cardEffectiveActivityFor(withNeither, undefined, 'attention'),
+    'idle',
+    'a structuredStatus-incapable harness must not claim the persisted-status fallback either — ' +
+      'the whole expression is gated, not just the live half'
+  )
+  assert.equal(
+    cardEffectiveActivityFor(withNeither, 'working', 'attention'),
+    'idle',
+    'even a (stale/unowned) truthy live value must be suppressed for an incapable harness'
+  )
+
+  assert.equal(
+    cardSessionTitleFor(CLAUDE_CAPABILITIES, 'Refactor auth'),
+    'Refactor auth',
+    'G2b regression net: Claude card title unchanged'
+  )
+  assert.equal(
+    cardUserPromptFor(CLAUDE_CAPABILITIES, 'fix the login bug'),
+    'fix the login bug',
+    'G2b regression net: Claude card prompt preview unchanged'
+  )
+  assert.equal(
+    cardEffectiveActivityFor(CLAUDE_CAPABILITIES, undefined, 'attention'),
+    'attention',
+    'G2b regression net: Claude card fallback activity unchanged'
+  )
+}
+
+// MUTATION: flip both G2 gates to always-true (ungated) and confirm the
+// incapable-harness cases above would have wrongly claimed live data.
+function testG2Mutation(): void {
+  const withoutStatus: HarnessCapabilities = { ...ALL_FALSE, structuredStatus: false }
+  const alwaysClaim = (): boolean => true
+
+  try {
+    const ungatedPopover = alwaysClaim() ? 'working' : undefined
+    assert.equal(
+      toPopoverState(ungatedPopover as WorkspaceActivityDetailLike | undefined),
+      'idle',
+      'an ungated popover dot must show working (not idle) for an incapable harness to be correct'
+    )
+    throw new Error('G2a mutation did not fail as expected')
+  } catch (e) {
+    assert.ok(e instanceof assert.AssertionError)
+    console.log(
+      `  mutation caught (expected failure) [G2a popover activity gate removed]: ${(e as Error).message.split('\n')[0]}`
+    )
+  }
+
+  try {
+    const ungatedCard = alwaysClaim()
+      ? ('working' as WorkspaceActivityDetailLike)
+      : cardEffectiveActivityFor(withoutStatus, undefined, 'attention')
+    assert.equal(
+      ungatedCard,
+      'idle',
+      'an ungated card fallback must show working (not idle) for an incapable harness to be correct'
+    )
+    throw new Error('G2b mutation did not fail as expected')
+  } catch (e) {
+    assert.ok(e instanceof assert.AssertionError)
+    console.log(
+      `  mutation caught (expected failure) [G2b card activity gate removed]: ${(e as Error).message.split('\n')[0]}`
+    )
+  }
+}
+
 testClaudeEquivalence()
 testFallbackGrantsNothing()
 testTranscriptGate()
@@ -493,5 +677,8 @@ testE2UnsetModelNotClaudeOnNonClaudeHarness()
 testE2Mutation()
 testE3LocoToggleGate()
 testE3Mutation()
+testG2aCollapsedPopoverActivityGate()
+testG2bWorkspaceCardGates()
+testG2Mutation()
 
 console.log('verify-harness-capability-gating: all assertions passed')

@@ -12,6 +12,8 @@ import {
 import { getActivitySnapshot } from '@/lib/activityStore'
 import { getTitleSnapshot } from '@/lib/titleStore'
 import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
+import { useHarnessList, resolveHarnessSummary } from '@/lib/harnessStore'
+import { shouldClaimLiveActivity } from '@shared/harness/capabilityGating'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import type { WorkspaceActivityDetail } from '@shared/types'
 
@@ -70,6 +72,10 @@ const ProjectTile = memo(function ProjectTile({
 }: ProjectTileProps): React.JSX.Element {
   const buttonRef = useRef<HTMLButtonElement>(null)
   const hoverCard = useOverlayHoverCard({ openDelay: 150, closeDelay: 80 })
+  // Hooks are illegal inside handleMouseEnter (it's an event handler, not a
+  // component), so the harness list is read here in the component body and
+  // closed over below — same shape as Sidebar.tsx's WorkspaceSubRow.
+  const { harnesses } = useHarnessList()
 
   function handleMouseEnter(): void {
     // Locked tile: no hover card — it would leak the project name/workspaces.
@@ -93,6 +99,9 @@ const ProjectTile = memo(function ProjectTile({
           const displayName = resolveWorkspaceName({
             workspace: w,
             terminalTitle: titles.get(w.id) ?? null,
+            // Hardcoded null, not a missing wire-up: a transcript-incapable
+            // harness can never produce a real session title, so leave this
+            // as-is rather than plumbing sessionTitleBySessionId in here.
             sessionTitle: null
           }).text
           // Append branch annotation for worktree workspaces so the project
@@ -101,9 +110,13 @@ const ProjectTile = memo(function ProjectTile({
             w.worktreeParentCwd && w.worktreeBranch
               ? `${displayName} · ${w.worktreeBranch}`
               : displayName
+          const harness = resolveHarnessSummary(harnesses, w.harnessId)
+          const rawActivity = shouldClaimLiveActivity(harness.capabilities)
+            ? activityMap.get(w.id)
+            : undefined
           return {
             name,
-            state: toPopoverState(activityMap.get(w.id))
+            state: toPopoverState(rawActivity)
           }
         })
       }

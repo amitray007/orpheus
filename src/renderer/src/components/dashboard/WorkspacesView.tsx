@@ -14,9 +14,13 @@ import { useWorkspaceActivity, getActivitySnapshot } from '@/lib/activityStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
-import { useHarnessList, resolveHarnessSummary } from '@/lib/harnessStore'
+import { useHarnessList, resolveHarnessSummary, useHarnessForWorkspace } from '@/lib/harnessStore'
 import type { HarnessSummary } from '@shared/types'
-import { canMissingSessionIdImplyWaiting } from '@shared/harness/capabilityGating'
+import {
+  canMissingSessionIdImplyWaiting,
+  shouldClaimLiveActivity,
+  shouldUseTranscriptDerivedTitle
+} from '@shared/harness/capabilityGating'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -179,6 +183,12 @@ const WorkspaceCard = memo(function WorkspaceCard({
   onClick,
   redacted
 }: WorkspaceCardProps): React.JSX.Element {
+  // This workspace's harness descriptor — gates the transcript-derived
+  // title/prompt and the live-activity claim below on real capabilities
+  // instead of assuming Claude, mirroring Sidebar.tsx's WorkspaceSubRow (C4,
+  // support-multi-harness). See src/shared/harness/capabilityGating.ts.
+  const harness = useHarnessForWorkspace(workspace.harnessId)
+
   // Subscribe to this workspace's data from per-key stores — re-renders only
   // when THIS card's keys change, not when any other workspace changes.
   const activityDetail = useWorkspaceActivity(workspace.id)
@@ -186,15 +196,25 @@ const WorkspaceCard = memo(function WorkspaceCard({
   const gitStatus = useGitStatus(workspace.id)
   const pr = usePr(workspace.id)
 
-  const sessionTitle = session?.title ?? null
+  const sessionTitle = shouldUseTranscriptDerivedTitle(harness.capabilities)
+    ? (session?.title ?? null)
+    : null
   const dn = resolveWorkspaceName({ workspace, terminalTitle, sessionTitle })
 
-  // Effective indicator: live activity wins; fall back to persisted status glyph
-  const effectiveActivity: WorkspaceActivityDetail = activityDetail ?? fallbackActivity(workspace)
+  // Effective indicator: live activity wins; fall back to persisted status
+  // glyph. Gating the WHOLE expression (not just the live half) matters —
+  // ws.status is itself only meaningful for a structuredStatus-capable
+  // harness (see sessionState.ts), so an incapable harness must not claim
+  // EITHER half; it renders a neutral 'idle' glyph instead.
+  const effectiveActivity: WorkspaceActivityDetail = shouldClaimLiveActivity(harness.capabilities)
+    ? (activityDetail ?? fallbackActivity(workspace))
+    : 'idle'
 
   const timestamp = workspace.lastOpenedAt ?? workspace.createdAt
   const branch = gitStatus?.branch ?? null
-  const userPrompt = session?.lastUserMessagePreview ?? null
+  const userPrompt = shouldUseTranscriptDerivedTitle(harness.capabilities)
+    ? (session?.lastUserMessagePreview ?? null)
+    : null
 
   // Single container in both states — its height is driven entirely by the
   // real-content layer below (rows 1-4, variable per-card depending on
