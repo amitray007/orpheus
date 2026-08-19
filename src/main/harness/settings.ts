@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { getDb } from '../db'
+import { withArgRowSet } from '../../shared/harness/projectDrawerSettings'
 
 // ---------------------------------------------------------------------------
 // src/main/harness/settings.ts
@@ -189,6 +190,42 @@ export function setCuratedModelEffort(
   if (patch.model !== undefined) nextCurated.model = patch.model
   if (patch.effort !== undefined) nextCurated.effort = patch.effort
   setHarnessSettings(harnessId, scope, scopeId, { ...existing, curated: nextCurated })
+}
+
+/**
+ * Merge-writes ONE keyed row within `args` — set (upsert, always enabled) or
+ * clear (remove the row entirely) — preserving that row's existing env,
+ * curated, curatedOptions, and every OTHER args row untouched. H1
+ * (support-multi-harness): the write path for the project Settings drawer's
+ * Permission-mode control, which has no curated-field home (see
+ * CLAUDE_DEFAULT_ARGS's doc comment in harness/claude/curated.ts —
+ * permission-mode is a plain `--permission-mode` arg row, not a curated
+ * concept, because the same intent takes a different argv shape per
+ * harness) but still needs a single-Select "Use global / set an override"
+ * UX exactly like model/effort get from setCuratedModelEffort above.
+ *
+ * Delegates the actual array surgery to withArgRowSet (src/shared/harness/
+ * projectDrawerSettings.ts) so the pure upsert-or-remove logic is
+ * independently testable and shared with any renderer-side preview that
+ * needs the same transform, rather than reimplemented here.
+ *
+ * `value: undefined` REMOVES the row (falls through to whatever the next
+ * scope down resolves to — see withArgRowSet's own doc comment for why a
+ * removed row, not a disabled one, is the right "inherit" representation
+ * for a single-Select control). A defined `value` always upserts an
+ * ENABLED row — the drawer has no separate enabled/disabled toggle for
+ * this field, unlike the harness settings page's full row editor.
+ */
+export function setArgRowValue(
+  harnessId: string,
+  scope: HarnessSettingsScope,
+  scopeId: string | undefined,
+  key: string,
+  value: string | undefined
+): void {
+  const existing = getHarnessSettings(harnessId, scope, scopeId)
+  const nextArgs = withArgRowSet(existing.args, key, value)
+  setHarnessSettings(harnessId, scope, scopeId, { ...existing, args: nextArgs })
 }
 
 // ---------------------------------------------------------------------------

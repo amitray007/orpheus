@@ -89,6 +89,12 @@ const verifiers = [
   // node:sqlite dispatch the harness-settings/-claude-launch/-session/-parity
   // entries above require.
   'verify-harness-settings-ui.ts',
+  // H1 (support-multi-harness) — the project Settings drawer's pure core
+  // (src/shared/harness/projectDrawerSettings.ts): which harness the drawer
+  // edits, the tri-state model/effort/permissionMode merge, and the honest
+  // override-chip decision. No SQLite/native dependency (pure TS transforms
+  // over plain objects), so plain bun like the entry above.
+  'verify-project-drawer-settings.ts',
   // C1 (support-multi-harness) — createWorkspace()'s new harnessId param,
   // the write-side half of the migration (workspaces.harness_id existed
   // since Phase 1.3 but nothing could ever write a non-default value until

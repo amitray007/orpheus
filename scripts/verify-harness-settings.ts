@@ -462,4 +462,48 @@ function rowCount(db: InstanceType<typeof Database>): number {
   console.log('✓ curatedOptions survives a partial write (args added) at the same scope')
 }
 
+// ---------------------------------------------------------------------------
+// 11. setArgRowValue (H1, support-multi-harness) — the project Settings
+//     drawer's Permission-mode write path. Merge-writes ONE keyed row,
+//     preserving curated/env/curatedOptions and every OTHER args row at
+//     that scope, mirroring setCuratedModelEffort's row-granularity merge
+//     one level down. See settings.ts's own doc comment on the function.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'project', 'proj-1', {
+    curated: { model: 'opus' },
+    args: [{ key: '--verbose', enabled: true }],
+    env: [{ key: 'FOO', value: 'bar', enabled: true }]
+  })
+  const { setArgRowValue } = settingsMod
+  setArgRowValue('claude', 'project', 'proj-1', '--permission-mode', 'acceptEdits')
+  const afterSet = getHarnessSettings('claude', 'project', 'proj-1')
+  assert.deepEqual(
+    afterSet,
+    {
+      curated: { model: 'opus' },
+      args: [
+        { key: '--verbose', enabled: true },
+        { key: '--permission-mode', value: 'acceptEdits', enabled: true }
+      ],
+      env: [{ key: 'FOO', value: 'bar', enabled: true }]
+    },
+    'setArgRowValue appends the new row, preserving curated/env/other args untouched'
+  )
+
+  setArgRowValue('claude', 'project', 'proj-1', '--permission-mode', undefined)
+  const afterClear = getHarnessSettings('claude', 'project', 'proj-1')
+  assert.deepEqual(
+    afterClear,
+    {
+      curated: { model: 'opus' },
+      args: [{ key: '--verbose', enabled: true }],
+      env: [{ key: 'FOO', value: 'bar', enabled: true }]
+    },
+    'clearing (undefined) removes the row entirely, leaving every other field untouched'
+  )
+  console.log('✓ setArgRowValue merge-writes/clears one args row without touching curated/env')
+}
+
 console.log('\nAll harness-settings assertions passed.')

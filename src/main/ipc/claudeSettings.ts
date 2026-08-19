@@ -35,8 +35,10 @@ import {
 } from '../claudeWorkspaceSettings'
 import type { ClaudeWorkspaceSettings, ClaudeEffort } from '../../shared/types'
 import { withReconciledEffort } from '../effortReconciliation'
-import { setCuratedModelEffort } from '../harness/settings'
+import { setCuratedModelEffort, getHarnessSettings, setHarnessSettings } from '../harness/settings'
 import { resolveHarness } from '../harness/registry'
+import { CLAUDE_PERMISSION_MODE_ARG_KEY } from '../harness/claude/curated'
+import { applyProjectDrawerPatch } from '../../shared/harness/projectDrawerSettings'
 import {
   getLaunchSnapshot,
   setLaunchSnapshot,
@@ -416,6 +418,38 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
     recomputeDirty()
     broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
     return result
+  })
+
+  // H1 (support-multi-harness) — the project Settings drawer's harness-aware
+  // write path. Unlike claudeProjectSettings:update above (which writes the
+  // now-dead-at-launch claude_project_settings table and syncs ONLY
+  // model/effort into harness_settings as a side effect), this writes
+  // harness_settings DIRECTLY — the storage the live launch emitter
+  // (composeClaudeHarnessLaunch, via each harness descriptor's composeLaunch)
+  // actually reads — for all three drawer-owned fields: model, effort (both
+  // `curated`), and permissionMode (an `args` row, since permission-mode has
+  // no curated/cross-harness home — see CLAUDE_DEFAULT_ARGS's doc comment).
+  //
+  // permissionMode is CLAUDE-SPECIFIC by construction, not by an oversight
+  // this handler should "generalize" — see shared/harness/types.ts's
+  // CuratedField header: different harnesses express the same intent as
+  // genuinely different argv shapes (Codex needs TWO flags, Copilot one,
+  // Gemini a bare `-y`), so there is no single arg-row key a non-Claude
+  // harness could plug into CLAUDE_PERMISSION_MODE_ARG_KEY. Gating on
+  // `harnessId === 'claude'` here is the honest expression of that: a
+  // permissionMode patch value for any OTHER harness is silently ignored
+  // (no row written) rather than mis-filed under a Claude-only flag name. A
+  // future harness that wants an equivalent control needs its own descriptor
+  // concept, not a rename of this one.
+  handle('harness:settings:updateProjectDrawer', (_e, { harnessId, projectId, patch }) => {
+    const existing = getHarnessSettings(harnessId, 'project', projectId)
+    const effectivePatch =
+      harnessId === 'claude' ? patch : { model: patch.model, effort: patch.effort }
+    const next = applyProjectDrawerPatch(existing, effectivePatch, CLAUDE_PERMISSION_MODE_ARG_KEY)
+    setHarnessSettings(harnessId, 'project', projectId, next)
+    recomputeDirty()
+    broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
+    return getHarnessSettings(harnessId, 'project', projectId)
   })
 
   // ---------------------------------------------------------------------------

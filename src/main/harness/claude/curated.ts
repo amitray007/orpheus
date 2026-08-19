@@ -115,6 +115,12 @@ export function buildCuratedEnv(
 // Default args
 // ---------------------------------------------------------------------------
 
+/** The arg row key permission-mode lives under — named so callers that need
+ *  to read/write this ONE row (H1's project Settings drawer, via
+ *  harness_settings' generic args merge) reference the same symbol instead
+ *  of repeating the literal `'--permission-mode'` string. */
+export const CLAUDE_PERMISSION_MODE_ARG_KEY = '--permission-mode'
+
 /**
  * The CLI args Claude ships with. `--permission-mode` lives HERE, not as a
  * curated concept: it is a Claude flag, and the same intent is
@@ -129,7 +135,7 @@ export function buildCuratedEnv(
  * for them.
  */
 export const CLAUDE_DEFAULT_ARGS: HarnessArgRow[] = [
-  { key: '--permission-mode', value: 'acceptEdits', enabled: false }
+  { key: CLAUDE_PERMISSION_MODE_ARG_KEY, value: 'acceptEdits', enabled: false }
 ]
 
 // ---------------------------------------------------------------------------

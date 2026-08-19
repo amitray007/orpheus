@@ -818,6 +818,43 @@ export interface InvokeChannelMap {
     req: [{ harnessId: string; projectId?: string }]
     res: HarnessSettings
   }
+  // H1 (support-multi-harness) — the project Settings drawer's write path,
+  // separate from the generic 'harness:settings:set' above. The drawer only
+  // ever patches THREE fields (model, effort, permission-mode) and — unlike
+  // the Settings > Harness page's whole-row-array save — each field is a
+  // single-control edit that must ALSO recompute every mounted workspace's
+  // dirty flag and broadcast fresh effective settings (the same side effects
+  // claudeProjectSettings:update already performs for model/effort, see
+  // src/main/ipc/claudeSettings.ts), which a bare setSettings() call has no
+  // way to trigger.
+  //
+  // TRI-STATE PATCH VALUES, EXPLICIT NULL FOR CLEAR — each field is
+  // `string | null | undefined`: an omitted key (`undefined`, i.e. the key
+  // absent from `patch`) means "leave this field's stored value alone";
+  // `null` means "clear the override, inherit from the scope below";  a
+  // string sets it. This mirrors the drawer's own OverrideField semantics
+  // (patch() in SettingsDrawer.tsx already uses `v === undefined` to
+  // delete a key) but deliberately does NOT reuse setCuratedModelEffort's
+  // bare `{ model?: string }` shape — that function treats an ABSENT key
+  // exactly like a present-but-`undefined` key (both fail its `!==
+  // undefined` guard), so it has no way to express "clear" at all; a
+  // caller wanting to clear would have needed to invent a magic string.
+  // The null/undefined split here removes that ambiguity at the type
+  // level instead.
+  'harness:settings:updateProjectDrawer': {
+    req: [
+      {
+        harnessId: string
+        projectId: string
+        patch: {
+          model?: string | null
+          effort?: string | null
+          permissionMode?: string | null
+        }
+      }
+    ]
+    res: HarnessSettings
+  }
 
   // Model-name aliasing (model-routing unit 08) — see
   // src/main/routingProxy/aliases.ts. 'aliases:list' returns the master

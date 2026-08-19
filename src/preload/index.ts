@@ -1003,7 +1003,16 @@ const api = {
     ): Promise<HarnessSettings> =>
       invoke('harness:settings:set', { harnessId, scope, scopeId, settings }),
     getResolvedSettings: (harnessId: string, projectId?: string): Promise<HarnessSettings> =>
-      invoke('harness:settings:resolved', { harnessId, projectId })
+      invoke('harness:settings:resolved', { harnessId, projectId }),
+    // H1 (support-multi-harness) — project Settings drawer write path. See
+    // harness:settings:updateProjectDrawer's own doc comment (shared/ipc.ts)
+    // for the tri-state (omit/null/string) patch contract.
+    updateProjectDrawerSettings: (
+      harnessId: string,
+      projectId: string,
+      patch: { model?: string | null; effort?: string | null; permissionMode?: string | null }
+    ): Promise<HarnessSettings> =>
+      invoke('harness:settings:updateProjectDrawer', { harnessId, projectId, patch })
   },
   aliases: {
     list: (): Promise<ModelAliasesState> => invoke('aliases:list'),

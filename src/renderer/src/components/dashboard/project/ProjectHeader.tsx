@@ -128,6 +128,12 @@ interface ProjectMetaProps {
   workspacesLabel: string | null
   activityLabel: string
   overrideCount: number | null
+  /** Non-null, non-empty ONLY when the project's overrides do not apply
+   *  project-wide — see projectOverrideChipInfo's own doc comment
+   *  (src/shared/harness/projectDrawerSettings.ts). With only Claude
+   *  registered this is always null (harnessesInProject can never contain
+   *  a SECOND harness id), so the chip renders exactly as before. */
+  overrideHarnessLabel?: string | null
   onOpenSettings: () => void
 }
 
@@ -136,6 +142,7 @@ const ProjectMeta = memo(function ProjectMeta({
   workspacesLabel,
   activityLabel,
   overrideCount,
+  overrideHarnessLabel,
   onOpenSettings
 }: ProjectMetaProps): React.JSX.Element {
   return (
@@ -171,8 +178,14 @@ const ProjectMeta = memo(function ProjectMeta({
             type="button"
             onClick={onOpenSettings}
             className="text-accent hover:underline cursor-pointer"
+            title={
+              overrideHarnessLabel
+                ? `These overrides apply to ${overrideHarnessLabel} workspaces only — this project also has workspaces on a different harness.`
+                : undefined
+            }
           >
             {overrideCount} override{overrideCount === 1 ? '' : 's'}
+            {overrideHarnessLabel ? ` (${overrideHarnessLabel})` : ''}
           </button>
         </>
       ) : null}
@@ -321,6 +334,8 @@ interface ProjectHeaderProps {
   lastActivityAt: number | null
   /** `null` while project settings are still loading. */
   overrideCount: number | null
+  /** See ProjectMetaProps' own doc comment — passed straight through. */
+  overrideHarnessLabel?: string | null
   /** Auto-generated next workspace name (e.g. "Workspace 2"), used to seed the worktree branch slug. */
   workspaceDefaultName: string
   onNewWorkspace: (modelId?: string, harnessId?: string) => void
@@ -337,6 +352,7 @@ export function ProjectHeader({
   workspaceCount,
   lastActivityAt,
   overrideCount,
+  overrideHarnessLabel,
   workspaceDefaultName,
   onNewWorkspace,
   onWorktreeCreated,
@@ -461,6 +477,7 @@ export function ProjectHeader({
             workspacesLabel={workspacesLabel}
             activityLabel={activityLabel}
             overrideCount={overrideCount}
+            overrideHarnessLabel={overrideHarnessLabel}
             onOpenSettings={onOpenSettings}
           />
         </div>
