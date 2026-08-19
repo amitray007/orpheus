@@ -346,4 +346,103 @@ const ALL_EIGHT_ACTIONS: FooterActionDescriptor[] = [
   )
 }
 
+// ---------------------------------------------------------------------------
+// 7 (support-multi-harness follow-up) — structuredStatus: false ->
+// workspace.getActivityStatus filtered out; Claude (structuredStatus: true)
+// keeps it; other ungated actions in the same batch are unaffected either
+// way.
+//
+// THE GAP THIS CLOSES: workspace.getActivityStatus (handleGetActivityStatus,
+// src/main/actions/workspace.ts) reads the SAME activity store
+// shouldClaimLiveActivity (src/shared/harness/capabilityGating.ts) gates
+// everywhere else in the UI — Sidebar, the workspaces table, the collapsed
+// rail, the kanban card. It had NO entry in FOOTER_ACTION_GATES, so a
+// harness without structuredStatus would still return a status string from
+// this chip's handler — a store nothing populates for that harness,
+// rendered as if it were live. It slipped past every prior gating pass
+// specifically because it's reached through the ACTIONS layer
+// (filterActionsForHarness) rather than a component shouldClaimLiveActivity
+// is called from directly.
+// ---------------------------------------------------------------------------
+
+{
+  const statuslessHarness = fixtureHarness({
+    capabilities: baseCapabilities({ structuredStatus: false })
+  })
+  const rowsWithStatus: FooterActionDescriptor[] = [
+    ...ALL_EIGHT_ACTIONS,
+    action('workspace.getActivityStatus', { label: 'Status' })
+  ]
+  const result = filterActionsForHarness(rowsWithStatus, statuslessHarness)
+  assert.equal(
+    result.some((a) => a.actionId === 'workspace.getActivityStatus'),
+    false,
+    'workspace.getActivityStatus must be filtered out when capabilities.structuredStatus is false'
+  )
+  assert.equal(
+    result.length,
+    rowsWithStatus.length - 1,
+    'exactly one action (getActivityStatus) should be removed — the other 8 ungated-by-this-change rows must be unaffected'
+  )
+  console.log(
+    '✓ capabilities.structuredStatus: false filters out workspace.getActivityStatus, leaves every other action id untouched'
+  )
+}
+
+{
+  // Claude (structuredStatus: true, real registry descriptor — not a
+  // fixture) must keep workspace.getActivityStatus exactly as before this
+  // fix — the regression net.
+  const claude = resolveHarness('claude')
+  const rowsWithStatus: FooterActionDescriptor[] = [
+    action('workspace.getActivityStatus', { label: 'Status' })
+  ]
+  const result = filterActionsForHarness(rowsWithStatus, claude)
+  assert.equal(
+    result.length,
+    1,
+    'workspace.getActivityStatus must survive filtering against the real Claude descriptor (structuredStatus: true)'
+  )
+  console.log(
+    '✓ REGRESSION GUARD: workspace.getActivityStatus survives filtering against the real Claude descriptor'
+  )
+}
+
+// MUTATION: remove the new gate entry (simulating its absence, the exact
+// pre-fix state) — must disagree with the real, gated function for a
+// statusless harness.
+{
+  let threw = false
+  try {
+    const statuslessHarness = fixtureHarness({
+      capabilities: baseCapabilities({ structuredStatus: false })
+    })
+    const ungatedResult = [action('workspace.getActivityStatus', { label: 'Status' })] // simulates the pre-fix "always allowed" behavior
+    const realResult = filterActionsForHarness(
+      [action('workspace.getActivityStatus', { label: 'Status' })],
+      statuslessHarness
+    )
+    assert.equal(
+      ungatedResult.length,
+      realResult.length,
+      'an ungated (pre-fix) implementation would keep workspace.getActivityStatus even for a statusless harness — the real, fixed function must disagree by filtering it out'
+    )
+    threw = false
+  } catch (err) {
+    threw = true
+    console.log(
+      '  mutation caught (expected failure) [workspace.getActivityStatus gate removed]:',
+      (err as Error).message.split('\n')[0]
+    )
+  }
+  assert.ok(
+    threw,
+    'MUTATION TEST FAILED TO FAIL: removing the structuredStatus gate for workspace.getActivityStatus went undetected'
+  )
+}
+
+console.log(
+  '\n✓ mutation test: removing the workspace.getActivityStatus gate is correctly caught as a failing assertion'
+)
+
 console.log('\nAll harness-actions assertions passed.')

@@ -228,7 +228,17 @@ const FOOTER_ACTION_GATES: Record<string, ActionGate> = {
   'session.getUsage': (h) => h.capabilities.usage,
   'session.getCost': (h) => h.capabilities.usage,
   'footer.modelSelect': (h) => h.curated?.model !== undefined,
-  'footer.effortSelect': (h) => h.curated?.effort !== undefined
+  'footer.effortSelect': (h) => h.curated?.effort !== undefined,
+  // workspace.getActivityStatus (handleGetActivityStatus, actions/workspace.ts)
+  // reads the SAME activity store src/shared/harness/capabilityGating.ts's
+  // shouldClaimLiveActivity gates everywhere else in the UI (Sidebar, the
+  // workspaces table, the collapsed rail, the kanban card) — a harness
+  // without structuredStatus never populates that store, so an ungated chip
+  // would render a stale/fabricated status dot as if it were live. Found
+  // while auditing FOOTER_ACTION_GATES for other action ids reached only
+  // through the actions layer (never a component), which is how this one
+  // slipped past every prior component-level gating pass.
+  'workspace.getActivityStatus': (h) => h.capabilities.structuredStatus
 }
 
 const ACTION_TERMINAL_SEND_INPUT = 'terminal.sendInput'
