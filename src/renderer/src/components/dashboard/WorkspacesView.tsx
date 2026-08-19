@@ -458,8 +458,8 @@ export function WorkspacesView({
             <Kanban size={28} className="text-text-muted" weight="thin" />
             <p className="text-lg font-semibold text-text-primary">No workspaces yet</p>
             <p className="text-sm text-text-muted">
-              Open a project and start a Claude session — your workspaces will appear here, grouped
-              by activity.
+              Open a project and start a session — your workspaces will appear here, grouped by
+              activity.
             </p>
           </div>
         </div>

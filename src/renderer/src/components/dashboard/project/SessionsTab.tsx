@@ -441,8 +441,7 @@ export function SessionsTab({
         emptyState={
           noSessionsAtAll ? (
             <p className="text-sm text-text-muted text-center">
-              No sessions yet — start Claude Code in this project and your sessions will appear
-              here.
+              No sessions yet — start a session in this project and your sessions will appear here.
             </p>
           ) : (
             filteredEmptyState

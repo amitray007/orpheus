@@ -9,7 +9,13 @@ import {
   SquaresFour,
   X
 } from '@phosphor-icons/react'
-import type { GhPullRequest, WorkspaceRecord, SessionUsage, SessionCost } from '@shared/types'
+import type {
+  GhPullRequest,
+  WorkspaceRecord,
+  SessionUsage,
+  SessionCost,
+  HarnessSummary
+} from '@shared/types'
 import { PrChip } from '../github/PrChip'
 import { useGitStatus } from '@/lib/gitStore'
 import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
@@ -24,7 +30,7 @@ import {
 } from '@/lib/overlayClient'
 import type { DetailsCardProps } from '@shared/types'
 import { contextBudgetCache } from './workspaceTitleBar.helpers'
-import { ClaudeGlyph } from '../workbench/ClaudeGlyph'
+import { ProviderIcon } from '../ProviderIcon'
 import { useWorkbenchApi, type WorkbenchApi } from '../workbench/workbenchReducer'
 import { WorkbenchTabStrip } from '../workbench/WorkbenchTabStrip'
 import { DEFAULT_WORKBENCH_WIDTH } from '../../lib/workbenchStore'
@@ -210,6 +216,74 @@ interface WorkspaceTitleBarProps {
    *  WorkspaceDrawer's (preserved, no longer mounted) "Restart to apply" button
    *  used. The dirty chip re-homes into the title-hover details popover. */
   onRestart?: () => void
+}
+
+// ---------------------------------------------------------------------------
+// HarnessBackControl — the ◂ (Back to <harness>) button (expanded workbench)
+// or the harness's own glyph (not expanded), leading the "Claude region".
+// Extracted from WorkspaceTitleBar's own render (support-multi-harness)
+// specifically to keep that component's cognitive-complexity budget under
+// the 20-warning threshold — this block's own branching (isExpanded,
+// harness.icon presence) was pushing the parent over on its own.
+// ---------------------------------------------------------------------------
+
+function HarnessBackControl({
+  isExpanded,
+  harness,
+  backToClaudeRef,
+  pendingCollapseFocusRef,
+  workbenchApi
+}: {
+  isExpanded: boolean
+  harness: HarnessSummary
+  backToClaudeRef: React.RefObject<HTMLButtonElement | null>
+  pendingCollapseFocusRef: React.RefObject<boolean>
+  workbenchApi: WorkbenchApi | null
+}): React.JSX.Element | null {
+  if (isExpanded) {
+    return (
+      <button
+        ref={backToClaudeRef}
+        type="button"
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          pendingCollapseFocusRef.current = document.activeElement === e.currentTarget
+          workbenchApi?.restoreToOpen()
+        }}
+        // Derived from harness.label (support-multi-harness) — "Back to
+        // Claude Code" for Claude today, was the hardcoded "Back to
+        // Claude". UNLIKE SettingsView.tsx's group-label call (kept
+        // static there — a section header has no functional stake in
+        // naming the harness, it's a list category), this string's
+        // entire job IS to name the specific agent the user is
+        // returning to: on a future non-Claude workspace, "Back to
+        // Claude" would be an actively WRONG claim, not just
+        // differently worded — the exact class of bug this unit exists
+        // to fix. "Claude Code" vs "Claude" is the harness's own
+        // canonical label gaining two words, not a wrong one.
+        title={`Back to ${harness.label}`}
+        aria-label={`Back to ${harness.label}`}
+        className="flex items-center justify-center w-5 h-5 -ml-0.5 rounded-sm text-text-muted hover:text-text-primary hover:bg-surface-overlay/60 transition-colors duration-150 flex-shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+      >
+        <CaretLeft size={13} />
+      </button>
+    )
+  }
+  if (!harness.icon) return null
+  // ProviderIcon (support-multi-harness), not ClaudeGlyph — same 'claude'
+  // id, but a DIFFERENT (newer) SVG asset than ClaudeGlyph.tsx's
+  // @/assets/claude-icon.svg (verified: different fill color #D97757 vs
+  // #D77655, different viewBox/path — not a re-export of the same file).
+  // ProviderIcon's mark is already what every other Claude-icon surface in
+  // the app renders (HarnessPicker, WorkspaceProviderIcon/Sidebar, the
+  // footer model/effort chips, NewWorkspaceMenu) — this title bar's
+  // ClaudeGlyph was the sole outlier still on the older asset, so this is
+  // a minor visual CONSISTENCY fix alongside the harness-neutrality
+  // change, not a silent regression: the user already sees ProviderIcon's
+  // mark everywhere else in the app.
+  return (
+    <ProviderIcon providerId={harness.icon} size={13} className="text-text-muted flex-shrink-0" />
+  )
 }
 
 export function WorkspaceTitleBar({
@@ -517,9 +591,10 @@ export function WorkspaceTitleBar({
   const isDormant = state === 'dormant'
   const workbenchWidth = workbenchApi?.width ?? DEFAULT_WORKBENCH_WIDTH
 
-  // Focus continuity for the ◂ (Back to Claude) control: it only exists while
-  // expanded, and clicking it collapses to 'open' — which unmounts ◂ and
-  // swaps in the (non-focusable) ClaudeGlyph, dropping keyboard focus. When
+  // Focus continuity for the ◂ (Back to <harness>) control: it only exists
+  // while expanded, and clicking it collapses to 'open' — which unmounts ◂
+  // and swaps in the (non-focusable) harness ProviderIcon, dropping
+  // keyboard focus. When
   // the collapse was keyboard-driven, hand focus to the workbench region's
   // expand (⤢) toggle, which is present + focusable in 'open' (queried by a
   // stable data attribute so the parent stays decoupled from the child that
@@ -572,24 +647,13 @@ export function WorkspaceTitleBar({
           isExpanded ? 'flex-shrink-0' : 'flex-1'
         ].join(' ')}
       >
-        {isExpanded ? (
-          <button
-            ref={backToClaudeRef}
-            type="button"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              pendingCollapseFocusRef.current = document.activeElement === e.currentTarget
-              workbenchApi?.restoreToOpen()
-            }}
-            title="Back to Claude"
-            aria-label="Back to Claude"
-            className="flex items-center justify-center w-5 h-5 -ml-0.5 rounded-sm text-text-muted hover:text-text-primary hover:bg-surface-overlay/60 transition-colors duration-150 flex-shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-          >
-            <CaretLeft size={13} />
-          </button>
-        ) : (
-          <ClaudeGlyph size={13} className="text-text-muted flex-shrink-0" />
-        )}
+        <HarnessBackControl
+          isExpanded={isExpanded}
+          harness={harness}
+          backToClaudeRef={backToClaudeRef}
+          pendingCollapseFocusRef={pendingCollapseFocusRef}
+          workbenchApi={workbenchApi}
+        />
 
         <span
           ref={detailsButtonRef}

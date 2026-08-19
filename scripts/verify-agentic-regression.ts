@@ -143,7 +143,15 @@ const verifiers = [
   // verify-harness-actions.ts and verify-harness-capability-gating.ts
   // above, so this stays on the plain-bun dispatch path, not the
   // node:sqlite tuple form the surrounding entries use.
-  'verify-settings-section-gating.ts'
+  'verify-settings-section-gating.ts',
+  // support-multi-harness harness-neutral-chrome unit — ActionChip.tsx's
+  // failure-tooltip regression: main already returns a harness-neutral
+  // busy message ('Workspace is busy', src/main/actions/terminal.ts), but
+  // the renderer discarded it and substituted a hardcoded 'Claude is busy'
+  // literal. Fixed via actionChipMessages.ts's pure actionFailureMessage.
+  // No electron/DB dependency at all, so this stays on the plain-bun
+  // dispatch path.
+  'verify-action-chip-messages.ts'
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {

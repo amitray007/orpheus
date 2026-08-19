@@ -5,6 +5,7 @@ import { playSound } from '../../../lib/sound'
 import { expandPlaceholders } from '../../../lib/footerPlaceholders'
 import { DotmFooterLoader } from '../../ui/dotm-footer-loader'
 import { IconByName } from './iconMap'
+import { actionFailureMessage } from './actionChipMessages'
 import {
   showChipTooltip,
   hideOverlayCard,
@@ -269,12 +270,19 @@ export function ActionChip({
           onForkSuccess?.(newId)
         }
       } else {
+        // Surface main's own error string (result.error) via
+        // actionFailureMessage rather than substituting a hardcoded
+        // literal here — main already returns a harness-neutral message
+        // for the busy case ('Workspace is busy', src/main/actions/
+        // terminal.ts's canInject-gated actions), so this used to be a
+        // real regression: the renderer discarded a correct, already-
+        // neutral value from main and replaced it with a Claude-specific
+        // string, EVEN for a non-Claude workspace. No special-casing
+        // `result.code === 'busy'` needed. See actionChipMessages.ts's own
+        // header for why this one-line decision is factored into a pure
+        // function rather than left inline.
         playSound('error')
-        if (result.code === 'busy') {
-          showTooltip('Claude is busy')
-        } else {
-          showTooltip(result.error ?? 'Action failed')
-        }
+        showTooltip(actionFailureMessage(result))
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -334,14 +342,26 @@ export function ActionChip({
     return () => document.removeEventListener('pointerdown', onPointerDown)
   }, [showPrompt, promptOverlayId])
 
-  const chipTitle = isDisabled ? (disabled ? 'Claude is busy' : 'Not available right now') : label
+  // Harness-neutral — matches the literal main returns for the same
+  // condition (canInject-gated actions, src/main/actions/terminal.ts:
+  // 'Workspace is busy'). This is a client-side PRE-check against the
+  // pushed `canInject` flag (no window.api.actions.invoke round trip here,
+  // so there is no result.error to surface — unlike the busy branch in
+  // invokeAction's catch above), but it reflects the identical underlying
+  // condition, so the string must match rather than reintroduce a
+  // Claude-specific one for the same fact.
+  const chipTitle = isDisabled
+    ? disabled
+      ? 'Workspace is busy'
+      : 'Not available right now'
+    : label
 
   const handleClick = useCallback(async (): Promise<void> => {
     if (inFlight) return
 
     if (isDisabled) {
       playSound('error')
-      showTooltip(disabled ? 'Claude is busy' : 'Not available right now')
+      showTooltip(disabled ? 'Workspace is busy' : 'Not available right now')
       return
     }
 
