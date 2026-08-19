@@ -31,7 +31,6 @@ import type {
 import type { HarnessDescriptor } from '../shared/harness/types'
 import { resolveHarness, HARNESSES } from './harness/registry'
 import { CLAUDE_DEFAULT_ACTIONS } from './harness/claude/actions'
-import { isActionTypeApplicable } from '../shared/harness/actionTypeGating'
 
 // ---------------------------------------------------------------------------
 // Row shapes from SQLite
