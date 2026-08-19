@@ -28,6 +28,9 @@ import {
   resolveProvenance,
   mergeDefaultArgs,
   draftsToStoredRows,
+  composedCommandPreview,
+  summarizeArgRows,
+  summarizeEnvRows,
   type HarnessScopeSettingsBundle
 } from '../src/renderer/src/components/dashboard/settings/harnessSettingsLogic'
 import type { HarnessArgRow } from '../src/shared/harness/types'
@@ -404,6 +407,161 @@ function mutatedHasUnsavedChangesAlwaysClean(): boolean {
 
   console.log(
     '✓ mutation test: an always-false dirty check is correctly caught as a failing assertion'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// composedCommandPreview (B2 restructure — Launch panel)
+// ---------------------------------------------------------------------------
+
+{
+  assert.equal(
+    composedCommandPreview('claude', []),
+    'claude',
+    'no rows -> bare binary, no trailing space'
+  )
+
+  assert.equal(
+    composedCommandPreview('claude', [
+      { key: '--permission-mode', value: 'acceptEdits', enabled: true },
+      { key: '--verbose', enabled: true }
+    ]),
+    'claude --permission-mode acceptEdits --verbose',
+    'enabled rows appear in order, flag then value when present'
+  )
+
+  assert.equal(
+    composedCommandPreview('claude', [
+      { key: '--permission-mode', value: 'acceptEdits', enabled: false },
+      { key: '--verbose', enabled: true }
+    ]),
+    'claude --verbose',
+    'a disabled row is skipped entirely'
+  )
+
+  assert.equal(
+    composedCommandPreview('claude', [{ key: '', value: '', enabled: true }]),
+    'claude',
+    'a blank-key (in-progress Add) row is skipped, matching hasUnsavedChanges/draftsToStoredRows'
+  )
+
+  console.log(
+    '✓ composedCommandPreview: binary-only, ordered flag+value, disabled-skip, blank-skip all correct'
+  )
+}
+
+// MUTATION TEST — composedCommandPreview
+function mutatedComposedCommandPreviewIgnoresEnabled(
+  binary: string,
+  rows: readonly { key: string; value?: string; enabled: boolean }[]
+): string {
+  // BUG: includes every named row regardless of `enabled`, so a disabled row
+  // still shows up in the "what will actually run" line.
+  const tokens = [binary]
+  for (const row of rows) {
+    if (row.key.trim() === '') continue
+    tokens.push(row.key)
+    if (row.value) tokens.push(row.value)
+  }
+  return tokens.join(' ')
+}
+
+{
+  let threw = false
+  try {
+    assert.equal(
+      mutatedComposedCommandPreviewIgnoresEnabled('claude', [{ key: '--verbose', enabled: false }]),
+      'claude',
+      'a disabled row must not appear in the composed preview'
+    )
+  } catch (err) {
+    threw = true
+    console.log('  mutation caught (expected failure):', (err as Error).message.split('\n')[0])
+  }
+  assert.ok(threw, 'MUTATION TEST FAILED TO FAIL: a preview that ignores `enabled` went undetected')
+
+  console.log(
+    '✓ mutation test: a composed preview that ignores `enabled` is correctly caught as a failing assertion'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// summarizeArgRows / summarizeEnvRows (B2 restructure — section summary lines)
+// ---------------------------------------------------------------------------
+
+{
+  assert.equal(summarizeArgRows([]), 'No arguments', 'empty rows -> "No arguments"')
+  assert.equal(
+    summarizeArgRows([{ key: '', enabled: true }]),
+    'No arguments',
+    'a blank-key row does not count toward the summary'
+  )
+  assert.equal(
+    summarizeArgRows([
+      { key: '--permission-mode', enabled: true, fromDefault: true },
+      { key: '--verbose', enabled: false }
+    ]),
+    '1 enabled, 1 default',
+    'mixed enabled/disabled/default rows summarized correctly'
+  )
+  assert.equal(
+    summarizeArgRows([{ key: '--verbose', enabled: true }]),
+    '1 enabled',
+    'no default rows -> the ", N default" clause is omitted entirely'
+  )
+
+  assert.equal(summarizeEnvRows([]), 'No variables', 'empty rows -> "No variables"')
+  assert.equal(
+    summarizeEnvRows([{ key: '' }]),
+    'No variables',
+    'a blank-key row does not count toward the summary'
+  )
+  assert.equal(
+    summarizeEnvRows([{ key: 'FOO' }]),
+    '1 variable',
+    'singular "variable" for exactly one'
+  )
+  assert.equal(
+    summarizeEnvRows([{ key: 'FOO' }, { key: 'BAR' }, { key: 'BAZ' }]),
+    '3 variables',
+    'plural "variables" for more than one'
+  )
+
+  console.log(
+    '✓ summarizeArgRows/summarizeEnvRows: counts, blank-row exclusion, singular/plural all correct'
+  )
+}
+
+// MUTATION TEST — summarizeArgRows
+function mutatedSummarizeArgRowsCountsBlankRows(
+  rows: readonly { key: string; enabled: boolean; fromDefault?: boolean }[]
+): string {
+  // BUG: counts every row including blank in-progress ones, so an untouched
+  // Add-row inflates the "N enabled" summary before it's ever named.
+  if (rows.length === 0) return 'No arguments'
+  const enabledCount = rows.filter((r) => r.enabled).length
+  const defaultCount = rows.filter((r) => r.fromDefault).length
+  const parts = [`${enabledCount} enabled`]
+  if (defaultCount > 0) parts.push(`${defaultCount} default`)
+  return parts.join(', ')
+}
+
+{
+  let threw = false
+  try {
+    assert.equal(
+      mutatedSummarizeArgRowsCountsBlankRows([{ key: '', value: '', enabled: true }]),
+      'No arguments',
+      'a blank-key row must not count toward the summary'
+    )
+  } catch (err) {
+    threw = true
+    console.log('  mutation caught (expected failure):', (err as Error).message.split('\n')[0])
+  }
+  assert.ok(threw, 'MUTATION TEST FAILED TO FAIL: a summary that counts blank rows went undetected')
+
+  console.log(
+    '✓ mutation test: a summary that counts blank rows is correctly caught as a failing assertion'
   )
 }
 

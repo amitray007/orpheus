@@ -106,8 +106,18 @@ function fixtureHarness(overrides: Partial<HarnessDescriptor> = {}): HarnessDesc
     // incidentally also filtering footer.modelSelect/effortSelect via a
     // default-undefined `curated`.
     curated: {
-      model: { flag: '--model', options: [], allowCustom: true },
-      effort: { flag: '--effort', options: [], allowCustom: true }
+      model: {
+        flag: '--model',
+        options: [],
+        allowCustom: true,
+        liveApply: { kind: 'restartRequired' }
+      },
+      effort: {
+        flag: '--effort',
+        options: [],
+        allowCustom: true,
+        liveApply: { kind: 'restartRequired' }
+      }
     },
     knownGoodVersions: new Set(),
     ...overrides
@@ -196,7 +206,14 @@ const ALL_EIGHT_ACTIONS: FooterActionDescriptor[] = [
   // effortSelect stays — proves the two gates are independent, not a
   // single "has curated at all" check.
   const harness = fixtureHarness({
-    curated: { effort: { flag: '--effort', options: [], allowCustom: true } }
+    curated: {
+      effort: {
+        flag: '--effort',
+        options: [],
+        allowCustom: true,
+        liveApply: { kind: 'restartRequired' }
+      }
+    }
   })
   const result = filterActionsForHarness(ALL_EIGHT_ACTIONS, harness)
   assert.equal(

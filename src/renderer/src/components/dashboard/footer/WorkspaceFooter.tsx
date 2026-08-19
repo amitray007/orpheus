@@ -1,5 +1,6 @@
 import type React from 'react'
 import type { FooterActionVisibility, WorkspaceActivityDetail } from '@shared/types'
+import type { HarnessId } from '@shared/harness/types'
 import { useFooterActions } from './useFooterActions'
 import { ActionChip } from './ActionChip'
 import { LiveChip } from './LiveChip'
@@ -14,6 +15,13 @@ export const WORKSPACE_FOOTER_HEIGHT_PX = 36
 
 interface WorkspaceFooterProps {
   workspaceId: string
+  /** Which coding-agent CLI this workspace runs — WorkspaceRecord.harnessId,
+   *  threaded down so DropdownChip can resolve ITS workspace's harness
+   *  descriptor (capabilities/curated/liveApply) instead of assuming
+   *  Claude. Optional because some callers may not have the record yet;
+   *  DropdownChip's own harnessStore resolver falls back to Claude when
+   *  absent, same as main's resolveHarness(undefined). */
+  harnessId?: HarnessId
   /** Claude session id for placeholder expansion in terminal.sendInput params. */
   sessionId?: string | null
   /** Working directory for placeholder expansion in terminal.sendInput params. */
@@ -78,6 +86,7 @@ function isVisible(
  */
 export function WorkspaceFooter({
   workspaceId,
+  harnessId,
   sessionId = null,
   cwd = '',
   onSelectWorkspace,
@@ -126,6 +135,7 @@ export function WorkspaceFooter({
                 key={item.id}
                 item={item}
                 workspaceId={workspaceId}
+                harnessId={harnessId}
                 enabled={isVisible(item.visibleWhen, activityDetail)}
                 activityDetail={activityDetail}
                 onRestart={onRestart}

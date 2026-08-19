@@ -40,16 +40,22 @@ import type {
 } from '../../../shared/harness/types'
 import { CLAUDE_EFFORT_VALUES, CLAUDE_MODEL_OPTIONS } from '../../../shared/types'
 
+// liveApply templates verified against DropdownChip.tsx's PRE-existing
+// literals (`/model ${value}` / `/effort ${value}`, both submit: true) —
+// this is a data-driven refactor of those two hardcoded injections, not a
+// behavior change; scripts/verify-harness-curated.ts pins the built text.
 export const CLAUDE_CURATED_MODEL: CuratedField = {
   flag: '--model',
   options: CLAUDE_MODEL_OPTIONS.map((o) => o.value),
-  allowCustom: true
+  allowCustom: true,
+  liveApply: { kind: 'replInject', template: '/model {value}', submit: true }
 }
 
 export const CLAUDE_CURATED_EFFORT: CuratedField = {
   flag: '--effort',
   options: [...CLAUDE_EFFORT_VALUES],
-  allowCustom: true
+  allowCustom: true,
+  liveApply: { kind: 'replInject', template: '/effort {value}', submit: true }
 }
 
 export const CLAUDE_CURATED = {

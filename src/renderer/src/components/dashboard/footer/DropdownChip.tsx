@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import type { ChipDropdownItem, ClaudeEffort, WorkspaceActivityDetail } from '@shared/types'
+import type { HarnessId } from '@shared/harness/types'
+import { buildLiveApplyText } from '@shared/harness/liveApply'
 import {
   capitalize,
   effortOptionsFor,
@@ -29,6 +31,7 @@ import { setWorkspaceModel, useWorkspaceModel } from '@/lib/workspaceModelStore'
 import { setWorkspaceEffort, useWorkspaceEffort } from '@/lib/workspaceEffortStore'
 import { buildModelDropdownItems, buildModelDropdownGroups } from '@/lib/modelPickerOptions'
 import { ProviderIcon } from '@/components/ProviderIcon'
+import { useHarnessForWorkspace } from '@/lib/harnessStore'
 import type { FooterActionItem } from './useFooterActions'
 
 // Diagonal-traversal close-delay for the model chip's provider -> model
@@ -121,6 +124,13 @@ function injectWithRetry(
 interface DropdownChipProps {
   item: FooterActionItem
   workspaceId: string
+  /** This workspace's harness id (WorkspaceRecord.harnessId), threaded down
+   *  from WorkspaceView -> WorkspaceFooter so the model/effort chips can
+   *  resolve THEIR workspace's real harness descriptor (curated.model/
+   *  curated.effort's liveApply declarations) instead of assuming Claude.
+   *  Absent falls back to Claude via useHarnessForWorkspace, same as main's
+   *  resolveHarness(undefined). */
+  harnessId?: HarnessId
   enabled?: boolean
   /** Live activity detail — used ONLY by the model-select chip to decide
    *  whether an auto-restart is safe (see onSelect's routed-model branch
@@ -139,6 +149,7 @@ interface DropdownChipProps {
 export function DropdownChip({
   item,
   workspaceId,
+  harnessId,
   enabled = true,
   activityDetail,
   onRestart
@@ -146,6 +157,12 @@ export function DropdownChip({
   const chipRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const openRef = useRef(false)
+  // This workspace's resolved harness descriptor summary — never undefined
+  // (falls back to Claude, see useHarnessForWorkspace's own doc comment).
+  // Only the model/effort branches below read `.curated`; the
+  // footer.dropdown branch (fully custom, author-configured options) never
+  // touches it.
+  const harness = useHarnessForWorkspace(harnessId)
 
   // Diagonal-traversal close-delay timer for the model chip's flyout submenu
   // — see this file's own MODEL_SUBMENU_*_DELAY_MS comment. Unused (never
@@ -405,23 +422,31 @@ export function DropdownChip({
           playSound('error')
           showTooltip('Model not saved — try again')
         })
-      // `/model <value>` is a Claude CLI slash command — it is only
-      // meaningful for a Claude -> Claude switch (same backend, same running
-      // process, just a different --model argument). A switch involving a
-      // routed model needs a NEW process with different
+      // The harness's curated.model.liveApply declaration is only
+      // meaningful for a same-backend switch (Claude -> Claude REPL command,
+      // same running process, just a different --model argument). A switch
+      // involving a routed model needs a NEW process with different
       // ANTHROPIC_BASE_URL/ANTHROPIC_MODEL/ANTHROPIC_AUTH_TOKEN env (see
       // src/main/modelRouting.ts computeRoutingEnv), which no in-terminal
-      // slash command can apply — injecting it there would be silently
-      // wrong (either a no-op inside the wrong backend's REPL, or Claude's
-      // own CLI misinterpreting a routed model id as one of its own).
-      // Persisting the setting above already marks the workspace dirty via
-      // the same isLiveApplicableModelChange gate main-side, so the existing
-      // "Restart to apply" chip (DetailsCard/WorkspaceDrawer, both driven by
-      // the same onRestart/handleRestart) is what surfaces the change if we
-      // don't auto-restart below.
+      // command can apply — injecting it there would be silently wrong
+      // (either a no-op inside the wrong backend's REPL, or the harness
+      // misinterpreting a routed model id as one of its own). Persisting the
+      // setting above already marks the workspace dirty via the same
+      // isLiveApplicableModelChange gate main-side, so the existing "Restart
+      // to apply" chip (DetailsCard/WorkspaceDrawer, both driven by the same
+      // onRestart/handleRestart) is what surfaces the change if we don't
+      // auto-restart below.
       if (currentModelIsClaude && newModelIsClaude) {
-        runInject(`/model ${value}`, true, 'Model set — applies next turn')
-        return
+        const liveApply = buildLiveApplyText(harness.curated?.model, value)
+        if (liveApply.kind === 'inject') {
+          runInject(liveApply.text, liveApply.submit, 'Model set — applies next turn')
+          return
+        }
+        // 'restartRequired' (or 'none', which shouldn't happen here since
+        // curated.model must be defined — footerActions.ts's visibility gate
+        // already requires it — but is handled the same way defensively)
+        // falls through to the restart-or-dirty-chip path below, exactly
+        // like the routed-model branch.
       }
       // Any switch involving a routed model (Claude->routed, routed->Claude,
       // routed->routed) needs a brand-new process — no in-terminal command
@@ -467,12 +492,27 @@ export function DropdownChip({
       window.api.workspaces
         .setEffort(workspaceId, value as ClaudeEffort)
         .then(() => {
-          // Only inject `/effort <value>` into the terminal AFTER the write
-          // is confirmed persisted — a rejected write (e.g. an out-of-enum
-          // value somehow reaching here) must never leave the running
-          // process told about a value the DB doesn't actually have,
-          // silently desyncing UI state from persisted state.
-          runInject(`/effort ${value}`, true, 'Effort set — applies next turn')
+          // Only inject the effort live-apply text into the terminal AFTER
+          // the write is confirmed persisted — a rejected write (e.g. an
+          // out-of-enum value somehow reaching here) must never leave the
+          // running process told about a value the DB doesn't actually
+          // have, silently desyncing UI state from persisted state.
+          //
+          // Gated the SAME way the model chip gates `/model` (see that
+          // branch's own comment): a live-apply command is only meaningful
+          // when talking to the SAME running backend. Unlike a model
+          // switch, effort has no "new model" to check — the process
+          // currently running IS the target — so this reduces to
+          // currentModelIsClaude alone. Previously this fired
+          // UNCONDITIONALLY (no gate at all), which meant a routed
+          // (non-Claude) workspace would have `/effort <value>` typed as
+          // literal text into its terminal.
+          if (currentModelIsClaude) {
+            const liveApply = buildLiveApplyText(harness.curated?.effort, value)
+            if (liveApply.kind === 'inject') {
+              runInject(liveApply.text, liveApply.submit, 'Effort set — applies next turn')
+            }
+          }
         })
         .catch((e) => {
           // Revert the optimistic store write and surface the failure —

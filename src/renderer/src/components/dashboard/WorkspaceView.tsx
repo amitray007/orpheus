@@ -1044,6 +1044,7 @@ export function WorkspaceView({
           {quantized == null ? (
             <WorkspaceFooter
               workspaceId={workspace.id}
+              harnessId={workspace.harnessId}
               sessionId={workspace.claudeSessionId}
               cwd={workspace.cwd}
               projectId={workspace.projectId}
@@ -1056,6 +1057,7 @@ export function WorkspaceView({
             <div className="flex-1 min-h-0 flex flex-col justify-center bg-surface-raised border-t border-border-default/60">
               <WorkspaceFooter
                 workspaceId={workspace.id}
+                harnessId={workspace.harnessId}
                 sessionId={workspace.claudeSessionId}
                 cwd={workspace.cwd}
                 projectId={workspace.projectId}

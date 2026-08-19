@@ -12,8 +12,10 @@ import {
   Trash,
   CaretUp,
   CaretDown,
+  CaretRight,
   Question,
-  ArrowCounterClockwise
+  ArrowCounterClockwise,
+  Rocket
 } from '@phosphor-icons/react'
 import { SettingRow, SegmentedControl, Select, Toggle, Eyebrow, SecretInput } from './primitives'
 import { ProviderIcon, isKnownProviderIconId } from '@/components/ProviderIcon'
@@ -24,6 +26,9 @@ import {
   resolveProvenance,
   mergeDefaultArgs,
   draftsToStoredRows,
+  composedCommandPreview,
+  summarizeArgRows,
+  summarizeEnvRows,
   type HarnessScopeSettingsBundle
 } from './harnessSettingsLogic'
 
@@ -324,6 +329,105 @@ function HarnessRowEditor({
 }
 
 // ---------------------------------------------------------------------------
+// CollapsibleSection — shared shell for every settings panel below the
+// Launch preview (Arguments, Environment, and B3's forthcoming Models/Effort
+// sections). Renders an eyebrow-style header button with a populated summary
+// line so the page reads as "here is what is configured" without expanding
+// anything, then the panel body when open. Expansion is ephemeral UI state
+// owned by the caller (HarnessSection keeps a Set of open section keys) —
+// this component never persists it and never decides the default; that's
+// the caller's call per-section (see the `openSections` seed effect below).
+//
+// SEAM FOR B3: a new section is just another entry in this pattern — pick a
+// key, compute a summary string, decide a default-open rule, and render the
+// body. Nothing about Save/dirty-detection routes through this component;
+// each editor keeps reporting straight into the section's own draft state
+// exactly as before, so a change inside a collapsed section still flows to
+// isDirty/save() upstream. Collapsing DOES unmount the body (the
+// `open && body` shape below, matching ClaudePermissionsSection), and that
+// is safe for a specific reason worth stating rather than assuming:
+// draftArgs/draftEnv live in HarnessSection (see their useState above), and
+// HarnessRowEditor is fully controlled — it holds no state of its own. So
+// unmounting the editor discards only rendered DOM, never a pending edit,
+// and isDirty (derived from those parent-owned drafts) is unaffected by what
+// happens to be rendered. If a future section's editor ever holds its own
+// draft state, that reasoning breaks and the body must be hidden rather than
+// unmounted.
+// ---------------------------------------------------------------------------
+
+interface CollapsibleSectionProps {
+  title: string
+  summary: string
+  open: boolean
+  onToggle: () => void
+  children: React.ReactNode
+}
+
+function CollapsibleSection({
+  title,
+  summary,
+  open,
+  onToggle,
+  children
+}: CollapsibleSectionProps): React.JSX.Element {
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="w-full flex items-center gap-2 mb-3 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
+      >
+        {open ? (
+          <CaretDown size={12} weight="bold" className="text-text-secondary flex-shrink-0" />
+        ) : (
+          <CaretRight size={12} weight="bold" className="text-text-secondary flex-shrink-0" />
+        )}
+        <span className="text-xs font-medium uppercase tracking-wider text-text-secondary">
+          {title}
+        </span>
+        <span className="text-xs text-text-muted">{summary}</span>
+      </button>
+      {open && (
+        <div className="bg-surface-raised border border-border-default rounded-lg p-5">
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// LaunchPreview — a proper panel for the composed command, surfacing what
+// used to be buried inline in the harness picker (harnessCommandPreview,
+// above, still covers the PICKER's per-harness-at-shipped-defaults preview;
+// this is the separate, LIVE draft-args preview for whichever harness is
+// currently selected in the editor below). Not collapsible — unlike
+// Arguments/Environment, there's nothing to hide here; it's the single most
+// useful "what will actually run" line on the page, so it stays visible.
+// ---------------------------------------------------------------------------
+
+function LaunchPreview({
+  binary,
+  argRows
+}: {
+  binary: string
+  argRows: readonly { key: string; value?: string; enabled: boolean }[]
+}): React.JSX.Element {
+  return (
+    <div>
+      <Eyebrow className="mb-3">Launch</Eyebrow>
+      <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4 flex items-center gap-2.5">
+        <Rocket size={13} className="text-text-muted flex-shrink-0" />
+        <p className="text-xs font-mono text-text-primary overflow-x-auto whitespace-nowrap">
+          {composedCommandPreview(binary, argRows)}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // HarnessSection
 // ---------------------------------------------------------------------------
 
@@ -345,6 +449,24 @@ export function HarnessSection(): React.JSX.Element | null {
   const [draftEnv, setDraftEnv] = useState<RowDraft[]>([])
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+
+  // Which collapsible sections (Arguments/Environment today; B3 adds
+  // Models/Effort into the same set by key) are expanded. Purely ephemeral
+  // UI state — never persisted, never round-tripped through settings — so a
+  // plain useState is correct here, unlike draftArgs/draftEnv which are the
+  // save pipeline's source of truth. Seeded with a sensible default once per
+  // context change (see the effect below) and freely toggled by the user
+  // afterward via toggleSection.
+  const [openSections, setOpenSections] = useState<Set<string>>(new Set())
+
+  function toggleSection(key: string): void {
+    setOpenSections((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -454,9 +576,19 @@ export function HarnessSection(): React.JSX.Element | null {
     let cancelled = false
     Promise.resolve().then(() => {
       if (cancelled) return
-      setDraftArgs(toDrafts(mergeDefaultArgs(selectedHarness?.defaultArgs, scopeSettings.args)))
+      const mergedArgs = mergeDefaultArgs(selectedHarness?.defaultArgs, scopeSettings.args)
+      setDraftArgs(toDrafts(mergedArgs))
       setDraftEnv(toDrafts(scopeSettings.env ?? []))
       setSaveError(null)
+      // Default expansion, computed once per genuine context change (same
+      // cadence as the draft reseed above) rather than reactively — see
+      // openSections' doc comment. Arguments starts expanded only when it
+      // has at least one non-default row (a user override or an ad hoc
+      // addition); an untouched, all-defaults args list and Environment
+      // (which has no shipped defaults to hide) both start collapsed, since
+      // the populated summary line already says what's configured.
+      const hasNonDefaultArg = mergedArgs.some((r) => !r.fromDefault)
+      setOpenSections(hasNonDefaultArg ? new Set(['args']) : new Set())
     })
     return () => {
       cancelled = true
@@ -582,50 +714,70 @@ export function HarnessSection(): React.JSX.Element | null {
       ) : (
         selectedHarness && (
           <>
-            <div>
-              <Eyebrow className="mb-3">Arguments</Eyebrow>
-              <div className="bg-surface-raised border border-border-default rounded-lg p-5">
-                {scope !== 'global' && provenance.args.size > 0 && (
-                  <InheritedRowsNote
-                    scope={scope}
-                    provenance={provenance.args}
-                    rows={scopeSettings.args}
-                  />
-                )}
-                <HarnessRowEditor
-                  rows={draftArgs}
-                  onChange={setDraftArgs}
-                  keyPlaceholder="--flag"
-                  valuePlaceholder="value (optional)"
-                  keyAriaLabel="Argument flag"
-                  valueAriaLabel="Argument value"
-                  addLabel="Add argument"
-                />
-              </div>
-            </div>
+            <LaunchPreview binary={selectedHarness.binary} argRows={draftArgs} />
 
-            <div>
-              <Eyebrow className="mb-3">Environment</Eyebrow>
-              <div className="bg-surface-raised border border-border-default rounded-lg p-5">
-                {scope !== 'global' && provenance.env.size > 0 && (
-                  <InheritedRowsNote
-                    scope={scope}
-                    provenance={provenance.env}
-                    rows={scopeSettings.env}
-                  />
-                )}
-                <HarnessRowEditor
-                  rows={draftEnv}
-                  onChange={setDraftEnv}
-                  keyPlaceholder="ENV_VAR_NAME"
-                  valuePlaceholder="value"
-                  keyAriaLabel="Environment variable name"
-                  valueAriaLabel="Environment variable value"
-                  secretValues
-                  addLabel="Add variable"
+            {/* CAPABILITY GATING: each section below only renders when the
+                selected harness declares the concept it edits. Arguments/
+                Environment are universal (every HarnessDescriptor has a
+                binary and can take flags/env), so they're unconditional.
+                B3's Models/Effort sections are the intended template for a
+                gated one — e.g. `selectedHarness.curated?.model &&
+                <CollapsibleSection ...>` — HarnessSummary.curated (already
+                available here) is exactly the field to gate on: Claude
+                declares both curated.model and curated.effort today, so
+                nothing hides yet, but a harness descriptor that omits
+                `curated` entirely (or omits just one field) would make the
+                corresponding section not render at all rather than render
+                empty. */}
+
+            <CollapsibleSection
+              title="Arguments"
+              summary={summarizeArgRows(draftArgs)}
+              open={openSections.has('args')}
+              onToggle={() => toggleSection('args')}
+            >
+              {scope !== 'global' && provenance.args.size > 0 && (
+                <InheritedRowsNote
+                  scope={scope}
+                  provenance={provenance.args}
+                  rows={scopeSettings.args}
                 />
-              </div>
-            </div>
+              )}
+              <HarnessRowEditor
+                rows={draftArgs}
+                onChange={setDraftArgs}
+                keyPlaceholder="--flag"
+                valuePlaceholder="value (optional)"
+                keyAriaLabel="Argument flag"
+                valueAriaLabel="Argument value"
+                addLabel="Add argument"
+              />
+            </CollapsibleSection>
+
+            <CollapsibleSection
+              title="Environment"
+              summary={summarizeEnvRows(draftEnv)}
+              open={openSections.has('env')}
+              onToggle={() => toggleSection('env')}
+            >
+              {scope !== 'global' && provenance.env.size > 0 && (
+                <InheritedRowsNote
+                  scope={scope}
+                  provenance={provenance.env}
+                  rows={scopeSettings.env}
+                />
+              )}
+              <HarnessRowEditor
+                rows={draftEnv}
+                onChange={setDraftEnv}
+                keyPlaceholder="ENV_VAR_NAME"
+                valuePlaceholder="value"
+                keyAriaLabel="Environment variable name"
+                valueAriaLabel="Environment variable value"
+                secretValues
+                addLabel="Add variable"
+              />
+            </CollapsibleSection>
 
             <SaveBar
               isDirty={isDirty}

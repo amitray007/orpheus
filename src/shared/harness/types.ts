@@ -182,7 +182,36 @@ export type HarnessLaunch = {
 // every target harness either has them or cleanly omits them, AND Orpheus
 // reads them back for its own UI (TUI tree, CLI display, footer pickers),
 // which is what earns a concept typed status rather than being a plain row.
-export type CuratedField = { options: string[]; allowCustom: true } & (
+export type CuratedField = {
+  options: string[]
+  allowCustom: true
+  /** How (or whether) this harness can apply a NEW value to an ALREADY
+   *  RUNNING process — distinct from `flag`/`env`/`configKey`, which
+   *  describe how the value reaches the process at LAUNCH. A footer chip
+   *  that lets a user change model/effort mid-session needs to know which
+   *  of these two regimes it's in before it does anything, so this is a
+   *  required field (not optional-and-guessed-from-absence): a harness
+   *  that genuinely cannot live-apply must SAY so, not leave callers to
+   *  infer "no liveApply case, must mean append nothing" and quietly type
+   *  a would-be REPL command into a session that doesn't understand it.
+   *
+   *  `kind: 'replInject'` — the harness understands a slash-command-style
+   *  line typed straight into the running REPL, e.g. Claude's `/model
+   *  {value}`. `template` uses `{value}` as the sole interpolation point
+   *  (a literal string substitution, not a template-literal expression —
+   *  see buildLiveApplyText in ./liveApply.ts) so a caller
+   *  never hand-assembles `` `/model ${value}` `` itself and risks drifting
+   *  from what this descriptor declares. `submit` says whether the built
+   *  text should be submitted (Enter) immediately after injection, mirroring
+   *  DropdownChip.tsx's existing `runInject(text, submit, ...)` signature.
+   *
+   *  `kind: 'restartRequired'` — this harness has no live-apply path for
+   *  the concept at all; the ONLY way to make a new value take effect is to
+   *  restart the workspace's process. First-class, not the absence of a
+   *  case, so a caller's switch/if over `liveApply.kind` is exhaustive
+   *  rather than falling through an `undefined` branch nobody wrote. */
+  liveApply: { kind: 'replInject'; template: string; submit: boolean } | { kind: 'restartRequired' }
+} & (
   | { flag: string; env?: never; configKey?: never; configFlag?: never }
   | { flag?: never; env: string; configKey?: never; configFlag?: never }
   // configFlag is the carrier (Codex's `-c`), configKey the setting name.

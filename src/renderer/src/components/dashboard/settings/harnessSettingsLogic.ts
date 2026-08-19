@@ -117,22 +117,6 @@ export function resolveProvenance(scopes: HarnessScopeSettingsBundle): HarnessPr
 }
 
 // ---------------------------------------------------------------------------
-// Row enable toggle
-// ---------------------------------------------------------------------------
-
-/** Returns a new array with the row at `index` having its `enabled` flag
- *  flipped to `enabled`. Extracted (rather than an inline `rows.map(...)`
- *  at each call site) purely so the reorder/toggle/provenance trio all live
- *  in one pure, independently testable module. */
-export function setRowEnabled<T extends { enabled: boolean }>(
-  rows: readonly T[],
-  index: number,
-  enabled: boolean
-): T[] {
-  return rows.map((row, i) => (i === index ? { ...row, enabled } : row))
-}
-
-// ---------------------------------------------------------------------------
 // Harness-provided default args merge
 // ---------------------------------------------------------------------------
 
@@ -283,4 +267,63 @@ export function hasUnsavedChanges(
     .map(project)
     .join(' ')
   return loaded !== draft
+}
+
+// ---------------------------------------------------------------------------
+// Launch preview (B2 restructure — collapsible Launch panel)
+// ---------------------------------------------------------------------------
+
+/**
+ * Assembles the live "claude <flags>" command line the Launch panel shows —
+ * binary followed by every currently-ENABLED arg row, in editor order,
+ * key then value (value omitted when blank). Pure string assembly over
+ * whatever rows are passed in, same convention as HarnessSection's own
+ * (picker-only) harnessCommandPreview — this is the general form of that,
+ * usable against live draft rows (which may include harness defaults,
+ * user overrides, and in-progress edits) rather than only a harness's
+ * shipped defaults. A blank-key row (in-progress Add) is skipped, matching
+ * hasUnsavedChanges/draftsToStoredRows's "blank rows aren't real" contract.
+ */
+export function composedCommandPreview(
+  binary: string,
+  argRows: readonly { key: string; value?: string; enabled: boolean }[]
+): string {
+  const tokens: string[] = [binary]
+  for (const row of argRows) {
+    if (!row.enabled) continue
+    if (row.key.trim() === '') continue
+    tokens.push(row.key)
+    if (row.value) tokens.push(row.value)
+  }
+  return tokens.join(' ')
+}
+
+// ---------------------------------------------------------------------------
+// Section summary lines (B2 restructure — collapsible section headers)
+// ---------------------------------------------------------------------------
+
+/** "N enabled, M default" — the Arguments section's populated summary line.
+ *  `total` counts every row (blank in-progress rows excluded); `enabled`
+ *  counts rows with `enabled: true`; `fromDefault` counts rows currently
+ *  matching a harness-provided default (see mergeDefaultArgs). Returns
+ *  "No arguments" when there are none, so the summary line is never blank. */
+export function summarizeArgRows(
+  rows: readonly { key: string; enabled: boolean; fromDefault?: boolean }[]
+): string {
+  const named = rows.filter((r) => r.key.trim() !== '')
+  if (named.length === 0) return 'No arguments'
+  const enabledCount = named.filter((r) => r.enabled).length
+  const defaultCount = named.filter((r) => r.fromDefault).length
+  const parts = [`${enabledCount} enabled`]
+  if (defaultCount > 0) parts.push(`${defaultCount} default`)
+  return parts.join(', ')
+}
+
+/** "N variables" (or "No variables") — the Environment section's summary
+ *  line. Counts only named (non-blank-key) rows, matching summarizeArgRows'
+ *  and hasUnsavedChanges' "blank rows aren't real" convention. */
+export function summarizeEnvRows(rows: readonly { key: string }[]): string {
+  const count = rows.filter((r) => r.key.trim() !== '').length
+  if (count === 0) return 'No variables'
+  return `${count} variable${count === 1 ? '' : 's'}`
 }

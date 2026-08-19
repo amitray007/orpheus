@@ -60,6 +60,7 @@ import { mock } from 'bun:test'
 import type { CuratedField } from '../src/shared/harness/types.ts'
 import type { ClaudeGlobalSettings } from '../src/shared/types.ts'
 import { CLAUDE_EFFORT_VALUES, CLAUDE_MODEL_OPTIONS } from '../src/shared/types.ts'
+import { buildLiveApplyText } from '../src/shared/harness/liveApply.ts'
 import {
   buildCuratedArgs,
   buildCuratedEnv,
@@ -199,7 +200,8 @@ function baseSettings(overrides: Partial<ClaudeGlobalSettings> = {}): ClaudeGlob
   const flagField: CuratedField = {
     flag: '--model',
     options: ['opus', 'sonnet'],
-    allowCustom: true
+    allowCustom: true,
+    liveApply: { kind: 'restartRequired' }
   }
   assert.deepEqual(buildCuratedArgs(flagField, 'opus'), ['--model', 'opus'])
   assert.deepEqual(buildCuratedEnv(flagField, 'opus'), {}, 'a flag-based field must never emit env')
@@ -207,7 +209,8 @@ function baseSettings(overrides: Partial<ClaudeGlobalSettings> = {}): ClaudeGlob
   const envField: CuratedField = {
     env: 'VIBE_ACTIVE_MODEL',
     options: ['vibe-1'],
-    allowCustom: true
+    allowCustom: true,
+    liveApply: { kind: 'restartRequired' }
   }
   assert.deepEqual(buildCuratedEnv(envField, 'vibe-1'), { VIBE_ACTIVE_MODEL: 'vibe-1' })
   assert.deepEqual(
@@ -224,7 +227,12 @@ function baseSettings(overrides: Partial<ClaudeGlobalSettings> = {}): ClaudeGlob
 // ---------------------------------------------------------------------------
 
 {
-  const field: CuratedField = { flag: '--model', options: ['opus', 'sonnet'], allowCustom: true }
+  const field: CuratedField = {
+    flag: '--model',
+    options: ['opus', 'sonnet'],
+    allowCustom: true,
+    liveApply: { kind: 'restartRequired' }
+  }
   const custom = 'my-fine-tuned-model-id'
   assert.ok(!field.options.includes(custom), 'fixture sanity: custom value must not be in options')
   assert.deepEqual(
@@ -236,7 +244,8 @@ function baseSettings(overrides: Partial<ClaudeGlobalSettings> = {}): ClaudeGlob
   const envField: CuratedField = {
     env: 'VIBE_ACTIVE_MODEL',
     options: ['vibe-1'],
-    allowCustom: true
+    allowCustom: true,
+    liveApply: { kind: 'restartRequired' }
   }
   const customEnvValue = 'vibe-custom-99'
   assert.deepEqual(buildCuratedEnv(envField, customEnvValue), { VIBE_ACTIVE_MODEL: customEnvValue })
@@ -249,8 +258,18 @@ function baseSettings(overrides: Partial<ClaudeGlobalSettings> = {}): ClaudeGlob
 // ---------------------------------------------------------------------------
 
 {
-  const flagField: CuratedField = { flag: '--model', options: ['opus'], allowCustom: true }
-  const envField: CuratedField = { env: 'X', options: [], allowCustom: true }
+  const flagField: CuratedField = {
+    flag: '--model',
+    options: ['opus'],
+    allowCustom: true,
+    liveApply: { kind: 'restartRequired' }
+  }
+  const envField: CuratedField = {
+    env: 'X',
+    options: [],
+    allowCustom: true,
+    liveApply: { kind: 'restartRequired' }
+  }
 
   assert.deepEqual(buildCuratedArgs(flagField, ''), [])
   assert.deepEqual(buildCuratedEnv(envField, ''), {})
@@ -294,7 +313,8 @@ console.log(
     configFlag: '-c',
     configKey: 'model_reasoning_effort',
     options: ['low', 'medium', 'high'],
-    allowCustom: true
+    allowCustom: true,
+    liveApply: { kind: 'restartRequired' }
   }
   assert.deepEqual(
     buildCuratedArgs(configField, 'high'),
@@ -332,6 +352,11 @@ console.log(
       `${name} must be flag-based (Claude has no env-based curated concept today)`
     )
     assert.equal(field.env, undefined, `${name} must not also declare env`)
+    assert.equal(
+      field.liveApply.kind,
+      'replInject',
+      `${name}.liveApply must be a repl-injectable command — Claude's REPL understands /model and /effort`
+    )
   }
 
   // Reuse, not duplicate: CLAUDE_CURATED_MODEL.options must be the exact
@@ -432,6 +457,66 @@ console.log(
     'permission-mode must ship disabled by default — the user opts in'
   )
   console.log('✓ CLAUDE_DEFAULT_ARGS seeds --permission-mode acceptEdits, disabled by default')
+}
+
+// ---------------------------------------------------------------------------
+// 7. buildLiveApplyText (src/shared/harness/liveApply.ts) — the B1
+// (support-multi-harness) function DropdownChip.tsx's Model/Effort chips
+// call instead of hand-assembling `/model ${value}` / `/effort ${value}`
+// themselves. Asserts the BUILT text from the real function against
+// Claude's real CLAUDE_CURATED fields, plus the two other liveApply cases
+// (restartRequired, undefined field) a harness/caller can hit.
+// ---------------------------------------------------------------------------
+
+{
+  // 7a. Claude's real model/effort fields produce exactly the same strings
+  // DropdownChip.tsx hardcoded pre-refactor: `/model <v>` and `/effort <v>`,
+  // both submit:true — this is the anti-regression pin for "preserve
+  // today's behavior exactly for Claude" (no behavior change, just
+  // data-driven).
+  assert.deepEqual(
+    buildLiveApplyText(CLAUDE_CURATED.model, 'opus'),
+    { kind: 'inject', text: '/model opus', submit: true },
+    'Claude model liveApply must build exactly "/model opus", submit:true — the pre-refactor hardcoded literal'
+  )
+  assert.deepEqual(
+    buildLiveApplyText(CLAUDE_CURATED.effort, 'high'),
+    { kind: 'inject', text: '/effort high', submit: true },
+    'Claude effort liveApply must build exactly "/effort high", submit:true — the pre-refactor hardcoded literal'
+  )
+
+  // 7b. A harness that cannot live-apply signals restart, with no text.
+  const restartOnlyField: CuratedField = {
+    flag: '--model',
+    options: ['a', 'b'],
+    allowCustom: true,
+    liveApply: { kind: 'restartRequired' }
+  }
+  assert.deepEqual(
+    buildLiveApplyText(restartOnlyField, 'a'),
+    { kind: 'restartRequired' },
+    'a restartRequired field must signal restart, not build injectable text'
+  )
+
+  // 7c. No field at all (harness doesn't curate this concept) -> 'none',
+  // same degrade-to-empty convention as buildCuratedArgs/buildCuratedEnv.
+  assert.deepEqual(
+    buildLiveApplyText(undefined, 'opus'),
+    { kind: 'none' },
+    'an undefined field must degrade to none rather than throwing'
+  )
+
+  // 7d. An empty value -> 'none', even for an otherwise-injectable field —
+  // there is nothing meaningful to type into a REPL for "no value chosen."
+  assert.deepEqual(
+    buildLiveApplyText(CLAUDE_CURATED.model, ''),
+    { kind: 'none' },
+    'an empty value must degrade to none even for a replInject field'
+  )
+
+  console.log(
+    '✓ buildLiveApplyText: Claude model/effort build "/model <v>"/"/effort <v>" (submit:true), restartRequired signals no text, undefined/empty degrade to none'
+  )
 }
 
 console.log('\nAll harness-curated assertions passed.')
