@@ -46,11 +46,15 @@ const OVERLAY_KINDS_DIR = join(REPO_ROOT, 'src/renderer/src/overlay/kinds')
  * Components that render INSIDE the overlay window despite living outside
  * overlay/kinds/ — maintained explicitly (short list by design). Add to this
  * whenever a NEW shared component is imported by an overlay kind file and
- * therefore also runs in that window.
+ * therefore also runs in that window. Empty as of the "Refresh models"
+ * button's removal (support-multi-harness) — RefreshModelsButton.tsx was
+ * this list's only entry, and the entry (and the file it named) died
+ * together. Other shared components overlay kinds import today
+ * (ProviderIcon.tsx, ActivityIndicator.tsx) were never added here — this
+ * list only ever tracked a component with a KNOWN prior window.api crash,
+ * not every import an overlay kind happens to pull in.
  */
-const ADDITIONAL_OVERLAY_RENDERED_FILES = [
-  join(REPO_ROOT, 'src/renderer/src/components/RefreshModelsButton.tsx')
-]
+const ADDITIONAL_OVERLAY_RENDERED_FILES: string[] = []
 
 /**
  * Strips `//` line comments and `/* *\/` block comments — best-effort, not a
@@ -91,10 +95,10 @@ for (const file of filesToCheck) {
     !codeOnly.includes('window.api'),
     `${file} references window.api in its CODE (not just a comment) — overlay-rendered code has NO ` +
       "window.api at runtime (the overlay window's preload, src/preload/overlay.ts, exposes ONLY " +
-      'window.overlayApi). This is exactly the crash class fixed in model-routing unit 12 ' +
-      '(RefreshModelsButton.tsx used to call window.api.routingProxy.* directly and crashed on the ' +
-      'first real click). Move the window.api call to the MAIN-window "smart half" that owns this ' +
-      'popover (mirroring useRefreshModelsController.ts) and thread the result down as a prop instead.'
+      'window.overlayApi). This is exactly the crash class fixed in model-routing unit 12 (the ' +
+      'now-removed RefreshModelsButton.tsx used to call window.api.routingProxy.* directly and ' +
+      'crashed on the first real click). Move the window.api call to the MAIN-window "smart half" ' +
+      'that owns this popover and thread the result down as a prop instead.'
   )
   checked++
 }
@@ -102,8 +106,8 @@ for (const file of filesToCheck) {
 assert.ok(checked > 0, 'sanity: this guard must actually check at least one file')
 
 console.log(
-  `✓ ${checked} overlay-rendered file(s) checked (every file under src/renderer/src/overlay/kinds/**, ` +
-    'plus RefreshModelsButton.tsx) — none reference window.api in code'
+  `✓ ${checked} overlay-rendered file(s) checked (every file under src/renderer/src/overlay/kinds/**) ` +
+    '— none reference window.api in code'
 )
 
 console.log('\nAll overlay window.api purity assertions passed.')

@@ -180,11 +180,6 @@ interface ChipGroupedDropdownHandlers {
   onHoverProvider: (providerId: string) => void
   onEnterSubmenu: () => void
   onLeaveSubmenu: () => void
-  /** The pinned "Refresh models" button was clicked (model-routing unit 12)
-   *  — routed here rather than handled in the overlay window itself because
-   *  the overlay has no window.api access (see RefreshModelsButton.tsx's own
-   *  header comment). Does NOT settle the popover's promise. */
-  onRefresh: () => void
 }
 
 const chipGroupedDropdownSettlers = new Map<string, ChipGroupedDropdownHandlers>()
@@ -238,11 +233,6 @@ export interface NewWorkspaceMenuHandlers {
   /** The pointer left the model flyout submenu — arms the same close-delay
    *  timer leaving the provider row would arm. */
   onLeaveSubmenu: () => void
-  /** The pinned "Refresh models" row was clicked (model-routing unit 12) —
-   *  routed here rather than handled in the overlay window itself, which has
-   *  no window.api access (see RefreshModelsButton.tsx's own header
-   *  comment). */
-  onRefresh: () => void
 }
 
 const newWorkspaceMenuHandlers = new Map<string, NewWorkspaceMenuHandlers>()
@@ -294,9 +284,6 @@ function dispatchChipGroupedDropdownEvent(e: OverlayEvent): boolean {
       break
     case 'leaveSubmenu':
       handlers.onLeaveSubmenu()
-      break
-    case 'refresh':
-      handlers.onRefresh()
       break
     case 'cancel':
       handlers.onCancel()
@@ -400,9 +387,6 @@ function dispatchNewWorkspaceMenuEvent(e: OverlayEvent): boolean {
       break
     case 'leaveSubmenu':
       menuHandlers.onLeaveSubmenu()
-      break
-    case 'refresh':
-      menuHandlers.onRefresh()
       break
     case 'exited':
       newWorkspaceMenuHandlers.delete(e.overlayId)
@@ -973,10 +957,6 @@ export interface ChipGroupedDropdownHoverHandlers {
   /** The pointer left the flyout submenu (or the provider row list) — arms
    *  the same close-delay timer leaving the other side would arm. */
   onLeaveSubmenu: () => void
-  /** The pinned "Refresh models" footer was clicked (model-routing unit 12)
-   *  — does NOT settle the popover's promise. The call site (DropdownChip.tsx)
-   *  wires this to useRefreshModelsController's onRefresh. */
-  onRefresh: () => void
 }
 
 export function showChipGroupedDropdown(
@@ -1005,8 +985,7 @@ export function showChipGroupedDropdown(
       onCancel: () => settle(null),
       onHoverProvider: hoverHandlers.onHoverProvider,
       onEnterSubmenu: hoverHandlers.onEnterSubmenu,
-      onLeaveSubmenu: hoverHandlers.onLeaveSubmenu,
-      onRefresh: hoverHandlers.onRefresh
+      onLeaveSubmenu: hoverHandlers.onLeaveSubmenu
     })
     chipGroupedDropdownForceCancel.set(id, () => settle(null))
 

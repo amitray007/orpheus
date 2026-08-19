@@ -4,7 +4,6 @@ import { CaretRight, GitBranch, House, ArrowElbowDownLeft, SpinnerGap } from '@p
 import type { NewWorkspaceMenuProps } from '@shared/types'
 import type { OverlayKindProps } from '../registry'
 import { ProviderIcon } from '../../components/ProviderIcon'
-import { RefreshModelsButton } from '../../components/RefreshModelsButton'
 import { labelFor } from '../../lib/modelPickerOptions'
 import {
   computeSubmenuSide,
@@ -514,8 +513,6 @@ export function NewWorkspaceMenu({ props, emit }: OverlayKindProps): React.JSX.E
     branchExists,
     branchCreating,
     branchError,
-    routingProxyEnabled,
-    refreshState,
     harnesses,
     selectedHarnessId
   } = data
@@ -825,21 +822,6 @@ export function NewWorkspaceMenu({ props, emit }: OverlayKindProps): React.JSX.E
               />
             ))}
           </div>
-
-          {/* Pinned "Refresh models" row (model-routing unit 12) — placed
-              ABOVE the Local/Worktree divider so it never collides with the
-              isolation toggle/branch panel below it. Only shown when routing
-              is actually enabled (a Claude-only provider list has nothing to
-              refresh — RefreshModelsButton's own doc comment). `onRefresh`
-              emits 'refresh' back to the call site
-              (components/dashboard/NewWorkspaceMenu.tsx) — this component has
-              no window.api access of its own (see RefreshModelsButton.tsx's
-              own header comment). */}
-          {routingProxyEnabled && (
-            <div className="px-2 pt-1.5 mt-1 border-t border-border-default/60">
-              <RefreshModelsButton state={refreshState} onRefresh={() => emit('refresh')} />
-            </div>
-          )}
 
           {/* Local / Worktree — isolation SELECTORS only (rule 4's
               inversion). Neither creates; both just toggle `isolation`. */}

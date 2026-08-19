@@ -2562,31 +2562,6 @@ export type ChipDropdownGroup = {
   models: ChipDropdownItem[]
 }
 
-/**
- * Serializable display state for the pinned "Refresh models" button
- * (RefreshModelsButton.tsx, model-routing unit 12) — lives in shared/types.ts
- * (not the renderer-only lib it's driven from) because it crosses the
- * overlay props/patch boundary: the MAIN window computes it (via
- * useRefreshModelsController.ts, which owns the actual window.api calls and
- * the reduceRefreshButtonState state machine) and pushes it down into the
- * overlay window as a plain prop, exactly like `groups`/`routingProxyEnabled`
- * below. RefreshModelsButton.tsx itself is a PURE render component — it
- * lives INSIDE the overlay's own separate BrowserWindow (see that file's own
- * header comment for the crash this fixes: that window's preload
- * (src/preload/overlay.ts) exposes ONLY `window.overlayApi`, never
- * `window.api` — a component rendered there can never call window.api.* or
- * any lib function that does, directly or transitively).
- */
-export interface RefreshButtonProgress {
-  done: number
-  total: number
-}
-
-export type RefreshButtonState =
-  | { kind: 'idle' }
-  | { kind: 'refreshing'; progress: RefreshButtonProgress | null }
-  | { kind: 'updated' }
-
 /** Interactive provider -> model flyout popover — opens upward from its
  *  anchor chip (same anchoring contract as ChipDropdownProps), but the
  *  top-level list is providers; picking one opens a submenu of that
@@ -2600,20 +2575,6 @@ export type ChipGroupedDropdownProps = {
    *  inside that group's model list. */
   selectedValue?: string
   title?: string
-  /** True when the routing proxy is enabled (multiple providers possible) —
-   *  gates the pinned "Refresh models" footer (RefreshModelsButton.tsx,
-   *  model-routing unit 12). A Claude-only flyout has nothing to refresh, so
-   *  this is false/undefined when routing is disabled. Threaded through as a
-   *  prop (computed by the call site via routingProxyEnabledStore.ts) rather
-   *  than the overlay kind reaching into a new IPC/store subscription
-   *  itself — same "props down" contract as `groups`. */
-  routingProxyEnabled?: boolean
-  /** The "Refresh models" button's current display state — see
-   *  RefreshButtonState's own doc comment above. Always supplied by the call
-   *  site (DropdownChip.tsx), including at open() time (`{kind:'idle'}`),
-   *  and kept in sync via the SAME overlay:update push that keeps `groups`
-   *  current while the popover is open. */
-  refreshState: RefreshButtonState
 }
 
 /** Partial props pushed via `overlay:update` as the call site's own live
@@ -2756,18 +2717,6 @@ export type NewWorkspaceMenuProps = {
   branchExists: boolean | null
   branchCreating: boolean
   branchError?: string
-  /** True when the routing proxy is enabled (multiple providers possible) —
-   *  gates the pinned "Refresh models" row (RefreshModelsButton.tsx,
-   *  model-routing unit 12), same contract as
-   *  ChipGroupedDropdownProps.routingProxyEnabled above. */
-  routingProxyEnabled?: boolean
-  /** The "Refresh models" row's current display state — see
-   *  RefreshButtonState's own doc comment (above ChipGroupedDropdownProps).
-   *  Always supplied by the call site (components/dashboard/NewWorkspaceMenu.tsx),
-   *  including at showNewWorkspaceMenu() time (`{kind:'idle'}`), and kept in
-   *  sync via the SAME updateNewWorkspaceMenu push that keeps `groups`
-   *  current while the popover is open. */
-  refreshState: RefreshButtonState
 }
 
 /** Partial props pushed via `overlay:update` — same shallow-merge contract

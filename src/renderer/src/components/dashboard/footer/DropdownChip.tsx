@@ -26,8 +26,6 @@ import {
 import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { playSound } from '../../../lib/sound'
 import { useSelectableModels, refetchSelectableModels } from '@/lib/useSelectableModels'
-import { useRoutingProxyEnabled } from '@/lib/routingProxyEnabledStore'
-import { useRefreshModelsController } from '@/lib/useRefreshModelsController'
 import { setWorkspaceModel, useWorkspaceModel } from '@/lib/workspaceModelStore'
 import { setWorkspaceEffort, useWorkspaceEffort } from '@/lib/workspaceEffortStore'
 import { buildModelDropdownItems, buildModelDropdownGroups } from '@/lib/modelPickerOptions'
@@ -323,20 +321,6 @@ export function DropdownChip({
     projectId,
     needsModelList ? effortValue : undefined
   )
-  // Gates the model flyout's pinned "Refresh models" footer (model-routing
-  // unit 12) — a Claude-only flyout (routing disabled) has nothing to
-  // refresh. Only meaningful for the model chip; harmless to read
-  // unconditionally otherwise (this hook is a cheap subscribed boolean, no
-  // IPC per-render).
-  const routingProxyEnabled = useRoutingProxyEnabled()
-  // Owns the pinned "Refresh models" footer's state machine + the real
-  // window.api calls it drives — RefreshModelsButton.tsx itself is a pure
-  // render component with no window.api access (it renders in the overlay's
-  // own separate BrowserWindow, which has none — see that file's own header
-  // comment). Only meaningful for the model chip (only it opens
-  // chipGroupedDropdown); harmless to call unconditionally otherwise, same
-  // as useSelectableModels above.
-  const { refreshState, onRefresh: handleRefreshModels } = useRefreshModelsController(modelValue)
   // isClaude lookup for the CURRENT effective model, used below to decide
   // whether a model switch is live-applicable (see onSelect's own comment).
   // A model present in the list answers from its own isClaude flag. A model
@@ -639,9 +623,7 @@ export function DropdownChip({
         {
           groups: dropdownGroups,
           selectedValue,
-          title: item.label,
-          routingProxyEnabled,
-          refreshState
+          title: item.label
         },
         {
           // Purely navigational — the kind already tracks activeProviderId
@@ -663,12 +645,7 @@ export function DropdownChip({
               // outside click already closes it. This handler exists mainly
               // to cancel the open-side of the SAME timer via clearTimer
               // above during genuine traversal.
-            }),
-          // The pinned "Refresh models" footer's click (model-routing unit
-          // 12) — routed to useRefreshModelsController's onRefresh, which
-          // owns the actual window.api calls (the overlay window itself has
-          // none — see RefreshModelsButton.tsx's own header comment).
-          onRefresh: handleRefreshModels
+            })
         },
         workspaceId
       )
@@ -684,30 +661,24 @@ export function DropdownChip({
           console.error('[DropdownChip] grouped dropdown failed', e)
         })
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- dropdownGroups/selectedValue/onSelect/submenuHoverCard/routingProxyEnabled/refreshState are recomputed/recreated fresh every render from item/workspaceId/local state; including them would churn the callback identity without changing behavior. handleRefreshModels IS explicitly listed below (not folded into that same acceptance) — its double-click guard reads the CURRENT refreshState, so a stale closure here could wrongly let a second refresh through against an out-of-date state.
-    [dropdownOverlayId, workspaceId, item.label, handleRefreshModels]
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dropdownGroups/selectedValue/onSelect/submenuHoverCard are recomputed/recreated fresh every render from item/workspaceId/local state; including them would churn the callback identity without changing behavior.
+    [dropdownOverlayId, workspaceId, item.label]
   )
 
-  // Keep the OPEN model flyout's `groups`/`routingProxyEnabled`/`refreshState`
-  // in sync with this component's own live state (model-routing unit 12) —
-  // mirrors components/dashboard/NewWorkspaceMenu.tsx's identical "keep the
-  // open popover's props in sync" effect. Without this, showChipGroupedDropdown's
-  // props (above) are a ONE-TIME snapshot taken at open() time — any later
-  // change (a background provider-health change, or the "Refresh models"
-  // button's own click, which useRefreshModelsController drives via
-  // refreshState/refetchSelectableModels) would update this component's
-  // state on its next render but never reach the already-open overlay.
-  // Gated on `open && isModelSelect` so it's a no-op for the effort/custom-
-  // dropdown chip instances (which never open a chipGroupedDropdown at all)
-  // and while the popover is closed.
+  // Keep the OPEN model flyout's `groups` in sync with this component's own
+  // live state (model-routing unit 12) — mirrors components/dashboard/
+  // NewWorkspaceMenu.tsx's identical "keep the open popover's props in
+  // sync" effect. Without this, showChipGroupedDropdown's props (above) are
+  // a ONE-TIME snapshot taken at open() time — a background provider-health
+  // change would update this component's state on its next render but
+  // never reach the already-open overlay. Gated on `open && isModelSelect`
+  // so it's a no-op for the effort/custom-dropdown chip instances (which
+  // never open a chipGroupedDropdown at all) and while the popover is
+  // closed.
   useEffect(() => {
     if (!open || !isModelSelect) return
-    updateChipGroupedDropdown(dropdownOverlayId, {
-      groups: dropdownGroups,
-      routingProxyEnabled,
-      refreshState
-    })
-  }, [open, isModelSelect, dropdownOverlayId, dropdownGroups, routingProxyEnabled, refreshState])
+    updateChipGroupedDropdown(dropdownOverlayId, { groups: dropdownGroups })
+  }, [open, isModelSelect, dropdownOverlayId, dropdownGroups])
 
   const handleClick = useCallback((): void => {
     if (!chipRef.current) return

@@ -4,7 +4,6 @@ import { Check, CaretRight } from '@phosphor-icons/react'
 import type { ChipGroupedDropdownProps, ChipDropdownGroup } from '@shared/types'
 import type { OverlayKindProps } from '../registry'
 import { ProviderIcon } from '../../components/ProviderIcon'
-import { RefreshModelsButton } from '../../components/RefreshModelsButton'
 import {
   computeSubmenuSide,
   reduceRowHover,
@@ -82,23 +81,17 @@ function FlatModelPanel({
   title,
   selectedValue,
   highlighted,
-  routingProxyEnabled,
-  refreshState,
   onRowHover,
   onRowLeave,
-  onSelect,
-  onRefresh
+  onSelect
 }: {
   group: ChipDropdownGroup
   title?: string
   selectedValue: string | undefined
   highlighted: number
-  routingProxyEnabled: boolean
-  refreshState: ChipGroupedDropdownProps['refreshState']
   onRowHover: (idx: number) => void
   onRowLeave: (idx: number) => void
   onSelect: (value: string) => void
-  onRefresh: () => void
 }): React.JSX.Element {
   return (
     <div className="w-64 flex-shrink-0 rounded-lg border border-border-default bg-surface-overlay shadow-lg flex flex-col">
@@ -135,11 +128,6 @@ function FlatModelPanel({
           })}
         </div>
       </div>
-      {routingProxyEnabled && (
-        <div className="flex-shrink-0 border-t border-border-default/60 p-1.5">
-          <RefreshModelsButton state={refreshState} onRefresh={onRefresh} />
-        </div>
-      )}
     </div>
   )
 }
@@ -268,20 +256,14 @@ function FlatModelDropdown({
   group,
   selectedValue,
   title,
-  routingProxyEnabled,
-  refreshState,
   onSelect,
-  onCancel,
-  onRefresh
+  onCancel
 }: {
   group: ChipDropdownGroup
   selectedValue: string | undefined
   title?: string
-  routingProxyEnabled: boolean
-  refreshState: ChipGroupedDropdownProps['refreshState']
   onSelect: (value: string) => void
   onCancel: () => void
-  onRefresh: () => void
 }): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -337,12 +319,9 @@ function FlatModelDropdown({
         title={title}
         selectedValue={selectedValue}
         highlighted={effectiveHighlighted}
-        routingProxyEnabled={routingProxyEnabled}
-        refreshState={refreshState}
         onRowHover={setHovered}
         onRowLeave={() => setHovered(null)}
         onSelect={onSelect}
-        onRefresh={onRefresh}
       />
     </div>
   )
@@ -356,7 +335,7 @@ function FlatModelDropdown({
  *  no further change needed here. */
 function GroupedModelPanel({ props, emit }: OverlayKindProps): React.JSX.Element {
   const data = props as unknown as ChipGroupedDropdownProps
-  const { groups, selectedValue, title, routingProxyEnabled, refreshState } = data
+  const { groups, selectedValue, title } = data
 
   // Which provider's submenu is open — starts on whichever group contains
   // the currently-selected model (so opening the chip shows the running
@@ -538,24 +517,13 @@ function GroupedModelPanel({ props, emit }: OverlayKindProps): React.JSX.Element
       // surfaces always reach the same bottom edge, so they read as one
       // coherent menu at any content height. See SubmenuPanel's max-h-80
       // comment for why the submenu itself still needs an independent
-      // scroll cap (13+ model lists) rather than also stretching. This
-      // outer box is now `flex flex-col` with TWO children — the scroll
-      // region (title + provider rows) and, when routing is enabled, a
-      // pinned footer (RefreshModelsButton, model-routing unit 12) — rather
-      // than being the single scrolling box itself; self-stretch/flex-col
-      // still make its OWN surface fill the row's height exactly as this
-      // comment describes, the split just moves where the padding/scroll
-      // cap live (see the scroll-region div immediately below).
+      // scroll cap (13+ model lists) rather than also stretching.
       className="w-64 flex-shrink-0 self-stretch rounded-lg border border-border-default bg-surface-overlay shadow-lg flex flex-col"
     >
-      {/* Scroll region — title + provider rows. `min-h-0` is required for a
-          flex child's max-h/overflow to actually cap it (a flex item's
-          default min-height is `auto`, i.e. "at least as tall as my
-          content", which silently defeats max-h-80 without this). Capped at
-          the SAME max-h-80 the model submenu already uses (SubmenuPanel,
-          above) so a long provider list scrolls instead of growing the
-          popover unboundedly, while the footer below stays pinned and never
-          scrolls with it. */}
+      {/* `min-h-0` is required for a flex child's max-h/overflow to
+          actually cap it (a flex item's default min-height is `auto`, i.e.
+          "at least as tall as my content", which silently defeats
+          max-h-80 without this). */}
       <div className="flex-1 min-h-0 overflow-y-auto max-h-80 p-1.5 flex flex-col justify-start gap-0.5">
         {title && (
           <span className="text-xs font-medium text-text-muted uppercase tracking-wider px-1.5 pt-0.5 pb-1">
@@ -608,19 +576,6 @@ function GroupedModelPanel({ props, emit }: OverlayKindProps): React.JSX.Element
           ))}
         </div>
       </div>
-      {/* Pinned footer — NEVER scrolls with the provider list above (see the
-          scroll-region div's own comment). Only shown when routing is
-          actually enabled (multiple providers possible) — a Claude-only
-          flyout has nothing to refresh (RefreshModelsButton's own doc
-          comment). `onRefresh` emits 'refresh' back to the call site
-          (DropdownChip.tsx) rather than touching window.api itself — this
-          component (like every other kind in this file) has no access to it;
-          see RefreshModelsButton.tsx's own header comment for why. */}
-      {routingProxyEnabled && (
-        <div className="flex-shrink-0 border-t border-border-default/60 p-1.5">
-          <RefreshModelsButton state={refreshState} onRefresh={() => emit('refresh')} />
-        </div>
-      )}
     </div>
   )
 
@@ -715,7 +670,7 @@ function GroupedModelPanel({ props, emit }: OverlayKindProps): React.JSX.Element
  */
 export function ChipGroupedDropdown(overlayProps: OverlayKindProps): React.JSX.Element {
   const data = overlayProps.props as unknown as ChipGroupedDropdownProps
-  const { groups, selectedValue, title, routingProxyEnabled, refreshState } = data
+  const { groups, selectedValue, title } = data
   const { emit } = overlayProps
 
   if (groups.length <= 1) {
@@ -725,11 +680,8 @@ export function ChipGroupedDropdown(overlayProps: OverlayKindProps): React.JSX.E
         group={group}
         selectedValue={selectedValue}
         title={title}
-        routingProxyEnabled={routingProxyEnabled ?? false}
-        refreshState={refreshState}
         onSelect={(value) => emit('select', { value })}
         onCancel={() => emit('cancel')}
-        onRefresh={() => emit('refresh')}
       />
     )
   }
