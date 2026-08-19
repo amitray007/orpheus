@@ -57,6 +57,40 @@ export function moveRow<T>(rows: readonly T[], index: number, direction: 'up' | 
   return next
 }
 
+/**
+ * Moves the item at index `from` so it ends up at index `to` IN THE
+ * RESULTING array — i.e. `to` is a post-move/"final index" coordinate, not
+ * an index into the pre-move `rows`. This is the arbitrary-distance sibling
+ * of `moveRow` (adjacent-swap only): drag-to-reorder needs to move item 8 to
+ * position 1 in one call, not seven adjacent swaps.
+ *
+ * Implementation is the standard splice-out/splice-in, which already
+ * satisfies the "final index" contract with no extra +/-1 adjustment: once
+ * the source item is removed, every element originally after `from` shifts
+ * left by one, so re-inserting at `to` (unadjusted) lands it at `to` in the
+ * post-removal array — which IS the final array, since insertion is the last
+ * step. Callers that derive `to` from an id/value lookup plus a before/after
+ * drop position (see OrpheusFooterSection.tsx's onDrop) must resolve that to
+ * a final index themselves before calling this — this function does not
+ * re-derive it and does not know about drop position.
+ *
+ * Same no-op conventions as `moveRow`: returns a new array (never mutates
+ * `rows`), and an out-of-range `from` or `to` (negative or >= length) is a
+ * safe no-op that returns an equivalent copy rather than throwing.
+ * `from === to` is also a no-op (splice-out-then-back-in at the same index
+ * reproduces the original order, but this is short-circuited explicitly
+ * rather than relied upon).
+ */
+export function moveRowTo<T>(rows: readonly T[], from: number, to: number): T[] {
+  const next = [...rows]
+  if (from < 0 || from >= next.length) return next
+  if (to < 0 || to >= next.length) return next
+  if (from === to) return next
+  const [item] = next.splice(from, 1)
+  next.splice(to, 0, item)
+  return next
+}
+
 // ---------------------------------------------------------------------------
 // Inherited-scope provenance
 // ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ import {
   isSecretLikeKey,
   hasUnsavedChanges,
   moveRow,
+  moveRowTo,
   resolveProvenance,
   mergeDefaultArgs,
   draftsToStoredRows,
@@ -336,6 +337,33 @@ function HarnessRowEditor({
 }
 
 // ---------------------------------------------------------------------------
+// DragHandle — small 3-line grip icon, mirrors OrpheusFooterSection.tsx's
+// DragHandle() exactly (same viewBox/rects/text-text-muted styling). Kept as
+// a local duplicate rather than extracted to primitives.tsx: it's a single
+// ~15-line SVG function, well under jscpd's 2.4% duplication threshold, and
+// the two call sites (footer action rows vs. curated-option rows) are close
+// enough in spirit but distant enough in file that sharing isn't obviously
+// worth a new cross-file dependency — see CLAUDE.md's note on this repo
+// tolerating small acceptable duplication.
+// ---------------------------------------------------------------------------
+function DragHandle(): React.JSX.Element {
+  return (
+    <svg
+      width="10"
+      height="10"
+      viewBox="0 0 10 10"
+      fill="currentColor"
+      aria-hidden="true"
+      className="text-text-muted"
+    >
+      <rect y="1.5" width="10" height="1.2" rx="0.6" />
+      <rect y="4.4" width="10" height="1.2" rx="0.6" />
+      <rect y="7.3" width="10" height="1.2" rx="0.6" />
+    </svg>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // CuratedOptionsEditor — the Models/Effort option-list editor (B3,
 // support-multi-harness). Edits HarnessSettings.curatedOptions.model/.effort
 // (an {add,hide,order} overlay onto CuratedField.options — see
@@ -350,6 +378,17 @@ function HarnessRowEditor({
 // (HarnessSection) owns draftModelRows/draftEffortRows exactly like it owns
 // draftArgs/draftEnv, which is what keeps the SEAM comment's "collapsing
 // unmounts safely" invariant true for these sections too.
+//
+// DRAG-TO-REORDER (mouse) is the ONLY reorder affordance here — no up/down
+// buttons, matching OrpheusFooterSection.tsx's ActionRow precedent exactly
+// (dragValue/dropTargetValue/dropPos state, opacity-40 while dragging, a 2px
+// accent border on the hovered drop edge). Rows here are keyed by
+// `row.value` (not an opaque id), so drag state tracks `value` instead of
+// `id`. Mouse-only reorder is an accepted, pre-existing limitation shared
+// with footer actions, not a new regression. That drag state
+// (dragValue/dropTargetValue/dropPos) is EPHEMERAL UI-only state, unlike row
+// order itself — it never substitutes for the `rows` prop and is cleared on
+// every drop/dragend.
 // ---------------------------------------------------------------------------
 
 interface CuratedOptionsEditorProps {
@@ -367,16 +406,17 @@ function CuratedOptionsEditor({
 }: CuratedOptionsEditorProps): React.JSX.Element {
   const [newValue, setNewValue] = useState('')
 
+  // Drag-reorder state — ephemeral, UI-only (see header comment above).
+  const [dragValue, setDragValue] = useState<string | null>(null)
+  const [dropTargetValue, setDropTargetValue] = useState<string | null>(null)
+  const [dropPos, setDropPos] = useState<'before' | 'after'>('before')
+
   function toggleHidden(idx: number): void {
     onChange(rows.map((r, i) => (i === idx ? { ...r, hidden: !r.hidden } : r)))
   }
 
   function removeRow(idx: number): void {
     onChange(rows.filter((_, i) => i !== idx))
-  }
-
-  function move(idx: number, direction: 'up' | 'down'): void {
-    onChange(moveRow(rows, idx, direction))
   }
 
   function addValue(): void {
@@ -392,30 +432,76 @@ function CuratedOptionsEditor({
     setNewValue('')
   }
 
+  function handleDragStart(e: React.DragEvent<HTMLDivElement>, value: string): void {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', value)
+    setDragValue(value)
+  }
+
+  function handleDragOver(e: React.DragEvent<HTMLDivElement>, value: string): void {
+    if (!dragValue || dragValue === value) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    const rect = e.currentTarget.getBoundingClientRect()
+    const isAbove = e.clientY < rect.top + rect.height / 2
+    setDropTargetValue(value)
+    setDropPos(isAbove ? 'before' : 'after')
+  }
+
+  // toIdx is computed as OrpheusFooterSection.tsx computes its target index
+  // (a value lookup in the PRE-splice array, +1 when dropping after), then
+  // adjusted once more here so it lands as the FINAL index moveRowTo expects
+  // — moveRowTo's own contract is "to is where the item ends up in the
+  // result", and once `from` is spliced out, every index at or after `from`
+  // shifts left by one. So when dragging downward (fromIdx < rawToIdx) the
+  // pre-splice target must be decremented by one to become the correct final
+  // index; dragging upward (fromIdx > rawToIdx) needs no adjustment, since
+  // nothing before `from` shifts when it's removed. Concretely: dragging row
+  // 0 to "after" the row at index 3 in a 5-row list computes rawToIdx = 4,
+  // which is >= fromIdx (0), so it's decremented to final index 3 — matching
+  // "row 0 lands at final index 3", not 4.
+  function handleDrop(e: React.DragEvent<HTMLDivElement>, targetValue: string): void {
+    e.preventDefault()
+    setDragValue(null)
+    setDropTargetValue(null)
+    if (!dragValue || dragValue === targetValue) return
+    const fromIdx = rows.findIndex((r) => r.value === dragValue)
+    if (fromIdx === -1) return
+    let rawToIdx = rows.findIndex((r) => r.value === targetValue)
+    if (rawToIdx === -1) return
+    if (dropPos === 'after') rawToIdx += 1
+    const toIdx = rawToIdx > fromIdx ? rawToIdx - 1 : rawToIdx
+    onChange(moveRowTo(rows, fromIdx, toIdx))
+  }
+
+  function handleDragEnd(): void {
+    setDragValue(null)
+    setDropTargetValue(null)
+  }
+
   return (
     <div className="flex flex-col gap-2">
       {rows.map((row, idx) => (
-        <div key={row.value} className="flex items-center gap-1.5">
-          <div className="flex flex-col gap-0.5 flex-shrink-0">
-            <button
-              type="button"
-              onClick={() => move(idx, 'up')}
-              disabled={idx === 0}
-              aria-label="Move up"
-              className="w-4 h-2.5 flex items-center justify-center text-text-muted hover:text-text-primary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              <CaretUp size={9} weight="bold" />
-            </button>
-            <button
-              type="button"
-              onClick={() => move(idx, 'down')}
-              disabled={idx === rows.length - 1}
-              aria-label="Move down"
-              className="w-4 h-2.5 flex items-center justify-center text-text-muted hover:text-text-primary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              <CaretDown size={9} weight="bold" />
-            </button>
-          </div>
+        <div
+          key={row.value}
+          draggable
+          onDragStart={(e) => handleDragStart(e, row.value)}
+          onDragOver={(e) => handleDragOver(e, row.value)}
+          onDrop={(e) => handleDrop(e, row.value)}
+          onDragEnd={handleDragEnd}
+          className={[
+            'flex items-center gap-1.5 rounded transition-colors duration-100',
+            dragValue === row.value ? 'opacity-40' : '',
+            dropTargetValue === row.value && dropPos === 'before'
+              ? 'border-t-2 border-accent'
+              : dropTargetValue === row.value && dropPos === 'after'
+                ? 'border-b-2 border-accent'
+                : ''
+          ].join(' ')}
+        >
+          <span className="flex-shrink-0 cursor-grab active:cursor-grabbing">
+            <DragHandle />
+          </span>
           <Toggle
             value={!row.hidden}
             onChange={() => toggleHidden(idx)}

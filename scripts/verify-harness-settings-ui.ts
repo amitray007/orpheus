@@ -25,6 +25,7 @@ import {
   isSecretLikeKey,
   hasUnsavedChanges,
   moveRow,
+  moveRowTo,
   resolveProvenance,
   mergeDefaultArgs,
   draftsToStoredRows,
@@ -98,6 +99,91 @@ assert.deepEqual(moveRow(rows, -1, 'down'), ['a', 'b', 'c'])
 assert.deepEqual(rows, ['a', 'b', 'c'])
 
 console.log('✓ moveRow: reorders correctly, boundary/out-of-range no-ops confirmed, no mutation')
+
+// ---------------------------------------------------------------------------
+// moveRowTo
+//
+// `to` is a FINAL index in the resulting array, not a pre-splice index —
+// see moveRowTo's own doc comment in harnessSettingsLogic.ts. The last case
+// below mirrors the actual UI call shape in CuratedOptionsEditor's onDrop:
+// dragging row 0 to drop "after" the row at (pre-splice) index 3 in a 5-row
+// list must land row 0 at FINAL index 3, not 4 — the component adjusts its
+// raw drop-target index down by one before calling moveRowTo precisely to
+// hit this contract, so this assertion pins that down unambiguously.
+// ---------------------------------------------------------------------------
+
+const rows4 = ['a', 'b', 'c', 'd']
+
+// Moving down (index 0 to final index 2 in a 4-item list).
+assert.deepEqual(moveRowTo(rows4, 0, 2), ['b', 'c', 'a', 'd'])
+// Moving up (index 3 to final index 0).
+assert.deepEqual(moveRowTo(rows4, 3, 0), ['d', 'a', 'b', 'c'])
+// Moving to the first position (from the middle).
+assert.deepEqual(moveRowTo(rows4, 2, 0), ['c', 'a', 'b', 'd'])
+// Moving to the last position (from the middle).
+assert.deepEqual(moveRowTo(rows4, 1, 3), ['a', 'c', 'd', 'b'])
+// No-op move to the same index.
+assert.deepEqual(moveRowTo(rows4, 2, 2), ['a', 'b', 'c', 'd'])
+// Out-of-range `from` (negative and >= length) — safe no-op, not a throw.
+assert.deepEqual(moveRowTo(rows4, -1, 2), ['a', 'b', 'c', 'd'])
+assert.deepEqual(moveRowTo(rows4, 4, 2), ['a', 'b', 'c', 'd'])
+// Out-of-range `to` (negative and >= length) — safe no-op, not a throw.
+assert.deepEqual(moveRowTo(rows4, 1, -1), ['a', 'b', 'c', 'd'])
+assert.deepEqual(moveRowTo(rows4, 1, 4), ['a', 'b', 'c', 'd'])
+// Original array is never mutated.
+assert.deepEqual(rows4, ['a', 'b', 'c', 'd'])
+
+// Named cases mirroring real drag interactions in CuratedOptionsEditor:
+// bottom-to-top is the literal case a user complained about (dragging item 8
+// to position 1 must reach the top after ONE drag, not require repeated
+// adjacent nudges), plus its top-to-bottom mirror and a plain adjacent-down
+// move.
+assert.deepEqual(
+  moveRowTo(['a', 'b', 'c', 'd'], 3, 0),
+  ['d', 'a', 'b', 'c'],
+  'bottom-to-top: dragging the last row to the first position must reach the top in one move'
+)
+assert.deepEqual(
+  moveRowTo(['a', 'b', 'c', 'd'], 0, 3),
+  ['b', 'c', 'd', 'a'],
+  'top-to-bottom: dragging the first row to the last position must reach the bottom in one move'
+)
+assert.deepEqual(
+  moveRowTo(['a', 'b', 'c', 'd'], 0, 1),
+  ['b', 'a', 'c', 'd'],
+  'adjacent-down: a single-step move behaves like a simple swap'
+)
+
+// EXPLICIT input-array-not-mutated assertion. The above `rows`/`rows4`/
+// `rows5` re-assertions after use are a light signal, but none of them
+// actually PROVE non-mutation on their own merit — a reviewer flagged this
+// as dangerous: `moveRowTo` copies before splicing (`const next = [...rows]`)
+// today, but a future refactor as innocent-looking as `rows as T[]` would
+// silently mutate the caller's array in place, and nothing above catches it.
+// draftModelRows/draftEffortRows in HarnessSection.tsx are the loaded-
+// baseline-vs-draft dirty-check inputs, so an in-place mutation of the input
+// array there could make Save silently drop a user's reorder. This assertion
+// exists specifically to catch that regression directly, independent of any
+// return-value check.
+{
+  const beforeMutationCheck = ['a', 'b', 'c', 'd']
+  const snapshot = [...beforeMutationCheck]
+  moveRowTo(beforeMutationCheck, 3, 0)
+  assert.deepEqual(beforeMutationCheck, snapshot, 'moveRowTo must not mutate its input array')
+}
+
+// Mirrors the actual UI call shape: dragging row 0 to drop "after" the row
+// at pre-splice index 3 in a 5-row list. CuratedOptionsEditor's onDrop
+// computes rawToIdx = 3 (target's pre-splice index) + 1 (dropPos==='after')
+// = 4, then — since rawToIdx(4) > fromIdx(0) — decrements to final index 3
+// before calling moveRowTo. So the call moveRowTo(rows5, 0, 3) must land
+// row 0 at final index 3, not 4.
+const rows5 = ['a', 'b', 'c', 'd', 'e']
+assert.deepEqual(moveRowTo(rows5, 0, 3), ['b', 'c', 'd', 'a', 'e'])
+
+console.log(
+  '✓ moveRowTo: reorders to an arbitrary final index (up/down/first/last), same-index and out-of-range no-ops confirmed, no mutation, UI drop-shape case confirmed'
+)
 
 // ---------------------------------------------------------------------------
 // resolveProvenance
