@@ -20,7 +20,7 @@ interface ProjectViewProps {
   workspaces: WorkspaceRecord[] | null
   onRequestRemove: () => void
   onSelectWorkspace: (workspaceId: string) => void
-  onAddWorkspace: (projectId: string, modelId?: string) => void | Promise<void>
+  onAddWorkspace: (projectId: string, modelId?: string, harnessId?: string) => void | Promise<void>
   onRenameWorkspace: (
     workspaceId: string,
     projectId: string,
@@ -118,7 +118,7 @@ export function ProjectView({
         lastActivityAt={lastActivityAt}
         overrideCount={overrideCount}
         workspaceDefaultName={nextWorkspaceName(activeWorkspaces)}
-        onNewWorkspace={(modelId) => onAddWorkspace(project.id, modelId)}
+        onNewWorkspace={(modelId, harnessId) => onAddWorkspace(project.id, modelId, harnessId)}
         onWorktreeCreated={(ws) => onSelectWorkspace(ws.id)}
         onOpenSettings={() => setSettingsOpen(true)}
         onRequestRemove={onRequestRemove}

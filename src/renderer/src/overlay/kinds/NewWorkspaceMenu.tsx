@@ -272,6 +272,62 @@ function IsolationRow({
   )
 }
 
+/** Harness picker row (support-multi-harness C1) — a compact chip row,
+ *  NOT a reuse of settings/HarnessSection.tsx's card-style HarnessPicker
+ *  (extracted to components/HarnessPicker.tsx): that picker's full-width
+ *  "[icon] [Name] ... [command preview]" rows suit a dedicated settings
+ *  panel, not this popover's tight isolation-toggle real estate. Rendered
+ *  ONLY when more than one harness is registered — see
+ *  NewWorkspaceMenuProps.harnesses' own doc comment; with today's single
+ *  Claude descriptor this component never mounts at all. Selecting a
+ *  harness is a pure SELECTION step (same rule 4 discipline as
+ *  IsolationRow) — it never itself creates. */
+function HarnessRow({
+  harnesses,
+  selectedHarnessId,
+  onPick
+}: {
+  harnesses: NewWorkspaceMenuProps['harnesses']
+  selectedHarnessId: string
+  onPick: (harnessId: string) => void
+}): React.JSX.Element | null {
+  if (harnesses.length <= 1) return null
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Harness"
+      className="flex items-center gap-1.5 px-2 pt-1.5 mt-1 border-t border-border-default/60 overflow-x-auto"
+    >
+      {harnesses.map((harness) => {
+        const selected = harness.id === selectedHarnessId
+        return (
+          <button
+            key={harness.id}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            onClick={(e) => {
+              e.stopPropagation()
+              onPick(harness.id)
+            }}
+            aria-pressed={selected}
+            title={harness.label}
+            className={[
+              'flex-shrink-0 flex items-center gap-1.5 text-xs px-2 py-1.5 rounded-md border font-medium transition-colors duration-100 cursor-pointer',
+              selected
+                ? 'bg-accent/15 border-accent/30 text-text-primary'
+                : 'border-border-default text-text-primary hover:bg-surface-raised'
+            ].join(' ')}
+          >
+            <ProviderIcon providerId={harness.icon ?? harness.id} size={12} />
+            <span className="truncate max-w-[8rem]">{harness.label}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function BranchPanel({
   branchValue,
   branchExists,
@@ -459,7 +515,9 @@ export function NewWorkspaceMenu({ props, emit }: OverlayKindProps): React.JSX.E
     branchCreating,
     branchError,
     routingProxyEnabled,
-    refreshState
+    refreshState,
+    harnesses,
+    selectedHarnessId
   } = data
 
   // Local highlighted-row index for KEYBOARD nav within whichever panel has
@@ -789,6 +847,12 @@ export function NewWorkspaceMenu({ props, emit }: OverlayKindProps): React.JSX.E
             isolation={isolation}
             modes={modes}
             onPick={(mode) => emit('pickIsolation', { isolation: mode })}
+          />
+
+          <HarnessRow
+            harnesses={harnesses}
+            selectedHarnessId={selectedHarnessId}
+            onPick={(harnessId) => emit('pickHarness', { harnessId })}
           />
 
           {isolation === 'worktree' && (

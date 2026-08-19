@@ -368,7 +368,8 @@ export class WorkspaceOrchestrationService {
           forkedFromConversationId:
             input.fork === true ? (parent?.claudeConversationId ?? null) : null,
           worktreeParentCwd,
-          worktreeBranch: branch
+          worktreeBranch: branch,
+          harnessId: input.harnessId
         })
       } catch {
         effects.push(receipt('db.write', 'failed', workspaceId, undefined, 'Effect failed.'))

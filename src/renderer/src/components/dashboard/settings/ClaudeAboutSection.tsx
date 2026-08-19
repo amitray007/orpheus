@@ -13,12 +13,14 @@ export function ClaudeAboutSection(): React.JSX.Element {
   const [claudePath, setClaudePath] = useState<string | null>(null)
 
   useEffect(() => {
-    // Doctor IPC already runs `claude --version` and `which claude`; reuse it.
+    // Doctor IPC already runs `claude --version` and `which claude` (as one
+    // entry in its per-harness list); reuse it rather than a Claude-only call.
     window.api.doctor
       .check()
       .then((result) => {
-        setClaudeVersion(result.claudeVersion)
-        setClaudePath(result.claudePath)
+        const claude = result.harnesses.find((h) => h.id === 'claude')
+        setClaudeVersion(claude?.version ?? null)
+        setClaudePath(claude?.path ?? null)
       })
       .catch(console.error)
   }, [])

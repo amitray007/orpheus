@@ -3,10 +3,11 @@
 //
 // System/diagnostics IPC — moved verbatim out of index.ts (STR-1).
 //
-// NOTE: doctor:check is deliberately NOT here. It depends on checkClaude(),
-// a private index.ts function whose cache (cachedClaudeCheck) is invalidated
-// by a mainWindow 'focus' listener inside createWindow() — genuine index.ts
-// state, not a clean self-contained handler. Left in index.ts.
+// NOTE: doctor:check is deliberately NOT here. It depends on
+// checkAllHarnesses()/checkHarnessBinary(), private index.ts functions whose
+// cache (cachedHarnessChecks) is invalidated by a mainWindow 'focus' listener
+// inside createWindow() — genuine index.ts state, not a clean self-contained
+// handler. Left in index.ts.
 // ---------------------------------------------------------------------------
 
 import { app, Notification } from 'electron'

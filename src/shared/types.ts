@@ -1,4 +1,9 @@
 import type { HarnessId, HarnessCapabilities, CuratedField, HarnessArgRow } from './harness/types'
+// Re-exported so src/shared/ipc.ts (which imports ONLY from this file, never
+// from ./harness/types directly — see that file's own header comment) can
+// reference HarnessId in channel signatures, e.g. workspaces:create's
+// optional harnessId (support-multi-harness C1).
+export type { HarnessId }
 
 // ---------------------------------------------------------------------------
 // Updates
@@ -299,10 +304,26 @@ export type GitCommit = {
   deletions: number
 }
 
+// Per-harness install-check result. One entry per HARNESSES descriptor (see
+// src/main/harness/registry.ts) — the doctor no longer hardcodes Claude.
+// `id`/`label` mirror the descriptor so the renderer can show install
+// guidance for a harness without importing main-process code.
+export type HarnessDoctorEntry = {
+  id: string
+  label: string
+  installed: boolean
+  version: string | null // e.g. "1.2.3" extracted from `<binary> --version`
+  path: string | null // e.g. "/usr/local/bin/claude"
+}
+
+// Doctor result across every registered harness. Kept as an array (not a
+// map) so it round-trips through JSON/IPC without key-order surprises and
+// stays trivially iterable for "list every harness's status" UI. Use
+// isAnyHarnessInstalled/isHarnessInstalled (src/shared/harness/doctor.ts)
+// rather than reaching into `harnesses` by hand — those are the two
+// questions this type exists to answer.
 export type DoctorResult = {
-  claudeInstalled: boolean
-  claudeVersion: string | null // e.g. "1.2.3" extracted from `claude --version`
-  claudePath: string | null // e.g. "/usr/local/bin/claude"
+  harnesses: HarnessDoctorEntry[]
 }
 
 // ---------------------------------------------------------------------------
@@ -383,8 +404,10 @@ export type WorkspaceOpenRequest =
     }>
 
 /** Params for creating a worktree-backed workspace (v64). When `branch` is
- *  omitted/blank, the handler defaults it to `worktree-<slug-of-name>`. */
-export type CreateWorktreeParams = { name: string; branch?: string }
+ *  omitted/blank, the handler defaults it to `worktree-<slug-of-name>`.
+ *  `harnessId` (support-multi-harness C1) picks which harness the new
+ *  workspace runs; omitted defaults to Claude, same as workspaces:create. */
+export type CreateWorktreeParams = { name: string; branch?: string; harnessId?: HarnessId }
 
 /**
  * DIPs rect used to mount/resize a workspace's libghostty surface. Mirrors
@@ -2695,6 +2718,17 @@ export type NewWorkspaceMenuProps = {
   /** Local/Worktree availability for this project (see app:offeredModes) —
    *  undefined while `loading` is true. */
   modes?: { local: boolean; worktree: boolean }
+  /** Every registered harness (harness:list) — support-multi-harness C1.
+   *  ALWAYS the full list regardless of length; the KIND decides whether to
+   *  render the picker row (only when `harnesses.length > 1`), matching
+   *  HarnessSection.tsx's "no hardcoded 'claude' anywhere" discipline. With
+   *  today's single Claude descriptor this is always length 1 and the row
+   *  never renders — creation silently uses the sole harness. */
+  harnesses: HarnessSummary[]
+  /** The currently-selected harness id — drives which row is checked when
+   *  the picker renders, and is the harnessId creation uses. Defaults to
+   *  the first entry in `harnesses` when the popover opens. */
+  selectedHarnessId: string
   /** Per-provider "last used" marker (session-scoped) so the model list can
    *  show a `●` next to the right row without the kind computing it itself. */
   lastUsedModelIdByProvider: Record<string, string>

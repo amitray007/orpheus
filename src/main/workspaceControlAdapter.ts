@@ -2,6 +2,7 @@ import type {
   ActionErrorCode,
   ActionResult,
   CreateWorktreeParams,
+  HarnessId,
   ProjectRecord,
   WorkspaceForkParams,
   WorkspaceRecord
@@ -26,7 +27,15 @@ type LegacyArchiveResult = { archived: boolean; wasDirty: boolean }
 type LegacyCloseResult =
   | { ok: true; workspace: WorkspaceRecord | null }
   | { ok: false; error: 'busy' }
-type RendererCreateArgs = { projectId: string; name: string; cwd: string }
+type RendererCreateArgs = {
+  projectId: string
+  name: string
+  cwd: string
+  /** Optional harness to create the workspace with (support-multi-harness
+   *  C1) — omitted defaults to Claude, threaded straight through to
+   *  CreateWorkspaceInput/createWorkspace unchanged. */
+  harnessId?: HarnessId
+}
 
 export type WorkspaceControlAdapterDeps = {
   invoke: ControlInvoker
@@ -104,7 +113,13 @@ export class WorkspaceControlAdapter {
       // though a name is supplied — otherwise the title pipeline (terminal
       // title / lastTitle) gets permanently masked by resolveWorkspaceName's
       // manual-name early return.
-      { mode: 'local', name: args.name, nameIsAuto: true, presentation: 'background' },
+      {
+        mode: 'local',
+        name: args.name,
+        nameIsAuto: true,
+        presentation: 'background',
+        ...(args.harnessId == null ? {} : { harnessId: args.harnessId })
+      },
       null
     )
   }
@@ -126,6 +141,7 @@ export class WorkspaceControlAdapter {
         // placeholder from the renderer, not a user-chosen name.
         nameIsAuto: true,
         ...(branch ? { branch } : {}),
+        ...(params.harnessId == null ? {} : { harnessId: params.harnessId }),
         presentation: 'background'
       },
       null

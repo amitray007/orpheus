@@ -219,6 +219,11 @@ export interface NewWorkspaceMenuHandlers {
   onBackToProviders: () => void
   onPickModel: (providerId: string, modelId: string) => void
   onPickIsolation: (isolation: 'local' | 'worktree') => void
+  /** A harness row was picked (support-multi-harness C1) — only ever fires
+   *  when more than one harness is registered; the kind doesn't render the
+   *  row at all otherwise (see NewWorkspaceMenuProps.harnesses' own doc
+   *  comment). */
+  onPickHarness: (harnessId: string) => void
   onChangeBranch: (value: string) => void
   onCreate: () => void
   /** Escape, or focus leaving the popover entirely (blur to outside) —
@@ -372,6 +377,11 @@ function dispatchNewWorkspaceMenuEvent(e: OverlayEvent): boolean {
     case 'pickIsolation': {
       const payload = e.payload as { isolation: 'local' | 'worktree' } | undefined
       if (payload) menuHandlers.onPickIsolation(payload.isolation)
+      break
+    }
+    case 'pickHarness': {
+      const payload = e.payload as { harnessId: string } | undefined
+      if (payload) menuHandlers.onPickHarness(payload.harnessId)
       break
     }
     case 'changeBranch': {

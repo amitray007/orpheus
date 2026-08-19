@@ -52,12 +52,7 @@ const MainContent = memo(MainContentBase)
 // Timed reveal duration for a classified project's "Reveal this project" peek.
 const PEEK_MS = 60_000
 
-interface DashboardProps {
-  claudeInstalled: boolean
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- prop forwarded from App.tsx but not yet used in this component
-export function Dashboard(_: DashboardProps): React.JSX.Element {
+export function Dashboard(): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   // UI state — live subscription via the shared store (single get() + single
@@ -1368,7 +1363,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   )
 
   const handleAddWorkspace = useCallback(
-    async (projectId: string, modelId?: string): Promise<void> => {
+    async (projectId: string, modelId?: string, harnessId?: string): Promise<void> => {
       // Read synchronously from refs — setState updaters are not guaranteed to
       // run synchronously in React 18+ createRoot, so reading state via a
       // functional updater callback is unreliable here.
@@ -1384,7 +1379,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         const newWs = await window.api.workspaces.create({
           projectId,
           name: defaultName,
-          cwd: finalPath
+          cwd: finalPath,
+          ...(harnessId ? { harnessId } : {})
         })
         playSound('pop')
         // Creation-time model routing (unit 10): when the creation popover

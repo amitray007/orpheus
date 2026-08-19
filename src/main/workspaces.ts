@@ -2,6 +2,15 @@ import { BrowserWindow } from 'electron'
 import { getDb } from './db'
 import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from '../shared/types'
 import type { HarnessId } from '../shared/harness/types'
+// The PURE predicate (not ./harness/registry's electron-reaching wrapper —
+// see shared/harness/membership.ts's own header, and this file's own
+// mention in that header as one of the modules this split exists for):
+// harness/claude/session.ts already imports getWorkspace from HERE, so
+// workspaces.ts importing anything from harness/registry.ts would recreate
+// the launch->session->registry->launch import cycle check:arch rejects.
+// This module has no such edge back to workspaces.ts (it only imports
+// ./types), so it's safe to use as the DB-write-boundary validation gate.
+import { isKnownHarnessId } from '../shared/harness/membership'
 import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
 import { removeWorktree, withRepoLock } from './worktrees'
 import { PUSH_CHANNELS } from '../shared/ipc'
@@ -200,7 +209,8 @@ export function createWorkspace({
   forkedFromSessionId = null,
   parentWorkspaceId = null,
   worktreeParentCwd = null,
-  worktreeBranch = null
+  worktreeBranch = null,
+  harnessId
 }: {
   /** Optional server-owned id used by orchestration transactions. */
   id?: string
@@ -220,7 +230,35 @@ export function createWorkspace({
   worktreeParentCwd?: string | null
   /** Branch checked out in this worktree; null for a plain workspace (v64). */
   worktreeBranch?: string | null
+  /** Which harness this workspace runs (Phase 1.3/C1, support-multi-harness).
+   *  Omitted (the default for every pre-existing caller) leaves the column
+   *  out of the INSERT entirely so SQLite applies schema.ts's own
+   *  `DEFAULT 'claude'` — the single source of truth for "no harness
+   *  specified means Claude," rather than duplicating that literal here. A
+   *  supplied id that isn't a known harness (isKnownHarnessId, imported from
+   *  the pure shared/harness/membership.ts — see this file's import comment
+   *  for why not the electron-reaching harness/registry.ts wrapper) is
+   *  rejected here too, as defense-in-depth alongside the 'workspaces.create'
+   *  control-plane descriptor's own isCreateInput check
+   *  (src/main/controlPlane/workspaceCapabilities.ts) that already gates
+   *  every external caller (renderer, CLI, MCP, TUI) upstream of this
+   *  function. A garbage/unregistered id reaching the column would silently
+   *  resolve to Claude via resolveHarness's fallback later, which is right
+   *  for a value that WAS valid once and was later removed from the
+   *  registry, but wrong for a value that was never valid — the caller made
+   *  a mistake and should see it now, not have it swallowed into a fallback
+   *  that looks identical to "unknown-but-once-valid." */
+  harnessId?: HarnessId
 }): WorkspaceRecord {
+  if (harnessId != null && !isKnownHarnessId(harnessId)) {
+    // isKnownHarnessId's `id is HarnessId` predicate narrows the negated
+    // branch to `never` (HarnessId's `string & {}` widening structurally
+    // covers every string, so TS treats "not a HarnessId" as unreachable) —
+    // read the value back through a fresh `string` binding so the template
+    // literal doesn't hit @typescript-eslint/restrict-template-expressions.
+    const rejected: string = harnessId
+    throw new Error(`createWorkspace: unknown harnessId "${rejected}"`)
+  }
   const db = getDb()
   const createdAt = Date.now()
   const sanitizedName = sanitizeWorkspaceName(name)
@@ -242,24 +280,35 @@ export function createWorkspace({
     .get(projectId) as { minSort: number | null } | undefined
   const sortOrder = minRow?.minSort != null ? minRow.minSort - 1 : 0
 
+  // harness_id is appended as a 13th column ONLY when explicitly supplied —
+  // omitting it from the statement entirely (rather than binding 'claude')
+  // is what lets SQLite's own column default (schema.ts) decide the
+  // no-harnessId case, so this function and the schema can never disagree
+  // about what "unspecified" means.
   const row = db
     .prepare(
-      `INSERT INTO workspaces (id, project_id, name, name_is_auto, cwd, created_at, claude_session_id, sort_order, forked_from_session_id, parent_workspace_id, worktree_parent_cwd, worktree_branch)
+      harnessId == null
+        ? `INSERT INTO workspaces (id, project_id, name, name_is_auto, cwd, created_at, claude_session_id, sort_order, forked_from_session_id, parent_workspace_id, worktree_parent_cwd, worktree_branch)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+        : `INSERT INTO workspaces (id, project_id, name, name_is_auto, cwd, created_at, claude_session_id, sort_order, forked_from_session_id, parent_workspace_id, worktree_parent_cwd, worktree_branch, harness_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
     )
     .get(
-      id,
-      projectId,
-      sanitizedName,
-      nameIsAuto ? 1 : 0,
-      cwd,
-      createdAt,
-      claudeSessionId,
-      sortOrder,
-      forkedFromSessionId ?? null,
-      parentWorkspaceId ?? null,
-      worktreeParentCwd ?? null,
-      worktreeBranch ?? null
+      ...([
+        id,
+        projectId,
+        sanitizedName,
+        nameIsAuto ? 1 : 0,
+        cwd,
+        createdAt,
+        claudeSessionId,
+        sortOrder,
+        forkedFromSessionId ?? null,
+        parentWorkspaceId ?? null,
+        worktreeParentCwd ?? null,
+        worktreeBranch ?? null,
+        ...(harnessId == null ? [] : [harnessId])
+      ] as const)
     ) as WorkspaceRow | undefined
   if (!row) throw new Error(`createWorkspace: INSERT RETURNING returned nothing`)
   const workspace = rowToWorkspaceRecord(row)

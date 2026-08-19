@@ -28,7 +28,10 @@ import type { FooterActionDraft } from '../types'
 // HarnessId
 // ---------------------------------------------------------------------------
 
-// The id of a supported harness. Currently only Claude Code.
+// The id of a supported harness. Claude Code today; C1 (support-multi-harness)
+// widens the TYPE so a second harness id is expressible, without yet adding a
+// second descriptor (that's a later unit — see registry.ts's HARNESSES array,
+// still `[CLAUDE_DESCRIPTOR]`).
 //
 // NAMING NOTE: from the SECOND harness onward (Phase 3's `codex-cli`, and
 // later `gemini-cli`), harness ids take a `-cli` suffix. This is a locked
@@ -46,7 +49,21 @@ import type { FooterActionDraft } from '../types'
 // `'claude-cli'` — that would require a data step this phase is explicitly
 // scoped to avoid, for a rule that only needs to bind starting with the
 // second harness.
-export type HarnessId = 'claude'
+//
+// SHAPE: `'claude' | (string & {})` rather than a closed union. A closed
+// union (`'claude' | 'codex-cli'`) would force this shared, DB-free file to
+// know every future harness id in advance — but harness identity is DATA
+// (registry.ts's HARNESSES array), not a compile-time enum, and a value read
+// back from `workspaces.harness_id` is untrusted input that must be able to
+// hold a stale/future/garbage string without a cast (see resolveHarness's
+// own doc comment: an unknown id must resolve to Claude, never crash or hit
+// a type error). The `& {}` intersection is the standard TS idiom for
+// "widen to string but keep the literal `'claude'` for autocomplete/
+// exhaustiveness checks" — plain `string` would drop that literal entirely.
+// isKnownHarnessId (registry.ts) remains the actual runtime membership check
+// against HARNESSES; this type only says "any string is structurally
+// assignable," it does not claim the id is registered.
+export type HarnessId = 'claude' | (string & {})
 
 // ---------------------------------------------------------------------------
 // HarnessCapabilities

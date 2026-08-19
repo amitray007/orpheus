@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
-import type { WorkspaceRecord, NewWorkspaceMenuIsolation } from '@shared/types'
+import type { WorkspaceRecord, NewWorkspaceMenuIsolation, HarnessSummary } from '@shared/types'
 import {
   showNewWorkspaceMenu,
   updateNewWorkspaceMenu,
@@ -43,6 +43,17 @@ function worktreeSlugRenderer(name: string): string {
 // ---------------------------------------------------------------------------
 
 const modesCache = new Map<string, { local: boolean; worktree: boolean }>()
+
+// ---------------------------------------------------------------------------
+// Harnesses cache (support-multi-harness C1) — module-level, shared across
+// all instances, same shape as modesCache above. harness:list is static
+// per-build data (no push channel — see HarnessPicker.tsx's own header for
+// why the settings picker doesn't need one either), so a single fetch on
+// first open per app session is enough; every instance of this popover
+// reuses it instead of refetching on every open.
+// ---------------------------------------------------------------------------
+
+let harnessesCache: HarnessSummary[] | null = null
 
 // Submenu hover-intent timing (the "+" TRIGGER itself is click-only — no
 // open delay there at all, see handleTriggerClick below; this timing is now
@@ -133,8 +144,10 @@ export interface NewWorkspaceMenuProps {
   /** Auto-generated workspace name for the current project (e.g. "Workspace 2"). */
   defaultName: string
   /** Called to create a local workspace via the existing plain-create path.
-   *  `modelId` is the model chosen in this popover (undefined = default). */
-  onCreateLocal: (modelId?: string) => void
+   *  `modelId` is the model chosen in this popover (undefined = default).
+   *  `harnessId` is the harness chosen (support-multi-harness C1) — undefined
+   *  means "use the sole/default harness," same convention as modelId. */
+  onCreateLocal: (modelId?: string, harnessId?: string) => void
   /** Called after a worktree workspace has been created. */
   onCreated: (record: WorkspaceRecord) => void
   /** The trigger element — the "+" button or text link. */
@@ -174,6 +187,9 @@ export function NewWorkspaceMenu({
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null)
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null)
   const [isolation, setIsolation] = useState<NewWorkspaceMenuIsolation>('local')
+  // support-multi-harness C1 — see harnessesCache's own header comment.
+  const [harnesses, setHarnesses] = useState<HarnessSummary[]>(() => harnessesCache ?? [])
+  const [selectedHarnessId, setSelectedHarnessId] = useState<string>('')
 
   // Branch-panel state (was BranchField's local state — now lives here since
   // the panel renders inside the SAME popover instance, not a swapped-in
@@ -250,6 +266,33 @@ export function NewWorkspaceMenu({
       })
   }, [projectId])
 
+  // support-multi-harness C1 — cache-first (harnessesCache), unlike
+  // fetchModes: harness:list is static per-build data, not per-project, so
+  // there's nothing to invalidate on open the way modesCache is invalidated
+  // above (project git-worktree support can change; the registered harness
+  // set cannot, within one running app). Falls back to a fresh window.api
+  // call only on first-ever open.
+  const fetchHarnesses = useCallback((): void => {
+    if (harnessesCache) {
+      setHarnesses(harnessesCache)
+      setSelectedHarnessId((prev) => prev || harnessesCache![0]?.id || '')
+      return
+    }
+    window.api.harness
+      .list()
+      .then((list) => {
+        harnessesCache = list
+        setHarnesses(list)
+        setSelectedHarnessId((prev) => prev || list[0]?.id || '')
+      })
+      .catch(() => {
+        // Leave harnesses empty on failure — HarnessRow (overlay kind)
+        // no-ops for length <= 1, same as the single-Claude-descriptor
+        // case, so a failed fetch degrades to "no picker shown" rather than
+        // blocking creation.
+      })
+  }, [])
+
   const defaultBranch = `worktree-${worktreeSlugRenderer(defaultName)}`
 
   const checkBranch = useCallback(
@@ -293,6 +336,7 @@ export function NewWorkspaceMenu({
 
     modesCache.delete(projectId)
     fetchModes()
+    fetchHarnesses()
 
     setActiveProviderId(null)
     setSelectedProviderId(null)
@@ -315,10 +359,12 @@ export function NewWorkspaceMenu({
       branchExists: null,
       branchCreating: false,
       routingProxyEnabled,
-      refreshState
+      refreshState,
+      harnesses: harnessesCache ?? [],
+      selectedHarnessId: selectedHarnessId || harnessesCache?.[0]?.id || ''
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- defaultBranch/fetchModes/menuId are all stable-per-projectId (or per-render-but-content-stable) — re-running openMenu's identity on their churn would defeat the hover-intent timer's callback stability.
-  }, [projectId, fetchModes, menuId])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- defaultBranch/fetchModes/fetchHarnesses/menuId are all stable-per-projectId (or per-render-but-content-stable) — re-running openMenu's identity on their churn would defeat the hover-intent timer's callback stability.
+  }, [projectId, fetchModes, fetchHarnesses, menuId])
 
   // CLICK-ONLY: the sole way this popover opens. No hover-open, no
   // hover-close — once open it stays open until outside-click/Escape/create/
@@ -372,9 +418,16 @@ export function NewWorkspaceMenu({
     const modelId = decision.modelId
     if (modelId && selectedProviderId) recordCreationLastUsed(selectedProviderId, modelId)
 
+    // support-multi-harness C1 — undefined when only one harness is
+    // registered (harnesses.length <= 1), matching HarnessRow's own
+    // gate and createWorkspace's "omitted means the sole/default harness"
+    // convention; a non-empty selectedHarnessId only exists once harnesses
+    // has actually loaded more than one entry.
+    const harnessId = harnesses.length > 1 ? selectedHarnessId || undefined : undefined
+
     if (decision.kind === 'local') {
       handleClose()
-      onCreateLocal(modelId)
+      onCreateLocal(modelId, harnessId)
       return
     }
 
@@ -393,7 +446,8 @@ export function NewWorkspaceMenu({
           .replace(/\b\w/g, (c) => c.toUpperCase()) || trimmed
       const record = await window.api.workspaces.createWorktree(projectId, {
         name,
-        branch: trimmed
+        branch: trimmed,
+        ...(harnessId ? { harnessId } : {})
       })
       // Creation-time model routing (unit 10) — same persistence path the
       // Local button uses (see handleAddWorkspace in Dashboard.tsx): write
@@ -476,6 +530,12 @@ export function NewWorkspaceMenu({
           recordCreationLastUsed(selectedProviderId, selectedModelId)
         }
       },
+      // support-multi-harness C1 — pure SELECTION, same rule 4 discipline as
+      // onPickIsolation/onPickModel above: only updates which row is
+      // checked, never itself creates.
+      onPickHarness: (harnessId) => {
+        setSelectedHarnessId(harnessId)
+      },
       onChangeBranch: (value) => {
         setBranch(value)
         setBranchError(null)
@@ -515,7 +575,9 @@ export function NewWorkspaceMenu({
       branchCreating,
       branchError: branchError ?? undefined,
       routingProxyEnabled,
-      refreshState
+      refreshState,
+      harnesses,
+      selectedHarnessId
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -531,6 +593,8 @@ export function NewWorkspaceMenu({
     branchExists,
     branchCreating,
     branchError,
+    harnesses,
+    selectedHarnessId,
     routingProxyEnabled,
     refreshState
   ])

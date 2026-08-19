@@ -82,6 +82,7 @@ import type {
   ProviderConfigSummary,
   ProviderApiKeyEntrySummary,
   HarnessSummary,
+  HarnessId,
   HarnessSettings,
   HarnessSettingsScope,
   SelectableModel,
@@ -237,7 +238,9 @@ export interface InvokeChannelMap {
     res: WorkspaceRecord[]
   }
   'workspaces:create': {
-    req: [{ projectId: string; name: string; cwd: string }]
+    // harnessId (support-multi-harness C1) is optional — omitted defaults to
+    // Claude, matching createWorkspace's own default in src/main/workspaces.ts.
+    req: [{ projectId: string; name: string; cwd: string; harnessId?: HarnessId }]
     res: WorkspaceRecord
   }
   'workspaces:createWorktree': {

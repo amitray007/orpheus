@@ -13,14 +13,13 @@ import {
   CaretUp,
   CaretDown,
   CaretRight,
-  Question,
   ArrowCounterClockwise,
   Rocket,
   Warning,
   EyeSlash
 } from '@phosphor-icons/react'
 import { SettingRow, SegmentedControl, Select, Toggle, Eyebrow, SecretInput } from './primitives'
-import { ProviderIcon, isKnownProviderIconId } from '@/components/ProviderIcon'
+import { HarnessPicker } from '@/components/HarnessPicker'
 import {
   isSecretLikeKey,
   hasUnsavedChanges,
@@ -77,90 +76,12 @@ function scopeChipLabel(scope: HarnessSettingsScope): string {
 }
 
 // ---------------------------------------------------------------------------
-// Harness picker — a command list, not a special-cased single-harness UI.
-// Reference: a preset picker where each row reads
-// "[icon] [Name] ............ [the actual command it runs]" — see the
-// redesign rationale in the task brief. Renders every harness from
-// harness:list (today just Claude), each with its resolved command preview
-// (binary + its own harness-provided default args, at descriptor defaults —
-// the picker previews what a FRESH install of this harness would run, not
-// the current scope's edited settings) so the row reads as "this is the
-// command this harness runs," matching CliFlagsPreview's "claude <flags>"
-// convention in primitives.tsx.
+// HarnessPicker — extracted to src/renderer/src/components/HarnessPicker.tsx
+// (support-multi-harness C1) so the workspace-creation menu can reuse the
+// exact same "[icon] [Name] ............ [the actual command it runs]"
+// picker instead of a second implementation. See that file's own header
+// comment for the full rationale.
 // ---------------------------------------------------------------------------
-
-/** Builds the resolved command preview for a harness's OWN shipped defaults
- *  — binary followed by its enabled default args, flag+value pairs in
- *  order. Pure string assembly, no dependency on the currently-edited
- *  scope's settings (that's a live edited-command concern the args editor
- *  below already covers via HarnessRowEditor). */
-function harnessCommandPreview(harness: HarnessSummary): string {
-  const tokens: string[] = [harness.binary]
-  for (const arg of harness.defaultArgs ?? []) {
-    if (!arg.enabled) continue
-    tokens.push(arg.key)
-    if (arg.value) tokens.push(arg.value)
-  }
-  return tokens.join(' ')
-}
-
-interface HarnessPickerProps {
-  harnesses: HarnessSummary[]
-  selectedId: string
-  onSelect: (id: string) => void
-}
-
-function HarnessPicker({ harnesses, selectedId, onSelect }: HarnessPickerProps): React.JSX.Element {
-  return (
-    <div
-      role="radiogroup"
-      aria-label="Harness"
-      className="bg-surface-raised border border-border-default rounded-lg divide-y divide-border-default/60 overflow-hidden"
-    >
-      {harnesses.map((harness) => {
-        const selected = harness.id === selectedId
-        return (
-          <button
-            key={harness.id}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            onClick={() => onSelect(harness.id)}
-            className={[
-              'w-full flex items-center gap-3 px-4 py-3 text-left transition-colors duration-150 cursor-pointer',
-              selected ? 'bg-accent/10' : 'hover:bg-surface-overlay'
-            ].join(' ')}
-          >
-            <span
-              className={[
-                'flex items-center justify-center w-6 h-6 rounded-md flex-shrink-0',
-                selected ? 'bg-accent/20 text-accent' : 'bg-surface-overlay text-text-muted'
-              ].join(' ')}
-            >
-              {harness.icon && isKnownProviderIconId(harness.icon) ? (
-                <ProviderIcon providerId={harness.icon} size={14} />
-              ) : (
-                <Question size={14} />
-              )}
-            </span>
-            <span
-              className={[
-                'text-sm font-medium flex-shrink-0',
-                selected ? 'text-text-primary' : 'text-text-secondary'
-              ].join(' ')}
-            >
-              {harness.label}
-            </span>
-            <span className="flex-1 min-w-0 border-b border-dotted border-border-default/50 mx-1" />
-            <span className="text-xs font-mono text-text-muted overflow-x-auto whitespace-nowrap flex-shrink-0">
-              {harnessCommandPreview(harness)}
-            </span>
-          </button>
-        )
-      })}
-    </div>
-  )
-}
 
 // ---------------------------------------------------------------------------
 // HarnessRowEditor — args/env editor for HarnessSettingRow[]: add, edit

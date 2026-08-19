@@ -18,6 +18,14 @@ import type {
   ControlRejectionAuditor,
   ControlSchema
 } from './types'
+// Imports the PURE predicate from shared/harness/membership.ts, not
+// '../harness/registry' — registry.ts's Claude descriptor transitively
+// imports electron (registry -> claude/launch -> claude/session ->
+// workspaces.ts -> BrowserWindow), and this module is reached (via
+// controlPlane/boot.ts) by scripts/verify-control-plane.ts, which runs
+// under plain `bun run` with no electron stub. See membership.ts's header
+// for the single-source-of-truth guarantee this split relies on.
+import { isKnownHarnessId } from '../../shared/harness/membership'
 
 const WORKSPACES_OPEN_ID = 'workspaces.open'
 const WORKSPACES_SEND_ID = 'workspaces.send'
@@ -317,7 +325,8 @@ function isCreateInput(value: unknown): value is CreateWorkspaceInput {
       'parentWorkspaceId',
       'fork',
       'branch',
-      'presentation'
+      'presentation',
+      'harnessId'
     ]) ||
     (value['mode'] !== 'local' && value['mode'] !== 'worktree') ||
     !isOptionalId(value['parentWorkspaceId']) ||
@@ -342,6 +351,14 @@ function isCreateInput(value: unknown): value is CreateWorkspaceInput {
       branch.trim().length < 1 ||
       branch.trim().length > 255)
   ) {
+    return false
+  }
+  // Same registry check createWorkspace() itself applies (src/main/
+  // workspaces.ts) — rejected here too so a bad id from an MCP/CLI caller
+  // fails validation with a clear schema error instead of reaching the
+  // service layer and throwing from deep inside a mutation transaction.
+  const harnessId = value['harnessId']
+  if (harnessId !== undefined && (typeof harnessId !== 'string' || !isKnownHarnessId(harnessId))) {
     return false
   }
   return true
@@ -502,7 +519,11 @@ export function createWorkspaceCapabilities(service: WorkspaceOrchestrationServi
         parentWorkspaceId: ID_SCHEMA,
         fork: { type: 'boolean' },
         branch: { type: 'string', minLength: 1, maxLength: 255 },
-        presentation: PRESENTATION_SCHEMA
+        presentation: PRESENTATION_SCHEMA,
+        // Not an enum: the registered harness set is DATA (registry.ts's
+        // HARNESSES), not fixed at schema-authoring time — isCreateInput's
+        // isKnownHarnessId check is the actual membership gate.
+        harnessId: { type: 'string', minLength: 1, maxLength: 64 }
       },
       oneOf: [
         {

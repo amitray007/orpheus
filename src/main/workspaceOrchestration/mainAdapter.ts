@@ -166,7 +166,8 @@ function createStorePort(
         parentWorkspaceId: record.parentWorkspaceId,
         forkedFromSessionId: record.forkedFromConversationId,
         worktreeParentCwd,
-        worktreeBranch: record.worktreeBranch
+        worktreeBranch: record.worktreeBranch,
+        harnessId: record.harnessId
       })
       const snapshot = workspaceSnapshot(created.id)
       if (snapshot == null) throw new Error('Created workspace could not be read back.')

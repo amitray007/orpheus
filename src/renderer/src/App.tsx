@@ -1,23 +1,23 @@
 import { useEffect, useState } from 'react'
 import { Dashboard } from './components/dashboard/Dashboard'
-import { ClaudeMissingModal } from './components/ClaudeMissingModal'
+import { HarnessMissingModal } from './components/HarnessMissingModal'
 import { DiffWorkerPoolProvider } from './components/workbench/DiffWorkerPoolProvider'
 import type { DoctorResult } from '@shared/types'
+import { isAnyHarnessInstalled } from '@shared/harness/doctor'
 
-// Optimistic initial state: assume claude is installed so the Dashboard
+// Optimistic initial state: assume a harness is installed so the Dashboard
 // mounts immediately on first paint. The real doctor.check() IPC resolves
-// asynchronously and updates this state; the missing-claude modal only shows
-// once the real check comes back false (never during the optimistic window).
-const OPTIMISTIC_DOCTOR: DoctorResult = {
-  claudeInstalled: true,
-  claudeVersion: null,
-  claudePath: null
-}
+// asynchronously and updates this state; the missing-harness modal only
+// shows once the real check comes back with nothing installed (never during
+// the optimistic window). The empty `harnesses` array itself never reaches
+// isAnyHarnessInstalled — doctorResolved gates that below — so it doesn't
+// need a fake entry to read as "installed".
+const OPTIMISTIC_DOCTOR: DoctorResult = { harnesses: [] }
 
 function App(): React.JSX.Element {
   const [doctor, setDoctor] = useState<DoctorResult>(OPTIMISTIC_DOCTOR)
   // Track whether the real doctor check has resolved so we never flash the
-  // missing-claude modal during the optimistic boot window.
+  // missing-harness modal during the optimistic boot window.
   const [doctorResolved, setDoctorResolved] = useState(false)
 
   async function runDoctor(): Promise<void> {
@@ -43,8 +43,10 @@ function App(): React.JSX.Element {
   }, [])
 
   // Only show the modal after the real check resolves — never during the
-  // optimistic window — so claude-installed users never see a flash.
-  const showMissingModal = doctorResolved && !doctor.claudeInstalled
+  // optimistic window — so a user with any harness installed never sees a
+  // flash. The gate is "no registered harness at all", not "Claude
+  // specifically" — see isAnyHarnessInstalled.
+  const showMissingModal = doctorResolved && !isAnyHarnessInstalled(doctor)
 
   return <AppShell doctor={doctor} runDoctor={runDoctor} showMissingModal={showMissingModal} />
 }
@@ -62,9 +64,9 @@ function AppShell({ doctor, runDoctor, showMissingModal }: AppShellProps): React
           workspace so all Git/Files tabs across the whole app share ONE
           @pierre/diffs worker pool instead of spinning one up per workspace. */}
       <DiffWorkerPoolProvider>
-        <Dashboard claudeInstalled={doctor.claudeInstalled} />
+        <Dashboard />
       </DiffWorkerPoolProvider>
-      {showMissingModal && <ClaudeMissingModal onRecheck={runDoctor} />}
+      {showMissingModal && <HarnessMissingModal doctor={doctor} onRecheck={runDoctor} />}
     </main>
   )
 }

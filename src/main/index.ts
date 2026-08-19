@@ -103,7 +103,7 @@ import {
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import { prepareTerminalLaunchEnv } from './terminalLaunchEnv'
 import { buildAppMenu } from './appMenu'
-import { resolveHarness } from './harness/registry'
+import { HARNESSES } from './harness/registry'
 import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor } from '../shared/types'
@@ -1075,9 +1075,10 @@ function createWindow(): void {
   // active again (Cmd-Tab back, dock click, etc.). Without this the focus
   // stays on whatever HTML element it was on, and typing won't reach claude.
   mainWindow.on('focus', () => {
-    // Invalidate the checkClaude cache so the next doctor:check picks up any
-    // claude install/update that happened while the window was in the background.
-    cachedClaudeCheck = null
+    // Invalidate the harness-check cache so the next doctor:check picks up
+    // any harness install/update that happened while the window was in the
+    // background.
+    cachedHarnessChecks.clear()
     kickActiveTerminal()
   })
 
@@ -1131,61 +1132,51 @@ function createWindow(): void {
 // interactive subshell once on first check, capture its $PATH, and cache it.
 //
 // The resolution is async so the main thread doesn't block on the first call.
-// Cache for checkClaude — invalidated on app focus change (app:focus event).
-// 30s TTL guards against stale "not installed" results if the user installs
-// claude while Orpheus is open.
-let cachedClaudeCheck: {
-  result: { installed: boolean; version: string | null; path: string | null }
-  at: number
-} | null = null
+// Cache for checkHarnessBinary — invalidated on app focus change (app:focus
+// event). 30s TTL guards against stale "not installed" results if the user
+// installs a harness while Orpheus is open. Keyed by harness id so each
+// registered harness gets its own independent cache entry.
+type HarnessCheckResult = { installed: boolean; version: string | null; path: string | null }
 
-const CLAUDE_CHECK_TTL_MS = 30_000
+const cachedHarnessChecks = new Map<string, { result: HarnessCheckResult; at: number }>()
 
-async function checkClaude(): Promise<{
-  installed: boolean
-  version: string | null
-  path: string | null
-}> {
-  if (cachedClaudeCheck && Date.now() - cachedClaudeCheck.at < CLAUDE_CHECK_TTL_MS) {
-    return cachedClaudeCheck.result
+const HARNESS_CHECK_TTL_MS = 30_000
+
+async function checkHarnessBinary(binary: string): Promise<HarnessCheckResult> {
+  const cached = cachedHarnessChecks.get(binary)
+  if (cached && Date.now() - cached.at < HARNESS_CHECK_TTL_MS) {
+    return cached.result
   }
 
   // PATH comes from the user's actual shell (cached). No hardcoded fallbacks:
-  // if `claude` isn't on the user's shell PATH, it isn't installed for them.
+  // if the binary isn't on the user's shell PATH, it isn't installed for them.
   const userPath = await getUserShellPath()
   const env = { ...process.env, PATH: userPath || process.env['PATH'] || '' }
 
   const execFile = promisify(childProcess.execFile)
 
-  // App-global doctor check — no workspace in scope to read a harness id
-  // from, so resolve the Claude descriptor explicitly. Behavior-identical
-  // (resolveHarness('claude').binary === 'claude') by construction.
-  // TODO(Phase 3): once a second harness exists, this must iterate
-  // HARNESSES rather than hardcoding the Claude descriptor.
-  const claudeBinary = resolveHarness('claude').binary
-
-  let claudePath: string
+  let binaryPath: string
   try {
-    const { stdout } = await execFile('which', [claudeBinary], {
+    const { stdout } = await execFile('which', [binary], {
       encoding: 'utf-8',
       env,
       timeout: 3000
     })
-    claudePath = stdout.trim()
-    if (!claudePath) {
+    binaryPath = stdout.trim()
+    if (!binaryPath) {
       const result = { installed: false, version: null, path: null }
-      cachedClaudeCheck = { result, at: Date.now() }
+      cachedHarnessChecks.set(binary, { result, at: Date.now() })
       return result
     }
   } catch {
     const result = { installed: false, version: null, path: null }
-    cachedClaudeCheck = { result, at: Date.now() }
+    cachedHarnessChecks.set(binary, { result, at: Date.now() })
     return result
   }
 
   let version: string | null = null
   try {
-    const { stdout: versionOutput } = await execFile(claudeBinary, ['--version'], {
+    const { stdout: versionOutput } = await execFile(binary, ['--version'], {
       encoding: 'utf-8',
       env,
       timeout: 3000
@@ -1195,9 +1186,28 @@ async function checkClaude(): Promise<{
   } catch {
     // `which` succeeded but `--version` failed; treat as installed, version unknown
   }
-  const result = { installed: true, version, path: claudePath }
-  cachedClaudeCheck = { result, at: Date.now() }
+  const result = { installed: true, version, path: binaryPath }
+  cachedHarnessChecks.set(binary, { result, at: Date.now() })
   return result
+}
+
+// Runs checkHarnessBinary across every registered harness (src/main/harness/
+// registry.ts) rather than hardcoding Claude — this is the doctor's actual
+// per-harness surface; doctor:check below just shapes the result for IPC.
+async function checkAllHarnesses(): Promise<DoctorResult> {
+  const harnesses = await Promise.all(
+    HARNESSES.map(async (descriptor) => {
+      const { installed, version, path: binaryPath } = await checkHarnessBinary(descriptor.binary)
+      return {
+        id: descriptor.id,
+        label: descriptor.label,
+        installed,
+        version,
+        path: binaryPath
+      }
+    })
+  )
+  return { harnesses }
 }
 
 // ---------------------------------------------------------------------------
@@ -1404,12 +1414,7 @@ registerAliasesIpc()
 registerOAuthIpc()
 
 handle('doctor:check', async (): Promise<DoctorResult> => {
-  const { installed, version, path: claudePath } = await checkClaude()
-  return {
-    claudeInstalled: installed,
-    claudeVersion: version,
-    claudePath
-  }
+  return checkAllHarnesses()
 })
 
 registerGitIpc({ getWorkspaceCwd: (workspaceId) => getWorkspace(workspaceId)?.cwd ?? null })

@@ -45,6 +45,7 @@ const verifiers = [
   'verify-non-claude-launch-behavior.ts',
   'verify-model-picker.ts',
   'verify-harness-registry.ts',
+  'verify-doctor.ts',
   'verify-harness-launch.ts',
   'verify-harness-curated.ts',
   'verify-harness-actions.ts',
@@ -80,7 +81,19 @@ const verifiers = [
   // verify-harness-settings-ui.ts's own header for why it doesn't need the
   // node:sqlite dispatch the harness-settings/-claude-launch/-session/-parity
   // entries above require.
-  'verify-harness-settings-ui.ts'
+  'verify-harness-settings-ui.ts',
+  // C1 (support-multi-harness) — createWorkspace()'s new harnessId param,
+  // the write-side half of the migration (workspaces.harness_id existed
+  // since Phase 1.3 but nothing could ever write a non-default value until
+  // this unit). Same node:sqlite/DatabaseSync constraint as the harness-
+  // settings/-claude-launch/-session/-parity entries above (needs a real,
+  // working `workspaces`/`projects` schema, not a throws-if-called stub) —
+  // dispatched via the same [label, command] tuple, mirroring
+  // verify-harness-launch-parity.ts's register()-hook technique (electron +
+  // ./db short-circuited to inline stub modules) rather than mock.module(),
+  // which is Bun-only and cannot combine with node:sqlite in any one
+  // runtime — see verify-workspace-harness-create.ts's own header.
+  ['verify-workspace-harness-create.ts', ['node', '--experimental-strip-types']]
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {

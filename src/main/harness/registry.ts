@@ -26,6 +26,7 @@
 // ---------------------------------------------------------------------------
 
 import type { HarnessDescriptor, HarnessId } from '../../shared/harness/types'
+import { isKnownHarnessId as isKnownHarnessIdPure } from '../../shared/harness/membership'
 import { composeClaudeHarnessLaunch } from './claude/launch'
 import { CLAUDE_CAPABILITIES, CLAUDE_CURATED, CLAUDE_DEFAULT_ARGS } from './claude/curated'
 import { CLAUDE_DEFAULT_ACTIONS } from './claude/actions'
@@ -119,9 +120,23 @@ export function getHarnessDescriptor(id: string): HarnessDescriptor | undefined 
 
 /** Structural membership check — never true for an id absent from HARNESSES.
  *  Mirrors isKnownProviderId's role on the routing-provider side: the one
- *  place "is this a thing we know how to launch" is decided. */
+ *  place "is this a thing we know how to launch" is decided.
+ *
+ *  Delegates to src/shared/harness/membership.ts's pure predicate, passing
+ *  the REAL, live descriptor ids (HARNESSES.map(h => h.id)) rather than
+ *  that module's own HARNESS_IDS constant — so a caller reaching this
+ *  export (the electron-reaching one) always sees the actual registry,
+ *  never a copy that could have drifted. Callers that cannot afford this
+ *  module's electron-reaching import chain (e.g.
+ *  src/main/controlPlane/workspaceCapabilities.ts) should import the pure
+ *  version directly from shared/harness/membership.ts instead — see that
+ *  file's header for why, and scripts/verify-doctor.ts for the assertion
+ *  that keeps HARNESS_IDS from drifting away from this list. */
 export function isKnownHarnessId(id: string): id is HarnessId {
-  return HARNESSES.some((h) => h.id === id)
+  return isKnownHarnessIdPure(
+    id,
+    HARNESSES.map((h) => h.id)
+  )
 }
 
 /**
