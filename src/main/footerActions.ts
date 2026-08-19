@@ -541,9 +541,11 @@ export function reorder(
 // DEFAULT_SEEDS list, independent of (and already diverged from) Claude's
 // descriptor.defaultActions in harness/claude/actions.ts, which nothing
 // read. That duplication is gone — CLAUDE_DEFAULT_ACTIONS is now the single
-// canonical list (see that file's own header for why it, not this module,
-// owns Claude's defaults), and this module seeds generically from
-// `descriptor.defaultActions` for whichever harness needs it.
+// canonical list (see that file's own header for the full drift-resolution
+// story, including a real-production-data correction of an initial
+// dev-DB-informed guess, and for why it, not this module, owns Claude's
+// defaults), and this module seeds generically from `descriptor.defaultActions`
+// for whichever harness needs it.
 //
 // TWO SEED PATHS, deliberately kept separate:
 //
@@ -553,9 +555,13 @@ export function reorder(
 //      sourced from CLAUDE_DEFAULT_ACTIONS instead of a parallel literal),
 //      still a total no-op the instant footer_actions_global has ANY row.
 //      This is the byte-identical guarantee for every existing install:
-//      someone who already has the 11 seeded (or since-customised) rows
-//      keeps seeing exactly those, untouched, forever — this function
-//      cannot run again for them. The ONE new behavior: rows it inserts on
+//      someone who already has their seeded (or since-customised) rows —
+//      whatever shape or count they are, including a subset a user
+//      deliberately pruned down to (see scripts/verify-footer-actions.ts's
+//      real-user-shaped fixture, modeled on an actual production DB
+//      inspected read-only during this unit's review) — keeps seeing
+//      exactly those, untouched, forever; this function cannot run again
+//      for them. The ONE new behavior: rows it inserts on
 //      a genuinely fresh install are now stamped harness_id = 'claude',
 //      whereas a pre-C5 install's rows stay NULL (this function never
 //      retroactively stamps an existing row — see the schema column's own
@@ -569,9 +575,11 @@ export function reorder(
 //      the table. For CLAUDE specifically it ALSO respects the whole-table
 //      check (see this function's own doc comment for why: a pre-C5
 //      install's rows are NULL-provenance, not 'claude'-stamped, so the
-//      per-harness check alone would seed 11 more Claude rows on top of an
-//      existing user's 11 — a real bug this special case exists to
-//      prevent). Called once per known harness at boot (see index.ts's boot
+//      per-harness check alone would seed CLAUDE_DEFAULT_ACTIONS.length more
+//      Claude rows on top of an existing user's rows — whatever shape those
+//      already are, including a deliberately-pruned subset — a real bug
+//      this special case exists to prevent). Called once per known harness
+//      at boot (see index.ts's boot
 //      sequence) — a harness with defaultActions already seeded is a
 //      no-op; a harness with no defaultActions declared is also a no-op
 //      (nothing to seed). Never touches, reorders, or deletes any row

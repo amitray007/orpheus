@@ -7,26 +7,48 @@
 // _workspace rows already round-trip through — reused deliberately, not
 // duplicated).
 //
-// C5 (support-multi-harness) — DRIFT RESOLUTION: this file previously
-// declared its own, DIFFERENT 8-row list (missing Archive/Rename/`/compact`/
-// `/cost`, and using session.getUsage+session.getCost where the real seed
-// used a `/cost` slash command) while footerActions.ts's DEFAULT_SEEDS —
-// the list that ACTUALLY seeds every real install via
-// seedDefaultFooterActions() — carried the real, shipped 11 rows. Nothing
-// ever read this file's list (verify-harness-actions.ts asserted exactly
-// that), so the two silently diverged with zero user impact, but ALSO zero
-// value: this file was dead weight duplicating data it didn't even agree
-// with.
+// C5 (support-multi-harness) — DRIFT RESOLUTION, settled by REAL DATA:
+// this file's list and footerActions.ts's own DEFAULT_SEEDS had silently
+// diverged (this file: 8 rows, no Archive/Rename/`/compact`/`/cost`, using
+// session.getUsage+session.getCost; DEFAULT_SEEDS: 11 rows, with `/compact`
+// and `/cost` as slash-command rows instead). Nothing ever read this file's
+// list before C5 (verify-harness-actions.ts asserted exactly that), so an
+// initial guess at which side was "real" was made by inspecting the DEV
+// database — which favored the 11-row DEFAULT_SEEDS shape.
 //
-// CLAUDE_DEFAULT_ACTIONS is now THE canonical source, verified against the
-// user's actual production footer_actions_global rows (11 entries) —
-// footerActions.ts's DEFAULT_SEEDS derives FROM this array (mapped into its
-// own on-disk seed-row shape) rather than restating it, so the two tables
-// can never drift apart again. Picking this file (not footerActions.ts) as
-// the canonical location matches the multi-harness design: a harness's
-// default actions belong on ITS OWN descriptor module, not in the
-// generic cross-harness storage module — footerActions.ts should know
-// nothing Claude-specific.
+// That guess was WRONG. A read-only inspection of the user's actual
+// PRODUCTION database (~/Library/Application Support/orpheus/orpheus.sqlite)
+// during this unit's review found their real footer_actions_global has
+// exactly 8 rows: Model, Effort, Fork, /copy, /context, /clear, Context
+// (session.getUsage), Cost (session.getCost) — i.e. almost exactly THIS
+// file's original 8-row list, not DEFAULT_SEEDS' 11. The user had
+// deliberately deleted `/compact`, `/cost`, Archive, and Rename from their
+// footer. CLAUDE_DEFAULT_ACTIONS is therefore restored to (and remains) the
+// canonical 8-row set — it is what a real, actively-used install actually
+// converged on, which is the only evidence that matters for "what should a
+// FRESH install ship with".
+//
+// footerActions.ts's DEFAULT_SEEDS now derives FROM this array (mapped into
+// its own on-disk seed-row shape) rather than restating it, so the two
+// tables can never drift apart again — this is the part of the original
+// resolution that stands regardless of which content won: one array, one
+// place it's declared, everything else derives from it. Picking this file
+// (not footerActions.ts) as the canonical location matches the
+// multi-harness design: a harness's default actions belong on ITS OWN
+// descriptor module, not in the generic cross-harness storage module —
+// footerActions.ts should know nothing Claude-specific.
+//
+// CRITICAL: this content choice affects ONLY a harness/install with ZERO
+// existing rows. seedDefaultFooterActions()/seedDefaultFooterActionsForHarness
+// in footerActions.ts are both gated on "does footer_actions_global already
+// have ANY row" (see that file's own header) — never on whether the
+// existing row count/shape matches this array. The user whose real 8-row,
+// deliberately-pruned footer prompted this correction is UNAFFECTED by
+// either version of this list: their rows are seeded-once, NULL-provenance,
+// and this migration never touches, reseeds, or evaluates them against
+// CLAUDE_DEFAULT_ACTIONS at all — see scripts/verify-footer-actions.ts's
+// real-user-shaped fixture (modeled on their exact 8 rows) for the assertion
+// that pins this.
 //
 // SEEDING: seedDefaultFooterActionsForHarness() in footerActions.ts reads
 // descriptor.defaultActions (this array, via registry.ts's CLAUDE_DESCRIPTOR)
@@ -35,14 +57,13 @@
 // per-harness idempotency contract and why it can never duplicate or
 // clobber a user's existing rows.
 //
-// These 11 entries are Claude Code SLASH COMMANDS (/copy, /context, /clear,
-// /compact, /cost) plus fork/model/effort/archive/rename — `/copy`/
-// `/context`/`/clear`/`/compact`/`/cost` are meaningless as literal terminal
-// text on a harness that isn't Claude; that is exactly why gating them
-// behind a harness's descriptor (rather than hardcoding them app-wide)
-// matters. See footerActions.ts's gate table for how already-stored rows
-// are filtered at list time by provenance — a separate, list-time concern
-// from this file's seed-time data.
+// These 8 entries are Claude Code SLASH COMMANDS (/copy, /context, /clear)
+// plus fork/usage/cost/model/effort — `/copy`/`/context`/`/clear` are
+// meaningless as literal terminal text on a harness that isn't Claude; that
+// is exactly why gating them behind a harness's descriptor (rather than
+// hardcoding them app-wide) matters. See footerActions.ts's gate table for
+// how already-stored rows are filtered at list time by provenance — a
+// separate, list-time concern from this file's seed-time data.
 // ---------------------------------------------------------------------------
 
 import type { FooterActionDraft } from '../../../shared/types'
@@ -79,23 +100,16 @@ export const CLAUDE_DEFAULT_ACTIONS: FooterActionDraft[] = [
     visibleWhen: 'idle'
   },
   {
-    label: '/compact',
-    icon: 'ArrowsInLineHorizontal',
-    actionId: SEND_INPUT,
-    params: { text: '/compact', submit: true },
-    visibleWhen: 'idle'
-  },
-  {
-    label: '/cost',
-    icon: 'CurrencyDollar',
-    actionId: SEND_INPUT,
-    params: { text: '/cost', submit: true },
+    label: 'Context',
+    icon: 'Gauge',
+    actionId: 'session.getUsage',
+    params: {},
     visibleWhen: 'always'
   },
   {
-    label: 'Model',
-    icon: 'Robot',
-    actionId: 'footer.modelSelect',
+    label: 'Cost',
+    icon: 'CurrencyDollar',
+    actionId: 'session.getCost',
     params: {},
     visibleWhen: 'always'
   },
@@ -107,31 +121,9 @@ export const CLAUDE_DEFAULT_ACTIONS: FooterActionDraft[] = [
     visibleWhen: 'always'
   },
   {
-    label: 'Archive',
-    icon: 'Archive',
-    actionId: 'workspace.archive',
-    params: {},
-    visibleWhen: 'idle'
-  },
-  {
-    label: 'Rename',
-    icon: 'PencilSimple',
-    actionId: 'workspace.rename',
-    params: {},
-    visibleWhen: 'idle',
-    prompts: [
-      {
-        key: 'name',
-        label: 'New name',
-        placeholder: 'Workspace name',
-        default: '{workspaceName}'
-      }
-    ]
-  },
-  {
-    label: 'Context',
-    icon: 'Gauge',
-    actionId: 'session.getUsage',
+    label: 'Model',
+    icon: 'Robot',
+    actionId: 'footer.modelSelect',
     params: {},
     visibleWhen: 'always'
   }

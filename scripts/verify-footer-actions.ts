@@ -241,10 +241,13 @@ function globalRows(): FullGlobalRow[] {
 // ---------------------------------------------------------------------------
 // 4. PRE-C5 SIMULATION: an existing user's rows (seeded before this column
 //    existed) are NULL-provenance, and this migration must never touch
-//    them. Simulated by resetting the DB, inserting 11 rows exactly like
-//    the pre-C5 seeder used to (no harness_id column value = NULL), then
-//    running seedDefaultFooterActions() and confirming it is a pure no-op
-//    (still whole-table count > 0) and every row stays NULL forever.
+//    them. Simulated by resetting the DB, inserting CLAUDE_DEFAULT_ACTIONS.
+//    length rows exactly like the pre-C5 seeder used to (no harness_id
+//    column value = NULL), then running seedDefaultFooterActions() and
+//    confirming it is a pure no-op (still whole-table count > 0) and every
+//    row stays NULL forever. See assertion 4b below for the SHARPER,
+//    real-user-shaped version of this same property (a PRUNED subset, not
+//    the full canonical set).
 // ---------------------------------------------------------------------------
 
 {
@@ -297,22 +300,27 @@ function globalRows(): FullGlobalRow[] {
 }
 
 // ---------------------------------------------------------------------------
-// 4b. REAL-USER-SHAPED CUSTOMIZATION (not the full 11/8 set — a PRUNED
-//    subset, mirroring an actual production footer_actions_global inspected
-//    read-only during this unit's development: 8 rows, NULL-provenance,
-//    with `/compact`, `/cost`, `Archive`, and `Rename` deliberately deleted
-//    by the user). This is the sharpest version of the data-safety property:
-//    a migration that "helpfully" restores those 4 deleted chips because
-//    the row count (8) doesn't match either canonical list's length (11)
-//    would be real, user-visible data loss — the user explicitly removed
-//    them and would see them reappear unexpectedly. seedDefaultFooterActions/
-//    seedDefaultFooterActionsForAllHarnesses must be a pure no-op regardless
-//    of WHICH subset the user kept, because the guard is "does the table
-//    have any row at all", never "does the row count/shape match what we'd
-//    seed". Also asserts full byte-identity across EVERY column (id,
-//    created_at, updated_at, params_json, icon, prompts_json) — not just
-//    label/action_id/position — so a migration that rewrote positions or
-//    bumped updated_at on an untouched row would be caught here too.
+// 4b. REAL-USER-SHAPED FIXTURE — mirrors an actual production
+//    footer_actions_global inspected read-only during this unit's review: 8
+//    rows, NULL-provenance (Fork, /copy, /context, /clear, Context/getUsage,
+//    Cost/getCost, Effort, Model). This inspection is what settled C5's
+//    canonical-list drift resolution (see harness/claude/actions.ts's own
+//    header): CLAUDE_DEFAULT_ACTIONS now equals this exact set, so this
+//    fixture is INTENTIONALLY hand-written as an independent literal (not
+//    derived from CLAUDE_DEFAULT_ACTIONS) rather than being reduced to a
+//    trivial "does the seed match itself" check — should a future edit to
+//    the canonical array ever drift from real production data again, THIS
+//    fixture (not the array) is the one that must keep representing what a
+//    real, already-seeded install actually has on disk, catching that drift
+//    the same way it caught the original one. It also doubles as a general
+//    property proof: seedDefaultFooterActions/seedDefaultFooterActionsForAllHarnesses
+//    must be a pure no-op purely because the table has ANY existing row —
+//    never because a row count/shape happens to match (or fails to match)
+//    what would be freshly seeded. Also asserts full byte-identity across
+//    EVERY column (id, created_at, updated_at, params_json, icon,
+//    prompts_json) — not just label/action_id/position — so a migration
+//    that rewrote positions or bumped updated_at on an untouched row would
+//    be caught here too.
 // ---------------------------------------------------------------------------
 
 {

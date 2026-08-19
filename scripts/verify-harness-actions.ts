@@ -303,13 +303,19 @@ const ALL_EIGHT_ACTIONS: FooterActionDescriptor[] = [
 
 // ---------------------------------------------------------------------------
 // 6. C5 (support-multi-harness) UPDATE: CLAUDE_DEFAULT_ACTIONS is now the
-//    CANONICAL 11-row list (drift-resolved against the real, shipped
-//    footerActions.ts DEFAULT_SEEDS — see that file's own header for the
-//    full resolution) and IS wired into per-harness seeding
-//    (seedDefaultFooterActionsForHarness in footerActions.ts) — this
-//    assertion previously pinned the OLD, pre-C5 8-row/unwired state; see
-//    scripts/verify-footer-actions.ts for the seeding-behavior coverage
-//    (per-harness idempotency, provenance stamping, mutation tests).
+//    CANONICAL 8-row list — drift-resolved against a READ-ONLY inspection of
+//    the user's actual PRODUCTION footer_actions_global (8 rows: Fork,
+//    /copy, /context, /clear, Context/getUsage, Cost/getCost, Effort,
+//    Model — almost exactly this file's original 8, not footerActions.ts's
+//    now-derived DEFAULT_SEEDS' shape) — see harness/claude/actions.ts's own
+//    header for the full resolution, including the earlier (wrong) guess
+//    made from dev-DB inspection before the production data was available.
+//    Now IS wired into per-harness seeding (seedDefaultFooterActionsForHarness
+//    in footerActions.ts); this assertion previously pinned the OLD, pre-C5
+//    unwired state; see scripts/verify-footer-actions.ts for the
+//    seeding-behavior coverage (per-harness idempotency, provenance
+//    stamping, mutation tests, and the real-user-shaped fixture proving an
+//    existing install's rows — of EITHER shape — are never touched).
 //    filterActionsForHarness itself remains pure/non-mutating, still
 //    asserted here.
 // ---------------------------------------------------------------------------
@@ -317,8 +323,8 @@ const ALL_EIGHT_ACTIONS: FooterActionDescriptor[] = [
 {
   assert.equal(
     CLAUDE_DEFAULT_ACTIONS.length,
-    11,
-    'CLAUDE_DEFAULT_ACTIONS should describe exactly the 11 production rows (drift-resolved, C5)'
+    8,
+    'CLAUDE_DEFAULT_ACTIONS should describe exactly the 8 production rows (drift-resolved against real production data, C5)'
   )
   const claudeDescriptor = HARNESSES.find((h: HarnessDescriptor) => h.id === 'claude')
   assert.ok(claudeDescriptor, 'claude descriptor must exist in HARNESSES')
@@ -336,7 +342,7 @@ const ALL_EIGHT_ACTIONS: FooterActionDescriptor[] = [
     'filterActionsForHarness must not mutate its input array/elements'
   )
   console.log(
-    '✓ CLAUDE_DEFAULT_ACTIONS is the canonical 11-row list (now wired into per-harness seeding, C5) and filtering never mutates input'
+    '✓ CLAUDE_DEFAULT_ACTIONS is the canonical 8-row list, matching real production data (now wired into per-harness seeding, C5) and filtering never mutates input'
   )
 }
 
