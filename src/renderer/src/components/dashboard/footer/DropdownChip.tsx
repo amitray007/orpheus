@@ -3,6 +3,7 @@ import type React from 'react'
 import type { ChipDropdownItem, ClaudeEffort, WorkspaceActivityDetail } from '@shared/types'
 import type { HarnessId } from '@shared/harness/types'
 import { buildLiveApplyText } from '@shared/harness/liveApply'
+import { isModelEffectivelyClaude } from '@shared/harness/footerChipGating'
 import {
   capitalize,
   effortOptionsFor,
@@ -338,12 +339,16 @@ export function DropdownChip({
   const { refreshState, onRefresh: handleRefreshModels } = useRefreshModelsController(modelValue)
   // isClaude lookup for the CURRENT effective model, used below to decide
   // whether a model switch is live-applicable (see onSelect's own comment).
-  // A model not present in the list (e.g. transient fetch gap) is treated as
-  // non-Claude — the conservative choice, since injecting `/model` into a
-  // routed workspace's terminal would be meaningless/wrong.
+  // A model present in the list answers from its own isClaude flag. A model
+  // ABSENT from the list (transient fetch gap, or genuinely unset '') falls
+  // back to whether THIS WORKSPACE's harness is Claude — not an
+  // unconditional "unset means Claude" default, which would wrongly treat
+  // an unset model as Claude on every harness (see
+  // isModelEffectivelyClaude's own doc comment in footerChipGating.ts for
+  // the bug this replaced).
   const currentModelIsClaude = useMemo(
-    () => selectableModels.find((m) => m.id === modelValue)?.isClaude ?? modelValue === '',
-    [selectableModels, modelValue]
+    () => isModelEffectivelyClaude(harness.id, selectableModels, modelValue),
+    [harness.id, selectableModels, modelValue]
   )
   // The current model's real effort levels (model-routing unit 11) — a
   // TRI-STATE (see resolveEffortLevelsForScope's own doc comment for the
@@ -531,20 +536,25 @@ export function DropdownChip({
           // running process told about a value the DB doesn't actually
           // have, silently desyncing UI state from persisted state.
           //
-          // Gated the SAME way the model chip gates `/model` (see that
-          // branch's own comment): a live-apply command is only meaningful
-          // when talking to the SAME running backend. Unlike a model
-          // switch, effort has no "new model" to check — the process
-          // currently running IS the target — so this reduces to
-          // currentModelIsClaude alone. Previously this fired
-          // UNCONDITIONALLY (no gate at all), which meant a routed
-          // (non-Claude) workspace would have `/effort <value>` typed as
-          // literal text into its terminal.
-          if (currentModelIsClaude) {
-            const liveApply = buildLiveApplyText(harness.curated?.effort, value)
-            if (liveApply.kind === 'inject') {
-              runInject(liveApply.text, liveApply.submit, 'Effort set — applies next turn')
-            }
+          // Previously this fired UNCONDITIONALLY (no gate at all), which
+          // meant a routed (non-Claude) workspace would have `/effort
+          // <value>` typed as literal text into its terminal. That was
+          // later fixed with a `currentModelIsClaude` check — reasonable at
+          // the time, since `/effort` was a hardcoded string. It is wrong
+          // NOW: `harness.curated?.effort.liveApply` is the actual
+          // authority on whether (and how) a value can be live-applied, and
+          // gating on model-provider identity on top of it double-guards
+          // and, worse, silently DROPS a harness's declared liveApply when
+          // its models happen to report isClaude:false —
+          // buildLiveApplyText already degrades safely on its own: no
+          // curated field -> {kind:'none'}, a harness that declares
+          // restartRequired -> {kind:'restartRequired'}, only a real
+          // `replInject` descriptor -> {kind:'inject'}. There is nothing
+          // left for a model-provider check to protect against, so it's
+          // removed rather than left alongside the descriptor check.
+          const liveApply = buildLiveApplyText(harness.curated?.effort, value)
+          if (liveApply.kind === 'inject') {
+            runInject(liveApply.text, liveApply.submit, 'Effort set — applies next turn')
           }
         })
         .catch((e) => {

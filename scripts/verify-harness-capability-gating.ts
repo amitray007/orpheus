@@ -38,6 +38,20 @@
 //      session id.
 //   4. structuredStatus: false -> live activity must not be claimed.
 //   5. usage: false -> the usage/cost hover-card fetches are gated off.
+//   6. E1/E2/E3 (support-multi-harness follow-up) — three DropdownChip.tsx/
+//      WorkspaceSettingsPopover.tsx blockers where a declared descriptor
+//      behavior was silently ignored:
+//        E1 — a harness declaring `curated.effort.liveApply = replInject`
+//             must have that injection FIRE even when its models report
+//             isClaude:false (the bug: DropdownChip.tsx gated the effort
+//             branch on `currentModelIsClaude`, which dropped a
+//             non-Claude harness's own declared liveApply).
+//        E2 — an UNSET model on a non-Claude harness must not be treated
+//             as Claude (isModelEffectivelyClaude, footerChipGating.ts).
+//        E3 — the Loco toggle must be hidden for a harness that doesn't
+//             own the underlying Claude CLI flag (shouldShowLocoToggle,
+//             same file).
+//      All three are asserted unchanged for Claude.
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert/strict'
@@ -50,9 +64,15 @@ import {
   shouldFetchUsageDetails,
   messageCountForWorkspace
 } from '../src/shared/harness/capabilityGating.ts'
+import {
+  isModelEffectivelyClaude,
+  shouldShowLocoToggle
+} from '../src/shared/harness/footerChipGating.ts'
+import { buildLiveApplyText } from '../src/shared/harness/liveApply.ts'
 import { resolveHarnessSummary, isHarnessIdKnown } from '../src/renderer/src/lib/harnessStore.ts'
-import { CLAUDE_CAPABILITIES } from '../src/main/harness/claude/curated.ts'
+import { CLAUDE_CAPABILITIES, CLAUDE_CURATED } from '../src/main/harness/claude/curated.ts'
 import type { HarnessSummary } from '../src/shared/types.ts'
+import type { CuratedField } from '../src/shared/harness/types.ts'
 
 const ALL_FALSE: HarnessCapabilities = {
   structuredStatus: false,
@@ -277,11 +297,193 @@ function testUsageGate(): void {
   )
 }
 
+// ---------------------------------------------------------------------------
+// 6. E1 — a harness's declared replInject liveApply must fire regardless of
+//    isClaude. Simulates DropdownChip.tsx's effort onSelect handler: after
+//    the fix, the call site is just `buildLiveApplyText(harness.curated
+//    ?.effort, value)` with no `currentModelIsClaude` gate around it (see
+//    DropdownChip.tsx's onSelect for footer.effortSelect). This directly
+//    exercises that exact call against a NON-Claude, replInject-declaring
+//    descriptor — the case the old `if (currentModelIsClaude)` guard would
+//    have silently dropped.
+// ---------------------------------------------------------------------------
+
+const NON_CLAUDE_REPL_INJECT_EFFORT: CuratedField = {
+  options: ['low', 'high'],
+  allowCustom: true,
+  liveApply: { kind: 'replInject', template: '/reasoning {value}', submit: true },
+  flag: '--effort'
+}
+
+function testE1EffortLiveApplyIgnoresModelProvider(): void {
+  // The bug case: a harness whose curated.effort declares replInject, but
+  // whose selectableModels entries (or lack thereof) report isClaude:false.
+  // The fixed call site — buildLiveApplyText alone, no model-provider gate
+  // — must still build injectable text.
+  const result = buildLiveApplyText(NON_CLAUDE_REPL_INJECT_EFFORT, 'high')
+  assert.deepEqual(
+    result,
+    { kind: 'inject', text: '/reasoning high', submit: true },
+    'E1: a harness declaring replInject for effort must have that liveApply text built ' +
+      'even though its own models are not Claude — the descriptor is the sole authority, ' +
+      'not a currentModelIsClaude side-gate'
+  )
+
+  // Claude unchanged: same call shape, same real descriptor, same literal
+  // "/effort high" the pre-refactor hardcoded string produced.
+  assert.deepEqual(
+    buildLiveApplyText(CLAUDE_CURATED.effort, 'high'),
+    { kind: 'inject', text: '/effort high', submit: true },
+    'E1 regression net: Claude effort liveApply must remain exactly "/effort high", submit:true'
+  )
+
+  // A restartRequired harness must still produce no injectable text (proves
+  // this isn't "always inject now" — buildLiveApplyText's own kind gate
+  // still applies, only the extra model-provider gate was removed).
+  const restartOnly: CuratedField = {
+    options: [],
+    allowCustom: true,
+    liveApply: { kind: 'restartRequired' },
+    flag: '--effort'
+  }
+  assert.deepEqual(
+    buildLiveApplyText(restartOnly, 'high'),
+    { kind: 'restartRequired' },
+    'E1: a restartRequired harness must still signal restartRequired, not inject'
+  )
+}
+
+// MUTATION: reinstate the currentModelIsClaude guard around the call —
+// i.e. simulate "only build liveApply text when isClaude is true" — and
+// confirm the E1 case above would have been (wrongly) suppressed.
+function testE1Mutation(): void {
+  const currentModelIsClaude = false // the non-Claude harness's own model list
+  const guarded = currentModelIsClaude
+    ? buildLiveApplyText(NON_CLAUDE_REPL_INJECT_EFFORT, 'high')
+    : { kind: 'none' as const }
+  try {
+    assert.deepEqual(guarded, { kind: 'inject', text: '/reasoning high', submit: true })
+    throw new Error('E1 mutation did not fail as expected')
+  } catch (e) {
+    assert.ok(
+      e instanceof assert.AssertionError,
+      'E1 mutation must fail via AssertionError, not some other error'
+    )
+    console.log(
+      `  mutation caught (expected failure) [E1 currentModelIsClaude guard reinstated]: ${(e as Error).message.split('\n')[0]}`
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 7. E2 — isModelEffectivelyClaude: an unset model on a non-Claude harness
+//    must not be treated as Claude.
+// ---------------------------------------------------------------------------
+
+type ModelLookup = { id: string; isClaude: boolean }
+const MODELS: ModelLookup[] = [
+  { id: 'opus', isClaude: true },
+  { id: 'grok-4', isClaude: false }
+]
+
+function testE2UnsetModelNotClaudeOnNonClaudeHarness(): void {
+  assert.equal(
+    isModelEffectivelyClaude('codex-cli', MODELS, ''),
+    false,
+    'E2: an unset model on a non-Claude harness must not resolve to isClaude:true'
+  )
+  assert.equal(
+    isModelEffectivelyClaude('codex-cli', MODELS, 'some-transient-fetch-gap-id'),
+    false,
+    'E2: a model absent from the list on a non-Claude harness must not resolve to isClaude:true'
+  )
+  // Present-in-list answers always come from the model's own flag,
+  // regardless of harness id.
+  assert.equal(isModelEffectivelyClaude('codex-cli', MODELS, 'opus'), true)
+  assert.equal(isModelEffectivelyClaude('claude', MODELS, 'grok-4'), false)
+
+  // Claude unchanged: unset model on a Claude workspace still resolves true
+  // (today's behavior — a Claude workspace mid-fetch still gets its
+  // live-apply chip).
+  assert.equal(
+    isModelEffectivelyClaude('claude', MODELS, ''),
+    true,
+    'E2 regression net: an unset model on a Claude harness must still resolve isClaude:true'
+  )
+  assert.equal(
+    isModelEffectivelyClaude('claude', [], 'not-yet-loaded'),
+    true,
+    'E2 regression net: a Claude harness with a not-yet-loaded model list must still resolve isClaude:true'
+  )
+}
+
+// MUTATION: restore the old `?? modelValue === ''` behavior (unset always
+// means Claude, regardless of harness) and confirm it wrongly passes for a
+// non-Claude harness.
+function testE2Mutation(): void {
+  const oldBehavior = (models: ModelLookup[], modelValue: string): boolean =>
+    models.find((m) => m.id === modelValue)?.isClaude ?? modelValue === ''
+  try {
+    assert.equal(
+      oldBehavior(MODELS, ''),
+      false,
+      'the OLD `?? modelValue === \'\'` resolution must be shown wrong: it resolves true for ANY unset model'
+    )
+    throw new Error('E2 mutation did not fail as expected')
+  } catch (e) {
+    assert.ok(e instanceof assert.AssertionError)
+    console.log(
+      `  mutation caught (expected failure) [E2 old modelValue === '' fallback restored]: ${(e as Error).message.split('\n')[0]}`
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 8. E3 — shouldShowLocoToggle: hidden for a harness that doesn't own the
+//    flag, shown for Claude (and for the absent/unresolved default).
+// ---------------------------------------------------------------------------
+
+function testE3LocoToggleGate(): void {
+  assert.equal(shouldShowLocoToggle('codex-cli'), false, 'E3: a non-Claude harness must hide the Loco toggle')
+  assert.equal(shouldShowLocoToggle('claude'), true, 'E3 regression net: Claude must still show the Loco toggle')
+  assert.equal(
+    shouldShowLocoToggle(undefined),
+    true,
+    'E3: an unresolved/absent harnessId must default to shown (matches pre-fix behavior for the only registered harness today)'
+  )
+  assert.equal(shouldShowLocoToggle(null), true, 'E3: null harnessId must also default to shown')
+}
+
+// MUTATION: ungate the toggle (always show) and confirm it wrongly passes
+// for a non-Claude harness.
+function testE3Mutation(): void {
+  const ungated = (): boolean => true
+  try {
+    assert.equal(
+      ungated(),
+      false,
+      'an ungated toggle must be shown false-for-non-Claude to be correct — always-true fails that'
+    )
+    throw new Error('E3 mutation did not fail as expected')
+  } catch (e) {
+    assert.ok(e instanceof assert.AssertionError)
+    console.log(
+      `  mutation caught (expected failure) [E3 toggle ungated / always shown]: ${(e as Error).message.split('\n')[0]}`
+    )
+  }
+}
+
 testClaudeEquivalence()
 testFallbackGrantsNothing()
 testTranscriptGate()
 testMessageCountGate()
 testStructuredStatusGate()
 testUsageGate()
+testE1EffortLiveApplyIgnoresModelProvider()
+testE1Mutation()
+testE2UnsetModelNotClaudeOnNonClaudeHarness()
+testE2Mutation()
+testE3LocoToggleGate()
+testE3Mutation()
 
 console.log('verify-harness-capability-gating: all assertions passed')

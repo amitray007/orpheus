@@ -44,6 +44,8 @@ import type {
   ClaudeWorkspaceSettingsOverrides,
   WorkspaceSettingsCardProps
 } from '@shared/types'
+import type { HarnessId } from '@shared/harness/types'
+import { shouldShowLocoToggle } from '@shared/harness/footerChipGating'
 import {
   showWorkspaceSettingsCard,
   updateWorkspaceSettingsCard,
@@ -115,6 +117,13 @@ export interface WorkspaceSettingsPopoverProps {
   /** Owning project, needed to fetch project-scope flags for the inherited
    *  (muted) preview — see useInheritedCliFlags above. */
   projectId: string
+  /** This workspace's harness id — gates the Plugins/Loco toggle's
+   *  visibility (see shouldShowLocoToggle's own doc comment in
+   *  footerChipGating.ts for why this section is Claude-only). Optional so
+   *  a caller that hasn't threaded harnessId yet still compiles; absent
+   *  resolves to "show" (see shouldShowLocoToggle's own default), matching
+   *  pre-fix behavior for the only registered harness today. */
+  harnessId?: HarnessId | null
   /** Restarts the workspace to apply pending settings changes — threaded
    *  down from WorkspaceView's component-local remountKey state (there is no
    *  terminal:restart IPC channel; see WorkspaceTitleBarProps.onRestart). */
@@ -256,6 +265,7 @@ function useWorkspaceEnvVars(workspaceId: string): {
 export function WorkspaceSettingsPopover({
   workspaceId,
   projectId,
+  harnessId,
   onRestart,
   isDirty
 }: WorkspaceSettingsPopoverProps): React.JSX.Element {
@@ -267,6 +277,11 @@ export function WorkspaceSettingsPopover({
     useWorkspaceCliFlags(workspaceId)
   const inheritedFlags = useInheritedCliFlags(projectId)
   const { envVarsValue, loading: envVarsLoading, setEnvVars } = useWorkspaceEnvVars(workspaceId)
+  // See shouldShowLocoToggle's own doc comment (footerChipGating.ts) for why
+  // this is a harness-id gate rather than a capability one — the Loco
+  // toggle is sugar over one hardcoded Claude CLI flag, not a general
+  // capability Orpheus curates.
+  const locoVisible = shouldShowLocoToggle(harnessId)
 
   // Stable identity for CliFlagsEditor's `value` prop — see EMPTY_FLAGS above.
   const cliFlagsValue = useMemo(
@@ -294,6 +309,7 @@ export function WorkspaceSettingsPopover({
     }
     if (!buttonRef.current) return
     const initialProps: WorkspaceSettingsCardProps = {
+      locoVisible,
       locoEnabled,
       flags: cliFlagsValue,
       inheritedFlags,
@@ -327,6 +343,7 @@ export function WorkspaceSettingsPopover({
   useEffect(() => {
     if (!open) return
     updateWorkspaceSettingsCard(cardId, {
+      locoVisible,
       locoEnabled,
       flags: cliFlagsValue,
       inheritedFlags,
@@ -337,6 +354,7 @@ export function WorkspaceSettingsPopover({
   }, [
     open,
     cardId,
+    locoVisible,
     locoEnabled,
     cliFlagsValue,
     inheritedFlags,

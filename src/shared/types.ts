@@ -2649,6 +2649,13 @@ export type ChipGroupedDropdownResult = { kind: 'select'; value: string } | null
  *  CustomEnvVarsEditorProps' `value` shapes exactly so the kind can pass them
  *  straight through without reshaping. */
 export type WorkspaceSettingsCardProps = {
+  /** Whether the Plugins/"Enable Loco Channel" section should render at
+   *  all — false for a harness that doesn't own the underlying Claude CLI
+   *  flag (see shouldShowLocoToggle in
+   *  src/shared/harness/footerChipGating.ts). Computed by the caller from
+   *  the workspace's harnessId, same "derived, never independent state"
+   *  rule as locoEnabled below. */
+  locoVisible: boolean
   /** Derived Loco-channel toggle state — `flags.some(flagName(e) === LOCO_FLAG_NAME)`,
    *  computed by the caller (never independent state) and passed down read-only. */
   locoEnabled: boolean

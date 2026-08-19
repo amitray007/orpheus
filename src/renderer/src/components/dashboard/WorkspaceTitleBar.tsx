@@ -81,6 +81,10 @@ interface WorkbenchTopBarRegionProps {
   style: React.CSSProperties
   workspaceId: string
   projectId: string
+  /** Threaded through to WorkspaceSettingsPopover so its Plugins/Loco
+   *  toggle can gate on this workspace's actual harness — see
+   *  shouldShowLocoToggle's own doc comment in footerChipGating.ts. */
+  harnessId?: string | null
   isDirty: boolean
   onRestart?: () => void
 }
@@ -90,6 +94,7 @@ function WorkbenchTopBarRegion({
   style,
   workspaceId,
   projectId,
+  harnessId,
   isDirty,
   onRestart
 }: WorkbenchTopBarRegionProps): React.JSX.Element {
@@ -138,6 +143,7 @@ function WorkbenchTopBarRegion({
       <WorkspaceSettingsPopover
         workspaceId={workspaceId}
         projectId={projectId}
+        harnessId={harnessId}
         isDirty={isDirty}
         onRestart={onRestart}
       />
@@ -616,6 +622,7 @@ export function WorkspaceTitleBar({
           style={workbenchRegionStyle}
           workspaceId={workspace.id}
           projectId={workspace.projectId}
+          harnessId={workspace.harnessId}
           isDirty={isDirty}
           onRestart={onRestart}
         />
