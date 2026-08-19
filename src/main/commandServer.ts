@@ -1115,11 +1115,34 @@ function makeDispatchTable(
     //                      any; passed straight through so a routed model
     //                      that's no longer healthy is still listed
     //                      (available: false) rather than silently dropped.
+    //   harnessId?/projectId?/currentEffort? — (B4, support-multi-harness)
+    //                      same optional scope context
+    //                      models:listSelectable's IPC handler accepts, so
+    //                      the TUI/CLI new-workspace wizard's model picker
+    //                      applies the SAME curatedOptions overlay the
+    //                      desktop pickers do rather than showing a
+    //                      different list — see resolveSelectableModels'
+    //                      own doc comment for the byte-identical-when-
+    //                      omitted contract. All optional; omitting them
+    //                      reproduces this action's pre-B4 behavior exactly.
     'models.list': async (args) => {
       if (args.currentModelId !== undefined && typeof args.currentModelId !== 'string') {
         throw new Error('args.currentModelId must be a string')
       }
-      const models = await resolveSelectableModels(args.currentModelId)
+      if (args.harnessId !== undefined && typeof args.harnessId !== 'string') {
+        throw new Error('args.harnessId must be a string')
+      }
+      if (args.projectId !== undefined && typeof args.projectId !== 'string') {
+        throw new Error('args.projectId must be a string')
+      }
+      if (args.currentEffort !== undefined && typeof args.currentEffort !== 'string') {
+        throw new Error('args.currentEffort must be a string')
+      }
+      const models = await resolveSelectableModels(args.currentModelId, {
+        harnessId: args.harnessId,
+        projectId: args.projectId,
+        currentEffort: args.currentEffort
+      })
       // Spread each entry into a plain object literal — NOT a reshape (same
       // keys/values, untouched order) — purely so this structurally satisfies
       // DispatchFn's JsonValue return type, which (unlike the type aliases

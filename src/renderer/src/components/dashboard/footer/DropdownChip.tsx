@@ -131,6 +131,14 @@ interface DropdownChipProps {
    *  Absent falls back to Claude via useHarnessForWorkspace, same as main's
    *  resolveHarness(undefined). */
   harnessId?: HarnessId
+  /** This workspace's project id (B4, support-multi-harness), threaded down
+   *  from WorkspaceFooter (which already carries it for post-fork
+   *  navigation) so the model/effort chips can resolve THIS project's
+   *  curatedOptions overlay via useSelectableModels, instead of only ever
+   *  seeing the global-scope option list. Absent resolves global scope
+   *  only, same as models:listSelectable's own omitted-projectId
+   *  contract. */
+  projectId?: string
   enabled?: boolean
   /** Live activity detail — used ONLY by the model-select chip to decide
    *  whether an auto-restart is safe (see onSelect's routed-model branch
@@ -150,6 +158,7 @@ export function DropdownChip({
   item,
   workspaceId,
   harnessId,
+  projectId,
   enabled = true,
   activityDetail,
   onRestart
@@ -271,6 +280,23 @@ export function DropdownChip({
     refetchEffectiveModel()
   }, [refetchEffectiveModel])
 
+  // Effective effort value, read early (hoisted above useSelectableModels
+  // below) so its CURRENT value can be threaded straight into that call as
+  // currentEffort — see Case 2's own doc comment further down for the full
+  // rationale on this store read; only the ORDERING is different here, the
+  // read itself is unchanged (a synchronous store lookup keyed only on
+  // workspaceId, safe to read this early).
+  const storeEffortValue = useWorkspaceEffort(workspaceId)
+  const effortValue = storeEffortValue ?? ''
+  // Same staleness-avoidance ref as modelValueRef above — handleClick below
+  // reads BOTH refs rather than the closed-over values, for the identical
+  // reason (its own narrow memoization dep list would otherwise pin this to
+  // whichever effortValue was current the last time handleClick itself got
+  // recreated).
+  const effortValueRef = useRef(effortValue)
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation, same pattern as modelValueRef above
+  effortValueRef.current = effortValue
+
   // Data-driven model list (Claude always present; routed models gated on
   // proxy/provider health server-side) — see useSelectableModels' own doc
   // comment. `enabled` gates the fetch to the modelSelect AND effortSelect
@@ -283,11 +309,18 @@ export function DropdownChip({
   // internal subscription/IPC is skipped when disabled. Passing modelValue
   // keeps an already-selected-but-now-unavailable routed model represented
   // (never silently dropped from the dropdown, even though it can no longer
-  // be freshly selected as "available").
+  // be freshly selected as "available"). harnessId/projectId/effortValue
+  // (B4, support-multi-harness) let the server apply THIS workspace's
+  // harness+project curatedOptions overlay, and keep a hidden-but-selected
+  // effort level represented the same way modelValue already does for a
+  // hidden-but-selected model.
   const needsModelList = isModelSelect || isEffortSelect
   const { models: selectableModels, loading: selectableModelsLoading } = useSelectableModels(
     needsModelList ? modelValue : undefined,
-    needsModelList
+    needsModelList,
+    harnessId,
+    projectId,
+    needsModelList ? effortValue : undefined
   )
   // Gates the model flyout's pinned "Refresh models" footer (model-routing
   // unit 12) — a Claude-only flyout (routing disabled) has nothing to
@@ -334,17 +367,17 @@ export function DropdownChip({
   const isEffortPending = isEffortSelect && currentModelEffortLevels === undefined
 
   // ---------------------------------------------------------------------
-  // Case 2 — footer.effortSelect: effective effort value, read from the
-  // SHARED per-workspace store (workspaceEffortStore) — same rationale as
-  // modelValue above. '' means unset/auto — normalized to 'auto' below.
-  // Bugfix (model-routing unit 11): this is what makes the main process's
-  // reconciliation (clampEffortToSupportedLevel, applied when a DIFFERENT
-  // chip/surface changes the model) visible here too — the reconciled
-  // value arrives via the SAME workspace:effectiveSettingsChanged push that
-  // updates modelValue, so this chip's displayed selection reflects the
-  // persisted value rather than a stale local one.
-  const storeEffortValue = useWorkspaceEffort(workspaceId)
-  const effortValue = storeEffortValue ?? ''
+  // Case 2 — footer.effortSelect: effective effort value. storeEffortValue/
+  // effortValue themselves are declared EARLIER (see the hoist comment
+  // above useSelectableModels), read from the SHARED per-workspace store
+  // (workspaceEffortStore) — same rationale as modelValue above. '' means
+  // unset/auto — normalized to 'auto' below. Bugfix (model-routing unit
+  // 11): this is what makes the main process's reconciliation
+  // (clampEffortToSupportedLevel, applied when a DIFFERENT chip/surface
+  // changes the model) visible here too — the reconciled value arrives via
+  // the SAME workspace:effectiveSettingsChanged push that updates
+  // modelValue, so this chip's displayed selection reflects the persisted
+  // value rather than a stale local one.
   const refetchEffectiveEffort = useCallback((): void => {
     if (!isEffortSelect) return
     window.api.workspaces
@@ -665,10 +698,15 @@ export function DropdownChip({
     // refetch — same coalescing fetchKey already uses, not a parallel fetch
     // path) plus the effective model/effort, so the picker self-heals here
     // even if a routingProxy:onSnapshot/workspace:effectiveSettingsChanged
-    // push was ever missed. modelValueRef.current (not the closed-over
-    // modelValue) because handleClick's own memoization can otherwise pin
-    // this to a stale value — see modelValueRef's own doc comment.
-    if (needsModelList) refetchSelectableModels(modelValueRef.current)
+    // push was ever missed. modelValueRef.current/effortValueRef.current
+    // (not the closed-over modelValue/effortValue) because handleClick's own
+    // memoization can otherwise pin this to a stale value — see
+    // modelValueRef's own doc comment. harnessId/projectId need no ref: they
+    // are props, not per-render derived state, so the closed-over values are
+    // already current.
+    if (needsModelList) {
+      refetchSelectableModels(modelValueRef.current, harnessId, projectId, effortValueRef.current)
+    }
     refetchEffectiveModel()
     refetchEffectiveEffort()
     const r = chipRef.current.getBoundingClientRect()

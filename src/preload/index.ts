@@ -487,8 +487,13 @@ const api = {
   models: {
     resolveLabels: (modelIds: string[]): Promise<Record<string, string>> =>
       invoke('models:resolveLabels', { modelIds }),
-    listSelectable: (currentModelId?: string): Promise<SelectableModel[]> =>
-      invoke('models:listSelectable', { currentModelId })
+    listSelectable: (
+      currentModelId?: string,
+      harnessId?: string,
+      projectId?: string,
+      currentEffort?: string
+    ): Promise<SelectableModel[]> =>
+      invoke('models:listSelectable', { currentModelId, harnessId, projectId, currentEffort })
   },
   claudeSettings: {
     get: (): Promise<ClaudeGlobalSettings> => invoke('claudeSettings:get'),

@@ -49,10 +49,23 @@ export interface UseSelectableModelsResult {
  * @param enabled when false, no IPC/subscription happens at all and the
  *   result is the synchronous Claude-only fallback — for callers that don't
  *   need the routed list this render (default true).
+ * @param harnessId (B4, support-multi-harness) which harness's curated model
+ *   list to resolve against — omitted falls back to Claude, matching every
+ *   pre-B4 caller's implicit assumption (see models:listSelectable's own
+ *   byte-identical-when-omitted doc comment in src/shared/ipc.ts).
+ * @param projectId (B4) which project scope's curatedOptions overlay to
+ *   apply on top of the global one — omitted resolves global scope only.
+ * @param currentEffort (B4) the workspace/project's currently-selected
+ *   effort value, if any — passed through so a hidden-but-selected effort
+ *   level still appears in each model's `effortLevels`, mirroring
+ *   currentModelId's own "never silently drop the active setting" role.
  */
 export function useSelectableModels(
   currentModelId?: string,
-  enabled = true
+  enabled = true,
+  harnessId?: string,
+  projectId?: string,
+  currentEffort?: string
 ): UseSelectableModelsResult {
-  return useSelectableModelsStore(currentModelId, enabled)
+  return useSelectableModelsStore(currentModelId, enabled, harnessId, projectId, currentEffort)
 }

@@ -37,7 +37,8 @@
 // ---------------------------------------------------------------------------
 
 import { CLAUDE_MODEL_OPTIONS, CLAUDE_BUILTIN_EFFORT_LEVELS } from '../../shared/types'
-import type { SelectableModel } from '../../shared/types'
+import type { SelectableModel, CuratedFieldOptionsOverlay } from '../../shared/types'
+import { resolveCuratedOptions } from '../../shared/harness/curatedOptions'
 import { bareClaudeIdFor, isClaudeModelId } from './sources/builtin'
 import { listCliProxyModelCacheEntries } from './sources/cliproxy'
 
@@ -180,23 +181,93 @@ export interface BuildSelectableModelsInput {
    *  identically when omitted — an absent/undefined set behaves exactly
    *  like an empty one (no persisted fallback offered). */
   persistedHealthyProviderIds?: Set<string>
+  /** User curation of the Claude MODEL list (B4, support-multi-harness) —
+   *  already-resolved HarnessSettings.curatedOptions.model for whichever
+   *  (harnessId, projectId) scope the caller is asking on behalf of, or
+   *  undefined for "no overlay" (no context available, or nothing stored).
+   *  Deliberately a plain resolved overlay, NOT a harnessId/projectId pair
+   *  this module would look up itself — selectable.ts must stay
+   *  electron-free/DB-free (see this file's own header +
+   *  scripts/verify-model-picker.ts, which exercises it fully offline); the
+   *  IPC handler (src/main/ipc/models.ts) is where resolveHarnessSettings()
+   *  actually runs, this module only applies the result via
+   *  resolveCuratedOptions. Applied ONLY to the Claude group — routed
+   *  models are dead code behind PHASE0_ROUTING_SEVERED, so there is
+   *  nothing else to apply it to yet. */
+  curatedModelOptions?: CuratedFieldOptionsOverlay
+  /** User curation of the EFFORT ladder (B4) — same resolved-overlay
+   *  contract as curatedModelOptions, applied per-model to that model's own
+   *  CLAUDE_BUILTIN_EFFORT_LEVELS entry (never a single global ladder — a
+   *  model with `null` effortLevels must stay `null`, not gain a fabricated
+   *  list just because an overlay exists). `currentEffort` is threaded
+   *  alongside so the hidden-but-selected invariant holds for effort too:
+   *  a hidden level that is the workspace's ACTIVE effort must still
+   *  resolve. */
+  curatedEffortOptions?: CuratedFieldOptionsOverlay
+  /** The workspace's currently-selected effort value, if any — passed
+   *  through to resolveCuratedOptions as the selectedValue for the effort
+   *  overlay, mirroring currentModelId's role for the model overlay. Never
+   *  itself validated against a model's real levels here — this module
+   *  only decides what to OFFER, not whether the current value is sane
+   *  (see effortPickerOptions.ts's clampEffortToSupportedLevel for that,
+   *  which this unit must not touch). */
+  currentEffort?: string
 }
 
-function claudeEntries(): SelectableModel[] {
-  return CLAUDE_MODEL_OPTIONS.map((o) => ({
-    id: o.value,
-    label: o.label,
-    providerId: CLAUDE_PROVIDER_ID,
-    providerLabel: CLAUDE_PROVIDER_LABEL,
-    isClaude: true,
-    available: true,
-    contextWindow: null, // resolved on demand via models:resolveLabels/registry, not duplicated here
-    // Real per-model levels from the hand-maintained builtin table (model-
-    // routing unit 11) — NOT a blanket null. See that table's own doc
-    // comment for why Claude is hardcoded here rather than proxy-sourced.
-    effortLevels: CLAUDE_BUILTIN_EFFORT_LEVELS[o.value] ?? null,
-    provisional: false
-  }))
+function claudeEntries(
+  curatedModelOptions?: CuratedFieldOptionsOverlay,
+  currentModelId?: string,
+  curatedEffortOptions?: CuratedFieldOptionsOverlay,
+  currentEffort?: string
+): SelectableModel[] {
+  // Resolve the MODEL list first (which ids appear at all, hidden/added/
+  // reordered) — resolveCuratedOptions is a true no-op (returns the input
+  // array by reference) when there is no overlay, so this costs nothing on
+  // the common "no curation configured" path.
+  const orderedIds = resolveCuratedOptions(
+    CLAUDE_MODEL_OPTIONS.map((o) => o.value),
+    curatedModelOptions,
+    currentModelId
+  )
+  // Keyed as plain `string` (not the narrow ClaudeModelOption union
+  // CLAUDE_MODEL_OPTIONS' own values infer to) — `id` below iterates over
+  // orderedIds, which can contain an overlay-added or reinstated-selected
+  // custom id resolveCuratedOptions never validates against the descriptor
+  // list (CuratedField.allowCustom's contract), so a Map keyed on the
+  // narrower type would reject looking those up at all.
+  const byId = new Map<string, (typeof CLAUDE_MODEL_OPTIONS)[number]>(
+    CLAUDE_MODEL_OPTIONS.map((o) => [o.value, o])
+  )
+
+  return orderedIds.map((id) => {
+    // A custom (overlay-added or reinstated-selected) id has no descriptor
+    // entry — fall back to using the id itself as the label, matching
+    // claudeFallbackModels'/buildCuratedOptionRows' own "arbitrary custom
+    // value" convention rather than throwing on a .get() miss.
+    const option = byId.get(id)
+    const rawEffortLevels =
+      (CLAUDE_BUILTIN_EFFORT_LEVELS as Record<string, string[] | null>)[id] ?? null
+    // Effort overlay applies PER MODEL, and only to a model that actually
+    // has real levels — a model with `null` (no reasoning-effort control at
+    // all) must stay `null`, never gain a fabricated ladder just because an
+    // overlay exists (see this field's own doc comment on
+    // BuildSelectableModelsInput).
+    const effortLevels =
+      rawEffortLevels === null
+        ? null
+        : resolveCuratedOptions(rawEffortLevels, curatedEffortOptions, currentEffort)
+    return {
+      id,
+      label: option?.label ?? id,
+      providerId: CLAUDE_PROVIDER_ID,
+      providerLabel: CLAUDE_PROVIDER_LABEL,
+      isClaude: true,
+      available: true,
+      contextWindow: null, // resolved on demand via models:resolveLabels/registry, not duplicated here
+      effortLevels,
+      provisional: false
+    }
+  })
 }
 
 /**
@@ -312,9 +383,21 @@ export function buildSelectableModels(input: BuildSelectableModelsInput): Select
   // `return` makes TS stop narrowing unreachable code, turning real
   // `string | undefined` guards below into spurious type errors — verified
   // empirically).
-  if (PHASE0_ROUTING_SEVERED) return claudeEntries()
+  if (PHASE0_ROUTING_SEVERED) {
+    return claudeEntries(
+      input.curatedModelOptions,
+      input.currentModelId,
+      input.curatedEffortOptions,
+      input.currentEffort
+    )
+  }
 
-  const result: SelectableModel[] = claudeEntries()
+  const result: SelectableModel[] = claudeEntries(
+    input.curatedModelOptions,
+    input.currentModelId,
+    input.curatedEffortOptions,
+    input.currentEffort
+  )
 
   const serving = proxyIsServing(input.routingProxy)
   const seenRoutedIds = new Set<string>()

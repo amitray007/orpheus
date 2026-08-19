@@ -136,6 +136,7 @@ export function WorkspaceFooter({
                 item={item}
                 workspaceId={workspaceId}
                 harnessId={harnessId}
+                projectId={projectId}
                 enabled={isVisible(item.visibleWhen, activityDetail)}
                 activityDetail={activityDetail}
                 onRestart={onRestart}

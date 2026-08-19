@@ -201,8 +201,18 @@ export function SettingsDrawer({
   // proxy/provider health server-side) — refetches whenever the currently
   // selected model changes so an unavailable-but-selected routed model is
   // never silently dropped (see useSelectableModels' own doc comment).
+  // projectId (B4, support-multi-harness) applies this project's
+  // curatedOptions overlay; harnessId omitted deliberately — this drawer is
+  // Claude-only (ClaudeProjectSettings), so the omitted-harnessId ->
+  // Claude-descriptor fallback is already the correct resolution, not a gap.
+  // localOverrides.effort keeps a hidden-but-selected effort override
+  // represented in the returned effortLevels.
   const { models: selectableModels, loading: selectableModelsLoading } = useSelectableModels(
-    localOverrides.model
+    localOverrides.model,
+    true,
+    undefined,
+    projectId,
+    localOverrides.effort
   )
   const modelOptions = useMemo(
     () => buildModelSelectOptions(selectableModels, { value: 'default', label: 'Use global' }),

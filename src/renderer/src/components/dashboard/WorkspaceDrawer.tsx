@@ -113,12 +113,20 @@ type EffortOption = string
 
 interface OverridesSectionProps {
   workspaceId: string
+  /** B4 (support-multi-harness) — threaded so useSelectableModels resolves
+   *  THIS workspace's harness+project curatedOptions overlay instead of
+   *  only ever seeing the global-scope option list. Both come straight off
+   *  the WorkspaceRecord already passed into WorkspaceDrawerProps. */
+  harnessId?: string
+  projectId?: string
   isDirty: boolean
   onRestart: () => void
 }
 
 function OverridesSection({
   workspaceId,
+  harnessId,
+  projectId,
   isDirty,
   onRestart
 }: OverridesSectionProps): React.JSX.Element {
@@ -139,8 +147,15 @@ function OverridesSection({
   // proxy/provider health server-side) — refetches whenever the currently
   // selected model changes so an unavailable-but-selected routed model is
   // never silently dropped (see useSelectableModels' own doc comment).
+  // harnessId/projectId/localOverrides.effort (B4, support-multi-harness)
+  // apply this workspace's harness+project curatedOptions overlay and keep
+  // a hidden-but-selected effort override represented.
   const { models: selectableModels, loading: selectableModelsLoading } = useSelectableModels(
-    localOverrides.model
+    localOverrides.model,
+    true,
+    harnessId,
+    projectId,
+    localOverrides.effort
   )
   const modelOptions = useMemo(
     () => buildModelSelectOptions(selectableModels, { value: 'default', label: 'Default' }),
@@ -456,7 +471,13 @@ export function WorkspaceDrawer({
       {/* Drawer body — single scrollable column */}
       <div className="flex-1 overflow-y-auto min-h-0">
         <ActivitySection activity={activity} detail={detail} />
-        <OverridesSection workspaceId={workspace.id} isDirty={isDirty} onRestart={onRestart} />
+        <OverridesSection
+          workspaceId={workspace.id}
+          harnessId={workspace.harnessId}
+          projectId={workspace.projectId}
+          isDirty={isDirty}
+          onRestart={onRestart}
+        />
       </div>
     </div>
   )

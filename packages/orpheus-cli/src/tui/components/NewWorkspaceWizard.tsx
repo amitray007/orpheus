@@ -153,7 +153,14 @@ function useWizardData(
 ): void {
   useEffect(() => {
     let cancelled = false
-    sendCommand('models.list', {})
+    // projectId threaded (B4, support-multi-harness) so the wizard's model
+    // picker applies the SAME per-project curatedOptions overlay the
+    // desktop pickers do (WorkspaceDrawer/SettingsDrawer/DropdownChip) —
+    // `project` is already this hook's own parameter, not new context.
+    // harnessId is omitted: WizardProject carries none (Claude is the only
+    // harness today), and models.list's own byte-identical-when-omitted
+    // contract means that's equivalent to explicitly passing 'claude'.
+    sendCommand('models.list', { projectId: project.id })
       .then((data) => {
         if (cancelled) return
         const models = groupModelsByProvider(data as SelectableModel[])

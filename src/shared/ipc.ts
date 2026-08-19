@@ -317,8 +317,21 @@ export interface InvokeChannelMap {
   // marked `available: false`, so a workspace's stored setting is never
   // silently dropped from the picker. See models:listSelectable's own doc
   // comment in src/main/ipc/models.ts for the full gating rules.
+  //
+  // `harnessId`/`projectId` (B4, support-multi-harness) are BOTH optional,
+  // additively so — every existing caller that omits them must get
+  // BYTE-IDENTICAL results to before this unit (see resolveSelectableModels'
+  // own doc comment for the exact fallback: an omitted harnessId resolves
+  // as the Claude descriptor, mirroring main's never-throws resolveHarness();
+  // an omitted projectId resolves global scope only). They let the handler
+  // apply that (harness, project) scope's HarnessSettings.curatedOptions
+  // overlay (added in c2932f43) to the returned model list — without them
+  // there is nothing to key that lookup on, and the list falls back to the
+  // shipped descriptor order unfiltered, same as pre-B4 behavior.
   'models:listSelectable': {
-    req: [{ currentModelId?: string }]
+    req: [
+      { currentModelId?: string; harnessId?: string; projectId?: string; currentEffort?: string }
+    ]
     res: SelectableModel[]
   }
   'claudeSettings:get': { req: []; res: ClaudeGlobalSettings }
