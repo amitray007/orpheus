@@ -143,6 +143,8 @@ type AppUiStateRow = {
   privacy_mode: number | null
   // App icon pack (Settings > General)
   icon_pack_id: string | null
+  // Worktree base-ref preference (support-multi-harness follow-up)
+  worktree_base_ref: string | null
   updated_at: number
 }
 
@@ -283,6 +285,17 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     // (both switched legacy → wisp when wisp became the default pack) so this
     // row→record mapping can't disagree with the catalog's own default.
     iconPackId: row.icon_pack_id ?? 'wisp',
+    // Worktree base-ref preference — narrow the raw column to the exact
+    // union rather than trusting it blanket-cast; a value that somehow
+    // isn't 'fresh'/'head' (a manual DB edit, a future rollback) reads back
+    // as null ("no preference here"), which readWorktreeBaseRef treats
+    // identically to genuinely-unset — falls through to the legacy
+    // ~/.claude/settings.json read, then to 'fresh'. Never throws on a
+    // corrupt value.
+    worktreeBaseRef:
+      row.worktree_base_ref === 'fresh' || row.worktree_base_ref === 'head'
+        ? row.worktree_base_ref
+        : null,
     updatedAt: row.updated_at
   }
 }
@@ -538,6 +551,7 @@ function validatePatch(patch: AppUiStatePatch): void {
   }
 
   validateFilesViewPatch(patch)
+  validateWorktreeBaseRefPatch(patch)
 }
 
 // Split out of validatePatch to keep its cognitive complexity under the
@@ -574,6 +588,26 @@ function validateFilesViewPatch(patch: AppUiStatePatch): void {
   if ('iconPackId' in patch && patch.iconPackId !== undefined) {
     if (typeof patch.iconPackId !== 'string' || patch.iconPackId.length === 0) {
       throw new Error('uiState: iconPackId must be a non-empty string')
+    }
+  }
+}
+
+// worktreeBaseRef: null is valid (clears the preference, falls back to the
+// legacy ~/.claude/settings.json location — see AppUiState's own doc
+// comment); a non-null value must be exactly 'fresh' or 'head'. Split out
+// of validateFilesViewPatch (support-multi-harness follow-up) for the same
+// "keep cognitive complexity under the ratchet ceiling" reason that
+// function's own header documents — it had accreted several unrelated
+// fields (privacyMode, iconPackId) past its original files-view scope, and
+// this addition would have pushed it over.
+function validateWorktreeBaseRefPatch(patch: AppUiStatePatch): void {
+  if ('worktreeBaseRef' in patch && patch.worktreeBaseRef !== undefined) {
+    if (
+      patch.worktreeBaseRef !== null &&
+      patch.worktreeBaseRef !== 'fresh' &&
+      patch.worktreeBaseRef !== 'head'
+    ) {
+      throw new Error("uiState: worktreeBaseRef must be 'fresh', 'head', or null")
     }
   }
 }
@@ -731,7 +765,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Privacy mode (v66)
     privacyMode: 'privacy_mode',
     // App icon pack (Settings > General)
-    iconPackId: 'icon_pack_id'
+    iconPackId: 'icon_pack_id',
+    // Worktree base-ref preference (support-multi-harness follow-up)
+    worktreeBaseRef: 'worktree_base_ref'
   }
 
   const setClauses: string[] = []

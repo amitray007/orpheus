@@ -244,6 +244,16 @@ export function composeClaudeHarnessLaunch(
   if (resolved.preLaunchSnippet) {
     env['ORPHEUS_PRE_LAUNCH_SNIPPET'] = resolved.preLaunchSnippet
   }
+  // sourceZshrc — same wrapper-plumbing exception as preLaunchSnippet just
+  // above (harness-common.sh reads ORPHEUS_SOURCE_ZSHRC directly, harness-
+  // agnostically); only emitted when explicitly true — harness-common.sh's
+  // own check is `== "1"`, so anything else (absent, "0", "false") is
+  // already equivalent to omitting the var entirely, but omitting rather
+  // than emitting '0'/'false' keeps this env map's "only true things are
+  // present" convention consistent with the rest of this function.
+  if (resolved.sourceZshrc) {
+    env['ORPHEUS_SOURCE_ZSHRC'] = '1'
+  }
 
   return {
     flags: flagTokens.join(FLAG_DELIMITER),

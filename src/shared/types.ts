@@ -848,6 +848,13 @@ export type AppUiState = {
   // 'legacy'; falls back to 'legacy' then the first valid pack at read time
   // if the persisted id's pack no longer exists on disk.
   iconPackId: string
+  // Worktree base-ref preference (support-multi-harness follow-up) — see
+  // src/main/worktrees.ts's readWorktreeBaseRef for the fallback-read
+  // rationale (this Orpheus-owned home vs. the legacy ~/.claude/settings.json
+  // location). null = no preference stored HERE yet — resolution falls
+  // through to the legacy location, then to 'fresh'. Never 'auto' or any
+  // other value; only ever 'fresh' or 'head'.
+  worktreeBaseRef: 'fresh' | 'head' | null
   updatedAt: number
 }
 
@@ -3445,6 +3452,10 @@ export type HarnessSettings = {
    *  src/main/harness/settings.ts's HarnessSettings for the full rationale
    *  (kept field-for-field identical to that type on purpose). */
   preLaunchSnippet?: string
+  /** Whether to source the user's full interactive shell rc before the
+   *  harness starts — see src/main/harness/settings.ts's HarnessSettings
+   *  for the full rationale (kept field-for-field identical). */
+  sourceZshrc?: boolean
 }
 
 /** Renderer-safe projection of a HarnessDescriptor (src/main/harness/registry.ts)

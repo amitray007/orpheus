@@ -95,6 +95,11 @@ const verifiers = [
   // override-chip decision. No SQLite/native dependency (pure TS transforms
   // over plain objects), so plain bun like the entry above.
   'verify-project-drawer-settings.ts',
+  // H1 follow-up (support-multi-harness) — per-harness worktree directory
+  // derivation (src/shared/harness/worktreePaths.ts): `.<harness>/worktrees`
+  // instead of a hardcoded `.claude/worktrees`. No SQLite/native dependency,
+  // plain bun like the entry above.
+  'verify-worktree-paths.ts',
   // C1 (support-multi-harness) — createWorkspace()'s new harnessId param,
   // the write-side half of the migration (workspaces.harness_id existed
   // since Phase 1.3 but nothing could ever write a non-default value until

@@ -26,6 +26,7 @@ import {
   worktreeSlug
 } from '../worktrees'
 import { getTitle, withInjectLock } from '../workspaceResources'
+import { worktreeDirSegment } from '../../shared/harness/worktreePaths'
 import { reconcileSessionStateFresh } from '../sessionState'
 import { renameHostedSession, unhostWorkspace } from '../tmuxHost'
 import { WorkspaceOrchestrationService } from './service'
@@ -280,14 +281,13 @@ function createStorePort(
 
 function createWorktreePort(): WorkspaceWorktreePort {
   return {
-    derivePath: ({ project, workspaceId, name }) =>
+    derivePath: ({ project, workspaceId, name, harnessId = 'claude' }) =>
       path.join(
         project.cwd,
-        '.claude',
-        'worktrees',
+        worktreeDirSegment(harnessId),
         `${worktreeSlug(name)}-${workspaceId.slice(0, 8)}`
       ),
-    create: async ({ project, path: requestedPath, branch }) => {
+    create: async ({ project, path: requestedPath, branch, harnessId = 'claude' }) => {
       const repoRoot = await resolveMainWorktree(project.cwd)
       const offeredModes = await resolveOfferedModes(project.cwd, true)
       if (!offeredModes.worktree) {
@@ -301,7 +301,8 @@ function createWorktreePort(): WorkspaceWorktreePort {
           slug,
           branch: requestedBranch,
           mode: (await branchExists(repoRoot, requestedBranch)) ? 'existing' : 'new',
-          baseRef: await readWorktreeBaseRef()
+          baseRef: await readWorktreeBaseRef(),
+          harnessId
         })
       )
     },

@@ -126,6 +126,16 @@ export type HarnessSettings = {
   curated?: HarnessCuratedSettings
   curatedOptions?: HarnessCuratedOptionsSettings
   preLaunchSnippet?: string
+  /** Whether to source the user's full interactive shell rc (e.g. ~/.zshrc)
+   *  before the harness starts — same ORPHEUS_* wrapper-plumbing family as
+   *  preLaunchSnippet above (harness-common.sh reads ORPHEUS_SOURCE_ZSHRC
+   *  directly), same harness-agnostic justification, same global -> project
+   *  scalar layering (mergeScalar below). Global-scope-only today: the
+   *  project Settings drawer does not offer this control (removed per
+   *  product decision — see SettingsDrawer.tsx's own header), but the field
+   *  itself is not scope-restricted by this type; a project override would
+   *  resolve correctly if a caller ever wrote one. */
+  sourceZshrc?: boolean
 }
 
 function normalizeScopeId(scope: HarnessSettingsScope, scopeId?: string): string {
@@ -221,6 +231,41 @@ export function setCuratedModelEffort(
   if (patch.model !== undefined) nextCurated.model = patch.model
   if (patch.effort !== undefined) nextCurated.effort = patch.effort
   setHarnessSettings(harnessId, scope, scopeId, { ...existing, curated: nextCurated })
+}
+
+/**
+ * Merge-writes preLaunchSnippet/sourceZshrc — the ORPHEUS_* wrapper-plumbing
+ * scalars (see HarnessSettings' own doc comments) — at one exact scope.
+ * Global-settings-page write path (H1 follow-up, support-multi-harness):
+ * the project Settings drawer has its own dedicated tri-state channel
+ * (harness:settings:updateProjectDrawer / applyProjectDrawerPatch) for
+ * preLaunchSnippet at project scope; this is the sibling for the GLOBAL
+ * scope page (ClaudeToolsSection.tsx), which needs only these two fields,
+ * not the drawer's full model/effort/args/env surface.
+ *
+ * Tri-state, same contract as applyProjectDrawerPatch: a key ABSENT from
+ * `patch` leaves that field's stored value untouched; `null` clears it
+ * (deletes the key rather than storing `undefined` — see
+ * applyProjectDrawerPatch's own comment for why that distinction matters
+ * once the value round-trips through JSON.stringify); a real value sets it.
+ */
+export function setShellInit(
+  harnessId: string,
+  scope: HarnessSettingsScope,
+  scopeId: string | undefined,
+  patch: { preLaunchSnippet?: string | null; sourceZshrc?: boolean | null }
+): void {
+  const existing = getHarnessSettings(harnessId, scope, scopeId)
+  const next: HarnessSettings = { ...existing }
+  if (patch.preLaunchSnippet !== undefined) {
+    if (patch.preLaunchSnippet === null) delete next.preLaunchSnippet
+    else next.preLaunchSnippet = patch.preLaunchSnippet
+  }
+  if (patch.sourceZshrc !== undefined) {
+    if (patch.sourceZshrc === null) delete next.sourceZshrc
+    else next.sourceZshrc = patch.sourceZshrc
+  }
+  setHarnessSettings(harnessId, scope, scopeId, next)
 }
 
 /**
@@ -327,15 +372,18 @@ function mergeRowsByKey(
   return sawAny ? merged : undefined
 }
 
-// preLaunchSnippet LAYERING — plain last-defined-wins, same rule
+// preLaunchSnippet/sourceZshrc LAYERING — plain last-defined-wins, same rule
 // mergeCurated applies to curated.model/curated.effort one field at a time.
-// A single free-text string has no sane per-key merge (unlike args/env rows,
-// which are independent addressable units) — the whole value is one
-// editorial decision, so a MORE SPECIFIC scope defining it replaces an
-// earlier scope's value entirely, and a scope with NO opinion (key absent)
-// leaves an earlier scope's value untouched.
-function mergeScalar(layers: Array<string | undefined>): string | undefined {
-  let merged: string | undefined
+// A single scalar value (free-text string, or boolean) has no sane per-key
+// merge (unlike args/env rows, which are independent addressable units) —
+// the whole value is one editorial decision, so a MORE SPECIFIC scope
+// defining it replaces an earlier scope's value entirely, and a scope with
+// NO opinion (key absent) leaves an earlier scope's value untouched.
+// Generic over T rather than two near-identical string/boolean copies —
+// preLaunchSnippet (string) and sourceZshrc (boolean) are the same merge
+// shape, just a different payload type.
+function mergeScalar<T>(layers: Array<T | undefined>): T | undefined {
+  let merged: T | undefined
   for (const layer of layers) {
     if (layer !== undefined) merged = layer
   }
@@ -422,6 +470,7 @@ export function resolveHarnessSettings(harnessId: string, projectId?: string): H
   const curated = mergeCurated([global.curated, project.curated])
   const curatedOptions = mergeCuratedOptions([global.curatedOptions, project.curatedOptions])
   const preLaunchSnippet = mergeScalar([global.preLaunchSnippet, project.preLaunchSnippet])
+  const sourceZshrc = mergeScalar([global.sourceZshrc, project.sourceZshrc])
 
   const resolved: HarnessSettings = {}
   const resolvedArgs = enabledOnly(args)
@@ -431,5 +480,6 @@ export function resolveHarnessSettings(harnessId: string, projectId?: string): H
   if (curated) resolved.curated = curated
   if (curatedOptions) resolved.curatedOptions = curatedOptions
   if (preLaunchSnippet !== undefined) resolved.preLaunchSnippet = preLaunchSnippet
+  if (sourceZshrc !== undefined) resolved.sourceZshrc = sourceZshrc
   return resolved
 }

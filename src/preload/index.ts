@@ -1013,7 +1013,13 @@ const api = {
       projectId: string,
       patch: ProjectDrawerFieldPatch
     ): Promise<HarnessSettings> =>
-      invoke('harness:settings:updateProjectDrawer', { harnessId, projectId, patch })
+      invoke('harness:settings:updateProjectDrawer', { harnessId, projectId, patch }),
+    // Global Settings page write path. See
+    // harness:settings:updateShellInit's own doc comment (shared/ipc.ts).
+    updateShellInit: (
+      harnessId: string,
+      patch: { preLaunchSnippet?: string | null; sourceZshrc?: boolean | null }
+    ): Promise<HarnessSettings> => invoke('harness:settings:updateShellInit', { harnessId, patch })
   },
   aliases: {
     list: (): Promise<ModelAliasesState> => invoke('aliases:list'),

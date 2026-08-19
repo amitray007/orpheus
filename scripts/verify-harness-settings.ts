@@ -549,6 +549,105 @@ function rowCount(db: InstanceType<typeof Database>): number {
   )
 }
 
+// ---------------------------------------------------------------------------
+// 13. sourceZshrc (H1 follow-up, support-multi-harness) — same mergeScalar
+//     layering as preLaunchSnippet, but a boolean payload — confirms
+//     mergeScalar's generic-over-T rewrite still works for a non-string type,
+//     not just preLaunchSnippet's string case.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  assert.equal(
+    resolveHarnessSettings('claude', 'proj-13').sourceZshrc,
+    undefined,
+    'nothing configured -> unset'
+  )
+  setHarnessSettings('claude', 'global', undefined, { sourceZshrc: true })
+  assert.equal(
+    resolveHarnessSettings('claude', 'proj-13').sourceZshrc,
+    true,
+    'global true applies when the project has no override'
+  )
+  setHarnessSettings('claude', 'project', 'proj-13', { sourceZshrc: false })
+  assert.equal(
+    resolveHarnessSettings('claude', 'proj-13').sourceZshrc,
+    false,
+    'an explicit project-scope false wins over a global true (not treated as "unset")'
+  )
+  console.log(
+    '✓ sourceZshrc layers global -> project via the same generic mergeScalar as preLaunchSnippet'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 14. setShellInit (H1 follow-up, support-multi-harness) — the global
+//     Settings page's write path for preLaunchSnippet/sourceZshrc. Merge-
+//     writes either field, tri-state (omit/null/value), without touching
+//     curated/args/env at the same scope.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    curated: { model: 'opus' },
+    args: [{ key: '--verbose', enabled: true }]
+  })
+  const { setShellInit } = settingsMod
+  setShellInit('claude', 'global', undefined, { preLaunchSnippet: 'eval "$(nvm use)"' })
+  assert.deepEqual(
+    getHarnessSettings('claude', 'global'),
+    {
+      curated: { model: 'opus' },
+      args: [{ key: '--verbose', enabled: true }],
+      preLaunchSnippet: 'eval "$(nvm use)"'
+    },
+    'setShellInit sets preLaunchSnippet, leaves curated/args untouched'
+  )
+
+  setShellInit('claude', 'global', undefined, { sourceZshrc: true })
+  assert.deepEqual(
+    getHarnessSettings('claude', 'global'),
+    {
+      curated: { model: 'opus' },
+      args: [{ key: '--verbose', enabled: true }],
+      preLaunchSnippet: 'eval "$(nvm use)"',
+      sourceZshrc: true
+    },
+    'a second setShellInit call for sourceZshrc leaves the first field (preLaunchSnippet) alone'
+  )
+
+  setShellInit('claude', 'global', undefined, { preLaunchSnippet: null })
+  const afterClear = getHarnessSettings('claude', 'global')
+  assert.equal(afterClear.sourceZshrc, true, 'sourceZshrc survives a preLaunchSnippet clear')
+  assert.equal(
+    'preLaunchSnippet' in afterClear,
+    false,
+    'clearing (null) DELETES the key rather than storing undefined'
+  )
+
+  // THE GAP — symmetric coverage for sourceZshrc's OWN clear path, not just
+  // preLaunchSnippet's. This matters MORE for sourceZshrc than for the
+  // snippet: false and "unset, falls through to a less specific scope" are
+  // genuinely different values once resolveHarnessSettings layers scopes
+  // (mergeScalar — see settings.ts). A clear that stored `false` instead of
+  // deleting the key would silently pin this scope to OFF rather than
+  // letting a broader scope's value apply, which the preLaunchSnippet-only
+  // assertion above could never have caught (a string field's "empty"
+  // value has no equivalent false/true ambiguity).
+  setShellInit('claude', 'global', undefined, { sourceZshrc: null })
+  const afterSourceZshrcClear = getHarnessSettings('claude', 'global')
+  assert.equal(
+    afterSourceZshrcClear.preLaunchSnippet,
+    undefined,
+    'preLaunchSnippet stays cleared from the earlier step (unrelated field)'
+  )
+  assert.equal(
+    'sourceZshrc' in afterSourceZshrcClear,
+    false,
+    'clearing sourceZshrc (null) DELETES the key rather than storing false'
+  )
+  console.log('✓ setShellInit merge-writes/clears preLaunchSnippet and sourceZshrc independently')
+}
+
 console.log('\nAll harness-settings assertions passed.')
 
 // ---------------------------------------------------------------------------
@@ -583,4 +682,36 @@ mustFail('mergeScalar letting an undefined project value wipe the global value',
     getHarnessSettings('claude', 'project', 'proj-mutation').preLaunchSnippet
   ])
   assert.equal(broken, real, 'the unguarded merge must disagree with the real fall-through result')
+})
+
+mustFail('setShellInit clearing sourceZshrc by writing false instead of deleting', () => {
+  // Simulates a broken clear that stores `false` for a `null` patch value
+  // instead of deleting the key — false and "unset" are NOT the same thing
+  // once resolveHarnessSettings layers scopes: an explicit project-scope
+  // `false` would override a global `true`, but a DELETED key falls through
+  // to the global value instead. Confusing the two silently changes
+  // behavior for anyone clearing a project-scope override.
+  function brokenSetShellInit(
+    existing: HarnessSettings,
+    patch: { sourceZshrc?: boolean | null }
+  ): HarnessSettings {
+    const next = { ...existing }
+    if (patch.sourceZshrc !== undefined) {
+      // BUG: stores `false` for a null (clear) patch instead of deleting.
+      next.sourceZshrc = patch.sourceZshrc === null ? false : patch.sourceZshrc
+    }
+    return next
+  }
+  createFreshDb()
+  setHarnessSettings('claude', 'project', 'proj-mutation-2', { sourceZshrc: true })
+  const existing = getHarnessSettings('claude', 'project', 'proj-mutation-2')
+  const { setShellInit } = settingsMod
+  setShellInit('claude', 'project', 'proj-mutation-2', { sourceZshrc: null })
+  const real = getHarnessSettings('claude', 'project', 'proj-mutation-2')
+  const broken = brokenSetShellInit(existing, { sourceZshrc: null })
+  assert.deepEqual(
+    broken,
+    real,
+    'storing false-for-clear must disagree with the real delete-the-key result'
+  )
 })

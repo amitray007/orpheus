@@ -591,6 +591,41 @@ function setWorkspaceOverride(
   console.log('✓ preLaunchSnippet layers global -> project, same as curated.model/effort')
 }
 
+// 16. sourceZshrc (H1 follow-up, support-multi-harness) — reaches the
+//     composed env as ORPHEUS_SOURCE_ZSHRC='1' when true; is ABSENT (not
+//     '0', not 'false') when false or unset, matching
+//     harness-common.sh's own `== "1"` check.
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, { sourceZshrc: true })
+  const launchTrue = composeClaudeHarnessLaunch('proj-17', 'ws-17')
+  assert.equal(
+    launchTrue.env['ORPHEUS_SOURCE_ZSHRC'],
+    '1',
+    'sourceZshrc: true must reach the composed env as ORPHEUS_SOURCE_ZSHRC=1'
+  )
+
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, { sourceZshrc: false })
+  const launchFalse = composeClaudeHarnessLaunch('proj-18', 'ws-18')
+  assert.equal(
+    'ORPHEUS_SOURCE_ZSHRC' in launchFalse.env,
+    false,
+    'sourceZshrc: false must emit NO env key at all, not ORPHEUS_SOURCE_ZSHRC=0'
+  )
+
+  createFreshDb()
+  const launchUnset = composeClaudeHarnessLaunch('proj-19', 'ws-19')
+  assert.equal(
+    'ORPHEUS_SOURCE_ZSHRC' in launchUnset.env,
+    false,
+    'unset sourceZshrc must emit no ORPHEUS_SOURCE_ZSHRC key at all'
+  )
+  console.log(
+    '✓ sourceZshrc reaches the composed launch env as ORPHEUS_SOURCE_ZSHRC=1 (or is absent)'
+  )
+}
+
 console.log('\nAll harness-claude-launch assertions passed.')
 
 // ---------------------------------------------------------------------------
@@ -631,4 +666,26 @@ mustFail('preLaunchSnippet emission reverted to the pre-fix no-op', () => {
 
 console.log(
   'mutation test: reverting preLaunchSnippet emission is correctly caught as a failing assertion'
+)
+
+mustFail('sourceZshrc emitted as "0"/"false" instead of being absent when off', () => {
+  // Simulates a broken emitter that always sets the env key with a string
+  // representation of the boolean, instead of only ever emitting '1' (and
+  // only when true) — harness-common.sh checks `== "1"` specifically, so an
+  // emitted 'false' would silently NOT match that check today, but would
+  // still leak a stray env var into every launch and diverge from this
+  // emitter's own "absent means unset" convention for every other field.
+  createFreshDb()
+  setHarnessSettings('claude', 'project', 'proj-mutation-2', { sourceZshrc: false })
+  const real = composeClaudeHarnessLaunch('proj-mutation-2', 'ws-mutation-2')
+  const broken: Record<string, string> = { ...real.env, ORPHEUS_SOURCE_ZSHRC: 'false' }
+  assert.deepEqual(
+    broken,
+    real.env,
+    'a stray ORPHEUS_SOURCE_ZSHRC=false must disagree with the real, key-absent result'
+  )
+})
+
+console.log(
+  'mutation test: emitting a stray ORPHEUS_SOURCE_ZSHRC=false is correctly caught as a failing assertion'
 )

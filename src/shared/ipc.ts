@@ -852,6 +852,26 @@ export interface InvokeChannelMap {
     ]
     res: HarnessSettings
   }
+  // Global Settings page (ClaudeToolsSection.tsx) write path for the two
+  // ORPHEUS_* wrapper-plumbing scalars — sibling to
+  // harness:settings:updateProjectDrawer above but for GLOBAL scope only
+  // (scopeId omitted means global — normalizeScopeId's '' sentinel, same as
+  // every other global-scope harness_settings write) and a narrower field
+  // set (this page has no model/effort/args/env controls of its own; those
+  // stay on window.api.claudeSettings). Also recomputes dirty + broadcasts,
+  // same as harness:settings:updateProjectDrawer — a sourceZshrc/
+  // preLaunchSnippet change alters the composed launch env (see
+  // composeClaudeHarnessLaunch), so every mounted workspace must be
+  // rechecked exactly like a model/effort change already is.
+  'harness:settings:updateShellInit': {
+    req: [
+      {
+        harnessId: string
+        patch: { preLaunchSnippet?: string | null; sourceZshrc?: boolean | null }
+      }
+    ]
+    res: HarnessSettings
+  }
 
   // Model-name aliasing (model-routing unit 08) — see
   // src/main/routingProxy/aliases.ts. 'aliases:list' returns the master

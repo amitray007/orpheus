@@ -337,10 +337,16 @@ export class WorkspaceOrchestrationService {
       let branch: string | null = null
       let worktreeParentCwd: string | null = null
       if (input.mode === 'worktree') {
-        const derivedPath = this.ports.worktrees.derivePath({ project, workspaceId, name })
+        const derivedPath = this.ports.worktrees.derivePath({
+          project,
+          workspaceId,
+          name,
+          harnessId: input.harnessId
+        })
         const created = await this.ports.worktrees.create({
           project,
           path: derivedPath,
+          harnessId: input.harnessId,
           ...(input.branch == null ? {} : { branch: input.branch.trim() })
         })
         cwd = created.path

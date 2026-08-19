@@ -438,6 +438,22 @@ export function ClaudeToolsSection(): React.JSX.Element {
   const [deletingServer, setDeletingServer] = useState<DiscoveredMcpServer | null>(null)
   const addButtonRef = useRef<HTMLButtonElement>(null)
 
+  // Shell-init (H1 follow-up, support-multi-harness) — Source ~/.zshrc /
+  // Custom shell before harness now read/write harness_settings (global
+  // scope) via harness:settings:updateShellInit, instead of
+  // claudeSettings.sourceZshrc/preLaunchSnippet — the columns the live
+  // launch emitter (composeClaudeHarnessLaunch) stopped reading after the
+  // U9 cutover. See SettingsDrawer.tsx's own header for the fuller
+  // investigation; this is the same fix applied to the global scope. `null`
+  // in harnessShellInit's optimistic patch state below is never actually
+  // stored (harness-side, `undefined` on the HarnessSettings type IS the
+  // unset state) — the UI just reads through `?? default` at render time,
+  // same convention as the rest of this component's `settings.*` reads.
+  const [harnessShellInit, setHarnessShellInit] = useState<{
+    preLaunchSnippet?: string
+    sourceZshrc?: boolean
+  } | null>(null)
+
   useEffect(() => {
     let cancelled = false
     window.api.claudeSettings
@@ -446,6 +462,17 @@ export function ClaudeToolsSection(): React.JSX.Element {
         if (!cancelled) setSettings(s)
       })
       .catch((err) => console.error('[tools-settings] load failed', err))
+    window.api.harness
+      .getSettings('claude', 'global')
+      .then((s) => {
+        if (!cancelled) {
+          setHarnessShellInit({
+            preLaunchSnippet: s.preLaunchSnippet,
+            sourceZshrc: s.sourceZshrc
+          })
+        }
+      })
+      .catch((err) => console.error('[tools-settings] shell-init load failed', err))
     return () => {
       cancelled = true
     }
@@ -508,6 +535,37 @@ export function ClaudeToolsSection(): React.JSX.Element {
       })
     },
     [settings]
+  )
+
+  // Optimistically updates local state, then writes through
+  // harness:settings:updateShellInit — see harnessShellInit's own comment
+  // above. `null` clears a field (inherit/off); a real value sets it.
+  const patchShellInit = useCallback(
+    (p: { preLaunchSnippet?: string | null; sourceZshrc?: boolean | null }): void => {
+      setHarnessShellInit((prev) => {
+        const next = { ...prev }
+        if (p.preLaunchSnippet !== undefined) {
+          next.preLaunchSnippet = p.preLaunchSnippet ?? undefined
+        }
+        if (p.sourceZshrc !== undefined) {
+          next.sourceZshrc = p.sourceZshrc ?? undefined
+        }
+        return next
+      })
+      window.api.harness.updateShellInit('claude', p).catch((err) => {
+        console.error('[tools-settings] shell-init update failed; refetching', err)
+        window.api.harness
+          .getSettings('claude', 'global')
+          .then((s) =>
+            setHarnessShellInit({
+              preLaunchSnippet: s.preLaunchSnippet,
+              sourceZshrc: s.sourceZshrc
+            })
+          )
+          .catch(console.error)
+      })
+    },
+    []
   )
 
   const toggleMcpServer = useCallback(
@@ -956,26 +1014,26 @@ export function ClaudeToolsSection(): React.JSX.Element {
             />
           </SettingRow>
           <SettingRow
-            label="Source ~/.zshrc before Claude"
-            description="Source your full ~/.zshrc before Claude starts. Off by default for faster launch; turn on if your shell setup (aliases, tool managers) lives in .zshrc."
+            label="Source ~/.zshrc before harness"
+            description="Source your full ~/.zshrc before the harness starts. Off by default for faster launch; turn on if your shell setup (aliases, tool managers) lives in .zshrc."
             mapsTo="ORPHEUS_SOURCE_ZSHRC"
           >
             <Toggle
-              ariaLabel="Source ~/.zshrc before Claude"
-              value={settings.sourceZshrc}
-              onChange={(v) => patch({ sourceZshrc: v })}
+              ariaLabel="Source ~/.zshrc before harness"
+              value={harnessShellInit?.sourceZshrc ?? false}
+              onChange={(v) => patchShellInit({ sourceZshrc: v })}
             />
           </SettingRow>
           <SettingRow
-            label="Custom shell before Claude"
-            description='Runs as you, in your shell, right before Claude starts. Use it to load tools like direnv or nvm. Example: eval "$(direnv export zsh)"'
+            label="Custom shell before harness"
+            description='Runs as you, in your shell, right before the harness starts. Use it to load tools like direnv or nvm. Example: eval "$(direnv export zsh)"'
             mapsTo="ORPHEUS_PRE_LAUNCH_SNIPPET"
           >
             <textarea
-              aria-label="Custom shell before Claude"
-              value={settings.preLaunchSnippet}
-              onChange={(e) => patch({ preLaunchSnippet: e.target.value })}
-              onBlur={(e) => patch({ preLaunchSnippet: e.target.value.trim() })}
+              aria-label="Custom shell before harness"
+              value={harnessShellInit?.preLaunchSnippet ?? ''}
+              onChange={(e) => patchShellInit({ preLaunchSnippet: e.target.value })}
+              onBlur={(e) => patchShellInit({ preLaunchSnippet: e.target.value.trim() || null })}
               placeholder='eval "$(direnv export zsh)"'
               className="w-full min-h-[76px] px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono resize-y cursor-text"
             />

@@ -35,7 +35,12 @@ import {
 } from '../claudeWorkspaceSettings'
 import type { ClaudeWorkspaceSettings, ClaudeEffort } from '../../shared/types'
 import { withReconciledEffort } from '../effortReconciliation'
-import { setCuratedModelEffort, getHarnessSettings, setHarnessSettings } from '../harness/settings'
+import {
+  setCuratedModelEffort,
+  getHarnessSettings,
+  setHarnessSettings,
+  setShellInit
+} from '../harness/settings'
 import { resolveHarness } from '../harness/registry'
 import { CLAUDE_PERMISSION_MODE_ARG_KEY } from '../harness/claude/curated'
 import { applyProjectDrawerPatch } from '../../shared/harness/projectDrawerSettings'
@@ -455,6 +460,17 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
     recomputeDirty()
     broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
     return getHarnessSettings(harnessId, 'project', projectId)
+  })
+
+  // Global Settings page (ClaudeToolsSection.tsx) write path — see
+  // harness:settings:updateShellInit's own doc comment (shared/ipc.ts).
+  // Global scope only, scopeId omitted (setShellInit/getHarnessSettings
+  // both normalize a missing scopeId to the '' global sentinel).
+  handle('harness:settings:updateShellInit', (_e, { harnessId, patch }) => {
+    setShellInit(harnessId, 'global', undefined, patch)
+    recomputeDirty()
+    broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
+    return getHarnessSettings(harnessId, 'global')
   })
 
   // ---------------------------------------------------------------------------

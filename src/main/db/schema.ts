@@ -772,6 +772,18 @@ export const schema: SchemaDef = {
       // the persisted id is unknown or its pack was removed. Default
       // 'legacy' so existing users keep today's icon on upgrade.
       icon_pack_id: { type: 'TEXT', notNull: true, default: "'legacy'" },
+      // Worktree base-ref preference (support-multi-harness follow-up) —
+      // moved here from ~/.claude/settings.json's invented `worktree.baseRef`
+      // key (readWorktreeBaseRef in worktrees.ts), which was never a real
+      // Claude Code setting (Claude does not create or manage worktrees;
+      // confirmed absent from .claude/snapshots/env-vars.json and
+      // claudeSettings.ts). Nullable, no default: NULL means "no preference
+      // stored here yet" — readWorktreeBaseRef falls back to reading the
+      // legacy ~/.claude/settings.json location (so a value someone already
+      // set there keeps applying), then to 'fresh' if that is ALSO unset.
+      // Only 'fresh'/'head' are ever written; no CHECK enum since this is a
+      // two-value app-internal preference, not user-facing free text.
+      worktree_base_ref: 'TEXT',
       updated_at: INTEGER_NOT_NULL
     },
     // workbench_enabled (Workbench feature flag) was removed once the

@@ -269,11 +269,23 @@ export type WorktreePreflight = {
 }
 
 export type WorkspaceWorktreePort = {
-  derivePath: (input: { project: ProjectSnapshot; workspaceId: string; name: string }) => string
+  derivePath: (input: {
+    project: ProjectSnapshot
+    workspaceId: string
+    name: string
+    /** Which harness this workspace runs (support-multi-harness follow-up)
+     *  — decides the worktree's parent directory
+     *  (`.<harnessId>/worktrees/`). Optional so an older caller that
+     *  predates harness-scoped worktrees still compiles; the adapter
+     *  defaults to 'claude', matching every workspace before this field
+     *  existed. */
+    harnessId?: string
+  }) => string
   create: (input: {
     project: ProjectSnapshot
     path: string
     branch?: string
+    harnessId?: string
   }) => { path: string; branch: string } | Promise<{ path: string; branch: string }>
   rollbackCreate: (input: {
     project: ProjectSnapshot
