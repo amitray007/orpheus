@@ -24,7 +24,11 @@ import {
   withArgRowSet,
   applyProjectDrawerPatch,
   countProjectHarnessOverrides,
-  projectOverrideChipInfo
+  projectOverrideChipInfo,
+  customCliFlagsToRows,
+  rowsToCustomCliFlags,
+  customEnvVarsToRows,
+  rowsToCustomEnvVars
 } from '../src/shared/harness/projectDrawerSettings'
 import type { HarnessSettingRow, HarnessSettings } from '../src/shared/types'
 
@@ -317,6 +321,207 @@ assert.deepEqual(
   'the edited harness has ZERO workspaces in the project (settings set before/after a harness switch) -> still dishonest to claim project-wide'
 )
 
+// ---------------------------------------------------------------------------
+// customCliFlagsToRows / rowsToCustomCliFlags — the hard conversion
+// ---------------------------------------------------------------------------
+
+{
+  const { rows, warnings } = customCliFlagsToRows(['--model opus', '--verbose'])
+  assert.deepEqual(
+    rows,
+    [
+      { key: '--model', value: 'opus', enabled: true },
+      { key: '--verbose', value: undefined, enabled: true }
+    ],
+    'the common 2-token and bare-flag cases convert losslessly'
+  )
+  assert.deepEqual(warnings, [], 'no warnings for clean entries')
+}
+{
+  // Quoted phrase collapses to ONE token before this ever sees it —
+  // tokenizeWords (cliFlags.ts) handles the quoting, so this is NOT a
+  // >2-token entry despite looking like one at a glance.
+  const { rows, warnings } = customCliFlagsToRows(['--append-system-prompt "be terse and kind"'])
+  assert.deepEqual(
+    rows,
+    [{ key: '--append-system-prompt', value: 'be terse and kind', enabled: true }],
+    'a quoted multi-word VALUE is one token, converts losslessly'
+  )
+  assert.deepEqual(warnings, [], 'no warning for a quoted phrase')
+}
+{
+  // THE LOSSY CASE — an unquoted entry with 2+ words after the flag has no
+  // lossless row representation (see customCliFlagsToRows' own header).
+  const { rows, warnings } = customCliFlagsToRows(['--add-dir /a /b'])
+  assert.deepEqual(
+    rows,
+    [{ key: '--add-dir', value: '/a /b', enabled: true }],
+    'extra tokens are joined into ONE value with a space'
+  )
+  assert.equal(warnings.length, 1, 'exactly one warning for the lossy join')
+  assert.match(warnings[0], /joined into one/, 'warning names the lossy join')
+}
+{
+  // THE COLLISION CASE — mergeRowsByKey (settings.ts) would collapse two
+  // same-key rows within one scope anyway, so this function makes the
+  // same "last wins" decision explicitly and reports it.
+  const { rows, warnings } = customCliFlagsToRows(['--model opus', '--model sonnet'])
+  assert.deepEqual(
+    rows,
+    [{ key: '--model', value: 'sonnet', enabled: true }],
+    'a same-flag collision keeps only the LAST entry, at the FIRST position'
+  )
+  assert.equal(warnings.length, 1, 'exactly one warning for the collision')
+  assert.match(warnings[0], /same flag/, 'warning names the collision')
+}
+{
+  const { rows, warnings } = customCliFlagsToRows(['not-a-flag', '--model opus'])
+  assert.deepEqual(
+    rows,
+    [{ key: '--model', value: 'opus', enabled: true }],
+    'an unparseable entry is dropped, valid entries still convert'
+  )
+  assert.equal(warnings.length, 1, 'exactly one warning for the dropped entry')
+  assert.match(warnings[0], /could not be converted/, 'warning explains the drop')
+}
+assert.deepEqual(
+  rowsToCustomCliFlags([
+    { key: '--model', value: 'opus', enabled: true },
+    { key: '--verbose', value: undefined, enabled: true },
+    { key: '--disabled-flag', value: 'x', enabled: false }
+  ]),
+  ['--model opus', '--verbose'],
+  'rowsToCustomCliFlags renders enabled rows back to entries, skips disabled'
+)
+assert.deepEqual(rowsToCustomCliFlags(undefined), [], 'undefined rows -> []')
+
+// ---------------------------------------------------------------------------
+// customEnvVarsToRows / rowsToCustomEnvVars — lossless both ways
+// ---------------------------------------------------------------------------
+
+assert.deepEqual(
+  customEnvVarsToRows({ FOO: 'bar', BAZ: 'qux' }),
+  [
+    { key: 'FOO', value: 'bar', enabled: true },
+    { key: 'BAZ', value: 'qux', enabled: true }
+  ],
+  'every entry becomes an enabled row, insertion order preserved'
+)
+assert.deepEqual(
+  rowsToCustomEnvVars([
+    { key: 'FOO', value: 'bar', enabled: true },
+    { key: 'DISABLED', value: 'x', enabled: false }
+  ]),
+  { FOO: 'bar' },
+  'rowsToCustomEnvVars round-trips enabled rows, skips disabled'
+)
+{
+  const original = { FOO: 'bar', BAZ: 'qux' }
+  const roundTripped = rowsToCustomEnvVars(customEnvVarsToRows(original))
+  assert.deepEqual(roundTripped, original, 'full round-trip is lossless (unlike CLI flags)')
+}
+
+// ---------------------------------------------------------------------------
+// applyProjectDrawerPatch — the new fields (customCliFlags/customEnvVars/
+// preLaunchSnippet), plus the coexistence guarantee with permission-mode
+// ---------------------------------------------------------------------------
+
+{
+  const existing: HarnessSettings = {}
+  const next = applyProjectDrawerPatch(
+    existing,
+    { customCliFlags: [{ key: '--verbose', enabled: true }] },
+    PERM_KEY
+  )
+  assert.deepEqual(
+    next.args,
+    [{ key: '--verbose', enabled: true }],
+    'customCliFlags alone writes args'
+  )
+  assert.equal(next.curated, undefined, 'curated untouched (absent from patch)')
+}
+{
+  // THE COEXISTENCE GUARANTEE — a customCliFlags write must NEVER wipe an
+  // existing permission-mode row, even though CLI-flags is conceptually a
+  // "replace the CLI-flags-owned rows" write.
+  const existing: HarnessSettings = {
+    args: [{ key: PERM_KEY, value: 'acceptEdits', enabled: true }]
+  }
+  const next = applyProjectDrawerPatch(
+    existing,
+    { customCliFlags: [{ key: '--verbose', enabled: true }] },
+    PERM_KEY
+  )
+  assert.deepEqual(
+    next.args,
+    [
+      { key: '--verbose', enabled: true },
+      { key: PERM_KEY, value: 'acceptEdits', enabled: true }
+    ],
+    'permission-mode row survives a customCliFlags write untouched'
+  )
+}
+{
+  // And the reverse: a permissionMode write must not disturb CLI-flags rows.
+  const existing: HarnessSettings = {
+    args: [{ key: '--verbose', enabled: true }]
+  }
+  const next = applyProjectDrawerPatch(existing, { permissionMode: 'plan' }, PERM_KEY)
+  assert.deepEqual(
+    next.args,
+    [
+      { key: '--verbose', enabled: true },
+      { key: PERM_KEY, value: 'plan', enabled: true }
+    ],
+    'a permissionMode write appends its row, leaves CLI-flags rows untouched'
+  )
+}
+{
+  const existing: HarnessSettings = {}
+  const next = applyProjectDrawerPatch(
+    existing,
+    { customEnvVars: [{ key: 'FOO', value: 'bar', enabled: true }] },
+    PERM_KEY
+  )
+  assert.deepEqual(
+    next.env,
+    [{ key: 'FOO', value: 'bar', enabled: true }],
+    'customEnvVars writes env'
+  )
+}
+{
+  const existing: HarnessSettings = {}
+  const next = applyProjectDrawerPatch(
+    existing,
+    { preLaunchSnippet: 'eval "$(direnv export zsh)"' },
+    PERM_KEY
+  )
+  assert.equal(
+    next.preLaunchSnippet,
+    'eval "$(direnv export zsh)"',
+    'preLaunchSnippet sets the field'
+  )
+}
+{
+  const existing: HarnessSettings = { preLaunchSnippet: 'eval "$(direnv export zsh)"' }
+  const next = applyProjectDrawerPatch(existing, { preLaunchSnippet: null }, PERM_KEY)
+  assert.equal(next.preLaunchSnippet, undefined, 'preLaunchSnippet: null clears it')
+  assert.equal(
+    'preLaunchSnippet' in next,
+    false,
+    'clearing DELETES the key rather than setting it to undefined'
+  )
+}
+{
+  // A patch that touches NOTHING must produce an object with exactly the
+  // same keys as `existing` — no stray undefined-valued keys from an
+  // unconditional assignment. This is the exact bug class caught during
+  // development (see this unit's report).
+  const existing: HarnessSettings = { curated: { model: 'opus' } }
+  const next = applyProjectDrawerPatch(existing, {}, PERM_KEY)
+  assert.deepEqual(Object.keys(next).sort(), ['curated'], 'no stray undefined-valued keys')
+}
+
 console.log('All project-drawer-settings assertions passed.')
 
 // ---------------------------------------------------------------------------
@@ -407,6 +612,54 @@ mustFail('applyProjectDrawerPatch collapsing null into undefined', () => {
     real.curated,
     'broken clear-as-noop must match the real clear result'
   )
+})
+
+// Mutation 4 — THE COEXISTENCE GUARANTEE broken: a customCliFlags write
+// wholesale-replaces `args` instead of excluding the permission-mode row,
+// silently wiping it. This is the exact "wholesale replace would wipe the
+// OTHER page's row" bug applyProjectDrawerPatch's own comment warns about.
+mustFail('customCliFlags write wiping the permission-mode row', () => {
+  function brokenApply(existing: HarnessSettings, nextRows: HarnessSettingRow[]): HarnessSettings {
+    // BUG: assigns the CLI-flags editor's rows AS the whole args array,
+    // instead of merging around the excluded permission-mode key.
+    return { ...existing, args: nextRows }
+  }
+  const existing: HarnessSettings = {
+    args: [{ key: PERM_KEY, value: 'acceptEdits', enabled: true }]
+  }
+  const real = applyProjectDrawerPatch(
+    existing,
+    { customCliFlags: [{ key: '--verbose', enabled: true }] },
+    PERM_KEY
+  )
+  const broken = brokenApply(existing, [{ key: '--verbose', enabled: true }])
+  assert.deepEqual(
+    broken.args,
+    real.args,
+    'a wholesale-replace bug must disagree with the real, permission-mode-preserving result'
+  )
+})
+
+// Mutation 5 — the same-flag-name collision silently keeps the FIRST entry
+// instead of the LAST (the wrong precedence — mergeRowsByKey's own
+// within-scope collapse rule is "later overwrites earlier").
+mustFail('customCliFlagsToRows keeping the first entry on a collision', () => {
+  function brokenConvert(entries: readonly string[]): HarnessSettingRow[] {
+    const rows: HarnessSettingRow[] = []
+    const seen = new Set<string>()
+    for (const raw of entries) {
+      const [key, ...rest] = raw.split(' ')
+      // BUG: skips an entry whose key was already seen, instead of
+      // overwriting — keeps the FIRST entry, not the last.
+      if (seen.has(key)) continue
+      seen.add(key)
+      rows.push({ key, value: rest.join(' ') || undefined, enabled: true })
+    }
+    return rows
+  }
+  const { rows: real } = customCliFlagsToRows(['--model opus', '--model sonnet'])
+  const broken = brokenConvert(['--model opus', '--model sonnet'])
+  assert.deepEqual(broken, real, 'keep-first must disagree with the real keep-last result')
 })
 
 console.log('All project-drawer-settings mutation tests passed.')

@@ -119,6 +119,7 @@ import type {
   IconPackCatalogResult
 } from '../shared/types'
 import type { RendererControlAck, RendererControlRequest } from '../shared/workbenchControl'
+import type { ProjectDrawerFieldPatch } from '../shared/harness/projectDrawerSettings'
 
 // ---------------------------------------------------------------------------
 // Generic typed IPC helpers. `invoke` and `subscribe` are typed against the
@@ -1010,7 +1011,7 @@ const api = {
     updateProjectDrawerSettings: (
       harnessId: string,
       projectId: string,
-      patch: { model?: string | null; effort?: string | null; permissionMode?: string | null }
+      patch: ProjectDrawerFieldPatch
     ): Promise<HarnessSettings> =>
       invoke('harness:settings:updateProjectDrawer', { harnessId, projectId, patch })
   },

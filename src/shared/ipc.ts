@@ -140,6 +140,7 @@ import type {
   IconPackCatalogResult
 } from './types'
 import type { RendererControlAck, RendererControlRequest } from './workbenchControl'
+import type { ProjectDrawerFieldPatch } from './harness/projectDrawerSettings'
 
 // ---------------------------------------------------------------------------
 // Invoke channels (request/response)
@@ -846,11 +847,7 @@ export interface InvokeChannelMap {
       {
         harnessId: string
         projectId: string
-        patch: {
-          model?: string | null
-          effort?: string | null
-          permissionMode?: string | null
-        }
+        patch: ProjectDrawerFieldPatch
       }
     ]
     res: HarnessSettings

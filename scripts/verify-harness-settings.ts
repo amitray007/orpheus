@@ -506,4 +506,81 @@ function rowCount(db: InstanceType<typeof Database>): number {
   console.log('✓ setArgRowValue merge-writes/clears one args row without touching curated/env')
 }
 
+// ---------------------------------------------------------------------------
+// 12. preLaunchSnippet (H1, support-multi-harness) — layers global -> project
+//     like curated.model/curated.effort (mergeScalar: last-defined-wins, not
+//     merged; a scope with no opinion leaves an earlier scope's value alone).
+//     The composed-launch END of this (does it reach ORPHEUS_PRE_LAUNCH_SNIPPET)
+//     is covered by scripts/verify-harness-claude-launch.ts — this is the
+//     storage/resolution half.
+// ---------------------------------------------------------------------------
+{
+  createFreshDb()
+  assert.equal(
+    resolveHarnessSettings('claude', 'proj-12').preLaunchSnippet,
+    undefined,
+    'nothing configured -> unset'
+  )
+
+  setHarnessSettings('claude', 'global', undefined, {
+    preLaunchSnippet: 'eval "$(nvm use)"'
+  })
+  assert.equal(
+    resolveHarnessSettings('claude', 'proj-12').preLaunchSnippet,
+    'eval "$(nvm use)"',
+    'global value applies when the project has no override'
+  )
+
+  setHarnessSettings('claude', 'project', 'proj-12', {
+    preLaunchSnippet: 'eval "$(direnv export zsh)"'
+  })
+  assert.equal(
+    resolveHarnessSettings('claude', 'proj-12').preLaunchSnippet,
+    'eval "$(direnv export zsh)"',
+    'a project-scope value wins over global'
+  )
+  assert.equal(
+    resolveHarnessSettings('claude', 'proj-13-different').preLaunchSnippet,
+    'eval "$(nvm use)"',
+    'a SIBLING project with no override of its own still sees the global value'
+  )
+  console.log(
+    '✓ preLaunchSnippet layers global -> project (last-defined-wins), same as curated fields'
+  )
+}
+
 console.log('\nAll harness-settings assertions passed.')
+
+// ---------------------------------------------------------------------------
+// Mutation test — mergeScalar's "absence must not clobber" rule.
+// ---------------------------------------------------------------------------
+
+function mustFail(label: string, fn: () => void): void {
+  try {
+    fn()
+  } catch (err) {
+    console.log(`  mutation caught (expected failure) [${label}]:`, (err as Error).message)
+    return
+  }
+  throw new Error(`MUTATION TEST FAILED TO CATCH A BUG: ${label} did not throw`)
+}
+
+mustFail('mergeScalar letting an undefined project value wipe the global value', () => {
+  // Simulates a broken merge that assigns the LAST layer unconditionally
+  // instead of skipping undefined layers — a project with no preLaunchSnippet
+  // opinion would then silently erase the global value for every workspace
+  // in that project, instead of falling through to it.
+  function brokenMergeScalar(layers: Array<string | undefined>): string | undefined {
+    let merged: string | undefined
+    for (const layer of layers) merged = layer // BUG: no `if (layer !== undefined)` guard
+    return merged
+  }
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, { preLaunchSnippet: 'eval "$(nvm use)"' })
+  const real = resolveHarnessSettings('claude', 'proj-mutation').preLaunchSnippet
+  const broken = brokenMergeScalar([
+    getHarnessSettings('claude', 'global').preLaunchSnippet,
+    getHarnessSettings('claude', 'project', 'proj-mutation').preLaunchSnippet
+  ])
+  assert.equal(broken, real, 'the unguarded merge must disagree with the real fall-through result')
+})

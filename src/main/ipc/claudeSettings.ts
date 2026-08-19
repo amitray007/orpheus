@@ -426,25 +426,30 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
   // model/effort into harness_settings as a side effect), this writes
   // harness_settings DIRECTLY — the storage the live launch emitter
   // (composeClaudeHarnessLaunch, via each harness descriptor's composeLaunch)
-  // actually reads — for all three drawer-owned fields: model, effort (both
-  // `curated`), and permissionMode (an `args` row, since permission-mode has
-  // no curated/cross-harness home — see CLAUDE_DEFAULT_ARGS's doc comment).
+  // actually reads — for the drawer's five surviving fields: model, effort
+  // (both `curated`), customCliFlags/customEnvVars (`args`/`env` rows), and
+  // preLaunchSnippet (a dedicated HarnessSettings field — see that type's
+  // own doc comment in harness/settings.ts). `permissionMode` is ALSO still
+  // supported by this handler (see below) even though, per the user's
+  // decision on this unit, the drawer itself no longer sends it — the
+  // storage and merge logic stay correct for whichever OTHER caller still
+  // relies on that row (Settings > Harness page, default-args seeding).
   //
-  // permissionMode is CLAUDE-SPECIFIC by construction, not by an oversight
-  // this handler should "generalize" — see shared/harness/types.ts's
-  // CuratedField header: different harnesses express the same intent as
-  // genuinely different argv shapes (Codex needs TWO flags, Copilot one,
-  // Gemini a bare `-y`), so there is no single arg-row key a non-Claude
-  // harness could plug into CLAUDE_PERMISSION_MODE_ARG_KEY. Gating on
-  // `harnessId === 'claude'` here is the honest expression of that: a
-  // permissionMode patch value for any OTHER harness is silently ignored
-  // (no row written) rather than mis-filed under a Claude-only flag name. A
-  // future harness that wants an equivalent control needs its own descriptor
-  // concept, not a rename of this one.
+  // ONLY permissionMode IS CLAUDE-SPECIFIC, not the other four. See
+  // shared/harness/types.ts's CuratedField header: different harnesses
+  // express the permission-mode INTENT as genuinely different argv shapes
+  // (Codex needs TWO flags, Copilot one, Gemini a bare `-y`), so there is no
+  // single arg-row key a non-Claude harness could plug into
+  // CLAUDE_PERMISSION_MODE_ARG_KEY — hence the `harnessId === 'claude'`
+  // gate stripping ONLY that one field for any other harness. model/effort
+  // are already harness-scoped by `resolveHarnessSettings(harnessId, ...)`
+  // itself (no gate needed here). customCliFlags/customEnvVars/
+  // preLaunchSnippet are equally harness-agnostic — arbitrary args/env rows
+  // and a free-text shell snippet apply to ANY harness's own wrapper/argv,
+  // so they are passed through unconditionally rather than gated.
   handle('harness:settings:updateProjectDrawer', (_e, { harnessId, projectId, patch }) => {
     const existing = getHarnessSettings(harnessId, 'project', projectId)
-    const effectivePatch =
-      harnessId === 'claude' ? patch : { model: patch.model, effort: patch.effort }
+    const effectivePatch = harnessId === 'claude' ? patch : { ...patch, permissionMode: undefined }
     const next = applyProjectDrawerPatch(existing, effectivePatch, CLAUDE_PERMISSION_MODE_ARG_KEY)
     setHarnessSettings(harnessId, 'project', projectId, next)
     recomputeDirty()

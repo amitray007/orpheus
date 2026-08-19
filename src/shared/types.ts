@@ -3440,6 +3440,11 @@ export type HarnessSettings = {
   env?: HarnessSettingRow[]
   curated?: HarnessCuratedSettings
   curatedOptions?: HarnessCuratedOptionsSettings
+  /** Free-text shell run in the harness's own wrapper script right before
+   *  the harness binary starts (H1, support-multi-harness) — see
+   *  src/main/harness/settings.ts's HarnessSettings for the full rationale
+   *  (kept field-for-field identical to that type on purpose). */
+  preLaunchSnippet?: string
 }
 
 /** Renderer-safe projection of a HarnessDescriptor (src/main/harness/registry.ts)

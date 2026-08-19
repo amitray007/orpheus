@@ -224,7 +224,26 @@ export function composeClaudeHarnessLaunch(
     ...buildCuratedEnv(CLAUDE_CURATED.model, curated.model ?? ''),
     ...buildCuratedEnv(CLAUDE_CURATED.effort, curated.effort ?? '')
   }
-  const env = applyUserEnvRows(curatedEnv, resolved.env)
+  const envWithUserRows = applyUserEnvRows(curatedEnv, resolved.env)
+  // H1 (support-multi-harness) — ANOTHER deliberate exception to KTD2's
+  // "zero typed passthrough" rule, same shape as U5's session-continuity
+  // exception above but the OPPOSITE justification: session continuity does
+  // NOT generalize to every harness (see session.ts's header), while
+  // preLaunchSnippet DOES — resources/harness-common.sh (sourced by every
+  // harness's own wrapper script, not just orpheus-claude.sh) reads
+  // ORPHEUS_PRE_LAUNCH_SNIPPET directly and `eval`s it, with zero Claude-
+  // specific logic involved. It is Orpheus's own wrapper-plumbing env var,
+  // not a `claude` CLI flag or a setting `claude` itself understands, so it
+  // does not belong in `resolved.args`/`resolved.env` (a user-supplied ROW
+  // there IS passed straight to the harness binary — this is not). Reading
+  // it here (rather than emitting it generically from buildMountEnv in
+  // orpheusSurfaceAdapter.ts) avoids a second DB read of harness_settings
+  // per mount; resolveHarnessSettings already resolved it above as part of
+  // this same call, harness-agnostically.
+  const env: Record<string, string> = { ...envWithUserRows }
+  if (resolved.preLaunchSnippet) {
+    env['ORPHEUS_PRE_LAUNCH_SNIPPET'] = resolved.preLaunchSnippet
+  }
 
   return {
     flags: flagTokens.join(FLAG_DELIMITER),

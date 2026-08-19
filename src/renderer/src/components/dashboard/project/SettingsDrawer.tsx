@@ -3,9 +3,6 @@ import type React from 'react'
 import { ArrowCounterClockwise, X } from '@phosphor-icons/react'
 import {
   EFFORT_LADDER_ORDER,
-  type ClaudeGlobalSettings,
-  type ClaudeProjectSettings,
-  type ClaudeProjectSettingsOverrides,
   type HarnessSettings,
   type HarnessSummary,
   type WorkspaceRecord
@@ -20,10 +17,14 @@ import { effortOptionsFor, resolveEffortLevelsForScope } from '@/lib/effortPicke
 import {
   harnessesPresentInProject,
   resolveDrawerHarnessId,
-  resolveArgRowValue,
   shouldShowProjectHarnessPicker,
   countProjectHarnessOverrides,
-  applyProjectDrawerPatch
+  applyProjectDrawerPatch,
+  customCliFlagsToRows,
+  rowsToCustomCliFlags,
+  customEnvVarsToRows,
+  rowsToCustomEnvVars,
+  type ProjectDrawerFieldPatch
 } from '@shared/harness/projectDrawerSettings'
 import { CLAUDE_PERMISSION_MODE_ARG_KEY } from './claudePermissionModeArgKey'
 
@@ -35,22 +36,36 @@ import { CLAUDE_PERMISSION_MODE_ARG_KEY } from './claudePermissionModeArgKey'
 // itself is a right-aligned overlay (the project view doesn't have a dedicated
 // side panel slot like WorkspaceView does).
 //
-// H1 (support-multi-harness) — Model / Permission mode / Effort are now
-// harness-aware and read/write harness_settings (project scope, via
-// window.api.harness.getSettings/updateProjectDrawerSettings) instead of
-// claude_project_settings — the storage the live launch emitter
+// H1 (support-multi-harness) — the drawer's fields now edit harness_settings
+// (project scope, via window.api.harness.getSettings/updateProjectDrawerSettings)
+// instead of claude_project_settings, the storage the live launch emitter
 // (composeClaudeHarnessLaunch, wired as every harness descriptor's
-// composeLaunch) actually reads. See this unit's report for the
-// investigation: composeClaudeLaunch (the OLD emitter reading
-// claude_project_settings) has zero non-dirty-tracking callers left; nothing
-// launches from it. Custom CLI flags / Custom environment variables /
-// Source ~/.zshrc / Custom shell before Claude remain wired to
-// claudeProjectSettings EXACTLY as before — deliberately NOT touched here,
-// per product decision: those fields are ALSO dead at launch today (same
-// root cause), but removing or re-pointing user-facing controls the user
-// has real values in (source_zshrc is set in this codebase's own dev DB) is
-// the user's call, not an engineering cleanup bundled into this fix. See
-// this unit's report for the precise per-field breakdown.
+// composeLaunch) actually reads. claude_project_settings and its IPC still
+// exist in main untouched; this drawer simply stops being the thing that
+// writes to it.
+//
+// FIVE SURVIVING FIELDS, per the user's decision (see this unit's report for
+// the full investigation and per-field findings that informed it):
+//   - Model, Effort — curated.model/curated.effort (harness_settings).
+//   - Custom CLI flags — an `args` row PER FLAG NAME, converted from/to the
+//     familiar free-text list via customCliFlagsToRows/rowsToCustomCliFlags.
+//     LOSSY in one direction only (string[] -> rows): see
+//     customCliFlagsToRows' own header for the exact cases (a >2-token
+//     entry, or two entries sharing a flag name) and why WARN-AND-CONVERT
+//     was chosen over refusing to save.
+//   - Custom environment variables — `env` rows, LOSSLESS both ways (no
+//     lexing; Record<string,string> and HarnessSettingRow[] are already the
+//     same shape).
+//   - Custom shell before harness (RENAMED from "before Claude" — the field
+//     is harness-agnostic: resources/harness-common.sh, sourced by every
+//     harness's own wrapper script, reads ORPHEUS_PRE_LAUNCH_SNIPPET
+//     directly) — a dedicated HarnessSettings.preLaunchSnippet field (see
+//     that type's own doc comment in src/main/harness/settings.ts).
+//
+// REMOVED: Permission mode ("we follow global only" — still editable at
+// Settings > Harness as a --permission-mode args row, so no capability is
+// lost) and Source ~/.zshrc before Claude (no revival — this drawer no
+// longer offers it at any scope).
 // ---------------------------------------------------------------------------
 
 // Model options are data-driven (models:listSelectable — Claude always
@@ -60,35 +75,16 @@ import { CLAUDE_PERMISSION_MODE_ARG_KEY } from './claudePermissionModeArgKey'
 // the shared 'Custom…' escape hatch (unit 01).
 type ModelOption = string
 
-const PERMISSION_OPTIONS = [
-  { value: 'default', label: 'Use global' },
-  { value: 'acceptEdits', label: 'Accept edits' },
-  { value: 'plan', label: 'Plan' },
-  { value: 'bypassPermissions', label: 'Bypass' }
-] as const
-
 // Effort options are data-driven (model-routing unit 11) — the project's
 // effective model's real effortLevels via resolveEffortLevelsForScope/
 // effortOptionsFor (see the useMemo below), never a hardcoded ladder. A
-// project has no single resolved model unless localOverrides.model is set
-// (see resolveEffortLevelsForScope's own doc comment for why 'default'/"no
+// project has no single resolved model unless projectModel is set (see
+// resolveEffortLevelsForScope's own doc comment for why 'default'/"no
 // override at this scope" resolves to the full ladder, the same fallback
 // the footer chip's modelValue === '' case uses) — 'Use global' is a
 // DIFFERENT concept from 'auto' and is prepended as `leading`, never
 // collapsed into it.
-
-// Tri-state: unset means "inherit the global sourceZshrc value", 'on'/'off'
-// are an explicit project-scope override — mirrors MODEL/PERMISSION/EFFORT's
-// 'default' = "Use global" sentinel pattern above.
-const SOURCE_ZSHRC_OPTIONS = [
-  { value: 'default', label: 'Use global' },
-  { value: 'on', label: 'On' },
-  { value: 'off', label: 'Off' }
-] as const
-
-type PermissionOption = (typeof PERMISSION_OPTIONS)[number]['value']
 type EffortOption = string
-type SourceZshrcOption = (typeof SOURCE_ZSHRC_OPTIONS)[number]['value']
 
 // Stable fallback identity for the CLI flags editor's value/inheritedFlags
 // props. A fresh `[]` literal allocated inline in JSX (`x ?? []`) gets a new
@@ -218,22 +214,21 @@ export function SettingsDrawer({
   onClose,
   workspaces
 }: SettingsDrawerProps): React.JSX.Element | null {
-  // The four dead-at-launch-but-untouched fields (Custom CLI flags, Custom
-  // env vars, Source ~/.zshrc, Custom shell before Claude) — still backed
-  // by claude_project_settings exactly as before. See this file's own
-  // header for why these are deliberately NOT re-pointed or removed here.
-  const [settings, setSettings] = useState<ClaudeProjectSettings | null>(null)
-  const [localOverrides, setLocalOverrides] = useState<ClaudeProjectSettingsOverrides>({})
-  // Global settings, fetched alongside project settings — needed only to
-  // render inherited CLI flags (muted) in the CliFlagsEditor preview.
-  const [globalSettings, setGlobalSettings] = useState<ClaudeGlobalSettings | null>(null)
-
-  // Harness-aware state (H1) — Model / Permission mode / Effort now live
-  // here, backed by harness_settings project scope for whichever harness
-  // is selected, instead of localOverrides/claude_project_settings above.
+  // Harness-aware state (H1) — every field in this drawer now lives here,
+  // backed by harness_settings (project scope, plus global for the
+  // CLI-flags "inherited" preview) for whichever harness is selected.
   const [harnesses, setHarnesses] = useState<HarnessSummary[]>([])
   const [selectedHarnessId, setSelectedHarnessId] = useState<string>('')
   const [harnessSettings, setHarnessSettingsState] = useState<HarnessSettings | null>(null)
+  // Global-scope harness_settings for the selected harness — needed only to
+  // render inherited CLI flags (muted) in the CliFlagsEditor preview, same
+  // role globalSettings played pre-H1.
+  const [globalHarnessSettings, setGlobalHarnessSettings] = useState<HarnessSettings | null>(null)
+  // Lossy-conversion warnings from the most recent customCliFlagsToRows call
+  // (see that function's own doc comment) — surfaced under the CLI flags
+  // editor so a user whose free-text entry couldn't convert losslessly sees
+  // exactly why, rather than silently getting different behavior.
+  const [cliFlagsWarnings, setCliFlagsWarnings] = useState<string[]>([])
 
   // Which harness(es) this project's workspaces actually run — the input to
   // both the picker's default selection and the override chip's honesty
@@ -257,10 +252,6 @@ export function SettingsDrawer({
 
   const projectModel = harnessSettings?.curated?.model
   const projectEffort = harnessSettings?.curated?.effort
-  const projectPermissionMode = resolveArgRowValue(
-    harnessSettings?.args,
-    CLAUDE_PERMISSION_MODE_ARG_KEY
-  )
 
   // Data-driven model list (Claude always present; routed models gated on
   // proxy/provider health server-side) — refetches whenever the currently
@@ -326,32 +317,9 @@ export function SettingsDrawer({
     }
   }, [open])
 
-  useEffect(() => {
-    if (!open) return
-    let cancelled = false
-    window.api.claudeProjectSettings
-      .get(projectId)
-      .then((s) => {
-        if (cancelled) return
-        setSettings(s)
-        setLocalOverrides(s.overrides)
-      })
-      .catch((err) => console.error('[settings-drawer] failed to load', err))
-    window.api.claudeSettings
-      .get()
-      .then((s) => {
-        if (!cancelled) setGlobalSettings(s)
-      })
-      .catch((err) => console.error('[settings-drawer] failed to load global settings', err))
-    return () => {
-      cancelled = true
-    }
-  }, [open, projectId])
-
-  // Fetch this project's harness_settings row (project scope) whenever the
-  // drawer is open and the EDITING target (harness) changes — a separate
-  // effect from the claude_project_settings fetch above since they now read
-  // different storage for a different set of fields.
+  // Fetch this project's harness_settings row (project scope) PLUS the
+  // global-scope row (for the CLI-flags inherited-preview) whenever the
+  // drawer is open and the EDITING target (harness) changes.
   useEffect(() => {
     if (!open || !harnessId) return
     let cancelled = false
@@ -366,54 +334,29 @@ export function SettingsDrawer({
         setCustomModelValue(isCustom ? m : '')
       })
       .catch((err) => console.error('[settings-drawer] failed to load harness settings', err))
+    window.api.harness
+      .getSettings(harnessId, 'global')
+      .then((s) => {
+        if (!cancelled) setGlobalHarnessSettings(s)
+      })
+      .catch((err) =>
+        console.error('[settings-drawer] failed to load global harness settings', err)
+      )
     return () => {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- selectableModels intentionally excluded: this effect only runs on open/harness/project change (initial load), not every time the list refetches, to avoid fighting in-progress custom-model typing.
   }, [open, harnessId, projectId])
 
-  // Stable patch: uses functional setState so it doesn't close over
-  // `localOverrides` — required for the memoized CliFlagsEditor onChange
-  // (below) to stay stable across renders. Mirrors ClaudeDeveloperSection's
-  // patch (~line 863); see the comment there for why stability matters for
-  // memo. The undefined-clears-a-key semantics and the IPC call + error-path
-  // refetch are unchanged from the previous non-memoized version. Only used
-  // for the four claude_project_settings fields now — see this file's
-  // header.
-  const patch = useCallback(
-    (update: ClaudeProjectSettingsOverrides): void => {
-      setLocalOverrides((prev) => {
-        const next: ClaudeProjectSettingsOverrides = { ...prev }
-        for (const [k, v] of Object.entries(update)) {
-          if (v === undefined) delete next[k as keyof ClaudeProjectSettingsOverrides]
-          else (next as Record<string, unknown>)[k] = v
-        }
-        return next
-      })
-      window.api.claudeProjectSettings.update(projectId, update).catch((err) => {
-        console.error('[settings-drawer] update failed, refetching', err)
-        window.api.claudeProjectSettings
-          .get(projectId)
-          .then((s) => {
-            setSettings(s)
-            setLocalOverrides(s.overrides)
-          })
-          .catch(console.error)
-      })
-    },
-    [projectId]
-  )
-
-  // Harness-aware patch for Model/Effort/Permission-mode — writes
+  // Harness-aware patch for every field in this drawer — writes
   // harness_settings project scope via the drawer-specific IPC channel (see
   // this file's header) instead of claude_project_settings. Optimistically
   // updates local state via applyProjectDrawerPatch (src/shared/harness/
   // projectDrawerSettings.ts) — the SAME pure merge function the main-process
   // handler uses, so the optimistic update can never drift from what the
-  // server-side write actually produces. Refetches on failure, mirroring
-  // `patch` above.
+  // server-side write actually produces. Refetches on failure.
   const patchHarness = useCallback(
-    (update: { model?: string | null; effort?: string | null; permissionMode?: string | null }) => {
+    (update: ProjectDrawerFieldPatch) => {
       setHarnessSettingsState((prev) =>
         applyProjectDrawerPatch(prev ?? {}, update, CLAUDE_PERMISSION_MODE_ARG_KEY)
       )
@@ -444,28 +387,20 @@ export function SettingsDrawer({
     const v = customModelValue.trim()
     if (v) patchHarness({ model: v })
   }
-  function handlePermission(v: PermissionOption): void {
-    patchHarness({ permissionMode: v === 'default' ? null : v })
-  }
   function handleEffort(v: EffortOption): void {
     patchHarness({ effort: v === 'default' ? null : v })
-  }
-  function handleSourceZshrc(v: SourceZshrcOption): void {
-    patch({ sourceZshrc: v === 'default' ? undefined : v === 'on' })
-  }
-  function handlePreLaunchSnippet(v: string): void {
-    patch({ preLaunchSnippet: v === '' ? undefined : v })
   }
 
   function resetAll(): void {
     setShowCustomModel(false)
     setCustomModelValue('')
-    patchHarness({ model: null, effort: null, permissionMode: null })
-    patch({
-      customCliFlags: undefined,
-      customEnvVars: undefined,
-      sourceZshrc: undefined,
-      preLaunchSnippet: undefined
+    setCliFlagsWarnings([])
+    patchHarness({
+      model: null,
+      effort: null,
+      customCliFlags: [],
+      customEnvVars: [],
+      preLaunchSnippet: null
     })
   }
 
@@ -473,30 +408,43 @@ export function SettingsDrawer({
   // Only change reference when the underlying data actually changes, so
   // CliFlagsEditor's prevValueRef sync and CliFlagsPreview's memo both work.
   // Must stay above the `if (!open) return null` below — Rules of Hooks.
+  // Extracted into plain locals (rather than accessing harnessSettings?.args
+  // twice inside the useMemo body) so the memo's dependency is exactly the
+  // array reference, not the whole settings object.
+  const projectArgs = harnessSettings?.args
+  const globalArgs = globalHarnessSettings?.args
+  const projectEnv = harnessSettings?.env
   const cliFlagsValue = useMemo(
-    () => localOverrides.customCliFlags ?? EMPTY_FLAGS,
-    [localOverrides.customCliFlags]
+    () => (projectArgs ? rowsToCustomCliFlags(projectArgs) : EMPTY_FLAGS),
+    [projectArgs]
   )
   const inheritedCliFlags = useMemo(
-    () => globalSettings?.customCliFlags ?? EMPTY_FLAGS,
-    [globalSettings?.customCliFlags]
+    () => (globalArgs ? rowsToCustomCliFlags(globalArgs) : EMPTY_FLAGS),
+    [globalArgs]
   )
   const handleCliFlagsChange = useCallback(
-    (v: string[]) => patch({ customCliFlags: v.length > 0 ? v : undefined }),
-    [patch]
+    (v: string[]) => {
+      const { rows, warnings } = customCliFlagsToRows(v)
+      setCliFlagsWarnings(warnings)
+      patchHarness({ customCliFlags: rows })
+    },
+    [patchHarness]
   )
 
   // Stable identity for CustomEnvVarsEditor's `value` prop — see
   // EMPTY_ENV_VARS comment.
   const envVarsValue = useMemo(
-    () => localOverrides.customEnvVars ?? EMPTY_ENV_VARS,
-    [localOverrides.customEnvVars]
+    () => (projectEnv ? rowsToCustomEnvVars(projectEnv) : EMPTY_ENV_VARS),
+    [projectEnv]
   )
   const handleEnvVarsChange = useCallback(
-    (v: Record<string, string>) =>
-      patch({ customEnvVars: Object.keys(v).length > 0 ? v : undefined }),
-    [patch]
+    (v: Record<string, string>) => patchHarness({ customEnvVars: customEnvVarsToRows(v) }),
+    [patchHarness]
   )
+
+  function handlePreLaunchSnippet(v: string): void {
+    patchHarness({ preLaunchSnippet: v === '' ? null : v })
+  }
 
   if (!open) return null
 
@@ -507,30 +455,26 @@ export function SettingsDrawer({
         : MODEL_CUSTOM_VALUE
       : 'default'
 
-  const permissionValue: PermissionOption =
-    projectPermissionMode !== undefined ? (projectPermissionMode as PermissionOption) : 'default'
-
   const effortValue: EffortOption = projectEffort !== undefined ? projectEffort : 'default'
 
-  const sourceZshrcValue: SourceZshrcOption =
-    localOverrides.sourceZshrc === undefined ? 'default' : localOverrides.sourceZshrc ? 'on' : 'off'
-
-  // Harness-aware override count (H1) — model/effort/permissionMode counted
-  // from harness_settings (countProjectHarnessOverrides), the four legacy
-  // fields still counted from claude_project_settings exactly as before.
-  // These two counts are ADDITIVE, not overlapping: no field is counted by
-  // both (model/effort/permissionMode were REMOVED from localOverrides'
-  // contribution above, not duplicated).
-  const harnessOverrideCount = countProjectHarnessOverrides(
+  // Harness-aware override count (H1) — every field in this drawer is now
+  // counted from harness_settings via countProjectHarnessOverrides, which
+  // covers model/effort/permissionMode; customCliFlags/customEnvVars/
+  // preLaunchSnippet are counted here directly since they are outside that
+  // function's three-field contract (see its own doc comment — it counts
+  // exactly the fields the ORIGINAL, permission-mode-having drawer wrote).
+  const baseOverrideCount = countProjectHarnessOverrides(
     harnessSettings ?? undefined,
     CLAUDE_PERMISSION_MODE_ARG_KEY
   )
-  const legacyOverrideCount =
-    ((localOverrides.customCliFlags?.length ?? 0) > 0 ? 1 : 0) +
-    (Object.keys(localOverrides.customEnvVars ?? {}).length > 0 ? 1 : 0) +
-    (localOverrides.sourceZshrc !== undefined ? 1 : 0) +
-    (localOverrides.preLaunchSnippet !== undefined ? 1 : 0)
-  const overrideCount = harnessOverrideCount + legacyOverrideCount
+  const cliFlagsOverridden = cliFlagsValue.length > 0
+  const envVarsOverridden = Object.keys(envVarsValue).length > 0
+  const preLaunchSnippetOverridden = Boolean(harnessSettings?.preLaunchSnippet)
+  const overrideCount =
+    baseOverrideCount +
+    (cliFlagsOverridden ? 1 : 0) +
+    (envVarsOverridden ? 1 : 0) +
+    (preLaunchSnippetOverridden ? 1 : 0)
   const hasAnyOverride = overrideCount > 0
 
   return (
@@ -588,9 +532,8 @@ export function SettingsDrawer({
 
             {/* Harness picker (H1) — invisible with only Claude registered
                 (shouldShowProjectHarnessPicker gates on harnesses.length > 1,
-                same threshold as workspace creation's own picker). Model,
-                Permission mode, and Effort below all edit THIS harness's
-                project-scope settings. */}
+                same threshold as workspace creation's own picker). Every
+                field below edits THIS harness's project-scope settings. */}
             {showHarnessPicker && (
               <div className="px-4 pb-3">
                 <p className="text-xs text-text-muted mb-2">
@@ -604,7 +547,7 @@ export function SettingsDrawer({
               </div>
             )}
 
-            <div className={!settings || !harnessSettings ? 'opacity-50 pointer-events-none' : ''}>
+            <div className={!harnessSettings ? 'opacity-50 pointer-events-none' : ''}>
               <OverrideField
                 label="Model"
                 options={modelOptions}
@@ -625,15 +568,6 @@ export function SettingsDrawer({
                   />
                 )}
               </OverrideField>
-              <OverrideField
-                label="Permission mode"
-                options={PERMISSION_OPTIONS}
-                value={permissionValue}
-                onChange={handlePermission}
-                isOverridden={projectPermissionMode !== undefined}
-                ariaLabel="Project permission mode override"
-                description="How Claude handles tool permissions when this project's workspaces launch."
-              />
               {showEffortField && (
                 <OverrideField
                   label="Effort"
@@ -645,22 +579,13 @@ export function SettingsDrawer({
                   description="Thinking depth Claude applies by default for this project."
                 />
               )}
-              <OverrideField
-                label="Source ~/.zshrc before Claude"
-                options={SOURCE_ZSHRC_OPTIONS}
-                value={sourceZshrcValue}
-                onChange={handleSourceZshrc}
-                isOverridden={localOverrides.sourceZshrc !== undefined}
-                ariaLabel="Project source ~/.zshrc override"
-                description="Source your full ~/.zshrc before Claude starts, for this project's workspaces."
-              />
               <TextOverrideField
-                label="Custom shell before Claude"
-                value={localOverrides.preLaunchSnippet ?? ''}
+                label="Custom shell before harness"
+                value={harnessSettings?.preLaunchSnippet ?? ''}
                 onChange={handlePreLaunchSnippet}
-                isOverridden={localOverrides.preLaunchSnippet !== undefined}
-                ariaLabel="Project custom shell before Claude override"
-                description='Runs as you, in your shell, right before Claude starts for this project. Example: eval "$(direnv export zsh)"'
+                isOverridden={harnessSettings?.preLaunchSnippet !== undefined}
+                ariaLabel="Project custom shell before harness override"
+                description='Runs as you, in your shell, right before this project&#39;s harness starts. Example: eval "$(direnv export zsh)"'
                 placeholder='eval "$(direnv export zsh)"'
               />
             </div>
@@ -694,6 +619,15 @@ export function SettingsDrawer({
                 inheritedFlags={inheritedCliFlags}
                 placeholder="--dangerously-load-development-channels server:loco"
               />
+              {cliFlagsWarnings.length > 0 && (
+                <ul className="mt-2 flex flex-col gap-1">
+                  {cliFlagsWarnings.map((w, i) => (
+                    <li key={i} className="text-xs text-amber-500">
+                      {w}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </section>
 

@@ -90,11 +90,42 @@ export type HarnessCuratedOptionsSettings = {
   effort?: CuratedFieldOptionsOverlay
 }
 
+/**
+ * Free-text shell run in the harness's OWN wrapper script, right before the
+ * harness binary starts (e.g. `eval "$(direnv export zsh)"`) — H1
+ * (support-multi-harness) revival of the project Settings drawer's "Custom
+ * shell before harness" field. NOT a CLI arg row and NOT a process-env row:
+ * it is `resources/harness-common.sh`'s ORPHEUS_PRE_LAUNCH_SNIPPET, read by
+ * the SHARED wrapper base every harness's own launch script sources (see
+ * that file's header) via plain shell `eval`, not passed to the harness
+ * binary's argv or env at all. That is what earns it a dedicated top-level
+ * field here rather than living in `args`/`env`: a value here is never
+ * emitted as `--flag value` or `KEY=value`, so folding it into either row
+ * kind would misrepresent what it actually does.
+ *
+ * HARNESS-AGNOSTIC BY DESIGN — harness-common.sh is not Claude-specific
+ * (every harness's wrapper sources it per its own header comment: "the
+ * sourcing wrapper... runs the harness-specific invocation using `flags`",
+ * with the shared PATH/shell-init logic living in the common file), so this
+ * field lives here in the GENERIC HarnessSettings type, not in Claude's own
+ * curated.ts, even though only Claude's composeClaudeHarnessLaunch emits it
+ * today (see that file for the emission + the reasoning on why this one
+ * exception to KTD2's "zero typed passthrough" rule is justified the same
+ * way U5's session-continuity exception is — except this one DOES
+ * generalize to every harness, which is the opposite of session
+ * continuity's "does NOT generalize" justification, and exactly why this
+ * lives in the shared module instead of a harness-specific one).
+ *
+ * Merged global -> project like curated.model/curated.effort (see
+ * mergeCurated below) — a later scope's defined value wins outright,
+ * `undefined` at a scope leaves an earlier scope's value untouched.
+ */
 export type HarnessSettings = {
   args?: HarnessSettingRow[]
   env?: HarnessSettingRow[]
   curated?: HarnessCuratedSettings
   curatedOptions?: HarnessCuratedOptionsSettings
+  preLaunchSnippet?: string
 }
 
 function normalizeScopeId(scope: HarnessSettingsScope, scopeId?: string): string {
@@ -296,6 +327,21 @@ function mergeRowsByKey(
   return sawAny ? merged : undefined
 }
 
+// preLaunchSnippet LAYERING — plain last-defined-wins, same rule
+// mergeCurated applies to curated.model/curated.effort one field at a time.
+// A single free-text string has no sane per-key merge (unlike args/env rows,
+// which are independent addressable units) — the whole value is one
+// editorial decision, so a MORE SPECIFIC scope defining it replaces an
+// earlier scope's value entirely, and a scope with NO opinion (key absent)
+// leaves an earlier scope's value untouched.
+function mergeScalar(layers: Array<string | undefined>): string | undefined {
+  let merged: string | undefined
+  for (const layer of layers) {
+    if (layer !== undefined) merged = layer
+  }
+  return merged
+}
+
 function mergeCurated(
   layers: Array<HarnessCuratedSettings | undefined>
 ): HarnessCuratedSettings | undefined {
@@ -375,6 +421,7 @@ export function resolveHarnessSettings(harnessId: string, projectId?: string): H
   const env = mergeRowsByKey([global.env, project.env])
   const curated = mergeCurated([global.curated, project.curated])
   const curatedOptions = mergeCuratedOptions([global.curatedOptions, project.curatedOptions])
+  const preLaunchSnippet = mergeScalar([global.preLaunchSnippet, project.preLaunchSnippet])
 
   const resolved: HarnessSettings = {}
   const resolvedArgs = enabledOnly(args)
@@ -383,5 +430,6 @@ export function resolveHarnessSettings(harnessId: string, projectId?: string): H
   if (resolvedEnv) resolved.env = resolvedEnv
   if (curated) resolved.curated = curated
   if (curatedOptions) resolved.curatedOptions = curatedOptions
+  if (preLaunchSnippet !== undefined) resolved.preLaunchSnippet = preLaunchSnippet
   return resolved
 }

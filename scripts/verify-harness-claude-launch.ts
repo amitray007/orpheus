@@ -530,4 +530,105 @@ function setWorkspaceOverride(
   console.log("✓ empty/unset resolves to '' for both model and effort")
 }
 
+// 13. preLaunchSnippet (H1, support-multi-harness) — reaches the composed
+//     env as ORPHEUS_PRE_LAUNCH_SNIPPET. THIS IS THE FIELD THAT MATTERS MOST
+//     to verify end-to-end: it was silently inert since the U9 cutover (the
+//     OLD emitter, composeClaudeLaunch, wrote it; the live one never did),
+//     and this scenario is the regression guard that it now actually
+//     reaches a real composed launch, not just that the storage layer
+//     round-trips it (verify-harness-settings.ts already covers that half).
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'project', 'proj-13', {
+    preLaunchSnippet: 'eval "$(direnv export zsh)"'
+  })
+  const launch = composeClaudeHarnessLaunch('proj-13', 'ws-13')
+  assert.equal(
+    launch.env['ORPHEUS_PRE_LAUNCH_SNIPPET'],
+    'eval "$(direnv export zsh)"',
+    'a stored preLaunchSnippet must reach the composed env as ORPHEUS_PRE_LAUNCH_SNIPPET'
+  )
+  console.log('✓ preLaunchSnippet reaches the composed launch env as ORPHEUS_PRE_LAUNCH_SNIPPET')
+}
+
+// 14. Unset preLaunchSnippet must NOT emit the key at all (not '', not
+//     undefined-valued — genuinely absent), matching every other curated/env
+//     field's "empty means nothing configured" contract.
+{
+  createFreshDb()
+  const launch = composeClaudeHarnessLaunch('proj-14', 'ws-14')
+  assert.equal(
+    'ORPHEUS_PRE_LAUNCH_SNIPPET' in launch.env,
+    false,
+    'no preLaunchSnippet configured -> the env key must be absent entirely'
+  )
+  console.log('✓ unset preLaunchSnippet emits no ORPHEUS_PRE_LAUNCH_SNIPPET key at all')
+}
+
+// 15. preLaunchSnippet layers global -> project like curated.model/effort —
+//     a project override wins; an unset project value falls through to
+//     global.
+{
+  createFreshDb()
+  setHarnessSettings('claude', 'global', undefined, {
+    preLaunchSnippet: 'eval "$(nvm use)"'
+  })
+  setHarnessSettings('claude', 'project', 'proj-15', {
+    preLaunchSnippet: 'eval "$(direnv export zsh)"'
+  })
+  const launchWithProjectOverride = composeClaudeHarnessLaunch('proj-15', 'ws-15')
+  assert.equal(
+    launchWithProjectOverride.env['ORPHEUS_PRE_LAUNCH_SNIPPET'],
+    'eval "$(direnv export zsh)"',
+    'a project-scope preLaunchSnippet wins over global'
+  )
+  const launchGlobalOnly = composeClaudeHarnessLaunch('proj-16-no-override', 'ws-16')
+  assert.equal(
+    launchGlobalOnly.env['ORPHEUS_PRE_LAUNCH_SNIPPET'],
+    'eval "$(nvm use)"',
+    'a project with no override of its own falls through to the global snippet'
+  )
+  console.log('✓ preLaunchSnippet layers global -> project, same as curated.model/effort')
+}
+
 console.log('\nAll harness-claude-launch assertions passed.')
+
+// ---------------------------------------------------------------------------
+// Mutation test — the preLaunchSnippet emission specifically (scenarios 13-15
+// above). This is the field that was silently inert since the U9 cutover, so
+// its regression guard gets its own mutation proof rather than relying on
+// the assertions above alone.
+// ---------------------------------------------------------------------------
+
+function mustFail(label: string, fn: () => void): void {
+  try {
+    fn()
+  } catch (err) {
+    console.log(`  mutation caught (expected failure) [${label}]:`, (err as Error).message)
+    return
+  }
+  throw new Error(`MUTATION TEST FAILED TO CATCH A BUG: ${label} did not throw`)
+}
+
+mustFail('preLaunchSnippet emission reverted to the pre-fix no-op', () => {
+  // Simulates composeClaudeHarnessLaunch WITHOUT the H1 fix — env is built
+  // from curated + user rows only, never reading resolved.preLaunchSnippet
+  // at all. This is exactly the bug this unit closes: the field round-trips
+  // through storage but never reaches a real launch.
+  createFreshDb()
+  setHarnessSettings('claude', 'project', 'proj-mutation', {
+    preLaunchSnippet: 'eval "$(direnv export zsh)"'
+  })
+  const real = composeClaudeHarnessLaunch('proj-mutation', 'ws-mutation')
+  const brokenEnv: Record<string, string> = { ...real.env }
+  delete brokenEnv['ORPHEUS_PRE_LAUNCH_SNIPPET'] // the pre-fix behavior
+  assert.deepEqual(
+    brokenEnv,
+    real.env,
+    'the pre-fix env (missing ORPHEUS_PRE_LAUNCH_SNIPPET) must disagree with the real, fixed env'
+  )
+})
+
+console.log(
+  'mutation test: reverting preLaunchSnippet emission is correctly caught as a failing assertion'
+)
