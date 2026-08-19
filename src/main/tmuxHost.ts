@@ -40,9 +40,9 @@
 //      deliberately NOT a literal `require('electron')` call (that would
 //      also trip `@typescript-eslint/no-require-imports`) — see
 //      loadElectronApp()'s own comment.
-//   2. composeClaudeLaunch/buildMountEnv (claudeSettings.ts /
-//      orpheusSurfaceAdapter.ts) transitively import `electron` too (via
-//      workspaces.ts). hostWorkspace() pulls them in with a dynamic
+//   2. composeLaunchForMount/buildMountEnv (orpheusSurfaceAdapter.ts)
+//      transitively import `electron` too (via workspaces.ts). hostWorkspace()
+//      pulls them in with a dynamic
 //      `import()` INSIDE the function body (mirrors the TUI's own D4 lazy-
 //      require pattern for Ink) so their module graph is only evaluated on
 //      an actual call, never at import time.
@@ -742,7 +742,7 @@ export type HostWorkspaceParams = {
  *  handled race and not some other unexpected tmux failure — see that test's
  *  own doc comment for why it drives the identical has-session/new-session
  *  sequence directly (real Electron/DB dependencies inside hostWorkspace()'s
- *  own composeClaudeLaunch/buildMountEnv call chain make hostWorkspace()
+ *  own composeLaunchForMount/buildMountEnv call chain make hostWorkspace()
  *  itself uninvokable from a plain `bun run` harness). */
 export function isDuplicateSessionError(err: unknown): boolean {
   const stderr =
@@ -785,11 +785,15 @@ export function tmuxSessionCommandArgv(command: string): string[] {
 
 /**
  * Create the tmux session for a workspace if one isn't already running.
- * Composes the launch EXACTLY the way the libghostty path does —
- * composeClaudeLaunch + buildMountEnv, see orpheusSurfaceAdapter.ts's own doc
- * comment — so the two hosts can never drift on flags/settings/auth env.
- * Both are dynamically imported (see the module doc comment above) so this
- * file stays importable outside Electron.
+ * Composes the launch EXACTLY the way the libghostty (native) mount path
+ * does — composeLaunchForMount + buildMountEnv, both from
+ * orpheusSurfaceAdapter.ts, see that file's own doc comments — so the two
+ * hosts can never drift on flags/settings/auth env. This used to call
+ * claudeSettings.ts's composeClaudeLaunch directly, which reads the
+ * pre-cutover claude_global_settings columns instead of harness_settings —
+ * a real divergence from the native path, fixed by routing through the same
+ * composeLaunchForMount the native path uses. Dynamically imported (see the
+ * module doc comment above) so this file stays importable outside Electron.
  *
  * HARD INVARIANT (do not add a second session-creation code path): this is
  * the ONLY place in the app that runs `tmux new-session`. It already owns
@@ -845,12 +849,18 @@ export async function hostWorkspace(
     return { sessionName, tuiSessionName, socketName, created: false, alreadyRunning: true }
   }
 
-  const [{ composeClaudeLaunch }, { buildMountEnv }] = await Promise.all([
-    import('./claudeSettings'),
-    import('./orpheusSurfaceAdapter')
-  ])
+  // Compose through composeLaunchForMount (harness_settings, resolved via
+  // resolveHarness) — the SAME source every other launch path reads. This
+  // used to call claudeSettings' composeClaudeLaunch directly, which reads
+  // the pre-cutover claude_global_settings columns; that stale-table read
+  // was the tmux path's own divergence from the native mount path (which
+  // has always gone through composeLaunchForMount), not something the
+  // parity gate between the two emitters could ever catch since it never
+  // exercises this call site. See fcb579cc / 1d214b05 for the emitter
+  // cutover this call site had been missed by.
+  const { composeLaunchForMount, buildMountEnv } = await import('./orpheusSurfaceAdapter')
 
-  const launch = composeClaudeLaunch(params.projectId, params.workspaceId)
+  const launch = composeLaunchForMount(params.projectId, params.workspaceId)
   // sockPath (notify-hook plumbing) is intentionally omitted: hooks are
   // "dormant enrichment, not the status driver" (CLAUDE.md) and the notify
   // server instance lives outside commandServer.ts's reach without a wider

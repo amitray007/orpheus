@@ -127,16 +127,21 @@ export function buildMountEnv(
   const descriptor = resolveHarness(workspace?.harnessId)
 
   // Compose the harness's launch payload → flags, settingsJson, base env
-  // vars. Callers on the terminal:mount hot path (index.ts) already composed
-  // this once via composeLaunchForMount and pass it back in via
-  // precomposedLaunch — composing is a DB read (global/project/workspace
-  // settings rows) per call, so reusing it here halves the settings-layering
-  // work paid on EVERY mount (see composeLaunchForMount's doc comment for the
-  // fuller story). Phase 1 has exactly one descriptor (Claude), so
-  // precomposedLaunch — itself produced by composeClaudeLaunch via
-  // composeLaunchForMount — is always the same function's output as
-  // descriptor.composeLaunch would produce; this stays true until a second
-  // harness lands.
+  // vars. Callers on the terminal:mount hot path (index.ts) AND the tmux
+  // hosting path (tmuxHost.ts's hostWorkspace) already composed this once
+  // via composeLaunchForMount and pass it back in via precomposedLaunch —
+  // composing is a DB read (global/project/workspace harness_settings rows)
+  // per call, so reusing it here halves the settings-layering work paid on
+  // EVERY mount (see composeLaunchForMount's doc comment for the fuller
+  // story). precomposedLaunch is ALWAYS produced by composeLaunchForMount
+  // (never by claudeSettings.ts's older composeClaudeLaunch, which reads
+  // the pre-cutover claude_global_settings columns and is a genuinely
+  // different, stale source — see fcb579cc / 1d214b05), so it is always the
+  // same function's output as the descriptor.composeLaunch fallback below
+  // would produce. That equivalence held only once every real caller was
+  // migrated onto composeLaunchForMount; the tmux path was the last
+  // straggler still calling composeClaudeLaunch directly until it was fixed
+  // to call composeLaunchForMount like every other caller.
   const launch = precomposedLaunch ?? descriptor.composeLaunch(projectId, workspaceId)
 
   // Auth env vars (ANTHROPIC_API_KEY, provider routing flags, etc.).

@@ -113,7 +113,27 @@ const verifiers = [
   // filterActionsForHarness's pure GATING logic is covered separately by
   // verify-harness-actions.ts, which stays on the plain-bun path since it
   // never touches SQLite).
-  ['verify-footer-actions.ts', ['node', '--experimental-strip-types']]
+  ['verify-footer-actions.ts', ['node', '--experimental-strip-types']],
+  // CALL-SITE fix for tmuxHost.ts's hostWorkspace() — it composed the tmux
+  // session launch via claudeSettings.ts's composeClaudeLaunch (the stale,
+  // pre-cutover claude_global_settings emitter) instead of
+  // orpheusSurfaceAdapter.ts's composeLaunchForMount (the harness registry,
+  // reading harness_settings) that every other launch path already used.
+  // Since tmux hosting is the DEFAULT path, this meant most users' `claude`
+  // process ran with settings the Settings UI no longer showed as current.
+  // Drives the REAL exported hostWorkspace() end-to-end against a real
+  // throwaway tmux server, seeded with DELIBERATELY DIVERGING
+  // --permission-mode values in harness_settings vs. claude_global_settings,
+  // and asserts the composed new-session env reflects harness_settings —
+  // see this harness's own header for why verify-harness-launch-parity.ts
+  // (which compares the two emitters against each other, never calling
+  // hostWorkspace() at all) cannot catch a call-site bug like this one.
+  // Same node:sqlite/DatabaseSync + electron/./db register()-hook
+  // constraints as the other node-dispatched entries above, plus a
+  // node:child_process intercept (passthrough — real tmux still runs) to
+  // observe the composed launch without racing scrubSecretEnvironment's
+  // post-creation cleanup of the session's stored environment table.
+  ['verify-tmux-host-composition.ts', ['node', '--experimental-strip-types']]
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {

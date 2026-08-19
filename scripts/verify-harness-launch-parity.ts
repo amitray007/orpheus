@@ -6,9 +6,17 @@
 // cutover safe rather than hopeful.
 //
 // Two emitters exist side by side right now:
-//   OLD (live, authoritative)  composeClaudeLaunch        src/main/claudeSettings.ts
-//   NEW (parallel, unused)     composeClaudeHarnessLaunch src/main/harness/claude/launch.ts
-// Both return { flags, settingsJson, env, model }.
+//   OLD (superseded, gate-only)  composeClaudeLaunch        src/main/claudeSettings.ts
+//   NEW (live, authoritative)    composeClaudeHarnessLaunch src/main/harness/claude/launch.ts
+// composeClaudeHarnessLaunch is wired in as descriptor.composeLaunch in
+// src/main/harness/registry.ts, and every real launch call site (native
+// mount via composeLaunchForMount, and tmux hosting via hostWorkspace, which
+// used to call composeClaudeLaunch directly until that call-site bug was
+// fixed) goes through the registry, so it is the one actually launching
+// `claude` today. composeClaudeLaunch survives only as the OLD-storage
+// reference implementation this gate compares against — it reads
+// claude_global_settings, which the harness cutover (fcb579cc / 1d214b05)
+// demoted from source of truth. Both return { flags, settingsJson, env, model }.
 //
 // WHAT PARITY MEANS HERE — read before adding a fixture. The two emitters
 // read DIFFERENT STORAGE (claude_global_settings vs harness_settings) and are
