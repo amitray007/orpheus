@@ -62,17 +62,80 @@ export function effortOptionsFor(
 }
 
 /**
+ * Build the effort option list from a harness's own flat, declared
+ * `curated.effort.options` (support-multi-harness, model/effort picker
+ * harness-scoping unit) — the FALLBACK path used only when the current
+ * model has NO per-model ladder of its own (`effortLevels === null`) but
+ * the harness still declares a harness-level effort control. Unlike
+ * effortOptionsFor above, this does NOT filter/reorder against
+ * EFFORT_LADDER_ORDER — a generic harness descriptor's CuratedField is
+ * declared as "one flat list for the whole harness" (see
+ * src/shared/harness/types.ts's CuratedField doc comment), with no
+ * guarantee its values are even DRAWN from Claude's specific ladder
+ * vocabulary (minimal/low/medium/high/xhigh/max). Filtering through that
+ * ladder would silently DROP a harness's own custom effort values (e.g.
+ * "thorough") the exact same way inventing a fabricated ladder would
+ * misrepresent them — so this renders the harness's OWN order verbatim,
+ * matching how HarnessSection.tsx's settings-drawer editor already treats
+ * `curated.effort.options` (no ladder-sorting there either). `leading`
+ * mirrors effortOptionsFor's own parameter for API symmetry, though the
+ * footer chip (the only caller today) never passes one.
+ */
+export function harnessEffortOptionsFor(
+  harnessEffortOptions: string[],
+  leading?: { value: string; label: string }
+): { value: string; label: string }[] {
+  return [
+    ...(leading ? [leading] : []),
+    { value: 'auto', label: 'Auto' },
+    ...harnessEffortOptions.map((v) => ({ value: v, label: capitalize(v) }))
+  ]
+}
+
+/**
+ * Combines the two option sources above into the ONE decision DropdownChip
+ * needs for its dropdownItems: per-model levels first, harness-level flat
+ * list as the fallback, empty otherwise. Factored out here (rather than
+ * inlined as a nested ternary at the call site) so it's independently
+ * assertable by scripts/verify-effort-levels.ts AND so DropdownChip's own
+ * cognitive-complexity budget doesn't have to carry this branching itself.
+ */
+export function effortDropdownItemsFor(
+  currentModelEffortLevels: string[] | null | undefined,
+  harnessEffortOptions: string[] | undefined
+): { value: string; label: string }[] {
+  if (currentModelEffortLevels) return effortOptionsFor(currentModelEffortLevels)
+  if (currentModelEffortLevels === null && harnessEffortOptions) {
+    return harnessEffortOptionsFor(harnessEffortOptions)
+  }
+  return []
+}
+
+/**
  * Pure selector mirroring DropdownChip's early-return condition right
  * before its JSX — the effort chip must be HIDDEN entirely (never rendered
- * disabled) for a model with no reasoning-effort control at all, but must
- * NOT be hidden while that fact is still unknown (see effortLevels' own
- * tri-state doc comment below).
+ * disabled) when NEITHER the current model NOR the workspace's harness
+ * declares any reasoning-effort control, but must NOT be hidden while a
+ * model's own per-model fact is still unknown (see effortLevels' own
+ * tri-state doc comment below). `harnessDeclaresEffort` is the
+ * harness-level fallback signal (support-multi-harness) — a harness with
+ * curated.effort.options is a real, declared control even for a model
+ * whose OWN per-model ladder is unknown (effortLevels === null), so the
+ * chip must not hide just because the null branch fired; it falls back to
+ * harnessEffortOptionsFor above instead. Defaults to false so every
+ * existing call site (only DropdownChip.tsx, always passing the real
+ * value from the resolved harness) behaves identically once wired.
  *
  * `effortLevels` is a TRI-STATE, not a boolean null/non-null (model-routing
  * unit 11 bugfix — the "empty on a cold direct-to-workspace open" bug):
- *   - `null`      -> this model genuinely has no reasoning-effort control
- *                    (e.g. an image model with no thinking.levels at all).
- *                    Returns false — HIDE the chip.
+ *   - `null`      -> this model genuinely has no PER-MODEL reasoning-effort
+ *                    control (e.g. an image model with no thinking.levels
+ *                    at all, OR a non-Claude harness's entries, which never
+ *                    carry per-model levels at all — see selectable.ts's
+ *                    harnessEntries doc comment). Returns
+ *                    `harnessDeclaresEffort` — false HIDES the chip (no
+ *                    per-model AND no harness-level control either), true
+ *                    falls back to harnessEffortOptionsFor's flat list.
  *   - `undefined` -> not resolved YET (the model list is still loading —
  *                    e.g. right after a cold app launch straight into a
  *                    workspace page, or a routed model whose proxy is still
@@ -84,8 +147,12 @@ export function effortOptionsFor(
  *                    options (effortOptionsFor(effortLevels)), including an
  *                    empty array (which still turns into at least 'auto').
  */
-export function shouldRenderEffortChip(effortLevels: string[] | null | undefined): boolean {
-  return effortLevels !== null
+export function shouldRenderEffortChip(
+  effortLevels: string[] | null | undefined,
+  harnessDeclaresEffort = false
+): boolean {
+  if (effortLevels === null) return harnessDeclaresEffort
+  return true
 }
 
 /**

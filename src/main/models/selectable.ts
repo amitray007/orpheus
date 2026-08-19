@@ -63,6 +63,7 @@ import type { SelectableModel, CuratedFieldOptionsOverlay } from '../../shared/t
 import { resolveCuratedOptions } from '../../shared/harness/curatedOptions'
 import { bareClaudeIdFor, isClaudeModelId } from './sources/builtin'
 import { listCliProxyModelCacheEntries } from './sources/cliproxy'
+import { modelLabel } from './registry'
 
 export const CLAUDE_PROVIDER_ID = 'claude'
 const CLAUDE_PROVIDER_LABEL = 'Claude'
@@ -339,10 +340,16 @@ function claudeEntries(
  * every respect except WHERE its base catalog comes from.
  *
  * Every non-id field is deliberately minimal, never fabricated:
- *   - label: the id itself — a generic harness descriptor's CuratedField is
+ *   - label: resolved through the model registry (modelLabel/resolveModel,
+ *     registry.ts) — a generic harness descriptor's CuratedField is
  *     `options: string[]`, a bare id list with no per-option label/metadata
- *     (unlike CLAUDE_MODEL_OPTIONS' {value,label} pairs), so there is no
- *     richer label to source one from.
+ *     of its own (unlike CLAUDE_MODEL_OPTIONS' {value,label} pairs), so the
+ *     REGISTRY is the richer source, not a second local label store (see
+ *     registry.ts's own file header on why a duplicate label parser is the
+ *     bug class this replaced three times already). The registry degrades
+ *     gracefully to the bare id for a genuinely unrecognized id (models.dev
+ *     unreachable/uncached, no local source knows it) — same visible result
+ *     as before this change, just never fabricated.
  *   - providerId/providerLabel: the harness's own id/label — grouping by
  *     harness, the only axis a harness with no provider-routing concept
  *     has. Falls back to the bare id when no label was threaded in.
@@ -378,7 +385,7 @@ function harnessEntries(
   const providerLabel = harnessLabel ?? harnessId
   return orderedIds.map((id) => ({
     id,
-    label: id,
+    label: modelLabel(id),
     providerId: harnessId,
     providerLabel,
     isClaude: false,

@@ -6,7 +6,7 @@ import { buildLiveApplyText } from '@shared/harness/liveApply'
 import { isModelEffectivelyClaude } from '@shared/harness/footerChipGating'
 import {
   capitalize,
-  effortOptionsFor,
+  effortDropdownItemsFor,
   shouldRenderEffortChip,
   resolveEffortLevelsForScope
 } from '@/lib/effortPickerOptions'
@@ -364,6 +364,22 @@ export function DropdownChip({
     () => resolveEffortLevelsForScope(modelValue, selectableModels, selectableModelsLoading),
     [selectableModels, selectableModelsLoading, modelValue]
   )
+  // Harness-level fallback (support-multi-harness, model/effort picker
+  // harness-scoping unit) — a non-Claude harness's SelectableModel entries
+  // never carry per-model effortLevels (selectable.ts's harnessEntries sets
+  // it to null unconditionally: a generic descriptor has no per-model
+  // ladder concept, only one flat curated.effort.options for the whole
+  // harness — see that function's own doc comment). Without this, EVERY
+  // chip configured `idle`/`awaitingInput`... no — EVERY effort chip on
+  // such a harness would render nothing at all (shouldRenderEffortChip's
+  // old unconditional "null -> hide" rule), even though the harness
+  // genuinely declares curated.effort. This is the harness's OWN options,
+  // read straight from the already-resolved HarnessSummary in scope here —
+  // never fabricated, never per-model, exactly mirroring what
+  // HarnessSection.tsx's settings-drawer editor already shows for the same
+  // field.
+  const harnessEffortOptions = harness.curated?.effort?.options
+
   // PENDING (model-routing unit 11 bugfix): the effort chip's levels are the
   // "unknown yet" tri-state member — render the chip, but non-interactively,
   // rather than either hiding it (that's `null`'s job) or opening a
@@ -508,17 +524,24 @@ export function DropdownChip({
   } else if (isEffortSelect) {
     // Options come from the CURRENT model's real effortLevels (model-routing
     // unit 11) — never a hardcoded list offered unconditionally. When
-    // currentModelEffortLevels is null, this model has no reasoning-effort
-    // control at all; the chip renders nothing at all (see the early-return
-    // right before the JSX below) rather than an empty/disabled dropdown.
-    // While undefined (PENDING — levels not resolved yet, see this tri-
-    // state's own doc comment above), dropdownItems is deliberately left
-    // empty too: never fabricate a ladder as if it were authoritative. The
-    // chip itself still renders (isEffortPending below, computed from the
-    // SAME tri-state) with the persisted effortValue as its face label —
-    // available from workspaceEffortStore independent of the model list —
-    // just non-interactive until levels resolve.
-    dropdownItems = currentModelEffortLevels ? effortOptionsFor(currentModelEffortLevels) : []
+    // currentModelEffortLevels is null and the harness has no harness-level
+    // curated.effort either, this workspace has no reasoning-effort control
+    // at all; the chip renders nothing at all (see the early-return right
+    // before the JSX below) rather than an empty/disabled dropdown. When
+    // null but the harness DOES declare curated.effort (support-multi-
+    // harness — a non-Claude harness's models never carry per-model levels,
+    // see harnessEffortOptions' own doc comment above), fall back to the
+    // harness's own flat list via harnessEffortOptionsFor, never through
+    // the ladder-sorting effortOptionsFor (which would silently drop a
+    // harness's custom effort values not spelled from Claude's ladder
+    // vocabulary). While undefined (PENDING — levels not resolved yet, see
+    // this tri-state's own doc comment above), dropdownItems is
+    // deliberately left empty too: never fabricate a ladder as if it were
+    // authoritative. The chip itself still renders (isEffortPending below,
+    // computed from the SAME tri-state) with the persisted effortValue as
+    // its face label — available from workspaceEffortStore independent of
+    // the model list — just non-interactive until levels resolve.
+    dropdownItems = effortDropdownItemsFor(currentModelEffortLevels, harnessEffortOptions)
     selectedValue = effortValue || 'auto'
     faceLabel = labelForEffort(effortValue)
     chipTitle = `${item.label}: ${faceLabel}`
@@ -819,8 +842,13 @@ export function DropdownChip({
   // levels.ts asserts directly (see effortPickerOptions.ts) — it treats the
   // PENDING (undefined) tri-state member as "render", so this early return
   // does NOT fire while pending; isEffortPending above is what keeps a
-  // pending chip non-interactive instead.
-  if (isEffortSelect && !shouldRenderEffortChip(currentModelEffortLevels)) return <></>
+  // pending chip non-interactive instead. `!!harnessEffortOptions` is the
+  // harness-level fallback signal (support-multi-harness) — a harness
+  // declaring curated.effort keeps the chip visible even when the CURRENT
+  // model's own per-model levels are null (see this function's own doc
+  // comment on the null branch).
+  if (isEffortSelect && !shouldRenderEffortChip(currentModelEffortLevels, !!harnessEffortOptions))
+    return <></>
 
   return (
     <div ref={chipRef} className="relative flex-shrink-0">

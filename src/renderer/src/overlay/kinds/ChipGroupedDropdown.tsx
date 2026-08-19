@@ -54,7 +54,95 @@ import { useGenuineHoverGate } from '../../lib/useGenuineHoverGate'
 // factored out of NewWorkspaceMenu.tsx specifically so this kind (whose card
 // resizes for the exact same reason and hits the exact same phantom-hover
 // mechanism) could reuse it verbatim instead of carrying a second copy.
+//
+// SINGLE-GROUP FLATTENING (support-multi-harness, model/effort picker
+// harness-scoping unit). `groups` comes from buildModelDropdownGroups
+// (modelPickerOptions.ts), which groups by providerId — but Phase 0 of the
+// multi-harness migration severed launch-side routing (selectable.ts's
+// PHASE0_ROUTING_SEVERED), so a workspace's model catalog is ALWAYS exactly
+// one harness's own models today; `groups` is never longer than 1 in
+// practice. Rendering the full provider-list -> submenu-flyout chrome for a
+// SINGLE, already-known group meant every open of this popover cost the
+// user an extra hover/click through an "unnamed" (single, unlabeled-as-a-
+// choice) menu just to reach the models they actually wanted — the same
+// "structure implies a choice that doesn't exist" complaint the flat model
+// list itself exists to avoid. FlatModelPanel below is the single-group
+// render path: the one group's models directly, no provider row, no
+// submenu-flip geometry, no diagonal-traversal timing (there's only one
+// panel, so none of that machinery is reachable). The multi-group path
+// (ProviderRow/SubmenuPanel below) is left completely intact — Phase 6
+// re-lands routing by deleting selectable.ts's PHASE0_ROUTING_SEVERED
+// guard, at which point `groups` can exceed 1 again and this component
+// falls through to the existing two-panel flyout with no further change
+// needed here.
 // ---------------------------------------------------------------------------
+
+function FlatModelPanel({
+  group,
+  title,
+  selectedValue,
+  highlighted,
+  routingProxyEnabled,
+  refreshState,
+  onRowHover,
+  onRowLeave,
+  onSelect,
+  onRefresh
+}: {
+  group: ChipDropdownGroup
+  title?: string
+  selectedValue: string | undefined
+  highlighted: number
+  routingProxyEnabled: boolean
+  refreshState: ChipGroupedDropdownProps['refreshState']
+  onRowHover: (idx: number) => void
+  onRowLeave: (idx: number) => void
+  onSelect: (value: string) => void
+  onRefresh: () => void
+}): React.JSX.Element {
+  return (
+    <div className="w-64 flex-shrink-0 rounded-lg border border-border-default bg-surface-overlay shadow-lg flex flex-col">
+      <div className="flex-1 min-h-0 overflow-y-auto max-h-80 p-1.5 flex flex-col justify-start gap-0.5">
+        {title && (
+          <span className="text-xs font-medium text-text-muted uppercase tracking-wider px-1.5 pt-0.5 pb-1">
+            {title}
+          </span>
+        )}
+        <div role="menu" aria-label={`${group.label} models`}>
+          {group.models.map((m, idx) => {
+            const isSelected = m.value === selectedValue
+            return (
+              <button
+                key={m.value}
+                type="button"
+                role="menuitem"
+                onPointerEnter={() => onRowHover(idx)}
+                onPointerLeave={() => onRowLeave(idx)}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onSelect(m.value)
+                }}
+                className={[
+                  'w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-md text-xs text-left transition-colors duration-100 cursor-pointer',
+                  isSelected ? 'text-accent' : 'text-text-primary',
+                  idx === highlighted ? 'bg-surface-raised' : ''
+                ].join(' ')}
+              >
+                <span className="truncate">{m.label}</span>
+                {isSelected && <Check size={12} className="flex-shrink-0" />}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+      {routingProxyEnabled && (
+        <div className="flex-shrink-0 border-t border-border-default/60 p-1.5">
+          <RefreshModelsButton state={refreshState} onRefresh={onRefresh} />
+        </div>
+      )}
+    </div>
+  )
+}
 
 function ProviderRow({
   providerId,
@@ -164,7 +252,109 @@ function SubmenuPanel({
   )
 }
 
-export function ChipGroupedDropdown({ props, emit }: OverlayKindProps): React.JSX.Element {
+/**
+ * Single-group render path — see this file's header comment
+ * ("SINGLE-GROUP FLATTENING") for why this exists and when it fires. Its
+ * own small hook set (keyboard nav is a plain up/down/enter/escape list,
+ * no panel-switching, no submenu-flip geometry, no diagonal-traversal
+ * timers) rather than reusing GroupedModelPanel's — that component's hooks
+ * are shaped entirely around the two-panel interaction this path doesn't
+ * have, and Rules of Hooks forbids conditionally skipping them, so a
+ * SEPARATE component (not an if-branch inside GroupedModelPanel) is the
+ * only way to avoid mounting unused hover-gate/geometry state for the
+ * common (single-group) case.
+ */
+function FlatModelDropdown({
+  group,
+  selectedValue,
+  title,
+  routingProxyEnabled,
+  refreshState,
+  onSelect,
+  onCancel,
+  onRefresh
+}: {
+  group: ChipDropdownGroup
+  selectedValue: string | undefined
+  title?: string
+  routingProxyEnabled: boolean
+  refreshState: ChipGroupedDropdownProps['refreshState']
+  onSelect: (value: string) => void
+  onCancel: () => void
+  onRefresh: () => void
+}): React.JSX.Element {
+  const containerRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    containerRef.current?.focus()
+  }, [])
+
+  const [highlighted, setHighlighted] = useState<number>(() =>
+    Math.max(
+      0,
+      group.models.findIndex((m) => m.value === selectedValue)
+    )
+  )
+  const [hovered, setHovered] = useState<number | null>(null)
+  const effectiveHighlighted = hovered ?? highlighted
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>): void {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      onCancel()
+      return
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setHovered(null)
+      setHighlighted((h) => Math.min(group.models.length - 1, h + 1))
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setHovered(null)
+      setHighlighted((h) => Math.max(0, h - 1))
+      return
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      const model = group.models[effectiveHighlighted]
+      if (model) onSelect(model.value)
+    }
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      tabIndex={-1}
+      onKeyDown={handleKeyDown}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onCancel()
+      }}
+      className="outline-none font-[family-name:var(--font-sans)]"
+    >
+      <FlatModelPanel
+        group={group}
+        title={title}
+        selectedValue={selectedValue}
+        highlighted={effectiveHighlighted}
+        routingProxyEnabled={routingProxyEnabled}
+        refreshState={refreshState}
+        onRowHover={setHovered}
+        onRowLeave={() => setHovered(null)}
+        onSelect={onSelect}
+        onRefresh={onRefresh}
+      />
+    </div>
+  )
+}
+
+/** Multi-group (provider list -> submenu flyout) render path — see this
+ *  file's header comment. Dormant in practice today (see
+ *  FlatModelDropdown's own comment on why), preserved byte-for-byte as the
+ *  Phase 6 re-land target: once routing returns, `groups` can exceed 1
+ *  again and ChipGroupedDropdown (below) falls through to this path with
+ *  no further change needed here. */
+function GroupedModelPanel({ props, emit }: OverlayKindProps): React.JSX.Element {
   const data = props as unknown as ChipGroupedDropdownProps
   const { groups, selectedValue, title, routingProxyEnabled, refreshState } = data
 
@@ -513,4 +703,36 @@ export function ChipGroupedDropdown({ props, emit }: OverlayKindProps): React.JS
       </div>
     </div>
   )
+}
+
+/**
+ * Dispatcher — the actual registered overlay kind. Picks FlatModelDropdown
+ * for 0-or-1 groups (today's only reachable case — see this file's header
+ * comment) and GroupedModelPanel for 2+ (Phase 6's re-land target). A
+ * single top-level conditional `return`, not a shared hook prefix, because
+ * the two paths' hook sets are genuinely different shapes (Rules of Hooks)
+ * — see FlatModelDropdown's own comment.
+ */
+export function ChipGroupedDropdown(overlayProps: OverlayKindProps): React.JSX.Element {
+  const data = overlayProps.props as unknown as ChipGroupedDropdownProps
+  const { groups, selectedValue, title, routingProxyEnabled, refreshState } = data
+  const { emit } = overlayProps
+
+  if (groups.length <= 1) {
+    const group = groups[0] ?? { providerId: '', label: '', models: [] }
+    return (
+      <FlatModelDropdown
+        group={group}
+        selectedValue={selectedValue}
+        title={title}
+        routingProxyEnabled={routingProxyEnabled ?? false}
+        refreshState={refreshState}
+        onSelect={(value) => emit('select', { value })}
+        onCancel={() => emit('cancel')}
+        onRefresh={() => emit('refresh')}
+      />
+    )
+  }
+
+  return <GroupedModelPanel {...overlayProps} />
 }

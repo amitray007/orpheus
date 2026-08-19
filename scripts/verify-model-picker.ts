@@ -78,6 +78,7 @@ import {
   raceWithTimeout
 } from '../src/main/models/cliProxyModelCacheStaleness.ts'
 import { PINNED_VERSION } from '../src/main/routingProxy/constants.ts'
+import { setModelsDevCacheForTests } from '../src/main/models/sources/modelsDev.ts'
 
 const PROVIDER_DESCRIPTORS: ProviderDescriptorInput[] = [
   { id: 'codex', label: 'Codex (OpenAI)' },
@@ -2720,4 +2721,409 @@ console.log(
   '✓ C3 mutation tests: descriptor-ignoring fallback to Claude, no-curated-model harness yielding a non-empty list, and overlay ordering being ignored are all correctly caught as failing assertions'
 )
 
-console.log('\nAll model-picker assertions passed.')
+// ---------------------------------------------------------------------------
+// G2 (support-multi-harness) — model/effort PICKER harness-scoping unit.
+//
+// The user's real request: the model and effort pickers show every model
+// regardless of which harness a workspace runs, and a given harness only
+// supports a subset. Fix has three parts, each asserted below:
+//
+//   1. harnessEntries (selectable.ts) now resolves `label` through the
+//      model registry (modelLabel/resolveModel) instead of the bare id.
+//   2. modelPickerOptions.ts's buildModelSelectOptions is now FLAT — no
+//      provider-grouping separator rows — preserving the server's
+//      (curated) order exactly.
+//   3. The footer Effort chip (DropdownChip.tsx/effortPickerOptions.ts)
+//      falls back to the harness's own flat curated.effort.options when
+//      the CURRENT model has no per-model ladder (effortLevels === null)
+//      but the harness still declares curated.effort — previously the
+//      chip stayed permanently hidden on every non-Claude harness even
+//      when curated.effort was genuinely declared.
+//
+// Claude regression net: Claude's picker must be byte-identical to today
+// (same models, same labels, same order) — asserted explicitly below, not
+// just assumed from the C3 section's pre-existing Claude assertions, since
+// this unit specifically touches the label-resolution and grouping code
+// those assertions exercise.
+// ---------------------------------------------------------------------------
+
+// Dynamic (not static) imports of these two renderer-side modules — this
+// script's other imports are all static/top-of-file, but these two need to
+// run AFTER the G2.1 section's setModelsDevCacheForTests(null) call below
+// has a chance to matter; more importantly, a plain top-level `await
+// import(...)` is the simplest way to pull in the two pure renderer
+// modules this section needs without adding them to every earlier
+// assertion's scope. Both are pure/DOM-free (mirrors this whole file's own
+// electron-free constraint — see the header comment), so `node
+// --experimental-strip-types` resolves them the same way it already
+// resolves this file's other cross-boundary imports (harnessEntries,
+// modelsDev, etc.).
+{
+  const { buildModelSelectOptions, buildModelDropdownGroups, labelFor } =
+    await import('../src/renderer/src/lib/modelPickerOptions.ts')
+  const { effortDropdownItemsFor, shouldRenderEffortChip } =
+    await import('../src/renderer/src/lib/effortPickerOptions.ts')
+
+  {
+    // -------------------------------------------------------------------
+    // G2.1 — label resolution through the registry, not the bare id.
+    // -------------------------------------------------------------------
+    {
+      // No models.dev cache hydrated — the offline/uncached case. Must
+      // degrade to the bare id exactly like before this change (never
+      // throw, never fabricate).
+      setModelsDevCacheForTests(null)
+      const uncached = buildSelectableModels(
+        baseInput({
+          isClaudeHarness: false,
+          harnessModelOptions: ['gpt-5-codex'],
+          harnessId: 'codex-cli',
+          harnessLabel: 'Codex CLI'
+        })
+      )
+      assert.equal(
+        uncached[0]?.label,
+        'gpt-5-codex',
+        'G2.1: an uncached/unrecognized id must degrade to the bare id, never throw or fabricate'
+      )
+
+      // Cache hydrated with a real entry for this id — label must resolve
+      // through the registry (models.dev source's labelFromId), not stay
+      // the bare id.
+      setModelsDevCacheForTests({
+        'gpt-5-codex': { context: 128000, pricing: null, supportsReasoning: true }
+      })
+      const cached = buildSelectableModels(
+        baseInput({
+          isClaudeHarness: false,
+          harnessModelOptions: ['gpt-5-codex'],
+          harnessId: 'codex-cli',
+          harnessLabel: 'Codex CLI'
+        })
+      )
+      assert.equal(
+        cached[0]?.label,
+        'Gpt 5 Codex',
+        'G2.1: a cached/recognized id must resolve its REAL registry label, not the bare id'
+      )
+      assert.notEqual(
+        cached[0]?.label,
+        'gpt-5-codex',
+        'G2.1: the label must not still be the bare id once the registry recognizes it'
+      )
+      setModelsDevCacheForTests(null) // reset for later sections
+      console.log(
+        '✓ G2.1: harnessEntries resolves label through the model registry — bare id only when genuinely unrecognized, real label once cached'
+      )
+    }
+
+    // -------------------------------------------------------------------
+    // G2.2 — flat picker, no provider grouping, curated order preserved.
+    // -------------------------------------------------------------------
+    {
+      const models: SelectableModel[] = [
+        {
+          id: 'model-b',
+          label: 'Model B',
+          providerId: 'codex-cli',
+          providerLabel: 'Codex CLI',
+          isClaude: false,
+          available: true,
+          contextWindow: null,
+          effortLevels: null,
+          provisional: false
+        },
+        {
+          id: 'model-a',
+          label: 'Model A',
+          providerId: 'codex-cli',
+          providerLabel: 'Codex CLI',
+          isClaude: false,
+          available: true,
+          contextWindow: null,
+          effortLevels: null,
+          provisional: false
+        }
+      ]
+      const options = buildModelSelectOptions(models)
+      assert.deepEqual(
+        options.map((o) => o.value),
+        ['model-b', 'model-a', 'custom'],
+        'G2.2: buildModelSelectOptions must preserve the SERVER (curated) order exactly — model-b first, no re-sort'
+      )
+      assert.ok(
+        options.every((o) => !o.value.startsWith('__sep')),
+        'G2.2: no separator/group-divider rows — the picker must be genuinely flat, not just single-group-flattened'
+      )
+      console.log(
+        '✓ G2.2: buildModelSelectOptions is flat (no provider-grouping separators) and preserves curated order'
+      )
+    }
+
+    // -------------------------------------------------------------------
+    // G2.3 — the grouped flyout's data source still groups by provider
+    // (dormant multi-provider case, Phase 6 re-land target) — but for
+    // TODAY's always-one-harness reality, it always produces <= 1 group,
+    // which is exactly what ChipGroupedDropdown.tsx's dispatcher uses to
+    // pick FlatModelDropdown over the two-panel GroupedModelPanel. This
+    // section asserts the DATA CONTRACT that dispatch decision depends on
+    // — the rendering itself is a React component, out of reach for this
+    // Electron-free/DOM-free harness (see verify-model-picker.ts's own
+    // header on why this file stays offline/renderer-free).
+    // -------------------------------------------------------------------
+    {
+      const singleHarnessModels: SelectableModel[] = [
+        {
+          id: 'model-a',
+          label: 'Model A',
+          providerId: 'codex-cli',
+          providerLabel: 'Codex CLI',
+          isClaude: false,
+          available: true,
+          contextWindow: null,
+          effortLevels: null,
+          provisional: false
+        },
+        {
+          id: 'model-b',
+          label: 'Model B',
+          providerId: 'codex-cli',
+          providerLabel: 'Codex CLI',
+          isClaude: false,
+          available: true,
+          contextWindow: null,
+          effortLevels: null,
+          provisional: false
+        }
+      ]
+      const groups = buildModelDropdownGroups(singleHarnessModels)
+      assert.equal(
+        groups.length,
+        1,
+        'G2.3: a single-harness model list must still produce exactly ONE group (grouping logic itself is untouched — only the RENDER path flattens it)'
+      )
+      assert.equal(
+        groups[0]?.models.length,
+        2,
+        'G2.3: the single group must contain every model, in order'
+      )
+      console.log(
+        '✓ G2.3: buildModelDropdownGroups still groups by provider (dormant Phase-6 logic, untouched) — today always exactly one group, the data contract ChipGroupedDropdown.tsx dispatches a flat render from'
+      )
+    }
+
+    // -------------------------------------------------------------------
+    // G2.4 — effort chip harness-level fallback.
+    // -------------------------------------------------------------------
+    {
+      // A model with real per-model levels — harness fallback must NEVER
+      // override real per-model data, even when a harness value is present.
+      assert.deepEqual(
+        effortDropdownItemsFor(['low', 'high'], ['thorough', 'quick']).map((o) => o.value),
+        ['auto', 'low', 'high'],
+        'G2.4: real per-model levels must win over the harness-level fallback, never be shadowed by it'
+      )
+
+      // effortLevels === null (no per-model data) + harness declares
+      // curated.effort -> harness's OWN flat list, own order, NOT filtered
+      // through the Claude ladder (a custom value like "thorough" must
+      // survive, unlike effortOptionsFor's ladder-only behavior).
+      const fallback = effortDropdownItemsFor(null, ['thorough', 'quick'])
+      assert.deepEqual(
+        fallback.map((o) => o.value),
+        ['auto', 'thorough', 'quick'],
+        "G2.4: null per-model levels + harness curated.effort must fall back to the harness's own flat list, unfiltered by the Claude ladder"
+      )
+
+      // effortLevels === null + NO harness curated.effort -> genuinely
+      // empty (chip should hide entirely, not render an empty dropdown).
+      assert.deepEqual(
+        effortDropdownItemsFor(null, undefined),
+        [],
+        'G2.4: null per-model levels with no harness fallback must yield an empty list'
+      )
+
+      // undefined (PENDING) must stay empty regardless of harness options
+      // — never fabricate a ladder while genuinely unresolved.
+      assert.deepEqual(
+        effortDropdownItemsFor(undefined, ['thorough']),
+        [],
+        'G2.4: PENDING (undefined) must stay empty even when a harness fallback exists — never fabricate while unresolved'
+      )
+
+      // shouldRenderEffortChip: the chip must STAY VISIBLE when the harness
+      // declares curated.effort, even though the model's own levels are
+      // null — this is the actual bug fix (previously: unconditional hide).
+      assert.equal(
+        shouldRenderEffortChip(null, true),
+        true,
+        'G2.4: the effort chip must NOT hide when the harness declares curated.effort, even with null per-model levels'
+      )
+      assert.equal(
+        shouldRenderEffortChip(null, false),
+        false,
+        'G2.4: the effort chip must still hide when NEITHER the model NOR the harness declares any effort control'
+      )
+      assert.equal(
+        shouldRenderEffortChip(null),
+        false,
+        'G2.4 regression net: omitting the new second parameter must keep the OLD "null -> hide" behavior — every pre-existing call site\'s default'
+      )
+      console.log(
+        "✓ G2.4: effort chip falls back to the harness's own flat curated.effort.options only when the model has no per-model ladder AND the harness declares one, never shadowing real per-model data, never fabricating while pending"
+      )
+    }
+
+    // -------------------------------------------------------------------
+    // G2.5 — Claude regression net: byte-identical to today.
+    // -------------------------------------------------------------------
+    {
+      const claudeResult = buildSelectableModels(baseInput())
+      assert.deepEqual(
+        claudeResult.map((m) => m.label),
+        CLAUDE_MODEL_OPTIONS.map((o) => o.label),
+        'G2.5: Claude labels must be byte-identical to CLAUDE_MODEL_OPTIONS — the registry-label change must be a no-op for Claude (builtinClaudeSource wins first)'
+      )
+      const claudeOptions = buildModelSelectOptions(claudeResult)
+      assert.deepEqual(
+        claudeOptions.map((o) => o.value),
+        [...CLAUDE_MODEL_OPTIONS.map((o) => o.value), 'custom'],
+        'G2.5: Claude picker option order must be byte-identical to today (no separators ever existed for Claude — single provider — so flattening is a true no-op)'
+      )
+      const claudeGroups = buildModelDropdownGroups(claudeResult)
+      assert.equal(
+        claudeGroups.length,
+        1,
+        'G2.5: Claude must still produce exactly one group (unchanged from before this unit)'
+      )
+      assert.equal(claudeGroups[0]?.label, 'Claude', 'G2.5: Claude group label unchanged')
+      console.log(
+        "✓ G2.5: Claude's picker (labels, flat order, single group) is byte-identical to before this unit — the whole model/effort picker change is a no-op for Claude"
+      )
+    }
+
+    // -------------------------------------------------------------------
+    // G2 MUTATION TESTS — break each of the three fixes, confirm a real
+    // assertion actually fails, then restore.
+    // -------------------------------------------------------------------
+
+    function assertMutationCaughtG2(run: () => void, label: string): void {
+      let threw = false
+      try {
+        run()
+      } catch (err) {
+        threw = true
+        console.log(
+          `  mutation caught (expected failure) [${label}]:`,
+          (err as Error).message.split('\n')[0]
+        )
+      }
+      assert.ok(threw, `MUTATION TEST FAILED TO FAIL: ${label} went undetected`)
+    }
+
+    {
+      // Mutation 1: simulate reverting harnessEntries to `label: id` (the
+      // pre-fix bug) — must disagree with the real, registry-resolved label
+      // once a models.dev entry is cached for this id.
+      setModelsDevCacheForTests({
+        'gpt-5-codex': { context: 128000, pricing: null, supportsReasoning: true }
+      })
+      const real = buildSelectableModels(
+        baseInput({
+          isClaudeHarness: false,
+          harnessModelOptions: ['gpt-5-codex'],
+          harnessId: 'codex-cli'
+        })
+      )
+      const brokenLabelIsId = 'gpt-5-codex' // simulates the reverted `label: id` bug
+      assertMutationCaughtG2(() => {
+        assert.equal(
+          brokenLabelIsId,
+          real[0]?.label,
+          'a reverted label:id implementation must disagree with the real, registry-resolved label'
+        )
+      }, 'harnessEntries reverted to label: id instead of modelLabel(id)')
+      setModelsDevCacheForTests(null)
+    }
+
+    {
+      // Mutation 2: reinstate provider grouping — simulate a separator row
+      // reappearing for a 2-group input, confirm that disagrees with the
+      // real (flat) buildModelSelectOptions output.
+      const twoProviderModels: SelectableModel[] = [
+        {
+          id: 'claude-model',
+          label: 'Claude Model',
+          providerId: 'claude',
+          providerLabel: 'Claude',
+          isClaude: true,
+          available: true,
+          contextWindow: null,
+          effortLevels: null,
+          provisional: false
+        },
+        {
+          id: 'other-model',
+          label: 'Other Model',
+          providerId: 'codex-cli',
+          providerLabel: 'Codex CLI',
+          isClaude: false,
+          available: true,
+          contextWindow: null,
+          effortLevels: null,
+          provisional: false
+        }
+      ]
+      const real = buildModelSelectOptions(twoProviderModels)
+      // Simulate what a REINSTATED-grouping implementation would produce
+      // (a separator row wherever providerId changes between adjacent
+      // entries) — this is a stand-in for the old, pre-fix behavior, not
+      // the current function.
+      const simulatedGrouped: { value: string; label: string }[] = []
+      let lastProvider: string | null = null
+      for (const m of twoProviderModels) {
+        if (lastProvider !== null && lastProvider !== m.providerId) {
+          simulatedGrouped.push({ value: '__sep_0', label: m.providerLabel })
+        }
+        lastProvider = m.providerId
+        simulatedGrouped.push({ value: m.id, label: labelFor(m) })
+      }
+      assertMutationCaughtG2(() => {
+        assert.deepEqual(
+          simulatedGrouped.map((o) => o.value),
+          real.map((o) => o.value),
+          'a reinstated-grouping implementation (inserting a __sep row between providers) must disagree with the real, flat buildModelSelectOptions output'
+        )
+      }, 'provider grouping reinstated in buildModelSelectOptions')
+      // Direct invariant, unconditional (not gated by the mutation-catch
+      // helper) — the real function must NEVER emit a separator row, for
+      // ANY input, mixed-provider or not.
+      assert.ok(
+        !real.some((o) => o.value.startsWith('__sep')),
+        'G2.2 invariant: the real buildModelSelectOptions output must never contain a __sep separator row'
+      )
+    }
+
+    {
+      // Mutation 3: revert the effort chip's harness fallback to the old
+      // unconditional "null -> hide" rule — must disagree with the real
+      // shouldRenderEffortChip for a harness that genuinely declares
+      // curated.effort.
+      const oldUnconditionalHide = (effortLevels: string[] | null | undefined): boolean =>
+        effortLevels !== null
+      assertMutationCaughtG2(() => {
+        assert.equal(
+          oldUnconditionalHide(null),
+          shouldRenderEffortChip(null, true),
+          'the old unconditional "null -> hide" rule must disagree with the real function for a harness that declares curated.effort'
+        )
+      }, 'effort chip reverted to unconditional null-hides-chip, ignoring harness fallback')
+    }
+
+    console.log(
+      '\n✓ G2 mutation tests: reverted label resolution, reinstated provider grouping, and reverted effort-chip harness fallback are all correctly caught as failing assertions'
+    )
+  }
+}
+
+console.log('\nAll model-picker assertions passed (including G2).')
