@@ -427,7 +427,7 @@ function testE2Mutation(): void {
     assert.equal(
       oldBehavior(MODELS, ''),
       false,
-      'the OLD `?? modelValue === \'\'` resolution must be shown wrong: it resolves true for ANY unset model'
+      "the OLD `?? modelValue === ''` resolution must be shown wrong: it resolves true for ANY unset model"
     )
     throw new Error('E2 mutation did not fail as expected')
   } catch (e) {
@@ -444,8 +444,16 @@ function testE2Mutation(): void {
 // ---------------------------------------------------------------------------
 
 function testE3LocoToggleGate(): void {
-  assert.equal(shouldShowLocoToggle('codex-cli'), false, 'E3: a non-Claude harness must hide the Loco toggle')
-  assert.equal(shouldShowLocoToggle('claude'), true, 'E3 regression net: Claude must still show the Loco toggle')
+  assert.equal(
+    shouldShowLocoToggle('codex-cli'),
+    false,
+    'E3: a non-Claude harness must hide the Loco toggle'
+  )
+  assert.equal(
+    shouldShowLocoToggle('claude'),
+    true,
+    'E3 regression net: Claude must still show the Loco toggle'
+  )
   assert.equal(
     shouldShowLocoToggle(undefined),
     true,
