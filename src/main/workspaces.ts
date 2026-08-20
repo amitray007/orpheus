@@ -270,7 +270,22 @@ export function createWorkspace({
   // where quitting Orpheus within ~2s of the first message orphaned the
   // session (the post-mount filesystem poll never completed and the row's
   // claudeSessionId stayed null, so the next launch started fresh).
-  const claudeSessionId = crypto.randomUUID()
+  //
+  // CONDITIONAL ON HARNESS (C5, support-multi-harness) — this pre-mint is
+  // Claude-specific and must NOT happen for a Codex workspace. Claude reuses
+  // Orpheus's own uuid as ITS session id (--session-id <uuid>), so minting
+  // ahead of launch is correct there. Codex mints its OWN id with no flag to
+  // pre-assign one (see harness/codex/session.ts's header) — a pre-minted
+  // value in this same claude_session_id column would not be Codex's actual
+  // session id, it would be inert filler that codexSessionArgs could
+  // mistake for a real discovered binding and hand to `codex resume
+  // <garbage-uuid>` on the workspace's very first launch. That is an actual
+  // functional bug, not just an unused value, so the mint is skipped (column
+  // stays null) for any harness other than Claude; harness/codex/session.ts
+  // fills it in later via setWorkspaceClaudeSessionId once discovery finds
+  // the real id Codex chose. `harnessId == null` still mints — see the
+  // column-omission comment below for why "unspecified" means Claude.
+  const claudeSessionId = harnessId == null || harnessId === 'claude' ? crypto.randomUUID() : null
 
   // Assign sort_order so new workspaces appear at the top of the project's
   // list — even above existing drag-reordered ones. MIN(sort_order) - 1 keeps

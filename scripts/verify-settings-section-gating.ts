@@ -269,6 +269,15 @@ mock.module(abs('db/index.ts'), () => ({
 mock.module(abs('workspaces.ts'), () => ({
   getWorkspace: () => {
     throw new Error('getWorkspace() must not be called resolving HARNESSES for this fixture')
+  },
+  // C5 (support-multi-harness) — registry.ts now transitively reaches
+  // codex/launch.ts -> codex/session.ts, which imports both getWorkspace
+  // AND setWorkspaceClaudeSessionId from this module. Same "throw if
+  // actually invoked" discipline as getWorkspace above.
+  setWorkspaceClaudeSessionId: () => {
+    throw new Error(
+      'setWorkspaceClaudeSessionId() must not be called resolving HARNESSES for this fixture'
+    )
   }
 }))
 

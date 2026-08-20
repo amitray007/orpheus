@@ -108,10 +108,50 @@ function createFreshDb(): InstanceType<typeof Database> {
       updated_at INTEGER NOT NULL
     )
   `)
+  // C5 — composeCodexHarnessLaunch now calls codexSessionArgs (./session.ts)
+  // -> getWorkspace (../../workspaces.ts), which does a real
+  // `SELECT * FROM workspaces WHERE id = ?`. Same minimal shape as
+  // scripts/verify-harness-session.ts's own workspaces fixture (Claude's
+  // equivalent test), reused verbatim so the two stay comparable.
+  db.exec(`
+    CREATE TABLE workspaces (
+      id TEXT PRIMARY KEY NOT NULL,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      pinned_at INTEGER,
+      created_at INTEGER NOT NULL DEFAULT 0,
+      last_opened_at INTEGER,
+      archived_at INTEGER,
+      closed_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'idle',
+      name_is_auto INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER,
+      claude_session_id TEXT,
+      last_title TEXT,
+      forked_from_session_id TEXT,
+      parent_workspace_id TEXT,
+      worktree_parent_cwd TEXT,
+      worktree_branch TEXT,
+      harness_id TEXT NOT NULL DEFAULT 'claude'
+    )
+  `)
   ;(
     globalThis as unknown as { __HARNESS_CODEX_LAUNCH_TEST_DB__: unknown }
   ).__HARNESS_CODEX_LAUNCH_TEST_DB__ = db
   return db
+}
+
+/** Inserts a minimal workspace row so codexSessionArgs's getWorkspace call
+ *  finds something real instead of degrading to "not found". */
+function insertWorkspace(
+  db: InstanceType<typeof Database>,
+  row: { id: string; cwd: string; claudeSessionId?: string | null }
+): void {
+  db.prepare(
+    `INSERT INTO workspaces (id, project_id, name, cwd, claude_session_id, harness_id)
+     VALUES (?, 'proj-1', 'ws', ?, ?, 'codex-cli')`
+  ).run(row.id, row.cwd, row.claudeSessionId ?? null)
 }
 
 const { setHarnessSettings } = await import('../src/main/harness/settings.ts')
@@ -290,10 +330,12 @@ function setWorkspaceOverride(
 }
 
 // ---------------------------------------------------------------------------
-// 10. NO session-continuity tokens are ever emitted — Codex mints its own
-//     session id; there is no --resume/--session-id-equivalent flag wired.
-//     Asserted by configuring a workspace-shaped scenario and confirming the
-//     flags contain nothing beyond curated + user rows.
+// 10. Session continuity (C5) — an UNBOUND workspace (no prior discovery,
+//     or no workspace row at all) emits NO continuity tokens; codexSessionArgs
+//     degrades to [] rather than throwing when getWorkspace can't find a row
+//     (this fixture's DB has a real `workspaces` table now, but a workspace
+//     id with no row exercises the same "not found" -> [] path getWorkspace
+//     returns for real).
 // ---------------------------------------------------------------------------
 {
   createFreshDb()
@@ -305,9 +347,66 @@ function setWorkspaceOverride(
   assert.deepEqual(
     splitFlagString(launch.flags),
     ['-m', 'gpt-5.4-mini', '--verbose'],
-    'no --resume/--session-id/--fork-session tokens may appear — session continuity is deferred to C5'
+    'an unbound workspace must emit no --resume prefix'
   )
-  console.log('✓ no session-continuity argv tokens are emitted')
+  console.log('✓ an unbound workspace emits no session-continuity argv tokens')
+}
+
+// ---------------------------------------------------------------------------
+// 10b. Session continuity (C5) — a workspace with a BOUND claude_session_id
+//      (i.e. a prior mount's discovery already found and persisted Codex's
+//      own session id) emits `['resume', <id>]` as the LEADING tokens,
+//      before curated model/effort and before user arg rows. This is the
+//      positive case proving the wiring in composeCodexHarnessLaunch
+//      actually reaches codexSessionArgs, not just that it stays silent
+//      when unbound (scenario 10 above).
+// ---------------------------------------------------------------------------
+{
+  const db = createFreshDb()
+  insertWorkspace(db, { id: 'ws-bound', cwd: '/repo', claudeSessionId: 'codex-real-session-id' })
+  setHarnessSettings('codex-cli', 'global', undefined, {
+    curated: { model: 'gpt-5.4-mini' },
+    args: [{ key: '--verbose', enabled: true }]
+  })
+  const launch = composeCodexHarnessLaunch('proj-1', 'ws-bound')
+  assert.deepEqual(
+    splitFlagString(launch.flags),
+    ['resume', 'codex-real-session-id', '-m', 'gpt-5.4-mini', '--verbose'],
+    'a bound workspace must emit ["resume", <id>] as the LEADING tokens, before curated/user flags'
+  )
+  console.log(
+    '✓ a bound workspace emits ["resume", <id>] as the leading argv tokens, subcommand-first'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 10c. Session continuity (C5) — capabilities.resume === false suppresses
+//      the prefix even when a binding exists, mirroring claudeSessionArgs's
+//      own capability-gating discipline (see harness/claude/session.ts).
+//      CODEX_CAPABILITIES.resume is true today, so this is asserted at the
+//      codexSessionArgs level directly rather than by mutating the shared
+//      descriptor (which would affect every other scenario in this file).
+// ---------------------------------------------------------------------------
+{
+  const db = createFreshDb()
+  insertWorkspace(db, { id: 'ws-bound-2', cwd: '/repo', claudeSessionId: 'codex-real-session-id' })
+  const { codexSessionArgs } = await import('../src/main/harness/codex/session.ts')
+  assert.deepEqual(
+    codexSessionArgs('ws-bound-2'),
+    ['resume', 'codex-real-session-id'],
+    'codexSessionArgs must emit ["resume", <id>] for a bound workspace'
+  )
+  assert.deepEqual(
+    codexSessionArgs(undefined),
+    [],
+    'codexSessionArgs must return [] when no workspaceId is supplied'
+  )
+  assert.deepEqual(
+    codexSessionArgs('no-such-workspace'),
+    [],
+    'codexSessionArgs must return [] for a workspace id with no row (getWorkspace -> null)'
+  )
+  console.log('✓ codexSessionArgs: bound -> ["resume", id]; unbound/missing -> []')
 }
 
 // ---------------------------------------------------------------------------
@@ -528,17 +627,44 @@ console.log(
   'mutation test: --skip-git-repo-check flipped to enabled:true is correctly caught as a failing assertion'
 )
 
-mustFail('a stray session-continuity token is caught', () => {
+mustFail('a stray session-continuity token on an UNBOUND workspace is caught', () => {
   createFreshDb()
   setHarnessSettings('codex-cli', 'global', undefined, { curated: { model: 'gpt-5.4-mini' } })
+  // ws-mutation-2 has no row in this fresh DB -> genuinely unbound -> real
+  // output has no continuity tokens (see scenario 10). Injecting a stray one
+  // must disagree.
   const real = composeCodexHarnessLaunch('proj-mutation-2', 'ws-mutation-2')
   const broken = `${real.flags}${real.flags ? '' : ''}--resumefake-session-id`
   assert.equal(
     broken,
     real.flags,
-    'a stray --resume token must disagree with the real, continuity-free composed flags'
+    'a stray --resume token must disagree with the real, unbound-so-continuity-free composed flags'
   )
 })
 console.log(
-  'mutation test: a stray session-continuity token is correctly caught as a failing assertion'
+  'mutation test: a stray session-continuity token on an unbound workspace is correctly caught'
+)
+
+mustFail('a resume prefix placed AFTER curated flags (wrong order) is caught', () => {
+  const db = createFreshDb()
+  insertWorkspace(db, {
+    id: 'ws-mutation-order',
+    cwd: '/repo',
+    claudeSessionId: 'codex-real-session-id'
+  })
+  setHarnessSettings('codex-cli', 'global', undefined, { curated: { model: 'gpt-5.4-mini' } })
+  const real = composeCodexHarnessLaunch('proj-mutation-3', 'ws-mutation-order')
+  // Simulate the bug this unit must not ship: resume tokens appended AFTER
+  // curated flags instead of prepended before them. `resume` is a codex
+  // SUBCOMMAND (verified against `codex resume --help`/`codex --help`) --
+  // placed after -m/-c it would not parse as the subcommand at all.
+  const wrongOrder = ['-m', 'gpt-5.4-mini', 'resume', 'codex-real-session-id'].join(FLAG_DELIMITER)
+  assert.equal(
+    wrongOrder,
+    real.flags,
+    'resume tokens placed after curated flags must disagree with the real, subcommand-first order'
+  )
+})
+console.log(
+  'mutation test: a resume prefix in the wrong (non-subcommand-first) position is correctly caught'
 )

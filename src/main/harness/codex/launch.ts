@@ -23,16 +23,20 @@
 //      there is nothing for it to guard against on this harness, and adding
 //      it would silently drop a valid custom Codex model id a user typed in.
 //
-//   2. NO SESSION-CONTINUITY ARGS. Codex mints its own session id; there is
-//      no flag to pre-assign one (checked against `codex --help`, `codex
-//      exec --help`, `codex resume --help` — none expose an equivalent of
-//      Claude's `--session-id`/`--resume`/`--fork-session`). This unit
-//      therefore emits NO continuity tokens at all — every launch is,
-//      argv-wise, a fresh invocation. Session binding (giving Orpheus a way
-//      to reopen a specific prior Codex conversation) is DEFERRED to a
-//      later unit (C5) once Codex's own resume story is worked out; nothing
-//      here should be read as "Codex has no sessions", only "this unit does
-//      not yet wire them".
+//   2. SESSION-CONTINUITY ARGS ARE DISCOVERED, NOT PRE-ASSIGNED (C5). Codex
+//      mints its own session id; there is no flag to pre-assign one (checked
+//      against `codex --help`, `codex exec --help`, `codex resume --help` —
+//      none expose an equivalent of Claude's `--session-id`). So unlike
+//      Claude's claudeSessionArgs (a pure read of the already-known bound
+//      id), Codex's codexSessionArgs (./session.ts) can only emit a
+//      `['resume', <id>]` PREFIX once a PRIOR launch's discovery has found
+//      and persisted Codex's own id for this workspace — see session.ts's
+//      header for the full id-vs-session_id/thread_source mechanics. This
+//      launch also SCHEDULES that discovery (scheduleCodexSessionDiscovery)
+//      for the launch currently being composed, so the NEXT mount can
+//      resume it. `resume` is a codex SUBCOMMAND, so its tokens are
+//      prepended before every other flag below — a flag placed first would
+//      not parse.
 //
 //   3. settingsJson IS ALWAYS ''. No `--settings <json>` (or equivalent)
 //      flag exists on Codex (verified against `codex --help`) —
@@ -54,6 +58,7 @@ import { FLAG_DELIMITER } from '../../../shared/cliFlags'
 import { resolveHarnessSettings, type HarnessSettingRow } from '../settings'
 import { CODEX_CURATED, buildCuratedArgs, buildCuratedEnv } from './curated'
 import { getClaudeWorkspaceSettings } from '../../claudeWorkspaceSettings'
+import { codexSessionArgs, scheduleCodexSessionDiscovery } from './session'
 
 const HARNESS_ID = 'codex-cli'
 
@@ -125,19 +130,47 @@ function withWorkspaceCuratedOverride(
  * doc comment for the full reasoning; only the divergences are called out
  * inline below):
  *
- *   1. CURATED FIRST — model (`-m`), effort (`-c model_reasoning_effort=`).
- *   2. NO SESSION-CONTINUITY STEP — see this file's header, divergence 2.
+ *   1. SESSION-CONTINUITY PREFIX FIRST (C5) — `['resume', <id>]` when a
+ *      prior discovery bound this workspace, else nothing. UNLIKE Claude
+ *      (whose continuity tokens are typed flags placed AFTER curated
+ *      model/effort), Codex's `resume` is a SUBCOMMAND and MUST be the
+ *      first token(s) emitted or codex's arg parser won't recognise it —
+ *      verified empirically: `codex resume --last --bogus-flag` reports the
+ *      error against `Usage: codex resume ...` (proving `resume` parsed as
+ *      the subcommand), while `codex --bogus-flag resume --last` reports it
+ *      against the TOP-LEVEL `Usage: codex [OPTIONS] [PROMPT]` (proving a
+ *      flag placed before `resume` never reaches the subcommand at all).
+ *      See ./session.ts's header for the full discovery mechanics.
+ *   2. THEN CURATED — model (`-m`), effort (`-c model_reasoning_effort=`).
+ *      `resume` accepts these same options itself (confirmed via `codex
+ *      resume --help`), so they compose correctly after the prefix.
  *   3. THEN USER ARG ROWS, in declared order (global rows first, then
  *      project-introduced keys).
  *   4. THEN USER ENV ROWS, layered on top of curated env, curated winning on
  *      key collision (same precedence rule as Claude's emitter).
  *   5. settingsJson — ALWAYS '' (see this file's header, divergence 3).
+ *
+ * SIDE EFFECT: also SCHEDULES discovery (scheduleCodexSessionDiscovery) for
+ * this launch, capturing `Date.now()` as the mount-time floor at the moment
+ * this function runs (i.e. before the process is even spawned) — see
+ * session.ts's header on why that floor matters. This is a launch-time,
+ * not a post-mount, hook because composeCodexHarnessLaunch is the only
+ * call site this unit owns that fires once per real mount attempt; there is
+ * no dedicated post-mount hook available to a harness module without
+ * reaching into index.ts. A no-op (no workspaceId) skips scheduling.
  */
 export function composeCodexHarnessLaunch(projectId?: string, workspaceId?: string): HarnessLaunch {
   const resolved = resolveHarnessSettings(HARNESS_ID, projectId)
   const curated = withWorkspaceCuratedOverride(resolved.curated ?? {}, workspaceId)
 
+  if (workspaceId) {
+    scheduleCodexSessionDiscovery(workspaceId, Date.now())
+  }
+
   const flagTokens: string[] = [
+    // Subcommand-first continuity prefix — see this function's doc comment,
+    // ordering step 1. Empty array (a no-op spread) when unbound.
+    ...codexSessionArgs(workspaceId),
     // Model then effort — same relative order as Claude's curated pair (no
     // isClaude() gate here; see this file's header, divergence 1).
     ...buildCuratedArgs(CODEX_CURATED.model, curated.model ?? ''),

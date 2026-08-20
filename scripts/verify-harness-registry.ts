@@ -74,6 +74,19 @@ mock.module(abs('db/index.ts'), () => ({
 mock.module(abs('workspaces.ts'), () => ({
   getWorkspace: () => {
     throw new Error('getWorkspace() must not be called by the registry lookup functions')
+  },
+  // C5 (support-multi-harness) — registry.ts now transitively reaches
+  // codex/launch.ts -> codex/session.ts, which imports
+  // setWorkspaceClaudeSessionId alongside getWorkspace (both from this same
+  // module). Not previously exported by this stub because nothing on this
+  // import path referenced it before C5. Same "throw if actually invoked"
+  // discipline as getWorkspace above — this script only exercises the pure
+  // registry lookup functions, never a real launch composition, so this
+  // should never run either.
+  setWorkspaceClaudeSessionId: () => {
+    throw new Error(
+      'setWorkspaceClaudeSessionId() must not be called by the registry lookup functions'
+    )
   }
 }))
 
