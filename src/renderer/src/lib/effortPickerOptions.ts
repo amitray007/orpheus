@@ -186,9 +186,31 @@ export function shouldRenderEffortChip(
 export function resolveEffortLevelsForScope(
   modelId: string | undefined,
   selectableModels: SelectableModel[],
-  loading: boolean
+  loading: boolean,
+  /** Whether this scope's harness is Claude. Defaults to `true` so every
+   *  pre-existing caller (the project/global settings drawers, which are
+   *  Claude-scoped surfaces) keeps today's exact behavior.
+   *
+   *  WHY IT EXISTS: the no-model fallback below returns Claude's full
+   *  EFFORT_LADDER_ORDER, whose doc comment states the assumption it rests
+   *  on — "every Claude/routed model's real levels are always a subset of
+   *  it". That assumption is FALSE for a non-Claude harness. On a Codex
+   *  workspace with no stored model, this returned a truthy array, so
+   *  effortDropdownItemsFor took the per-model branch and never reached the
+   *  harness fallback — the chip offered Claude's ladder (including
+   *  'minimal', which no Codex model supports) and omitted 'ultra', which
+   *  Codex does support. Returning `null` instead routes the caller into
+   *  harnessEffortOptionsFor, which is already correct. */
+  isClaudeHarness = true
 ): string[] | null | undefined {
-  if (modelId === undefined || modelId === '') return [...EFFORT_LADDER_ORDER]
+  if (modelId === undefined || modelId === '') {
+    // A non-Claude harness has no per-model ladder concept at all — `null`
+    // is the honest answer ("no per-model levels"), and it is precisely what
+    // effortDropdownItemsFor needs to fall back to the harness's own
+    // declared options. Never Claude's ladder, which is a different
+    // harness's vocabulary.
+    return isClaudeHarness ? [...EFFORT_LADDER_ORDER] : null
+  }
   if (loading) return undefined
   // Once loaded, buildSelectableModels/claudeFallbackModels guarantee an
   // already-selected model is represented (marked unavailable if its

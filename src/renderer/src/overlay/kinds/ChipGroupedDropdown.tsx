@@ -121,7 +121,20 @@ function FlatModelPanel({
                   idx === highlighted ? 'bg-surface-raised' : ''
                 ].join(' ')}
               >
-                <span className="truncate">{m.label}</span>
+                <span className="flex items-center gap-1.5 min-w-0">
+                  {/* Provider mark per row. The FLAT panel is the path the
+                      model chip actually opens today (groups.length <= 1
+                      while the catalog is single-harness), and it rendered
+                      only the label — so a Codex workspace's models showed
+                      no icon at all, and so did Claude's. `m.providerId`
+                      already carries the ICON id (buildModelDropdownItems
+                      emits providerIconId ?? providerId), and ProviderIcon
+                      returns null for an id it doesn't know, so a group
+                      with no recognizable provider degrades to exactly the
+                      old label-only row. */}
+                  {m.providerId && <ProviderIcon providerId={m.providerId} size={12} />}
+                  <span className="truncate">{m.label}</span>
+                </span>
                 {isSelected && <Check size={12} className="flex-shrink-0" />}
               </button>
             )

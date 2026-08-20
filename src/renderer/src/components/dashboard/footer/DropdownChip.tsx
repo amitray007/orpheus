@@ -345,8 +345,14 @@ export function DropdownChip({
   // chip on a cold direct-to-workspace open" bug — see that function's own
   // doc comment.
   const currentModelEffortLevels = useMemo(
-    () => resolveEffortLevelsForScope(modelValue, selectableModels, selectableModelsLoading),
-    [selectableModels, selectableModelsLoading, modelValue]
+    () =>
+      resolveEffortLevelsForScope(
+        modelValue,
+        selectableModels,
+        selectableModelsLoading,
+        harness.id === 'claude'
+      ),
+    [selectableModels, selectableModelsLoading, modelValue, harness.id]
   )
   // Harness-level fallback (support-multi-harness, model/effort picker
   // harness-scoping unit) — a non-Claude harness's SelectableModel entries
@@ -421,7 +427,18 @@ export function DropdownChip({
     // SelectableModel.providerIconId.
     faceProviderId = (() => {
       const m = selectableModels.find((sm) => sm.id === modelValue)
-      return m?.providerIconId ?? m?.providerId
+      // providerIconId when present, else providerId — a harness-sourced
+      // model carries its HARNESS id ('codex-cli') as providerId, which
+      // ProviderIcon does not know.
+      const fromModel = m?.providerIconId ?? m?.providerId
+      if (fromModel) return fromModel
+      // No model resolved — either none is stored (modelValue === '', the
+      // chip face reads "Default") or the list hasn't loaded. Fall back to
+      // the WORKSPACE'S HARNESS icon rather than letting the face drop to
+      // the footer row's generic 'Robot': a model-less Codex workspace
+      // should still look like Codex. `harness.icon` is the descriptor's
+      // own icon id ('codex'), not its harness id.
+      return harness.icon
     })()
     chipTitle = `${item.label}: ${faceLabel}`
     onSelect = (value: string): void => {

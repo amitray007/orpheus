@@ -241,10 +241,8 @@ const FOOTER_ACTION_GATES: Record<string, ActionGate> = {
   'workspace.getActivityStatus': (h) => h.capabilities.structuredStatus
 }
 
-const ACTION_TERMINAL_SEND_INPUT = 'terminal.sendInput'
-
 /**
- * C5's provenance gate for terminal.sendInput rows — separate from
+ * C5's provenance gate, applied to EVERY row — separate from
  * FOOTER_ACTION_GATES because it depends on the ROW (its stamped
  * harnessId), not just the target harness, unlike every capability gate
  * above. NULL/undefined harnessId (a user-authored row, or any row seeded
@@ -252,10 +250,11 @@ const ACTION_TERMINAL_SEND_INPUT = 'terminal.sendInput'
  * protecting existing data, and is asserted directly by
  * scripts/verify-footer-actions.ts's mutation tests. A stamped harnessId
  * passes only when it matches the WORKSPACE's resolved harness id, so a
- * Claude-seeded `/copy` row is hidden on a Codex workspace but still shows
- * on every Claude workspace, exactly like before this column existed.
+ * Claude-seeded row (a `/copy`, but equally a Fork/Model/Effort) is hidden
+ * on a Codex workspace while still showing on every Claude workspace,
+ * exactly like before this column existed.
  */
-function sendInputPassesHarnessGate(
+function rowPassesHarnessProvenance(
   action: FooterActionDescriptor,
   harness: HarnessDescriptor
 ): boolean {
@@ -279,9 +278,24 @@ export function filterActionsForHarness(
   harness: HarnessDescriptor
 ): FooterActionDescriptor[] {
   return actions.filter((action) => {
-    if (action.actionId === ACTION_TERMINAL_SEND_INPUT) {
-      return sendInputPassesHarnessGate(action, harness)
-    }
+    // PROVENANCE FIRST, for every action id — not just terminal.sendInput.
+    //
+    // The provenance rule was originally scoped to sendInput because that
+    // was the only action whose CONTENT was harness-specific. That was too
+    // narrow: once a second harness registered, Claude's stamped Fork /
+    // Model / Effort / Context / Cost rows all still passed their
+    // capability gates on a Codex workspace, so a Codex workspace showed
+    // Claude's rows AND its own — visible DUPLICATE chips, with Claude's
+    // sorting first (it seeds at positions 0-7). Context/Cost are worse
+    // than cosmetic: codex/actions.ts deliberately omits them because their
+    // handlers are Claude-transcript-shaped.
+    //
+    // A row stamped for a harness belongs to that harness, whatever it
+    // does. NULL/undefined provenance still ALWAYS passes — that is the
+    // load-bearing rule protecting user-authored rows and every row seeded
+    // before this column existed, and it is what
+    // scripts/verify-footer-actions.ts's mutation tests pin.
+    if (!rowPassesHarnessProvenance(action, harness)) return false
     const gate = FOOTER_ACTION_GATES[action.actionId]
     return gate ? gate(harness) : true
   })
