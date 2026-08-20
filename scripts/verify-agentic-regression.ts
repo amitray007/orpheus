@@ -194,7 +194,8 @@ const verifiers = [
   // server (commandServer.ts's isKnownHarnessId) is the sole validator; see
   // this file's own header for why. No SQLite/native dependency, plain bun
   // like the entry above.
-  'verify-ws-new-harness.ts'
+  'verify-ws-new-harness.ts',
+  'verify-harness-create-threading.ts'
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {

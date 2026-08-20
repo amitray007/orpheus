@@ -713,7 +713,9 @@ interface ProjectRowProps {
   onFinishRename: (newName: string) => void
   onCancelRename: () => void
   onRequestRemove: () => void
-  onAddWorkspace: (modelId?: string) => void
+  // harnessId (support-multi-harness) — the new-workspace popover's harness
+  // row passes which harness to launch; it MUST be forwarded, not dropped.
+  onAddWorkspace: (modelId?: string, harnessId?: string) => void
   renamingWorkspaceId: string | null
   onBeginRenameWorkspace: (workspaceId: string) => void
   onFinishRenameWorkspace: (workspaceId: string, newName: string) => void
@@ -1002,7 +1004,7 @@ const ProjectRow = memo(function ProjectRow({
               <NewWorkspaceMenu
                 projectId={project.id}
                 defaultName={nextWorkspaceName(workspaces)}
-                onCreateLocal={(modelId) => onAddWorkspace(modelId)}
+                onCreateLocal={(modelId, harnessId) => onAddWorkspace(modelId, harnessId)}
                 onCreated={(ws) => onSelectWorkspace(ws.id)}
                 className="w-0 shrink-0 overflow-hidden opacity-0 pointer-events-none group-hover:w-8 group-hover:mr-0.5 group-hover:overflow-visible group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:w-8 group-focus-within:mr-0.5 group-focus-within:overflow-visible group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
               >
@@ -1076,7 +1078,7 @@ const ProjectRow = memo(function ProjectRow({
         <NewWorkspaceMenu
           projectId={project.id}
           defaultName={nextWorkspaceName(workspaces)}
-          onCreateLocal={(modelId) => onAddWorkspace(modelId)}
+          onCreateLocal={(modelId, harnessId) => onAddWorkspace(modelId, harnessId)}
           onCreated={(ws) => onSelectWorkspace(ws.id)}
           className="w-full mt-0.5"
           // This project's "+" trigger above is ALSO always mounted, so both
@@ -1253,7 +1255,7 @@ interface ProjectsSectionProps {
   onFinishRename: (id: string, newName: string) => void
   onCancelRename: () => void
   onRequestRemoveProject: (project: ProjectRecord) => void
-  onAddWorkspace: (projectId: string, modelId?: string) => void | Promise<void>
+  onAddWorkspace: (projectId: string, modelId?: string, harnessId?: string) => void | Promise<void>
   renamingWorkspaceId: string | null
   onBeginRenameWorkspace: (id: string) => void
   onFinishRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void
@@ -1428,7 +1430,9 @@ function ProjectsSection({
                       onFinishRename={(name) => onFinishRename(p.id, name)}
                       onCancelRename={onCancelRename}
                       onRequestRemove={() => onRequestRemoveProject(p)}
-                      onAddWorkspace={(modelId) => onAddWorkspace(p.id, modelId)}
+                      onAddWorkspace={(modelId, harnessId) =>
+                        onAddWorkspace(p.id, modelId, harnessId)
+                      }
                       renamingWorkspaceId={renamingWorkspaceId}
                       onBeginRenameWorkspace={onBeginRenameWorkspace}
                       onFinishRenameWorkspace={(wsId, name) =>
