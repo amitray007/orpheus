@@ -517,7 +517,11 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
             visually colliding with the archive button's hover fill. */}
         <span className="absolute right-0.5 top-1/2 -translate-y-1/2 flex items-center gap-1 h-8">
           <span className="flex items-center justify-center w-[11px] h-8 flex-shrink-0 pointer-events-none">
-            <WorkspaceProviderIcon workspaceId={workspace.id} size={11} />
+            <WorkspaceProviderIcon
+              workspaceId={workspace.id}
+              size={11}
+              harnessIconFallback={harness.icon}
+            />
           </span>
           {/* Time/archive slot — ALWAYS reserves w-8 (32px), even when
               nothing renders inside it (renaming, or no relativeTime yet,

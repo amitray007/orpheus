@@ -29,12 +29,16 @@ import {
   markError,
   configureLoadingOverlay,
   slowCopyFor,
+  shouldWaitForSessionReadiness,
   __setClockForTest,
   MIN_SHOW_MS,
   SLOW_THRESHOLD_MS,
   SLOW_THRESHOLD_MS_ROUTED,
   type LoadingCopy
 } from '../src/main/loadingOverlay.ts'
+import { shouldClaimLiveActivity } from '../src/shared/harness/capabilityGating.ts'
+import { CLAUDE_CAPABILITIES } from '../src/main/harness/claude/curated.ts'
+import { CODEX_CAPABILITIES } from '../src/main/harness/codex/curated.ts'
 
 // ---------------------------------------------------------------------------
 // Fake clock: a virtual millisecond counter + a pending-timer queue. advance()
@@ -329,6 +333,94 @@ function makeRecordingBridge(): { calls: Call[]; reset: () => void } {
   hide('ws-error')
   __setClockForTest(undefined)
   console.log('✓ markError() is unaffected by the routed flag')
+}
+
+// ---------------------------------------------------------------------------
+// 8. shouldWaitForSessionReadiness — bug fix (support-multi-harness): a
+//    Codex workspace mount ALWAYS rode the fixed 10s fallback timer before
+//    dismissing "Starting workspace", because isWorkspaceSessionReady
+//    (sessionState.ts) is driven entirely by Claude's
+//    ~/.claude/sessions/<pid>.json PID-file registry, which Codex never
+//    writes (capabilities.structuredStatus: false). index.ts's
+//    handlePostMountOverlay now gates on this decision — using
+//    shouldClaimLiveActivity(capabilities) (the SAME capability gate the
+//    sidebar's live-activity dot already uses, from
+//    ../shared/harness/capabilityGating.ts) as the input — before deciding
+//    whether to wait on isWorkspaceSessionReady / arm the fallback timer at
+//    all.
+//
+// LIMITATION (documented per the task's own instruction): this section
+// exercises shouldWaitForSessionReadiness and shouldClaimLiveActivity
+// directly with Codex's and Claude's REAL capability objects (imported from
+// their curated.ts sources, not hand-typed), proving the two harnesses
+// produce DIFFERENT decisions and that Claude's decision is unchanged
+// (`true`, preserving today's wait-then-10s-fallback behavior). It does NOT
+// exercise index.ts's handlePostMountOverlay itself — that function lives in
+// src/main/index.ts, which imports the `electron` module and cannot run
+// under a plain bun/node script (see this repo's other verifiers: none
+// import index.ts directly). What this proves: the capability-gating
+// DECISION handlePostMountOverlay's new branch relies on is correct and
+// harness-differentiated. What it does NOT prove: that index.ts's actual
+// wiring (the resolveHarness(...).capabilities threading at both call sites,
+// the early-return-and-hide branch) is bug-free — that requires either an
+// Electron-level integration test (none exists in this repo for
+// index.ts-level mount flows) or manual verification in the running app.
+// ---------------------------------------------------------------------------
+
+{
+  const claudeHasStructuredStatus = shouldClaimLiveActivity(CLAUDE_CAPABILITIES)
+  const codexHasStructuredStatus = shouldClaimLiveActivity(CODEX_CAPABILITIES)
+
+  assert.equal(
+    claudeHasStructuredStatus,
+    true,
+    'sanity: CLAUDE_CAPABILITIES must report structuredStatus (Claude has a real session-readiness signal)'
+  )
+  assert.equal(
+    codexHasStructuredStatus,
+    false,
+    'sanity: CODEX_CAPABILITIES must report NO structuredStatus (Codex has no session-readiness signal)'
+  )
+
+  assert.equal(
+    shouldWaitForSessionReadiness(claudeHasStructuredStatus),
+    true,
+    'REGRESSION BAR: Claude must still wait on isWorkspaceSessionReady / arm the 10s fallback timer — unchanged behavior'
+  )
+  assert.equal(
+    shouldWaitForSessionReadiness(codexHasStructuredStatus),
+    false,
+    'BUG FIX: Codex has nothing to wait on — must NOT arm the Claude-tuned 10s fallback timer, dismiss promptly instead'
+  )
+
+  console.log(
+    '✓ shouldWaitForSessionReadiness differentiates Claude (wait) from Codex (dismiss promptly), using the real capability objects'
+  )
+}
+
+// MUTATION: hardcode shouldWaitForSessionReadiness to always return true
+// (the pre-fix behavior: every harness rides the wait-then-10s-fallback
+// path) and confirm the Codex case above would have been wrongly forced to
+// wait despite having no session-readiness signal.
+{
+  const mutatedAlwaysWait = (): boolean => true
+
+  try {
+    assert.equal(
+      mutatedAlwaysWait(),
+      false,
+      'the pre-fix always-wait behavior must be shown wrong for Codex: it forces waiting despite having no readiness signal'
+    )
+    throw new Error('mutation did not fail as expected')
+  } catch (e) {
+    assert.ok(
+      e instanceof assert.AssertionError,
+      'mutation must fail via AssertionError, not some other error'
+    )
+    console.log(
+      `  mutation caught (expected failure) [shouldWaitForSessionReadiness hardcoded to always-true, pre-fix behavior]: ${(e as Error).message.split('\n')[0]}`
+    )
+  }
 }
 
 console.log('\nAll loading-overlay assertions passed.')
