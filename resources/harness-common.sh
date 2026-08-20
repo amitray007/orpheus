@@ -79,6 +79,17 @@ if [[ -n "${ORPHEUS_HARNESS_FLAGS:-}" ]]; then
   flags=("${(@ps:\x1f:)ORPHEUS_HARNESS_FLAGS}")
 fi
 
+# ORIGIN HYGIENE — unset the launch-composition vars now that `flags` holds
+# their parsed content. Without this they leak into the harness process and
+# EVERY descendant of it, including a shell the user runs Orpheus itself from
+# (the normal dev loop). That app process then inherits them, hands them to
+# the tmux server as its GLOBAL env (tmuxSpawnEnv passes {...process.env}),
+# and a later pane whose own composed flags are empty falls through to this
+# same fallback and launches with the OUTER app's argv — which is how
+# `codex` ended up being handed Claude's `--permission-mode`. `flags` is
+# already built, so nothing below needs these. Harmless when absent.
+unset ORPHEUS_CLAUDE_FLAGS ORPHEUS_HARNESS_FLAGS
+
 # NOTE: this file only prepares the environment/`flags` array — it does not
 # invoke the harness binary or exec the interactive-shell tail itself. The
 # sourcing wrapper (e.g. orpheus-claude.sh) runs the harness-specific

@@ -186,9 +186,22 @@ export function buildMountEnv(
     // re-run — the tmux session just keeps its original env). Keep both
     // until Phase 5, at least one release after every wrapper script reads
     // the new names exclusively. Do NOT "simplify" this to one pair.
-    ...(effectiveFlags
-      ? { ORPHEUS_CLAUDE_FLAGS: effectiveFlags, ORPHEUS_HARNESS_FLAGS: effectiveFlags }
-      : {}),
+    // ALWAYS emitted, even when empty — deliberately NOT conditional.
+    // These vars must SHADOW whatever the tmux server's global environment
+    // holds. That global env is the env of the client that first spawned the
+    // server (tmuxSpawnEnv passes {...process.env}), so if Orpheus was itself
+    // launched from inside an Orpheus workspace pane it can carry that pane's
+    // ORPHEUS_CLAUDE_FLAGS. Omitting the key on an empty compose left nothing
+    // to shadow it, and harness-common.sh's rollback fallback
+    // (`: "${ORPHEUS_HARNESS_FLAGS:=${ORPHEUS_CLAUDE_FLAGS:-}}"`) then fed the
+    // OUTER app's Claude argv to `codex` — which rejected it with
+    // "unexpected argument '--permission-mode'". Emitting the empty string
+    // shadows it (zsh's `:=` substitutes on empty, so BOTH names must be set,
+    // which they are). scrubInheritedPaneEnv.ts fixes the leak at its source;
+    // this is the belt-and-braces half, and it also protects a tmux server
+    // that some OTHER client spawned.
+    ORPHEUS_CLAUDE_FLAGS: effectiveFlags,
+    ORPHEUS_HARNESS_FLAGS: effectiveFlags,
     ...(launch.settingsJson
       ? {
           ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson,

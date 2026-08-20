@@ -1,4 +1,10 @@
 import './safeConsole'
+// MUST stay at the top, before any module reads process.env: strips the
+// workspace-pane plumbing vars this process inherits when Orpheus is
+// launched from inside an Orpheus terminal. See the module header — this
+// fixes both the argv poisoning that fed Claude's flags to `codex` and a
+// cross-variant ORPHEUS_CMD_TOKEN leak into the tmux server's global env.
+import './scrubInheritedPaneEnv'
 import { APP_NAME, APP_ID, isDev } from './appMode'
 import {
   startSessionStateService,
@@ -80,7 +86,8 @@ import {
 import {
   configureLoadingOverlay,
   show as showLoadingOverlay,
-  hide as hideLoadingOverlay
+  hide as hideLoadingOverlay,
+  shouldWaitForSessionReadiness
 } from './loadingOverlay'
 import type { Theme } from '../shared/types'
 import {
@@ -103,7 +110,9 @@ import {
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import { prepareTerminalLaunchEnv } from './terminalLaunchEnv'
 import { buildAppMenu } from './appMenu'
-import { HARNESSES } from './harness/registry'
+import { HARNESSES, resolveHarness } from './harness/registry'
+import { shouldClaimLiveActivity } from '../shared/harness/capabilityGating'
+import type { HarnessCapabilities } from '../shared/harness/types'
 import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor } from '../shared/types'
@@ -1806,7 +1815,15 @@ async function traceTerminalMountForTmuxAttach(
 
 /** Post-mount overlay handling: show the "Starting workspace" overlay only when a
  *  new surface was actually created (re-attach/resize of an already-running
- *  workspace has no boot to mask), and arm the 10s fallback dismissal timer.
+ *  workspace has no boot to mask), and arm the 10s fallback dismissal timer —
+ *  but ONLY for a harness that has a real session-readiness signal to wait
+ *  on in the first place (`capabilities.structuredStatus`, via
+ *  shouldClaimLiveActivity/shouldWaitForSessionReadiness). Claude has one
+ *  (~/.claude/sessions/<pid>.json, read by isWorkspaceSessionReady); a
+ *  harness without one (e.g. Codex) would otherwise ALWAYS ride the full,
+ *  fixed 10s fallback — tuned for Claude's boot profile — on every single
+ *  mount, since isWorkspaceSessionReady can never return true for it. That
+ *  harness dismisses promptly instead: see the `else` arm below.
  *  `routed` picks the slow-watchdog copy and threshold inside
  *  loadingOverlay.ts — a routed mount waits on a proxy round-trip before
  *  claude registers its session file, so the generic "hooks/auth" slow copy
@@ -1814,9 +1831,26 @@ async function traceTerminalMountForTmuxAttach(
  *  passes `false` (launch-side routing was severed in Phase 0); the
  *  parameter itself stays live as the Phase 6 re-land hook — see
  *  multi-harness roadmap. */
-function handlePostMountOverlay(workspaceId: string, created: boolean, routed: boolean): void {
+function handlePostMountOverlay(
+  workspaceId: string,
+  created: boolean,
+  routed: boolean,
+  capabilities: HarnessCapabilities
+): void {
   if (created) {
     showLoadingOverlay(workspaceId, { title: 'Starting workspace' }, routed)
+
+    if (!shouldWaitForSessionReadiness(shouldClaimLiveActivity(capabilities))) {
+      // No structured-status source exists for this harness — there is
+      // nothing isWorkspaceSessionReady could ever observe becoming true, so
+      // don't arm the Claude-tuned 10s fallback timer at all. Dismiss
+      // promptly instead (mirrors the "surface already existed" else-branch
+      // below's unconditional immediate hideLoadingOverlay — hide() applies
+      // its own MIN_SHOW_MS anti-flash debounce, so this still shows briefly
+      // rather than never appearing).
+      hideLoadingOverlay(workspaceId)
+      return
+    }
 
     // If the session is already past its starting phase (re-mount of a
     // running workspace), dismiss the overlay immediately.
@@ -2054,7 +2088,12 @@ async function finishTmuxAttachMount(
   // Routed-model health gate: severed repo-wide in Phase 0 (launch-side
   // routing injection), so there is currently nothing to (deliberately not)
   // run here at all — see multi-harness roadmap (Phase 6) for the re-land.
-  handlePostMountOverlay(workspaceId, result.created, false)
+  handlePostMountOverlay(
+    workspaceId,
+    result.created,
+    false,
+    resolveHarness(runtimeWorkspace.harnessId).capabilities
+  )
 
   // Snapshot handling on the tmux-attach path — subtle, documented in full
   // here since this is the exact decision point:
@@ -2243,7 +2282,12 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     })
   }
 
-  handlePostMountOverlay(workspaceId, result.created, false)
+  handlePostMountOverlay(
+    workspaceId,
+    result.created,
+    false,
+    resolveHarness(runtimeWorkspace.harnessId).capabilities
+  )
 
   // Snapshot the composed launch (+ auth env layer) so we can detect settings
   // AND auth drift later — see LaunchSnapshot in workspaceResources.ts.

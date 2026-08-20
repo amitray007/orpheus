@@ -195,7 +195,32 @@ const verifiers = [
   // this file's own header for why. No SQLite/native dependency, plain bun
   // like the entry above.
   'verify-ws-new-harness.ts',
-  'verify-harness-create-threading.ts'
+  'verify-harness-create-threading.ts',
+  'verify-inherited-pane-env.ts',
+  // support-multi-harness bug fix — the "Starting workspace" overlay's
+  // capability-gated dismiss decision (loadingOverlay.ts's
+  // shouldWaitForSessionReadiness, consumed by index.ts's
+  // handlePostMountOverlay): a harness with no structured-status source
+  // (e.g. Codex) previously ALWAYS rode the Claude-tuned fixed 10s fallback
+  // timer, since isWorkspaceSessionReady can never return true for it. Was
+  // already covered by scripts/verify-loading-overlay.ts (package.json's
+  // `test:overlay`) but that harness was NOT wired into this CI-gated
+  // suite — an unwired harness is indistinguishable from no harness (see
+  // this file's own header rule). No electron/DB dependency (loadingOverlay
+  // ts is a leaf module with a fake-clock test hook), plain bun like the
+  // entries above.
+  'verify-loading-overlay.ts',
+  // support-multi-harness bug fix — the sidebar's per-workspace provider
+  // icon rendered nothing for a Codex workspace because
+  // useWorkspaceProviderIcon resolves a providerId only from the
+  // workspace's effective MODEL (via the Claude-routing-only selectable-
+  // model list), which a Codex model never matches. Fixed by
+  // WorkspaceProviderIcon.tsx's resolveWorkspaceProviderIconId: prefer the
+  // model-derived provider, fall back to the workspace's own harness icon
+  // (already computed by Sidebar.tsx's WorkspaceSubRow for other capability
+  // gating — no new fetch). No electron/DB dependency, plain bun like the
+  // entries above.
+  'verify-workspace-provider-icon.ts'
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {
