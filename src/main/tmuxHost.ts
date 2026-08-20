@@ -837,6 +837,26 @@ export async function hostWorkspace(
   const tuiSessionName = tmuxTuiSessionName(params.workspaceName, params.workspaceId)
 
   if (await hasSession(socketName, sessionName)) {
+    // LATENT GAP, deliberately not guarded (investigated, not overlooked):
+    // this branch returns WITHOUT recomposing the launch or validating what
+    // the session is actually running — not its command, wrapper, or binary.
+    // A session therefore keeps its ORIGINAL argv and env for its whole life,
+    // so a workspace whose harness changed would silently keep running the
+    // old harness until something tore the session down.
+    //
+    // It is unreachable today: `workspaces.harness_id` is CREATE-TIME ONLY
+    // (the sole write is createWorkspace's INSERT — verified, there is no
+    // `UPDATE workspaces SET harness_id` anywhere in src/main), so a live
+    // workspace's harness cannot change under a running session. The one
+    // real path is a session created by an OLDER BUILD being reattached
+    // after an app restart, which is a deliberate feature (tmux outliving
+    // the app is the whole point of hosting there).
+    //
+    // If harness ever becomes mutable, this branch must compare the session's
+    // wrapper against the current descriptor's and rehost on mismatch. Adding
+    // that guard now would be speculative code for a state nothing can
+    // produce.
+    //
     // Re-apply on the ALREADY-RUNNING path too, not just at creation: a
     // session created by an older build carries that build's options, and
     // nothing else ever revisits them. Without this, `status off` (and any
