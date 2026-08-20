@@ -19,12 +19,16 @@
 
 import type { ModelInfo, ModelSource } from './types'
 import { builtinClaudeSource, isClaudeModelId, bareClaudeIdFor } from './sources/builtin'
-import { modelsDevSource, refreshModelsDevCache } from './sources/modelsDev'
+import {
+  modelsDevSource,
+  refreshModelsDevCache,
+  hydrateModelsDevCacheFromDisk
+} from './sources/modelsDev'
 import { cliProxyModelSource, refreshCliProxyModelCache } from './sources/cliproxy'
 
 export type { ModelInfo, Pricing, ModelSource } from './types'
 export { isClaudeModelId, bareClaudeIdFor }
-export { refreshModelsDevCache }
+export { refreshModelsDevCache, hydrateModelsDevCacheFromDisk }
 export { refreshCliProxyModelCache }
 
 // Precedence order. builtinClaudeSource must never move from index 0 — see

@@ -96,6 +96,143 @@ function toPricing(cost: ModelsDevCost | null | undefined): Pricing | null {
   }
 }
 
+/** The derived catalog: the flattened id->entry map plus Anthropic's own
+ *  bucket of ids. This — NOT models.dev's 3.8 MB raw response — is what gets
+ *  persisted and rehydrated. */
+export type ModelsDevCatalog = {
+  entries: Map<string, CachedEntry>
+  anthropicModelIds: string[]
+}
+
+/**
+ * Pure: models.dev's response -> the derived catalog. Extracted from
+ * refreshModelsDevCache so the flattening rules (first-provider-wins, the
+ * anthropic-bucket-only id list, toPricing's don't-fabricate-zeros contract)
+ * can be asserted directly against a fixture instead of only through a live
+ * network fetch.
+ */
+export function buildCatalogFromResponse(data: ModelsDevResponse): ModelsDevCatalog {
+  const entries = new Map<string, CachedEntry>()
+  let anthropicIds: string[] = []
+
+  for (const [providerSlug, provider] of Object.entries(data)) {
+    const models = provider?.models
+    if (!models || typeof models !== 'object') continue
+
+    for (const [modelId, model] of Object.entries(models)) {
+      // First provider to mention an id wins — ids are not expected to
+      // collide across providers in practice (models.dev keys are already
+      // provider-qualified in most cases), and this only matters for the
+      // rare id string that appears twice; either entry is a reasonable
+      // choice since this source is never authoritative for Claude ids.
+      if (entries.has(modelId)) continue
+
+      entries.set(modelId, {
+        context: model.limit?.context ?? null,
+        pricing: toPricing(model.cost),
+        supportsReasoning: model.reasoning === true
+      })
+    }
+    // See anthropicModelIds' own doc comment: only Anthropic's own bucket
+    // is a trustworthy source of "date-stamped ids Anthropic actually
+    // mints" — every other provider bucket may resell Claude models under
+    // vendor-suffixed SKU names sharing a Claude-shaped prefix.
+    if (providerSlug === 'anthropic') {
+      anthropicIds = Object.keys(models)
+    }
+  }
+
+  return { entries, anthropicModelIds: anthropicIds }
+}
+
+/** On-disk shape. `entries` is a plain object because JSON has no Map. */
+export type PersistedCatalog = {
+  entries: Record<string, CachedEntry>
+  anthropicModelIds: string[]
+}
+
+/**
+ * Persistence PORT — injected by src/main/models/modelsDevPersistence.ts
+ * rather than imported here, deliberately.
+ *
+ * This module is imported directly by pure, no-electron verifiers
+ * (verify-routing.ts, verify-model-registry.ts, verify-providers.ts, ...).
+ * Importing db/dashboardCache would drag `electron` into every one of them
+ * through the DB layer — verify-routing.ts mocks nothing today and would have
+ * to start mocking electron just to keep testing routing logic. Keeping the
+ * dependency INVERTED means this file stays DB-free and those verifiers stay
+ * as they are; the electron-reaching wiring lives in one place that only the
+ * main process imports.
+ *
+ * Unset means "no persistence" — the pre-existing network-only behavior.
+ */
+let persistence: ModelsDevPersistence | null = null
+
+/** Read/write the derived catalog. Both sides must be total: neither may
+ *  throw, because they run inside a fire-and-forget refresh. */
+export type ModelsDevPersistence = {
+  read: () => { value: PersistedCatalog; fetchedAt: number } | null
+  write: (value: PersistedCatalog) => void
+}
+
+/** Installs the persistence port. Called once, from the main process. */
+export function setModelsDevPersistence(impl: ModelsDevPersistence | null): void {
+  persistence = impl
+}
+
+function persistCatalog(catalog: ModelsDevCatalog): void {
+  if (!persistence) return
+  try {
+    persistence.write({
+      entries: Object.fromEntries(catalog.entries),
+      anthropicModelIds: catalog.anthropicModelIds
+    })
+  } catch (err) {
+    console.error('[models/modelsDev] persist failed (cache still live in memory)', err)
+  }
+}
+
+/**
+ * Populate the in-memory cache from the last persisted catalog, synchronously,
+ * so a cold launch can resolve model facts WITHOUT waiting on the network.
+ *
+ * WHY: refreshModelsDevCache downloads 3.8 MB from models.dev and parses 3202
+ * models. Measured on a real cold boot, that was a ~2 s wait before any model
+ * fact resolved plus a ~400 ms main-thread stall when the JSON landed — the
+ * app's largest startup hitch, and it happened on EVERY launch even though the
+ * catalog changes rarely. Reading the derived form back from SQLite (~456 KB,
+ * no network) makes the common case local, and the live refresh still runs
+ * fire-and-forget afterwards to pick up genuine changes.
+ *
+ * Deliberately does NOT overwrite a cache a refresh has already populated:
+ * hydrate is a floor, never a rollback to older data.
+ *
+ * Never throws — a miss, a corrupt row, or a DB error all degrade to "no
+ * hydration", leaving exactly the pre-existing wait-for-network behavior.
+ */
+export function hydrateModelsDevCacheFromDisk(): boolean {
+  if (cache) return false
+  try {
+    if (!persistence) return false
+    const row = persistence.read()
+    if (!row?.value || typeof row.value !== 'object') return false
+    const { entries, anthropicModelIds: ids } = row.value
+    if (!entries || typeof entries !== 'object') return false
+
+    cache = new Map(Object.entries(entries))
+    anthropicModelIds = Array.isArray(ids) ? ids : []
+    console.log(
+      `[models/modelsDev] hydrated ${cache.size} models from disk (age ${Math.round(
+        (Date.now() - row.fetchedAt) / 1000
+      )}s) — skipping the cold-start network wait`
+    )
+    return true
+  } catch (err) {
+    console.error('[models/modelsDev] hydrate failed — falling back to network only', err)
+    return false
+  }
+}
+
 /**
  * Fetch models.dev's full catalog and rebuild the in-memory cache. Fails
  * silently on network error, timeout, or malformed response — the cache is
@@ -119,39 +256,18 @@ export async function refreshModelsDevCache(fetchImpl: typeof fetch = fetch): Pr
       return
     }
 
-    const next = new Map<string, CachedEntry>()
-    let count = 0
+    const built = buildCatalogFromResponse(data)
 
-    for (const [providerSlug, provider] of Object.entries(data)) {
-      const models = provider?.models
-      if (!models || typeof models !== 'object') continue
+    cache = built.entries
+    anthropicModelIds = built.anthropicModelIds
+    console.log(
+      `[models/modelsDev] refreshed cache: ${built.entries.size} models across all providers`
+    )
 
-      for (const [modelId, model] of Object.entries(models)) {
-        // First provider to mention an id wins — ids are not expected to
-        // collide across providers in practice (models.dev keys are already
-        // provider-qualified in most cases), and this only matters for the
-        // rare id string that appears twice; either entry is a reasonable
-        // choice since this source is never authoritative for Claude ids.
-        if (next.has(modelId)) continue
-
-        next.set(modelId, {
-          context: model.limit?.context ?? null,
-          pricing: toPricing(model.cost),
-          supportsReasoning: model.reasoning === true
-        })
-        count++
-      }
-      // See anthropicModelIds' own doc comment: only Anthropic's own bucket
-      // is a trustworthy source of "date-stamped ids Anthropic actually
-      // mints" — every other provider bucket may resell Claude models under
-      // vendor-suffixed SKU names sharing a Claude-shaped prefix.
-      if (providerSlug === 'anthropic') {
-        anthropicModelIds = Object.keys(models)
-      }
-    }
-
-    cache = next
-    console.log(`[models/modelsDev] refreshed cache: ${count} models across all providers`)
+    // Persist the DERIVED catalog (~456 KB) — never the 3.8 MB raw response —
+    // so the next cold launch resolves from disk instead of the network. See
+    // hydrateModelsDevCacheFromDisk below for why this matters.
+    persistCatalog(built)
   } catch (err) {
     console.warn('[models/modelsDev] refresh failed (keeping previous cache):', String(err))
   }

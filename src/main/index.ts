@@ -120,7 +120,8 @@ import type { SplitTree, PaneLayout, TerminalRect, TerminalMountResult } from '.
 import { bootActions, setTerminalAddonRef, registerWebContentsCleanup } from './actions/index'
 import { evictAccumulator } from './actions/session'
 import { seedDefaultFooterActions, seedDefaultFooterActionsForAllHarnesses } from './footerActions'
-import { refreshModelsDevCache } from './models/registry'
+import { refreshModelsDevCache, hydrateModelsDevCacheFromDisk } from './models/registry'
+import { installModelsDevPersistence } from './models/modelsDevPersistence'
 import {
   startDiagnostics,
   stopDiagnostics,
@@ -3477,8 +3478,25 @@ if (!app.requestSingleInstanceLock()) {
         )
       }
 
-      // Refresh model context/pricing from models.dev — fire-and-forget, never
-      // blocks boot. See src/main/models/registry.ts.
+      // Model context/pricing from models.dev, in two steps.
+      //
+      // FIRST hydrate synchronously from the last persisted catalog, so model
+      // facts resolve immediately on a cold launch. The network path below
+      // downloads 3.8 MB and parses 3202 models — measured at ~2 s before any
+      // fact resolved plus a ~400 ms main-thread stall, on EVERY launch, for a
+      // catalog that changes rarely. Reading the derived form back from SQLite
+      // (~456 KB, no network) removes that from the common path entirely.
+      //
+      // THEN refresh over the network anyway — fire-and-forget, never blocks
+      // boot — so genuine catalog changes still land, and the refresh
+      // re-persists for the next launch. Hydrate never overwrites a cache the
+      // refresh already populated, so ordering between the two is safe.
+      try {
+        installModelsDevPersistence()
+        hydrateModelsDevCacheFromDisk()
+      } catch (err) {
+        console.error('[startup] models.dev hydrate failed (continuing)', err)
+      }
       refreshModelsDevCache().catch(() => {})
 
       // Clear stale in_progress / attention statuses left over from a prior
