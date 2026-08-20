@@ -8,17 +8,8 @@ import {
   newWorkspaceMenuId,
   onNewWorkspaceMenuEvent
 } from '@/lib/overlayClient'
-import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { playSound } from '@/lib/sound'
-import { useSelectableModels } from '@/lib/useSelectableModels'
-import {
-  groupModelsForCreation,
-  initialCreationProviderId,
-  lastUsedModelForProvider
-} from '@/lib/creationProviderMenu'
-import { recordCreationLastUsed, useCreationLastUsedState } from '@/lib/creationLastUsedStore'
-import { setWorkspaceModel } from '@/lib/workspaceModelStore'
-import { decideCreateAction } from '@/lib/newWorkspaceMenuLogic'
+import { decideHarnessCreateAction } from '@/lib/newWorkspaceMenuLogic'
 
 // ---------------------------------------------------------------------------
 // Renderer-side slug helper (mirrors main/worktrees.ts worktreeSlug without
@@ -43,8 +34,8 @@ function worktreeSlugRenderer(name: string): string {
 const modesCache = new Map<string, { local: boolean; worktree: boolean }>()
 
 // ---------------------------------------------------------------------------
-// Harnesses cache (support-multi-harness C1) — module-level, shared across
-// all instances, same shape as modesCache above. harness:list is static
+// Harnesses cache (support-multi-harness) — module-level, shared across all
+// instances, same shape as modesCache above. harness:list is static
 // per-build data (no push channel — see HarnessPicker.tsx's own header for
 // why the settings picker doesn't need one either), so a single fetch on
 // first open per app session is enough; every instance of this popover
@@ -53,85 +44,54 @@ const modesCache = new Map<string, { local: boolean; worktree: boolean }>()
 
 let harnessesCache: HarnessSummary[] | null = null
 
-// Submenu hover-intent timing (the "+" TRIGGER itself is click-only — no
-// open delay there at all, see handleTriggerClick below; this timing is now
-// scoped ENTIRELY to the provider -> model flyout submenu's own
-// diagonal-traversal problem). 120ms open matches every other hover-driven
-// overlay in this app (Sidebar's HoverCard, WorkspaceTitleBar's DetailsCard);
-// 200ms close (toward the top of the requested 150-250ms range) gives room
-// to cross the row-to-submenu gap before the flyout vanishes.
-const SUBMENU_OPEN_DELAY_MS = 120
-const SUBMENU_CLOSE_DELAY_MS = 200
-
 // ---------------------------------------------------------------------------
 // NewWorkspaceMenu
 //
-// Ported to the native overlay layer (model-routing unit 10-creation) so the
-// popover paints OVER the terminal instead of being clipped inside the
-// sidebar — see src/renderer/src/overlay/kinds/NewWorkspaceMenu.tsx (the
-// dumb render+emit half) and src/renderer/src/lib/overlayClient.ts's
+// Rendered in the native overlay layer so the popover paints OVER the
+// terminal instead of being clipped inside the sidebar — see
+// src/renderer/src/overlay/kinds/NewWorkspaceMenu.tsx (the dumb render+emit
+// half) and src/renderer/src/lib/overlayClient.ts's
 // showNewWorkspaceMenu/onNewWorkspaceMenuEvent (the props-down/events-up
 // wiring). This component keeps ALL data hooks and every window.api.* call
-// (offeredModes, worktrees.branchExists, workspaces.createWorktree/setModel)
-// — the overlay kind never computes model facts or touches IPC directly,
-// mirroring WorkspaceSettingsPopover.tsx's contract exactly.
+// (offeredModes, harness:list, worktrees.branchExists,
+// workspaces.createWorktree) — the overlay kind never touches IPC directly,
+// mirroring WorkspaceSettingsPopover.tsx's contract.
 //
-// CLICK-ONLY TRIGGER (this unit's fix — "it shouldn't open on hover for the
-// + icon... only on click, and it should be open until I stay in popover"):
-// the "+" trigger has NO hover-open at all anymore — handleTriggerClick is
-// the ONLY way the popover opens (a plain toggle: click opens, click again
-// closes). Once open, it stays open regardless of pointer position — it
-// closes ONLY on: outside click (the pointerdown effect below), Escape (the
-// overlay kind's own handler, which emits 'cancel'), a successful create, or
-// clicking the trigger again. The `hoverCard` timer machinery below is now
-// scoped ENTIRELY to the provider -> model FLYOUT SUBMENU's own
-// diagonal-traversal problem (see PROVIDER -> MODEL FLYOUT SUBMENU below) —
-// it has nothing to do with the top-level trigger/popover open state
-// anymore.
+// CLICK-ONLY TRIGGER: the "+" trigger has no hover-open at all — a plain
+// toggle (click opens, click again closes). Once open, it stays open until:
+// outside click (the pointerdown effect below), Escape (the overlay kind's
+// own handler, which emits 'cancel'), a successful create, or clicking the
+// trigger again.
 //
-// PROVIDER -> MODEL FLYOUT SUBMENU (this unit's redesign — was an in-place
-// swap that hid the provider list and lost the user's place): the overlay
-// kind (src/renderer/src/overlay/kinds/NewWorkspaceMenu.tsx) now renders the
-// provider list AND the active provider's model list as two SIDE-BY-SIDE
-// panels in the SAME overlay surface (an in-flow flex layout, not a second
-// overlay window — see that file's header comment for the full reasoning on
-// why one surface is simpler and is what the existing overlay
-// infrastructure supports naturally). This component still owns every
-// window.api.* call and the `activeProviderId`/`selectedProviderId`/
-// `selectedModelId` state the kind renders from; `onEnterSubmenu`/
-// `onLeaveSubmenu` below are the new events that solve the diagonal-
-// traversal problem for that submenu specifically (entering EITHER the
-// provider row list or the submenu itself cancels any pending close;
-// leaving either re-arms it) — the same shape as the trigger-hover fix this
-// unit REMOVES from the top level, just moved one level down to where a
-// hover-driven affordance still legitimately exists.
+// HARNESS-SELECTOR REBUILD (support-multi-harness — replaces the old
+// provider/model creation flow entirely): this popover used to be a
+// two-level provider -> model picker with its own flyout submenu, a
+// committed "selected model" top line, and a SEPARATE click/Enter on that
+// top line to actually create. All of that — useSelectableModels,
+// groupModelsForCreation/creationProviderMenu.ts's grouping, the
+// session-scoped creationLastUsedStore, workspace-creation-time
+// workspaces.setModel, and decideCreateAction's model-aware create
+// decision — is gone from this component. Per the approved redesign, the
+// popover now shows every registered HARNESS as a chip
+// (window.api.harness.list); clicking one BOTH selects it AND creates the
+// workspace immediately, using whatever isolation mode + branch text is
+// currently set (see decideHarnessCreateAction in newWorkspaceMenuLogic.ts —
+// the pure, assertable half of this decision). The workspace's actual model
+// is then whatever that harness's own settings resolve to at launch
+// (composeClaudeLaunch layering global -> project -> workspace) — this
+// popover doesn't pick a model at creation time at all anymore.
 //
-// CREATE-ACTION INVERSION, HOVER VS. PICK (this unit's bug fixes — see
-// onHoverProvider/onPickProvider/onPickModel below): the top line (provider
-// icon + model name + an Enter-key affordance) is the ONLY create action, so
-// every OTHER interaction in this popover must be purely a SELECTION step,
-// never itself destructive of a prior selection:
-//   - onHoverProvider (mouse hover) is PURELY NAVIGATIONAL — it opens/
-//     switches the flyout submenu so the user can browse a provider's models,
-//     but must NOT write to selectedProviderId/selectedModelId (the top
-//     line/create payload). Hovering around must never change what Enter/the
-//     top line would create.
-//   - onPickProvider (explicit click, or ArrowRight/Enter navigating INTO a
-//     provider row) IS deliberate user intent, unlike a hover — this DOES
-//     commit that provider's last-used model to the top line.
-//   - onPickModel (clicking a specific model row) commits that model to the
-//     top line AND leaves the submenu OPEN — picking a model is a STEP, not
-//     the create action; the user still needs to reach the top line and
-//     click it (or press Enter) to actually create. Only outside-click, Esc,
-//     a successful create, or clicking the "+" trigger again close things.
+// Local/Worktree is UNCHANGED: a two-way isolation TOGGLE (never creates by
+// itself); selecting Worktree reveals the branch input inline, and clicking
+// a harness while Worktree is selected creates the worktree workspace using
+// whatever branch text is currently in that field.
 //
 // Props:
 //   projectId     — the project this workspace will belong to
 //   defaultName   — auto-generated workspace name (used to seed the branch slug)
-//   onCreateLocal — callback to perform the plain-create (Local) path; now
-//                   receives the model id chosen in this popover (undefined
-//                   = use the global/project default, unchanged pre-existing
-//                   behavior)
+//   onCreateLocal — callback to perform the plain-create (Local) path.
+//                   `harnessId` is the harness chosen (undefined means "use
+//                   the sole/default harness").
 //   onCreated     — callback fired after a worktree workspace is created
 //   children      — the trigger element (the "+" button or similar)
 //   className     — forwarded to the wrapper div
@@ -142,9 +102,11 @@ export interface NewWorkspaceMenuProps {
   /** Auto-generated workspace name for the current project (e.g. "Workspace 2"). */
   defaultName: string
   /** Called to create a local workspace via the existing plain-create path.
-   *  `modelId` is the model chosen in this popover (undefined = default).
-   *  `harnessId` is the harness chosen (support-multi-harness C1) — undefined
-   *  means "use the sole/default harness," same convention as modelId. */
+   *  `modelId` stays for the caller's existing signature (see Sidebar.tsx/
+   *  ProjectHeader.tsx call sites) but this popover no longer picks a model —
+   *  always undefined ("use the global/project default" for whichever
+   *  harness launches). `harnessId` is the harness chosen — undefined means
+   *  "use the sole/default harness," same convention as before. */
   onCreateLocal: (modelId?: string, harnessId?: string) => void
   /** Called after a worktree workspace has been created. */
   onCreated: (record: WorkspaceRecord) => void
@@ -166,7 +128,7 @@ export interface NewWorkspaceMenuProps {
   idSuffix?: string
 }
 
-type MenuView = 'closed' | 'providers' | 'models'
+type MenuView = 'closed' | 'open'
 
 export function NewWorkspaceMenu({
   projectId,
@@ -181,13 +143,9 @@ export function NewWorkspaceMenu({
   const [modes, setModes] = useState<{ local: boolean; worktree: boolean } | null>(
     () => modesCache.get(projectId) ?? null
   )
-  const [activeProviderId, setActiveProviderId] = useState<string | null>(null)
-  const [selectedModelId, setSelectedModelId] = useState<string | null>(null)
-  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null)
   const [isolation, setIsolation] = useState<NewWorkspaceMenuIsolation>('local')
-  // support-multi-harness C1 — see harnessesCache's own header comment.
+  // support-multi-harness — see harnessesCache's own header comment.
   const [harnesses, setHarnesses] = useState<HarnessSummary[]>(() => harnessesCache ?? [])
-  const [selectedHarnessId, setSelectedHarnessId] = useState<string>('')
 
   // Branch-panel state (was BranchField's local state — now lives here since
   // the panel renders inside the SAME popover instance, not a swapped-in
@@ -204,40 +162,6 @@ export function NewWorkspaceMenu({
     ? `${newWorkspaceMenuId(projectId)}:${idSuffix}`
     : newWorkspaceMenuId(projectId)
   const openRef = useRef(false)
-  // Scoped to the provider -> model flyout submenu ONLY (see this file's own
-  // header comment) — the top-level trigger/popover no longer uses any
-  // hover timer at all, it's click-toggle only.
-  const submenuHoverCard = useOverlayHoverCard({
-    openDelay: SUBMENU_OPEN_DELAY_MS,
-    closeDelay: SUBMENU_CLOSE_DELAY_MS
-  })
-
-  // The full selectable-model list (Claude always present; routed groups
-  // gated on proxy/provider health — see selectable.ts). Shared/cached with
-  // every other picker in the app (footer chip, drawers) — this popover
-  // computes NO model facts of its own, only groups/orders what main sent.
-  const { models: selectableModels } = useSelectableModels(undefined, view !== 'closed')
-  const groups = groupModelsForCreation(selectableModels)
-  const lastUsed = useCreationLastUsedState()
-
-  const hasPickedRef = useRef(false)
-
-  // Seeding is NOT done at click/hover-open time — at that moment
-  // useSelectableModels is still disabled (view is about to flip from
-  // 'closed'), so `groups` could still be the Claude-only fallback even when
-  // the real last-used was a routed provider. Instead, re-seed via effect
-  // whenever the popover is on the provider view AND the user hasn't made an
-  // explicit pick yet this session.
-  useEffect(() => {
-    if (view !== 'providers' || hasPickedRef.current) return
-    const initialProviderId = initialCreationProviderId(lastUsed, groups)
-    const initialGroup = groups.find((g) => g.providerId === initialProviderId)
-    const initialModels = initialGroup?.models ?? []
-    const modelId = lastUsedModelForProvider(lastUsed, initialProviderId, initialModels)
-    setSelectedProviderId(initialProviderId)
-    setSelectedModelId(modelId)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- groups is recomputed fresh every render from selectableModels; re-running this seed effect on identity churn (not content) would fight hasPickedRef's "only seed until a real pick" contract.
-  }, [view, lastUsed])
 
   const fetchModes = useCallback((): void => {
     window.api.app
@@ -253,16 +177,15 @@ export function NewWorkspaceMenu({
       })
   }, [projectId])
 
-  // support-multi-harness C1 — cache-first (harnessesCache), unlike
-  // fetchModes: harness:list is static per-build data, not per-project, so
-  // there's nothing to invalidate on open the way modesCache is invalidated
-  // above (project git-worktree support can change; the registered harness
-  // set cannot, within one running app). Falls back to a fresh window.api
-  // call only on first-ever open.
+  // support-multi-harness — cache-first (harnessesCache), unlike fetchModes:
+  // harness:list is static per-build data, not per-project, so there's
+  // nothing to invalidate on open the way modesCache is invalidated above
+  // (project git-worktree support can change; the registered harness set
+  // cannot, within one running app). Falls back to a fresh window.api call
+  // only on first-ever open.
   const fetchHarnesses = useCallback((): void => {
     if (harnessesCache) {
       setHarnesses(harnessesCache)
-      setSelectedHarnessId((prev) => prev || harnessesCache![0]?.id || '')
       return
     }
     window.api.harness
@@ -270,13 +193,11 @@ export function NewWorkspaceMenu({
       .then((list) => {
         harnessesCache = list
         setHarnesses(list)
-        setSelectedHarnessId((prev) => prev || list[0]?.id || '')
       })
       .catch(() => {
-        // Leave harnesses empty on failure — HarnessRow (overlay kind)
-        // no-ops for length <= 1, same as the single-Claude-descriptor
-        // case, so a failed fetch degrades to "no picker shown" rather than
-        // blocking creation.
+        // Leave harnesses empty on failure — the overlay kind's HarnessRow
+        // renders zero chips, so a failed fetch degrades to "no create
+        // control shown" rather than blocking on a stale/garbage list.
       })
   }, [])
 
@@ -307,7 +228,6 @@ export function NewWorkspaceMenu({
   function handleClose(): void {
     openRef.current = false
     setView('closed')
-    setActiveProviderId(null)
     setIsolation('local')
     setBranch('')
     setBranchExists(null)
@@ -325,30 +245,22 @@ export function NewWorkspaceMenu({
     fetchModes()
     fetchHarnesses()
 
-    setActiveProviderId(null)
-    setSelectedProviderId(null)
-    setSelectedModelId(null)
     setIsolation('local')
     setBranch(defaultBranch)
     setBranchExists(null)
     setBranchCreating(false)
     setBranchError(null)
-    hasPickedRef.current = false
-    setView('providers')
+    setView('open')
 
     showNewWorkspaceMenu(menuId, wrapperRef.current, {
       loading: true,
-      groups: [],
-      view: 'providers',
       isolation: 'local',
-      lastUsedModelIdByProvider: {},
       branchValue: defaultBranch,
       branchExists: null,
       branchCreating: false,
-      harnesses: harnessesCache ?? [],
-      selectedHarnessId: selectedHarnessId || harnessesCache?.[0]?.id || ''
+      harnesses: harnessesCache ?? []
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- defaultBranch/fetchModes/fetchHarnesses/menuId are all stable-per-projectId (or per-render-but-content-stable) — re-running openMenu's identity on their churn would defeat the hover-intent timer's callback stability.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- defaultBranch/fetchModes/fetchHarnesses/menuId are all stable-per-projectId (or per-render-but-content-stable).
   }, [projectId, fetchModes, fetchHarnesses, menuId])
 
   // CLICK-ONLY: the sole way this popover opens. No hover-open, no
@@ -363,56 +275,18 @@ export function NewWorkspaceMenu({
     openMenu()
   }
 
-  // Submenu hover-bridge (the provider -> model FLYOUT SUBMENU's own
-  // diagonal-traversal fix, NOT the top-level trigger/popover — that one is
-  // click-only now, see handleTriggerClick above). The overlay lives in a
-  // separate child BrowserWindow, so entering/leaving the provider row list
-  // or the submenu panel doesn't reach this component as a native DOM event
-  // — the overlay kind emits 'enterSubmenu'/'leaveSubmenu' (routed through
-  // onNewWorkspaceMenuEvent below) whenever the pointer crosses into or out
-  // of EITHER panel. Entering either cancels any pending close; leaving
-  // either re-arms the SAME close timer, so leaving via the submenu behaves
-  // identically to leaving via the row list.
-  function handleEnterSubmenu(): void {
-    submenuHoverCard.clearTimer()
-  }
-
-  function handleLeaveSubmenu(): void {
-    submenuHoverCard.armClose(() => {
-      setActiveProviderId(null)
-      setView('providers')
-    })
-  }
-
-  // Per-provider last-used marker map — passed down as-is so the overlay
-  // kind can render the `●` on the right model row without needing to know
-  // about CreationLastUsedState's Map-based shape itself.
-  const lastUsedModelIdByProvider: Record<string, string> = {}
-  for (const [providerId, modelId] of lastUsed.byProvider) {
-    lastUsedModelIdByProvider[providerId] = modelId
-  }
-
-  async function handleCreate(): Promise<void> {
-    // decideCreateAction is the pure, assertable half of this decision (see
-    // scripts/verify-new-workspace-menu.ts) — this handler is just its
-    // side-effecting continuation (persist last-used, call the right
-    // window.api.* path).
-    const decision = decideCreateAction(isolation, selectedModelId, branch)
+  async function handleCreate(harnessId: string): Promise<void> {
+    // decideHarnessCreateAction is the pure, assertable half of this
+    // decision (see scripts/verify-new-workspace-menu.ts) — this handler is
+    // just its side-effecting continuation (call the right window.api.*
+    // path). One click both selects the harness AND creates — see this
+    // file's header comment.
+    const decision = decideHarnessCreateAction(isolation, harnessId, branch)
     if (decision.kind === 'disabled' || branchCreating) return
-
-    const modelId = decision.modelId
-    if (modelId && selectedProviderId) recordCreationLastUsed(selectedProviderId, modelId)
-
-    // support-multi-harness C1 — undefined when only one harness is
-    // registered (harnesses.length <= 1), matching HarnessRow's own
-    // gate and createWorkspace's "omitted means the sole/default harness"
-    // convention; a non-empty selectedHarnessId only exists once harnesses
-    // has actually loaded more than one entry.
-    const harnessId = harnesses.length > 1 ? selectedHarnessId || undefined : undefined
 
     if (decision.kind === 'local') {
       handleClose()
-      onCreateLocal(modelId, harnessId)
+      onCreateLocal(undefined, harnessId)
       return
     }
 
@@ -432,21 +306,8 @@ export function NewWorkspaceMenu({
       const record = await window.api.workspaces.createWorktree(projectId, {
         name,
         branch: trimmed,
-        ...(harnessId ? { harnessId } : {})
+        harnessId
       })
-      // Creation-time model routing (unit 10) — same persistence path the
-      // Local button uses (see handleAddWorkspace in Dashboard.tsx): write
-      // to workspace:setModel (the SAME storage the footer chip writes)
-      // BEFORE onCreated fires navigation, so the first terminal:mount for
-      // this worktree workspace composes routed with no restart needed.
-      if (modelId) {
-        try {
-          await window.api.workspaces.setModel(record.id, modelId)
-          setWorkspaceModel(record.id, modelId)
-        } catch (err) {
-          console.error('[NewWorkspaceMenu] failed to set creation-time model', err)
-        }
-      }
       playSound('pop')
       handleClose()
       onCreated(record)
@@ -465,115 +326,39 @@ export function NewWorkspaceMenu({
   useEffect(() => {
     if (view === 'closed') return undefined
     return onNewWorkspaceMenuEvent(menuId, {
-      onHoverProvider: (providerId) => {
-        // PURELY NAVIGATIONAL (bug fix — hovering must never mutate the
-        // committed top-line selection): opens/switches the FLYOUT SUBMENU to
-        // this provider's model list so the user can see its models, but does
-        // NOT touch selectedProviderId/selectedModelId (the top line, which
-        // is also the create action) and does NOT set hasPickedRef — a mere
-        // hover is not a pick. The submenu still previews that provider's
-        // last-used model (via lastUsedModelIdByProvider, already threaded
-        // down) without committing it. `view` moves to 'models' so arrow
-        // keys act on the now-open submenu.
-        setActiveProviderId(providerId)
-        setView('models')
-      },
-      onPickProvider: (providerId) => {
-        // EXPLICIT pick (click, or ArrowRight/Enter navigating into a
-        // provider row): deliberate, not incidental like a hover — this DOES
-        // commit that provider's last-used model to the top line, same as
-        // picking a model directly. See this file's header comment for the
-        // reasoning (hover must stay non-destructive; an explicit action on
-        // the row is a reasonable proxy for "I want this provider").
-        hasPickedRef.current = true
-        setActiveProviderId(providerId)
-        const group = groups.find((g) => g.providerId === providerId)
-        const modelId = lastUsedModelForProvider(lastUsed, providerId, group?.models ?? [])
-        setSelectedProviderId(providerId)
-        setSelectedModelId(modelId)
-        setView('models')
-      },
-      onBackToProviders: () => {
-        setActiveProviderId(null)
-        setView('providers')
-      },
-      onPickModel: (providerId, modelId) => {
-        // Selecting a model updates the top line but leaves the submenu OPEN
-        // (bug fix — picking a model is only a STEP now, not the create
-        // action itself: the user still needs to reach the top line and
-        // click it/press Enter to actually create). The submenu stays
-        // anchored on this provider (activeProviderId untouched) with the
-        // picked model shown checked; only outside-click/Esc/create/
-        // clicking the trigger again close the popover.
-        hasPickedRef.current = true
-        setSelectedProviderId(providerId)
-        setSelectedModelId(modelId)
-      },
       onPickIsolation: (nextIsolation) => {
         setIsolation(nextIsolation)
-        if (nextIsolation === 'worktree' && selectedModelId && selectedProviderId) {
-          recordCreationLastUsed(selectedProviderId, selectedModelId)
-        }
       },
-      // support-multi-harness C1 — pure SELECTION, same rule 4 discipline as
-      // onPickIsolation/onPickModel above: only updates which row is
-      // checked, never itself creates.
-      onPickHarness: (harnessId) => {
-        setSelectedHarnessId(harnessId)
-      },
+      // support-multi-harness — a harness chip click IS the create action
+      // now (no separate confirm/create step); see this file's header
+      // comment for why.
+      onPickHarness: (harnessId) => void handleCreate(harnessId),
       onChangeBranch: (value) => {
         setBranch(value)
         setBranchError(null)
         setBranchExists(null)
         checkBranch(value)
       },
-      onCreate: () => void handleCreate(),
-      onCancel: handleClose,
-      onEnterSubmenu: handleEnterSubmenu,
-      onLeaveSubmenu: handleLeaveSubmenu
+      onCancel: handleClose
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, menuId, groups, lastUsed, selectedModelId, selectedProviderId])
+  }, [view, menuId, isolation, branch])
 
   // Keep the open popover's props in sync as state changes (mirrors
   // WorkspaceSettingsPopover's isDirty->updateWorkspaceSettingsCard effect).
   useEffect(() => {
     if (view === 'closed') return
-    const topLineProviderId = selectedProviderId ?? 'claude'
     updateNewWorkspaceMenu(menuId, {
       loading: modes === null,
-      groups,
-      view: view === 'models' ? 'models' : 'providers',
-      activeProviderId: activeProviderId ?? undefined,
-      selectedProviderId: topLineProviderId,
-      selectedModelId: selectedModelId ?? undefined,
       isolation,
       modes: modes ?? undefined,
-      lastUsedModelIdByProvider,
       branchValue: branch,
       branchExists,
       branchCreating,
       branchError: branchError ?? undefined,
-      harnesses,
-      selectedHarnessId
+      harnesses
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    view,
-    menuId,
-    groups,
-    modes,
-    activeProviderId,
-    selectedProviderId,
-    selectedModelId,
-    isolation,
-    branch,
-    branchExists,
-    branchCreating,
-    branchError,
-    harnesses,
-    selectedHarnessId
-  ])
+  }, [view, menuId, modes, isolation, branch, branchExists, branchCreating, branchError, harnesses])
 
   // Outside-click dismissal: the popover lives in a separate child
   // BrowserWindow, so the main renderer's document-level listener never sees

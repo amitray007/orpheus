@@ -2,80 +2,77 @@
 // scripts/verify-new-workspace-menu.ts
 //
 // Assertion harness for src/renderer/src/lib/newWorkspaceMenuLogic.ts — the
-// pure logic backing the "+ new workspace" popover's native-overlay port
-// (model-routing unit 10-creation): decideCreateAction (rule 4's inversion —
-// the top line/Enter is the SOLE create action), decideHoverIntentAction
-// (the PROVIDER -> MODEL FLYOUT SUBMENU's own diagonal-traversal fix — the
-// top-level trigger is click-only and has NO hover-intent timer at all
-// anymore), computeSubmenuSide (the submenu's left/right flip decision),
-// reduceHoverGate/isGenuineHover (the phantom-hover-from-resize fix — see
-// their doc comments in newWorkspaceMenuLogic.ts for the full root-cause
-// story: this popover's own resize, not real user input, was cascading into
-// a self-sustaining submenu open/close/reassign loop), and
-// decideProviderRowIntent/decideModelPickAction (the two post-ship bug
-// fixes: hovering a provider row must NOT commit the top-line selection, and
-// picking a model must NOT close the submenu — see both functions' doc
-// comments in newWorkspaceMenuLogic.ts).
+// pure logic backing the "+ new workspace" popover's native-overlay port:
+// decideHarnessCreateAction (the support-multi-harness rebuild's create
+// decision — a harness chip click IS the create action now, given isolation
+// mode + which harness was clicked + branch text), decideHoverIntentAction/
+// computeSubmenuSide/reduceHoverGate/isGenuineHover/reduceRowHover (all
+// still exercised here even though THIS popover no longer has a flyout
+// submenu — see newWorkspaceMenuLogic.ts's own header comment: these are
+// shared with ChipGroupedDropdown.tsx, the footer Model chip's own,
+// still-present provider -> model flyout, which reuses this exact module
+// rather than re-deriving its own copy of these fixes).
+//
+// REMOVED in the harness-selector rebuild: decideCreateAction (superseded by
+// decideHarnessCreateAction below) and decideProviderRowIntent/
+// decideModelPickAction (hover-vs-pick semantics for the now-deleted
+// provider/model list — nothing in this popover hovers or picks a model
+// anymore).
 //
 // MUST PASS FULLY OFFLINE — newWorkspaceMenuLogic.ts imports nothing from
-// react/electron, mirroring verify-creation-provider-menu.ts's own
-// no-Electron/no-DB constraint.
+// react/electron.
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert'
 import {
-  decideCreateAction,
+  decideHarnessCreateAction,
+  isHarnessRowDisabled,
   decideHoverIntentAction,
   computeSubmenuSide,
   reduceHoverGate,
   isGenuineHover,
-  decideProviderRowIntent,
-  decideModelPickAction,
   reduceRowHover,
   type HoveredRow
 } from '../src/renderer/src/lib/newWorkspaceMenuLogic.ts'
 
 // ---------------------------------------------------------------------------
-// 1. decideCreateAction — isolation + selection + branch -> create payload.
+// 1. decideHarnessCreateAction — isolation + clicked harness + branch ->
+//    create payload. The harness-selector rebuild's central decision: one
+//    click on a harness chip both selects it AND creates.
 // ---------------------------------------------------------------------------
 
 {
-  // Local isolation always creates, regardless of branch text (branch is
-  // irrelevant while isolation === 'local') — undefined model means "use the
-  // global/project default", unchanged pre-existing behavior.
-  const noModel = decideCreateAction('local', undefined, '')
-  assert.deepEqual(noModel, { kind: 'local', modelId: undefined })
+  // Local isolation always creates immediately with whichever harness chip
+  // was clicked, regardless of branch text (branch is irrelevant while
+  // isolation === 'local').
+  const claude = decideHarnessCreateAction('local', 'claude', '')
+  assert.deepEqual(claude, { kind: 'local', harnessId: 'claude' })
 
-  const withModel = decideCreateAction('local', 'gpt-5-codex', '')
-  assert.deepEqual(withModel, { kind: 'local', modelId: 'gpt-5-codex' })
-
-  // null selectedModelId (never explicitly picked) normalizes the same as
-  // undefined — both mean "use the default".
-  const nullModel = decideCreateAction('local', null, '')
-  assert.deepEqual(nullModel, { kind: 'local', modelId: undefined })
+  const codex = decideHarnessCreateAction('local', 'codex-cli', 'unused-branch-text')
+  assert.deepEqual(codex, { kind: 'local', harnessId: 'codex-cli' })
 
   console.log(
-    '✓ local isolation always creates immediately (branch text irrelevant); undefined/null selectedModelId both mean "use the global/project default"'
+    '✓ local isolation always creates immediately with the CLICKED harness id (branch text irrelevant)'
   )
 }
 
 {
   // Worktree isolation with a non-blank branch creates with that (trimmed)
-  // branch + the current model selection.
-  const decision = decideCreateAction('worktree', 'grok-4.5', '  my-feature  ')
-  assert.deepEqual(decision, { kind: 'worktree', modelId: 'grok-4.5', branch: 'my-feature' })
+  // branch + the clicked harness.
+  const decision = decideHarnessCreateAction('worktree', 'codex-cli', '  my-feature  ')
+  assert.deepEqual(decision, { kind: 'worktree', harnessId: 'codex-cli', branch: 'my-feature' })
   console.log(
-    '✓ worktree isolation with a non-blank branch creates with the TRIMMED branch text + current model selection'
+    '✓ worktree isolation with a non-blank branch creates with the TRIMMED branch text + the clicked harness'
   )
 }
 
 {
   // Worktree isolation with an empty/whitespace-only branch is disabled —
-  // Enter/click on the top line must not silently create with a garbage
-  // branch name. This is the exact gate the overlay kind's TopLine
-  // `disabled` prop encodes (isolation === 'worktree' && !branchValue.trim()).
-  assert.deepEqual(decideCreateAction('worktree', 'gpt-5-codex', ''), { kind: 'disabled' })
-  assert.deepEqual(decideCreateAction('worktree', 'gpt-5-codex', '   '), { kind: 'disabled' })
+  // clicking a harness chip must not silently create with a garbage branch
+  // name. This is the exact gate the overlay kind's HarnessRow `disabled`
+  // prop encodes (isolation === 'worktree' && !branchValue.trim()).
+  assert.deepEqual(decideHarnessCreateAction('worktree', 'claude', ''), { kind: 'disabled' })
+  assert.deepEqual(decideHarnessCreateAction('worktree', 'claude', '   '), { kind: 'disabled' })
   console.log(
     '✓ worktree isolation with an empty/whitespace-only branch resolves to "disabled" — never silently creates with a garbage branch name'
   )
@@ -287,55 +284,52 @@ import {
 }
 
 // ---------------------------------------------------------------------------
-// 5. decideProviderRowIntent / decideModelPickAction — the two post-ship bug
-//    fixes reported by the user:
-//
-//    Bug A: "hovering over the model provider name like openai, changes the
-//    selected model on top, this is bad, unless I select a model it
-//    shouldn't." Hover must NEVER commit the top-line (create-payload)
-//    selection — only an explicit pick (click, or ArrowRight/Enter into the
-//    row) may.
-//
-//    Bug B: "On selecting model, make sure popover doesn't close as I need
-//    to select the selected model thing too." Picking a model is only a STEP
-//    toward the top-line create action now (not the action itself, per the
-//    create-action inversion) — it must commit the selection WITHOUT closing
-//    the submenu.
+// 5. isHarnessRowDisabled — the exact predicate decideHarnessCreateAction's
+//    'disabled' branch is built on, extracted so the overlay kind computes
+//    each harness chip's `disabled` prop from the SAME logic a click would
+//    be evaluated against (see newWorkspaceMenuLogic.ts's own doc comment —
+//    this exists specifically to prevent the chip's greyed-out state and
+//    the click decision from drifting into two hand-written copies of the
+//    same condition).
 // ---------------------------------------------------------------------------
 
 {
-  // Bug A fix: a mere hover on a provider row must NOT commit anything to
-  // the top line — it only ever previews/switches the flyout submenu.
-  const hover = decideProviderRowIntent('hover')
-  assert.deepEqual(hover, { commitsSelection: false, keepsSubmenuOpen: true })
+  assert.equal(isHarnessRowDisabled('local', ''), false)
+  assert.equal(isHarnessRowDisabled('local', '   '), false)
+  console.log('✓ local isolation never disables the harness chips, regardless of branch text')
+}
+
+{
+  assert.equal(isHarnessRowDisabled('worktree', ''), true)
+  assert.equal(isHarnessRowDisabled('worktree', '   '), true)
   console.log(
-    '✓ Bug A fix: hovering a provider row does NOT commit the top-line selection — only opens/switches the submenu preview'
+    '✓ worktree isolation with an empty/whitespace-only branch disables every harness chip'
   )
 }
 
 {
-  // An explicit pick (click, or ArrowRight/Enter navigating INTO the row) IS
-  // deliberate user intent, unlike a hover — this DOES commit that
-  // provider's last-used model to the top line. (Design decision: my lean,
-  // confirmed — an explicit action on the row is a reasonable proxy for "I
-  // want this provider", whereas a hover is purely incidental mouse
-  // transit.)
-  const pick = decideProviderRowIntent('pick')
-  assert.deepEqual(pick, { commitsSelection: true, keepsSubmenuOpen: true })
-  console.log(
-    '✓ an explicit pick on a provider row (click / ArrowRight / Enter-into-row) DOES commit its last-used model to the top line — deliberate action, unlike a hover'
-  )
+  assert.equal(isHarnessRowDisabled('worktree', 'my-feature'), false)
+  console.log('✓ worktree isolation with non-blank branch text enables the harness chips')
 }
 
 {
-  // Bug B fix: picking a SPECIFIC model always commits the selection AND
-  // always keeps the submenu open — the opposite of the old conventional-
-  // menu behavior (leaf pick closes the menu), which broke the create-action
-  // inversion by hiding the very top line the user still needs to click.
-  const modelPick = decideModelPickAction()
-  assert.deepEqual(modelPick, { commitsSelection: true, keepsSubmenuOpen: true })
+  // End-to-end agreement: for every isolation/branch combination this
+  // predicate disagrees with decideHarnessCreateAction only in the
+  // direction that's expected — disabled() === true iff the decision is
+  // 'disabled'.
+  const cases: Array<['local' | 'worktree', string]> = [
+    ['local', ''],
+    ['local', 'x'],
+    ['worktree', ''],
+    ['worktree', '   '],
+    ['worktree', 'x']
+  ]
+  for (const [isolation, branch] of cases) {
+    const decision = decideHarnessCreateAction(isolation, 'claude', branch)
+    assert.equal(isHarnessRowDisabled(isolation, branch), decision.kind === 'disabled')
+  }
   console.log(
-    '✓ Bug B fix: picking a model commits the selection to the top line AND leaves the submenu OPEN — the user still needs to reach the top line to actually create'
+    '✓ isHarnessRowDisabled agrees with decideHarnessCreateAction across every isolation/branch combination — disabled() is true iff the decision would be "disabled"'
   )
 }
 

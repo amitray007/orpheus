@@ -2646,78 +2646,46 @@ export type WorkspaceSettingsCardPatch = Partial<WorkspaceSettingsCardProps>
 
 // ---------------------------------------------------------------------------
 // Overlay kind: newWorkspaceMenu — the "+ new workspace" popover
-// (NewWorkspaceMenu.tsx), migrated off the in-page `Overlay` component
-// (model-routing unit 10-creation) so it can paint OVER the terminal instead
-// of being clipped inside the sidebar. Long-lived + focusable + hover- AND
-// keyboard-driven, closest in shape to workspaceSettingsCard: props down,
-// events up. The call site keeps every window.api.* call (offeredModes,
-// worktrees.branchExists, workspaces.createWorktree/setModel) and all
-// selectable-model/last-used data hooks; this props bag is a pure
-// serializable snapshot, and the kind emits intent events the call site turns
-// back into state changes + a follow-up updateNewWorkspaceMenu push.
+// (NewWorkspaceMenu.tsx), rendered in the native overlay layer so it can
+// paint OVER the terminal instead of being clipped inside the sidebar.
+// Long-lived + focusable, closest in shape to workspaceSettingsCard: props
+// down, events up. The call site keeps every window.api.* call
+// (offeredModes, worktrees.branchExists, workspaces.createWorktree/
+// harness:list) and this props bag is a pure serializable snapshot; the kind
+// emits intent events the call site turns back into state changes + a
+// follow-up updateNewWorkspaceMenu push.
 //
-// Inverted create-flow (per the approved redesign): the top line (provider
-// icon + selected model name + an Enter-key affordance) is now the SOLE
-// create action — click or Enter creates immediately with the
-// currently-selected model + currently-selected isolation mode. Local/
-// Worktree became a two-way isolation TOGGLE (never creates by itself);
-// selecting Worktree reveals the branch input in the SAME card (no separate
-// overlay swap), and creating from the top line while Worktree is selected
-// creates the worktree workspace using whatever branch text is currently in
-// that field.
+// HARNESS-SELECTOR REBUILD (support-multi-harness — replaces the old
+// provider/model creation flow entirely, see NewWorkspaceMenu.tsx's own
+// header comment for the full story): the popover no longer picks a model
+// at creation time. It shows every registered HARNESS (Claude Code, Codex,
+// ...) as chips; clicking one BOTH selects it AND creates immediately — one
+// click, no separate confirm/create step. Local/Worktree stays exactly as
+// it was: a two-way isolation TOGGLE (never creates by itself); selecting
+// Worktree reveals the branch input in the same card, and clicking a
+// harness while Worktree is selected creates the worktree workspace using
+// whatever branch text is currently in that field. The launched workspace's
+// model comes from that harness's OWN settings resolution
+// (composeClaudeLaunch), not a per-creation pick.
 // ---------------------------------------------------------------------------
-
-/** One provider group in the creation menu's provider list — a thin,
- *  serializable projection of CreationProviderGroup (creationProviderMenu.ts)
- *  that the call site computes; the kind never groups/filters models itself. */
-export type NewWorkspaceMenuGroup = {
-  providerId: string
-  label: string
-  models: SelectableModel[]
-}
-
-export type NewWorkspaceMenuView = 'providers' | 'models'
 
 export type NewWorkspaceMenuIsolation = 'local' | 'worktree'
 
 export type NewWorkspaceMenuProps = {
-  /** True while offeredModes (Local/Worktree availability) is still loading —
-   *  selectableModels never gates the picker (see NewWorkspaceMenu.tsx's own
-   *  doc comment: the Claude-only fallback is synchronous). */
+  /** True while offeredModes (Local/Worktree availability) or harness:list
+   *  is still loading. */
   loading: boolean
-  /** Every provider group the popover can show — Claude always present. */
-  groups: NewWorkspaceMenuGroup[]
-  /** 'providers' (top-level list) or 'models' (a specific provider's models,
-   *  shown when the user hovers/clicks a provider row). */
-  view: NewWorkspaceMenuView
-  /** The provider whose model list is showing in the 'models' view — undefined
-   *  while on the 'providers' view. */
-  activeProviderId?: string
-  /** The currently-selected provider/model — drives the top line AND what
-   *  Local/Worktree create with. Undefined selectedModelId means "use the
-   *  global/project default" (Claude's unchanged pre-existing behavior). */
-  selectedProviderId?: string
-  selectedModelId?: string
   /** Which isolation mode is currently toggled — drives whether the branch
    *  panel is shown. Defaults to 'local' when the popover first opens. */
   isolation: NewWorkspaceMenuIsolation
   /** Local/Worktree availability for this project (see app:offeredModes) —
    *  undefined while `loading` is true. */
   modes?: { local: boolean; worktree: boolean }
-  /** Every registered harness (harness:list) — support-multi-harness C1.
-   *  ALWAYS the full list regardless of length; the KIND decides whether to
-   *  render the picker row (only when `harnesses.length > 1`), matching
-   *  HarnessSection.tsx's "no hardcoded 'claude' anywhere" discipline. With
-   *  today's single Claude descriptor this is always length 1 and the row
-   *  never renders — creation silently uses the sole harness. */
+  /** Every registered harness (harness:list) — support-multi-harness. ALWAYS
+   *  the full list, rendered as one chip per harness; clicking a chip both
+   *  selects AND creates (see this file's own header comment). With today's
+   *  Claude + Codex descriptors this is at least length 2. */
   harnesses: HarnessSummary[]
-  /** The currently-selected harness id — drives which row is checked when
-   *  the picker renders, and is the harnessId creation uses. Defaults to
-   *  the first entry in `harnesses` when the popover opens. */
-  selectedHarnessId: string
-  /** Per-provider "last used" marker (session-scoped) so the model list can
-   *  show a `●` next to the right row without the kind computing it itself. */
-  lastUsedModelIdByProvider: Record<string, string>
   // --- Worktree/branch-panel fields (only rendered when isolation === 'worktree') ---
   branchValue: string
   /** null = not checked yet/empty input, true/false = debounced check result. */

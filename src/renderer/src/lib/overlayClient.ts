@@ -204,35 +204,28 @@ export interface WorkspaceSettingsCardHandlers {
 const workspaceSettingsCardHandlers = new Map<string, WorkspaceSettingsCardHandlers>()
 
 // Per-id newWorkspaceMenu event handlers — LONG-LIVED (like
-// workspaceSettingsCardHandlers above): the popover stays open across many
-// selection/hover/isolation changes, not settled once like the chip
-// dropdown/prompt promises. A given overlay id is never in more than one of
-// these six maps.
+// workspaceSettingsCardHandlers above): the popover stays open across
+// isolation/branch changes, not settled once like the chip dropdown/prompt
+// promises. A given overlay id is never in more than one of these six maps.
+//
+// HARNESS-SELECTOR REBUILD (support-multi-harness) — this vocabulary shrank
+// considerably: the old provider/model flyout's hover-preview/pick/
+// back-to-providers/model-pick/submenu-enter-leave events are all gone (see
+// NewWorkspaceMenu.tsx — both the overlay kind and its host component — for
+// the full story). onPickHarness is no longer a pure SELECTION step; a
+// harness pick IS the create action now, one click. onCreate is gone for the
+// same reason — there is no longer a separate "confirm" step to trigger.
 export interface NewWorkspaceMenuHandlers {
-  onHoverProvider: (providerId: string) => void
-  onPickProvider: (providerId: string) => void
-  onBackToProviders: () => void
-  onPickModel: (providerId: string, modelId: string) => void
   onPickIsolation: (isolation: 'local' | 'worktree') => void
-  /** A harness row was picked (support-multi-harness C1) — only ever fires
-   *  when more than one harness is registered; the kind doesn't render the
-   *  row at all otherwise (see NewWorkspaceMenuProps.harnesses' own doc
-   *  comment). */
+  /** A harness chip was clicked — this BOTH selects the harness AND creates
+   *  the workspace immediately (using the currently-selected isolation mode
+   *  + branch text), per the approved harness-selector redesign. */
   onPickHarness: (harnessId: string) => void
   onChangeBranch: (value: string) => void
-  onCreate: () => void
   /** Escape, or focus leaving the popover entirely (blur to outside) —
    *  OverlayRoot emits 'cancel' globally for any takesFocus descriptor; the
    *  kind's own onBlur also emits it directly (see NewWorkspaceMenu.tsx). */
   onCancel: () => void
-  /** The pointer reached the model flyout submenu — cancels any pending
-   *  close scheduled by leaving the provider row (the diagonal-traversal
-   *  fix for the provider -> model submenu, distinct from the generic
-   *  onCardPointer bridge below which covers the WHOLE card's boundary). */
-  onEnterSubmenu: () => void
-  /** The pointer left the model flyout submenu — arms the same close-delay
-   *  timer leaving the provider row would arm. */
-  onLeaveSubmenu: () => void
 }
 
 const newWorkspaceMenuHandlers = new Map<string, NewWorkspaceMenuHandlers>()
@@ -343,24 +336,6 @@ function dispatchNewWorkspaceMenuEvent(e: OverlayEvent): boolean {
   if (!menuHandlers) return false
 
   switch (e.type) {
-    case 'hoverProvider': {
-      const payload = e.payload as { providerId: string } | undefined
-      if (payload) menuHandlers.onHoverProvider(payload.providerId)
-      break
-    }
-    case 'pickProvider': {
-      const payload = e.payload as { providerId: string } | undefined
-      if (payload) menuHandlers.onPickProvider(payload.providerId)
-      break
-    }
-    case 'backToProviders':
-      menuHandlers.onBackToProviders()
-      break
-    case 'pickModel': {
-      const payload = e.payload as { providerId: string; modelId: string } | undefined
-      if (payload) menuHandlers.onPickModel(payload.providerId, payload.modelId)
-      break
-    }
     case 'pickIsolation': {
       const payload = e.payload as { isolation: 'local' | 'worktree' } | undefined
       if (payload) menuHandlers.onPickIsolation(payload.isolation)
@@ -376,17 +351,8 @@ function dispatchNewWorkspaceMenuEvent(e: OverlayEvent): boolean {
       if (payload) menuHandlers.onChangeBranch(payload.value)
       break
     }
-    case 'create':
-      menuHandlers.onCreate()
-      break
     case 'cancel':
       menuHandlers.onCancel()
-      break
-    case 'enterSubmenu':
-      menuHandlers.onEnterSubmenu()
-      break
-    case 'leaveSubmenu':
-      menuHandlers.onLeaveSubmenu()
       break
     case 'exited':
       newWorkspaceMenuHandlers.delete(e.overlayId)

@@ -1,69 +1,86 @@
 // ---------------------------------------------------------------------------
 // src/renderer/src/lib/newWorkspaceMenuLogic.ts
 //
-// Pure logic backing the "+ new workspace" popover's native-overlay port
-// (model-routing unit 10-creation) — kept free of React/Electron so
-// scripts/verify-new-workspace-menu.ts can exercise every decision offline,
-// mirroring creationProviderMenu.ts's own pattern. Three independently
-// assertable pieces:
+// Pure logic backing the "+ new workspace" popover's native-overlay port —
+// kept free of React/Electron so scripts/verify-new-workspace-menu.ts can
+// exercise every decision offline. Two independently assertable pieces
+// remain (support-multi-harness rebuild removed a third — see below):
 //
-//   1. The create-payload decision (rule 4's inversion): given the current
-//      isolation mode + selection + branch text, what does pressing
-//      Enter/clicking the top line actually do? ('local' create with model,
-//      or 'worktree' create with branch+model, or disabled).
-//   2. The hover-intent timer state machine — now scoped to the PROVIDER ->
-//      MODEL FLYOUT SUBMENU only (the trigger itself is click-only, see #3):
-//      a tiny reducer over enter-row/leave-row/enter-submenu/leave-submenu
-//      events that decides whether a pending open/close timer should fire,
-//      be cancelled, or be re-armed — the classic "diagonal traversal into a
-//      submenu" problem every hierarchical menu (macOS menus, VS Code
-//      context menus) has to solve. useOverlayHoverCard (existing hook)
-//      already implements the TIMING half (setTimeout bookkeeping); this
-//      module is the DECISION half — same shape as every other pure/hook
-//      split in this codebase (creationProviderMenu.ts is the data half of
-//      NewWorkspaceMenu.tsx, useCreationLastUsedState is the React half).
-//   3. The submenu flip/clamp placement decision — given the parent panel's
-//      measured rect, the submenu's natural size, and the available screen
-//      width, does the submenu open to the right (preferred) or flip to the
-//      left, and how far (if at all) does it need to be nudged up to stay
-//      on-screen vertically? Mirrors src/main/overlayLayer.ts's own
-//      computeAnchoredPlacement flip/clamp shape, but computed CLIENT-SIDE
-//      against the parent row's rect since both panels live inside the SAME
-//      overlay window/surface (see NewWorkspaceMenu.tsx's kind-level doc
-//      comment for why: a second overlay WINDOW would need its own
-//      cross-window pointer-boundary bridge, which the existing overlay
-//      infra doesn't support and isn't needed when one window can size to
-//      fit both panels side-by-side).
+//   1. The create-payload decision (harness-selector rebuild): given the
+//      current isolation mode + the harness that was just clicked + branch
+//      text, what does that click actually do? ('local' create with that
+//      harness, or 'worktree' create with branch+harness, or disabled).
+//      Clicking a harness chip IS the create action now — there is no
+//      separate top-line/Enter step (see decideHarnessCreateAction below and
+//      this module's header comment update).
+//   2. The submenu flip/clamp placement decision, and the phantom-hover /
+//      row-hover / hover-intent-timer machinery — ALL STILL LIVE, but no
+//      longer used by THIS menu (its provider -> model flyout submenu is
+//      gone along with the model list). They're kept here because
+//      ChipGroupedDropdown.tsx (the footer Model chip's own provider ->
+//      model flyout, for an ALREADY-RUNNING workspace) reuses every one of
+//      them for its own, still-present submenu — see that file's own header
+//      comment ("THIS COMPONENT DELIBERATELY REUSES newWorkspaceMenuLogic.ts
+//      RATHER THAN RE-DERIVING ITS OWN COPY"). Moving them out of this file
+//      would just rename the shared module, not remove any code, so they
+//      stay put.
+//
+// REMOVED in the harness-selector rebuild (support-multi-harness): the old
+// decideCreateAction (isolation + selectedModelId + branch -> create
+// payload, keyed off a top-line "click the summary row" create action) and
+// decideProviderRowIntent/decideModelPickAction (hover-vs-pick semantics for
+// the now-deleted provider list and its model flyout). This popover no
+// longer has a provider/model list at all — see NewWorkspaceMenu.tsx (both
+// the overlay kind and its host component)'s own header comments for why:
+// the user picks a HARNESS here (Claude Code, Codex, ...), one click both
+// selects and creates, and the launched workspace's actual model comes from
+// composeClaudeLaunch's normal settings layering, not a per-creation pick.
 // ---------------------------------------------------------------------------
 
 export type NewWorkspaceMenuIsolation = 'local' | 'worktree'
 
-export type CreateDecision =
-  | { kind: 'local'; modelId: string | undefined }
-  | { kind: 'worktree'; modelId: string | undefined; branch: string }
+export type HarnessCreateDecision =
+  | { kind: 'local'; harnessId: string }
+  | { kind: 'worktree'; harnessId: string; branch: string }
   | { kind: 'disabled' }
 
 /**
- * What pressing Enter / clicking the top line actually does, given the
- * current isolation mode + selection + branch text. Mirrors
- * NewWorkspaceMenu.tsx's handleCreate exactly:
- *   - 'local' isolation always creates (selectedModelId undefined means "use
- *     the global/project default", unchanged pre-existing behavior).
+ * What clicking a harness chip actually does, given the current isolation
+ * mode + the clicked harness id + branch text. One click both selects the
+ * harness AND creates (the approved redesign — "As soon as I click on any
+ * harness, it should open the terminal directly"):
+ *   - 'local' isolation always creates immediately with the clicked harness.
  *   - 'worktree' isolation creates ONLY when the branch field has non-blank
- *     text (matches the top line's own disabled condition in the overlay
- *     kind) — an empty/whitespace-only branch resolves to 'disabled' rather
- *     than silently creating with a garbage branch name.
+ *     text (matches the branch field's own inline validation) — an
+ *     empty/whitespace-only branch resolves to 'disabled' rather than
+ *     silently creating with a garbage branch name. The chosen isolation
+ *     mode still applies to the create either way.
  */
-export function decideCreateAction(
+export function decideHarnessCreateAction(
   isolation: NewWorkspaceMenuIsolation,
-  selectedModelId: string | null | undefined,
+  harnessId: string,
   branchValue: string
-): CreateDecision {
-  const modelId = selectedModelId ?? undefined
-  if (isolation === 'local') return { kind: 'local', modelId }
+): HarnessCreateDecision {
+  if (isolation === 'local') return { kind: 'local', harnessId }
   const trimmed = branchValue.trim()
   if (!trimmed) return { kind: 'disabled' }
-  return { kind: 'worktree', modelId, branch: trimmed }
+  return { kind: 'worktree', harnessId, branch: trimmed }
+}
+
+/**
+ * Whether every harness chip should render disabled — the SAME gate
+ * decideHarnessCreateAction's 'disabled' branch encodes (worktree isolation
+ * selected but the branch field is blank), extracted as its own pure
+ * predicate so the overlay kind (NewWorkspaceMenu.tsx) can compute a chip's
+ * `disabled` prop from the identical logic a click would be evaluated
+ * against, rather than a second hand-written copy of the same condition
+ * that could silently drift from decideHarnessCreateAction's real gate.
+ */
+export function isHarnessRowDisabled(
+  isolation: NewWorkspaceMenuIsolation,
+  branchValue: string
+): boolean {
+  return isolation === 'worktree' && !branchValue.trim()
 }
 
 // ---------------------------------------------------------------------------
@@ -215,63 +232,6 @@ export function reduceHoverGate(event: HoverGateEvent): boolean {
  *  trusted as user-driven, given the current gate flag. */
 export function isGenuineHover(hasMoved: boolean): boolean {
   return hasMoved
-}
-
-// ---------------------------------------------------------------------------
-// Provider-row intent decision (bug fixes reported after the flyout-submenu
-// redesign shipped):
-//
-//   Bug A — hovering a provider row was mutating the COMMITTED top-line
-//   selection (selectedProviderId/selectedModelId), which is also the create
-//   payload — so merely moving the mouse over "openai" silently changed what
-//   Enter/the top line would create. Hover must be PURELY navigational: it
-//   may only switch which provider's model list the flyout submenu shows, a
-//   plain UI-navigation fact, never the create payload.
-//
-//   Bug B — picking a model used to close the submenu (conventional-menu
-//   behavior: a leaf pick ends the interaction). That's wrong here because
-//   the create-action inversion means picking a model is only a STEP, not
-//   the action itself — the user still has to reach the top line and click
-//   it (or press Enter) afterward. Closing the submenu on pick made that
-//   next step harder to find. Picking a model must leave the submenu OPEN.
-//
-// This function is the pure decision half of both fixes: given the kind of
-// interaction with a provider row, does it commit the provider to the top
-// line, and does it keep the submenu open? (Explicit clicks and the
-// keyboard's ArrowRight/Enter-into-row use the SAME 'pick' intent as a mouse
-// click — see NewWorkspaceMenu.tsx's onPickProvider handler and the overlay
-// kind's pickProviderRow.)
-// ---------------------------------------------------------------------------
-
-export type ProviderRowIntent = 'hover' | 'pick'
-
-export interface ProviderRowIntentAction {
-  /** Whether this interaction commits the provider (and its last-used model)
-   *  to the top line — the create payload. */
-  commitsSelection: boolean
-  /** Whether the flyout submenu should stay open afterward. Always true for
-   *  provider-row interactions (unlike a model pick, which ALSO always keeps
-   *  the submenu open per Bug B — see decideModelPickAction below — a
-   *  provider row interaction opens/keeps the submenu by definition). */
-  keepsSubmenuOpen: boolean
-}
-
-/** Decides what a provider-ROW interaction (hover vs. explicit pick) should
- *  do to the committed selection. A hover only ever previews (opens/switches
- *  the submenu); only an explicit pick (click, or ArrowRight/Enter navigating
- *  into the row) commits that provider's last-used model to the top line. */
-export function decideProviderRowIntent(intent: ProviderRowIntent): ProviderRowIntentAction {
-  return { commitsSelection: intent === 'pick', keepsSubmenuOpen: true }
-}
-
-/** Decides what picking a SPECIFIC model (a leaf row inside the flyout
- *  submenu) should do. Unlike a conventional menu (where a leaf pick IS the
- *  action and closes the menu), this popover's create action lives on the
- *  top line — so picking a model always commits the selection AND always
- *  keeps the submenu open (Bug B): the user still needs to reach the top
- *  line afterward. */
-export function decideModelPickAction(): ProviderRowIntentAction {
-  return { commitsSelection: true, keepsSubmenuOpen: true }
 }
 
 // ---------------------------------------------------------------------------

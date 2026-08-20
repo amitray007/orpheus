@@ -59,7 +59,6 @@
     "test:overlay-purity": "bun run scripts/verify-overlay-window-api-purity.ts",
     "test:oauth": "bun run scripts/verify-oauth.ts",
     "test:overlay": "bun run scripts/verify-loading-overlay.ts",
-    "test:creation": "bun run scripts/verify-creation-provider-menu.ts",
     "test:picker-icons": "bun run scripts/verify-model-picker-icons.ts",
     "test:creation-menu": "bun run scripts/verify-new-workspace-menu.ts",
     "test:overlay-dismissal": "bun run scripts/verify-overlay-dismissal.ts",

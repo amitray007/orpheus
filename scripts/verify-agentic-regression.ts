@@ -44,6 +44,14 @@ const verifiers = [
   'verify-session-status.ts',
   'verify-non-claude-launch-behavior.ts',
   'verify-model-picker.ts',
+  // Harness-selector rebuild of the "+ new workspace" popover
+  // (support-multi-harness) — decideHarnessCreateAction/isHarnessRowDisabled
+  // (a harness chip click both selects and creates) plus the shared
+  // submenu-flip/phantom-hover/hover-intent logic newWorkspaceMenuLogic.ts
+  // still carries for ChipGroupedDropdown.tsx's own flyout. Was previously
+  // written but never wired into this suite — see this file's own header
+  // comment for why an unwired harness is indistinguishable from no harness.
+  'verify-new-workspace-menu.ts',
   'verify-harness-registry.ts',
   'verify-doctor.ts',
   'verify-harness-launch.ts',
@@ -77,6 +85,15 @@ const verifiers = [
   // throws-if-called stub) — dispatched via the same [label, command] tuple
   // form to run under plain node instead of bun.
   ['verify-harness-codex-launch.ts', ['node', '--experimental-strip-types']],
+  // C5 (support-multi-harness) — codex/session.ts: the discoverer that
+  // binds a Codex workspace to its real Codex session id (rollout-file
+  // scanning, thread_source/cwd/mount-floor filtering) plus codexSessionArgs
+  // (the resume-argv builder). Two layers of fixtures: real temp-dir rollout
+  // files for the pure discoverer, plus the same node:sqlite/DatabaseSync
+  // `workspaces` table technique as verify-harness-session.ts (getWorkspace/
+  // setWorkspaceClaudeSessionId need a real DB, not a throws-if-called stub)
+  // — dispatched under plain node for the same reason as the entries above.
+  ['verify-harness-codex-session.ts', ['node', '--experimental-strip-types']],
   // U5 — session.ts's claudeSessionArgs. Same node:sqlite/DatabaseSync
   // constraint (getWorkspace needs a real, working `workspaces` table, not
   // a throws-if-called stub) — dispatched under plain node for the same

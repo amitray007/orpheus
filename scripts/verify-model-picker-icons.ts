@@ -19,9 +19,7 @@
 //      without needing React/useSyncExternalStore.
 //   3. buildModelDropdownGroups (the footer Model chip's provider -> model
 //      FLYOUT redesign's grouping helper, ChipGroupedDropdown.tsx's data
-//      source) — groups EVERY provider the server returned (unlike
-//      creationProviderMenu.ts's groupModelsForCreation, which curates a
-//      fixed subset for the creation-time menu only), in first-seen/server
+//      source) — groups EVERY provider the server returned, in first-seen/server
 //      order, with labels taken verbatim from providerLabel rather than a
 //      second hardcoded short-label table. This module takes providerId/
 //      providerLabel as opaque strings off the server-provided

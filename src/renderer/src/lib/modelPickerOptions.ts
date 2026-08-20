@@ -72,18 +72,18 @@ export function buildModelDropdownItems(models: SelectableModel[]): ChipDropdown
 
 /**
  * Build the footer Model chip's provider -> model FLYOUT groups (the
- * ChipGroupedDropdown overlay kind's data source). Unlike
- * creationProviderMenu.ts's groupModelsForCreation, this groups EVERY
+ * ChipGroupedDropdown overlay kind's data source). This groups EVERY
  * provider the server returned — the footer chip is the general-purpose
  * model switcher for an already-running workspace and must keep offering
- * whatever a workspace could already be routed to, not the curated
- * creation-time subset. Group order is first-seen order from
- * `models` (server's own ordering, Claude first by construction of
- * buildSelectableModels); labels come straight from providerLabel, never a
- * second hardcoded short-label table like the creation menu's
- * SHORT_PROVIDER_LABEL — this surface reuses the SAME canonical label the
- * flat dropdown's sublabel already showed, so switching to the grouped view
- * doesn't rename any provider the user already recognizes.
+ * whatever a workspace could already be routed to. (The "+ new workspace"
+ * popover no longer has an equivalent curated grouping of its own — the
+ * support-multi-harness rebuild replaced its provider/model list with a
+ * harness selector, see NewWorkspaceMenu.tsx's own header comment.) Group
+ * order is first-seen order from `models` (server's own ordering, Claude
+ * first by construction of buildSelectableModels); labels come straight
+ * from providerLabel, the SAME canonical label the flat dropdown's sublabel
+ * already showed, so switching to the grouped view doesn't rename any
+ * provider the user already recognizes.
  */
 export function buildModelDropdownGroups(models: SelectableModel[]): ChipDropdownGroup[] {
   const order: string[] = []
