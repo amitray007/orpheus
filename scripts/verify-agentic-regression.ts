@@ -198,6 +198,7 @@ const verifiers = [
   'verify-harness-create-threading.ts',
   'verify-inherited-pane-env.ts',
   'verify-models-dev-cache.ts',
+  'verify-effort-chip-restart.ts',
   // support-multi-harness bug fix — the "Starting workspace" overlay's
   // capability-gated dismiss decision (loadingOverlay.ts's
   // shouldWaitForSessionReadiness, consumed by index.ts's

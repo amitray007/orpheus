@@ -562,6 +562,26 @@ export function DropdownChip({
           const liveApply = buildLiveApplyText(harness.curated?.effort, value)
           if (liveApply.kind === 'inject') {
             runInject(liveApply.text, liveApply.submit, 'Effort set — applies next turn')
+            return
+          }
+          // 'restartRequired' — the harness has NO way to apply a new effort
+          // to its already-running process, so persisting alone would leave
+          // the chip showing a value the live session isn't using. This
+          // branch previously did not exist, which made the chip a SILENT
+          // NO-OP for such a harness (Codex): the value was written and
+          // nothing else happened, with no feedback and no prompt. Mirrors
+          // the model chip's own restartRequired path above, including its
+          // mid-task guard — auto-restarting while an agent turn is in
+          // flight would silently kill it, which is worse than a visible
+          // manual step, so that case falls back to the "Restart to apply"
+          // chip the dirty state already surfaces.
+          if (onRestart && activityDetail !== 'working') {
+            playSound('success')
+            showTooltip('Effort set — restarting workspace…')
+            onRestart()
+          } else {
+            playSound('success')
+            showTooltip('Effort set — restart workspace to apply')
           }
         })
         .catch((e) => {

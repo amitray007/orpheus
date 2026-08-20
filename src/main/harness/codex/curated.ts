@@ -79,13 +79,22 @@ const CODEX_MODEL_SLUGS = [
 // the superset is safe, just not maximally helpful).
 const CODEX_EFFORT_VALUES = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const
 
-// liveApply is `restartRequired` for BOTH fields below. This is an HONEST
-// "unverified", not an assumed-absent: nobody has confirmed whether Codex's
-// interactive REPL has a slash-command (or similar) surface that could
-// live-apply a new model/effort mid-session the way Claude's `/model
-// {value}` does. Ship the conservative case (a footer chip change requires
-// a workspace restart to take effect) and leave this comment so a later
-// unit knows to go CHECK Codex's REPL surface before flipping this to
+// liveApply is `restartRequired` for BOTH fields below — now VERIFIED, no
+// longer the conservative guess it started as.
+//
+// Codex's REPL does have `/model`, but it takes NO ARGUMENT: it opens an
+// INTERACTIVE PICKER (choose a model, then choose a reasoning effort), which
+// is a fundamentally different shape from Claude's `/model {value}` one-shot
+// injection. Typing `/model gpt-5.6-terra` does not select that model. So
+// there is no text Orpheus could inject to live-apply either concept, and
+// `replInject` would leave a workspace sitting in a half-navigated picker —
+// strictly worse than restarting. Reported from real use, and consistent
+// with `codex --help`, which documents no argument-taking slash command.
+//
+// Do NOT "improve" this to replInject with a picker-driving keystroke
+// sequence: that would encode Codex's current TUI layout as a protocol, and
+// it would silently break the first time that picker's order or key handling
+// changes. If Codex ever gains an argument-taking form, THAT is what to
 // `replInject`, rather than re-deriving from scratch whether it was ever
 // investigated.
 const CODEX_LIVE_APPLY = { kind: 'restartRequired' } as const
