@@ -27,7 +27,7 @@ import { isHarnessRowDisabled } from '../../lib/newWorkspaceMenuLogic'
 //
 //   - HarnessRow is now the PRIMARY control, not a hidden extra shown only
 //     past a length-> 1 gate. It is the popover's only selection UI, and
-//     clicking a harness chip BOTH selects it AND creates immediately —
+//     clicking a harness ROW BOTH selects it AND creates immediately —
 //     one click, no separate confirm/create step. This is a deliberate
 //     departure from every OTHER selector in this popover (IsolationRow is
 //     still a pure two-way TOGGLE that never creates by itself) — harness
@@ -41,7 +41,7 @@ import { isHarnessRowDisabled } from '../../lib/newWorkspaceMenuLogic'
 //     two-way-toggle behavior, same inline branch field when Worktree is
 //     selected. Clicking a harness while Worktree is selected AND the
 //     branch field has valid (non-blank) text creates the worktree
-//     workspace using that text; an empty branch leaves every harness chip
+//     workspace using that text; an empty branch leaves every harness row
 //     disabled (see decideHarnessCreateAction in newWorkspaceMenuLogic.ts —
 //     the pure decision half of this, asserted by
 //     scripts/verify-new-workspace-menu.ts).
@@ -115,12 +115,12 @@ function IsolationRow({
 
 /** Harness picker row (support-multi-harness) — the popover's PRIMARY and
  *  now only selection control. Unlike every other row in this popover
- *  (IsolationRow is a pure toggle), clicking a harness chip both selects it
+ *  (IsolationRow is a pure toggle), clicking a harness row both selects it
  *  AND creates immediately — see this file's header comment for why. Always
  *  rendered (the old `harnesses.length <= 1` gate is gone — with a real
  *  second harness (Codex) now registered, hiding this until "more than one"
  *  would still hide it exactly when it's needed most: a single-harness
- *  build still shows its one chip so the control's presence and behavior
+ *  build still shows its one row so the control's presence and behavior
  *  never depends on how many harnesses happen to be registered). */
 function HarnessRow({
   harnesses,
@@ -131,19 +131,15 @@ function HarnessRow({
   harnesses: NewWorkspaceMenuProps['harnesses']
   /** True when worktree isolation is selected but the branch field is
    *  blank — matches decideHarnessCreateAction's 'disabled' case. Every
-   *  chip is disabled together rather than letting a click silently no-op. */
+   *  row is disabled together rather than letting a click silently no-op. */
   disabled: boolean
-  /** True while a worktree create is in flight — chips are disabled to
+  /** True while a worktree create is in flight — rows are disabled to
    *  avoid a double-create from a second click. */
   creating: boolean
   onPick: (harnessId: string) => void
 }): React.JSX.Element {
   return (
-    <div
-      role="group"
-      aria-label="Harness"
-      className="flex items-center gap-1.5 px-2 pt-1.5 pb-1 overflow-x-auto"
-    >
+    <div role="group" aria-label="Harness" className="flex flex-col gap-1 px-2 pt-1.5 pb-1">
       {harnesses.map((harness) => (
         <button
           key={harness.id}
@@ -155,14 +151,14 @@ function HarnessRow({
           disabled={disabled || creating}
           title={`Start a ${harness.label} workspace`}
           className={[
-            'flex-shrink-0 flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border font-medium transition-colors duration-100 cursor-pointer',
+            'w-full flex items-center gap-2 text-xs px-2.5 py-2 rounded-md border font-medium transition-colors duration-100 cursor-pointer text-left',
             'border-border-default text-text-primary hover:bg-surface-raised hover:border-accent/30',
             'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
             disabled || creating ? 'opacity-40 cursor-not-allowed hover:bg-transparent' : ''
           ].join(' ')}
         >
-          <ProviderIcon providerId={harness.icon ?? harness.id} size={13} />
-          <span className="truncate max-w-[9rem]">{harness.label}</span>
+          <ProviderIcon providerId={harness.icon ?? harness.id} size={14} />
+          <span className="truncate">{harness.label}</span>
         </button>
       ))}
     </div>
@@ -253,11 +249,11 @@ export function NewWorkspaceMenu({ props, emit }: OverlayKindProps): React.JSX.E
     containerRef.current?.focus()
   }, [])
 
-  // Every harness chip shares the same disabled condition — isHarnessRowDisabled
+  // Every harness row shares the same disabled condition — isHarnessRowDisabled
   // is the exact pure predicate decideHarnessCreateAction's 'disabled'
   // branch is built on (newWorkspaceMenuLogic.ts), so this can never drift
   // from what a click would actually decide.
-  const chipsDisabled = isHarnessRowDisabled(isolation, branchValue)
+  const harnessRowsDisabled = isHarnessRowDisabled(isolation, branchValue)
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>): void {
     if (e.key === 'Escape') {
@@ -285,25 +281,25 @@ export function NewWorkspaceMenu({ props, emit }: OverlayKindProps): React.JSX.E
         </div>
       ) : (
         <>
-          {/* Local / Worktree — isolation SELECTOR only, unchanged position
-              (still the first row) and behavior. Neither creates; just
-              toggles `isolation`. */}
+          {/* Harness selector FIRST — a vertical stack of full-width rows,
+              one per registered harness (logo + label), and the popover's
+              ONLY create action: one click both picks the harness AND
+              creates. It leads because it is the actual decision; the rows
+              below only qualify HOW that workspace is made. */}
+          <HarnessRow
+            harnesses={harnesses}
+            disabled={harnessRowsDisabled}
+            creating={branchCreating}
+            onPick={(harnessId) => emit('pickHarness', { harnessId })}
+          />
+
+          {/* Local / Worktree — isolation SELECTOR only, below the harness
+              list. Neither button creates; each just toggles `isolation`,
+              which the harness rows above then read when one is clicked. */}
           <IsolationRow
             isolation={isolation}
             modes={modes}
             onPick={(mode) => emit('pickIsolation', { isolation: mode })}
-          />
-
-          {/* Harness selector — the popover's ONLY create action now. One
-              click both picks the harness AND creates. Sits where the old
-              HarnessRow used to (right after IsolationRow, before the
-              worktree branch panel), preserving the original relative
-              order of everything that survives this rebuild. */}
-          <HarnessRow
-            harnesses={harnesses}
-            disabled={chipsDisabled}
-            creating={branchCreating}
-            onPick={(harnessId) => emit('pickHarness', { harnessId })}
           />
 
           {isolation === 'worktree' && (
