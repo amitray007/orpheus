@@ -211,3 +211,58 @@ function resolveProviderId(modelId: string | null, models: SelectableModel[]): s
 }
 
 console.log('\nAll model-picker-icon assertions passed.')
+
+// ---------------------------------------------------------------------------
+// HARNESS ICON ID != HARNESS ID (support-multi-harness)
+//
+// A harness-sourced model carries its HARNESS id as providerId — Codex's is
+// 'codex-cli' — but ProviderIcon only knows 'claude' | 'codex' | 'xai' |
+// 'antigravity'. Passing providerId straight to the icon therefore rendered
+// NOTHING for every Codex model in the picker, while Claude worked fine.
+// SelectableModel.providerIconId carries the descriptor's own `icon` so the
+// icon and the GROUPING key can differ: grouping must stay the harness id, or
+// two harnesses could collapse into one group.
+// ---------------------------------------------------------------------------
+{
+  const harnessModel = {
+    id: 'gpt-5.6-terra',
+    label: 'GPT-5.6-Terra',
+    providerId: 'codex-cli',
+    providerIconId: 'codex',
+    providerLabel: 'Codex',
+    isClaude: false,
+    available: true,
+    contextWindow: null,
+    effortLevels: null,
+    provisional: false
+  }
+
+  const [row] = buildModelDropdownItems([harnessModel as never])
+  assert.equal(
+    row?.providerId,
+    'codex',
+    "a picker ROW must receive the ICON id ('codex'), not the harness id ('codex-cli') which ProviderIcon cannot render"
+  )
+
+  const groups = buildModelDropdownGroups([harnessModel as never])
+  assert.equal(
+    groups[0]?.providerId,
+    'codex',
+    'a group HEADER must receive the icon id too, so a Codex group is not headerless'
+  )
+
+  // Absent providerIconId must behave exactly as before — Claude and routed
+  // entries already carry a valid icon id in providerId.
+  const claudeModel = { ...harnessModel, id: 'opus', providerId: 'claude', isClaude: true }
+  delete (claudeModel as { providerIconId?: string }).providerIconId
+  const [claudeRow] = buildModelDropdownItems([claudeModel as never])
+  assert.equal(
+    claudeRow?.providerId,
+    'claude',
+    'without providerIconId the row must fall back to providerId — Claude is unchanged'
+  )
+
+  console.log(
+    '✓ harness-sourced models render their descriptor icon in rows AND group headers, while grouping still keys on the harness id'
+  )
+}

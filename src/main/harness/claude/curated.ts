@@ -38,7 +38,7 @@ import type {
   HarnessArgRow,
   HarnessCapabilities
 } from '../../../shared/harness/types'
-import { CLAUDE_EFFORT_VALUES, CLAUDE_MODEL_OPTIONS } from '../../../shared/types'
+import { CLAUDE_PICKER_EFFORT_VALUES, CLAUDE_MODEL_OPTIONS } from '../../../shared/types'
 
 // liveApply templates verified against DropdownChip.tsx's PRE-existing
 // literals (`/model ${value}` / `/effort ${value}`, both submit: true) —
@@ -53,7 +53,10 @@ export const CLAUDE_CURATED_MODEL: CuratedField = {
 
 export const CLAUDE_CURATED_EFFORT: CuratedField = {
   flag: '--effort',
-  options: [...CLAUDE_EFFORT_VALUES],
+  // The PICKER list (claude --help's documented levels), NOT the wider
+  // validator list — see CLAUDE_PICKER_EFFORT_VALUES' own comment for why
+  // 'auto'/'none'/'minimal' must stay valid but must not be OFFERED.
+  options: [...CLAUDE_PICKER_EFFORT_VALUES],
   allowCustom: true,
   liveApply: { kind: 'replInject', template: '/effort {value}', submit: true }
 }

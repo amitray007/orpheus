@@ -107,6 +107,7 @@ function collectSelectableInput(
     isClaudeHarness: isClaudeHarness ? undefined : false,
     harnessModelOptions: isClaudeHarness ? undefined : (descriptor.curated?.model?.options ?? []),
     harnessLabel: isClaudeHarness ? undefined : descriptor.label,
+    harnessIcon: isClaudeHarness ? undefined : descriptor.icon,
     harnessId: isClaudeHarness ? undefined : descriptor.id
   }
 }

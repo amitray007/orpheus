@@ -59,7 +59,11 @@ import assert from 'node:assert/strict'
 import { mock } from 'bun:test'
 import type { CuratedField } from '../src/shared/harness/types.ts'
 import type { ClaudeGlobalSettings } from '../src/shared/types.ts'
-import { CLAUDE_EFFORT_VALUES, CLAUDE_MODEL_OPTIONS } from '../src/shared/types.ts'
+import {
+  CLAUDE_EFFORT_VALUES,
+  CLAUDE_PICKER_EFFORT_VALUES,
+  CLAUDE_MODEL_OPTIONS
+} from '../src/shared/types.ts'
 import { buildLiveApplyText } from '../src/shared/harness/liveApply.ts'
 import {
   buildCuratedArgs,
@@ -372,10 +376,30 @@ console.log(
     CLAUDE_MODEL_OPTIONS.map((o) => o.value),
     'CLAUDE_CURATED_MODEL.options must be derived from CLAUDE_MODEL_OPTIONS, not a hand-copied list'
   )
+  // The PICKER list, not the VALIDATOR list. These deliberately differ:
+  // CLAUDE_EFFORT_VALUES stays wider because it also validates 'auto' (a
+  // CLI-level reset-to-default) and 'none'/'minimal' (values some ROUTED
+  // providers report) — all of which must keep passing the DB CHECK
+  // constraint and the CLI arg validator. But `claude --help` documents only
+  // "low, medium, high, xhigh, max" for --effort, so offering the wider set
+  // in a menu put values in front of users that Claude's own binary rejects.
   assert.deepEqual(
     CLAUDE_CURATED_EFFORT.options,
-    [...CLAUDE_EFFORT_VALUES],
-    'CLAUDE_CURATED_EFFORT.options must be derived from CLAUDE_EFFORT_VALUES, not a hand-copied list'
+    [...CLAUDE_PICKER_EFFORT_VALUES],
+    'CLAUDE_CURATED_EFFORT.options must be derived from CLAUDE_PICKER_EFFORT_VALUES, not a hand-copied list'
+  )
+  // The picker list must remain a strict SUBSET of the validator list —
+  // otherwise the UI could offer a value that fails validation on write.
+  for (const value of CLAUDE_PICKER_EFFORT_VALUES) {
+    assert.ok(
+      CLAUDE_EFFORT_VALUES.includes(value),
+      `picker effort '${value}' must also be a VALID effort — the picker may narrow the validator, never widen it`
+    )
+  }
+  assert.equal(
+    CLAUDE_PICKER_EFFORT_VALUES.includes('auto'),
+    false,
+    "'auto' is a reset-to-default sentinel, not a level to offer in a menu"
   )
 
   console.log(

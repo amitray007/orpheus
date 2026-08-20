@@ -267,6 +267,15 @@ export interface BuildSelectableModelsInput {
    *  wins there). Falls back to `harnessId` itself if omitted, mirroring
    *  providerLabelFor's own descriptor-miss fallback below. */
   harnessLabel?: string
+  /** (support-multi-harness) The harness descriptor's `icon` — the id
+   *  ProviderIcon.tsx knows, which is NOT the harness id. Codex's descriptor
+   *  is `id: 'codex-cli'` but `icon: 'codex'`, and ProviderIcon only knows
+   *  'claude' | 'codex' | 'xai' | 'antigravity'. Passing the harness id as
+   *  the icon id therefore rendered NOTHING for a Codex model in the picker.
+   *  Threaded separately for the same reason harnessLabel is: this module
+   *  stays electron-free, so the IPC layer hands it the resolved descriptor's
+   *  fields rather than the descriptor itself. */
+  harnessIcon?: string
   /** (C3) The resolved harness's id, e.g. 'claude' or 'codex-cli' — used as
    *  SelectableModel.providerId for a non-Claude harness's own models
    *  (grouping the picker by harness, the only axis that exists for a
@@ -378,6 +387,7 @@ function harnessEntries(
   harnessModelOptions: string[],
   harnessId: string,
   harnessLabel: string | undefined,
+  harnessIcon: string | undefined,
   curatedModelOptions: CuratedFieldOptionsOverlay | undefined,
   currentModelId: string | undefined
 ): SelectableModel[] {
@@ -387,6 +397,10 @@ function harnessEntries(
     id,
     label: modelLabel(id),
     providerId: harnessId,
+    // The ICON id, which is deliberately not the harness id — see
+    // BuildSelectableModelsInput.harnessIcon. Falls back to the harness id so
+    // a descriptor with no declared icon behaves exactly as before.
+    providerIconId: harnessIcon ?? harnessId,
     providerLabel,
     isClaude: false,
     available: true,
@@ -506,6 +520,7 @@ function baseEntries(input: BuildSelectableModelsInput): SelectableModel[] {
       input.harnessModelOptions ?? [],
       input.harnessId ?? 'unknown',
       input.harnessLabel,
+      input.harnessIcon,
       input.curatedModelOptions,
       input.currentModelId
     )

@@ -66,7 +66,12 @@ export function buildModelDropdownItems(models: SelectableModel[]): ChipDropdown
     value: m.id,
     label: labelFor(m),
     sublabel: m.providerLabel,
-    providerId: m.providerId
+    // The ICON id, not the grouping id. A harness-sourced model's providerId
+    // is its HARNESS id ('codex-cli'), which ProviderIcon does not know — so
+    // rows rendered no icon for Codex. Grouping below still keys on the real
+    // providerId; only what the icon component receives changes. See
+    // SelectableModel.providerIconId.
+    providerId: m.providerIconId ?? m.providerId
   }))
 }
 
@@ -100,7 +105,12 @@ export function buildModelDropdownGroups(models: SelectableModel[]): ChipDropdow
   return order.map((providerId) => {
     const group = byProvider.get(providerId)!
     return {
-      providerId,
+      // Group header icon: same providerIconId-else-providerId rule as the
+      // rows, so a Codex group header shows the OpenAI mark rather than
+      // nothing. The map key (`providerId`, above) is untouched — grouping
+      // must stay keyed on the harness id so two harnesses can never
+      // collapse into one group.
+      providerId: group[0]?.providerIconId ?? providerId,
       label: group[0]?.providerLabel ?? providerId,
       models: buildModelDropdownItems(group)
     }

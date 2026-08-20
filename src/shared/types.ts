@@ -898,6 +898,30 @@ export const CLAUDE_EFFORT_VALUES: readonly ClaudeEffort[] = [
   'xhigh',
   'max'
 ]
+/**
+ * The effort levels the `claude` BINARY itself documents for `--effort`:
+ * "low, medium, high, xhigh, max" (verified against `claude --help`, not
+ * assumed). This is the PICKER list — what a user should be offered for a
+ * Claude workspace.
+ *
+ * Deliberately a SUBSET of CLAUDE_EFFORT_VALUES above, which stays wider
+ * because it is the VALIDATOR list: 'auto' is a CLI-level "reset to model
+ * default", and 'none'/'minimal' are real values some ROUTED providers
+ * report. Those must keep passing validation (the DB CHECK constraint, the
+ * CLI arg validator, stored rows that already hold them) — they are simply
+ * not things to offer in a menu for Claude's own binary, which would reject
+ * them. Narrowing the validator to match this list would break routed
+ * workspaces and reject existing rows; widening the picker to match the
+ * validator is what put 'auto'/'none'/'minimal' in front of users.
+ */
+export const CLAUDE_PICKER_EFFORT_VALUES: readonly ClaudeEffort[] = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+]
+
 export type ClaudeOutputStyle = 'default' | 'explanatory' | 'proactive' | 'learning'
 export type ClaudeTuiMode = 'default' | 'fullscreen'
 export type ClaudeEditorMode = 'normal' | 'vim'
@@ -3157,6 +3181,16 @@ export interface SelectableModel {
   providerId: string
   /** Human-readable group label for the picker, e.g. "Claude" or "Grok (xAI)". */
   providerLabel: string
+  /** (support-multi-harness) The id ProviderIcon.tsx should render, when it
+   *  differs from `providerId`. A HARNESS-sourced model carries its harness
+   *  id as providerId (e.g. 'codex-cli'), but ProviderIcon only knows
+   *  'claude' | 'codex' | 'xai' | 'antigravity' — so the picker rendered no
+   *  icon at all for Codex models. The descriptor's own `icon` ('codex') is
+   *  threaded here instead of overloading providerId, which is also the
+   *  GROUPING key and must stay the harness id so two harnesses can never
+   *  collapse into one group. Absent for Claude/routed entries, whose
+   *  providerId is already a valid icon id. */
+  providerIconId?: string
   isClaude: boolean
   available: boolean
   /** Native context window in tokens, or null when unknown — never fabricated. */

@@ -415,7 +415,14 @@ export function DropdownChip({
     dropdownItems = buildModelDropdownItems(selectableModels)
     selectedValue = modelValue
     faceLabel = labelForModel(modelValue, selectableModels)
-    faceProviderId = selectableModels.find((m) => m.id === modelValue)?.providerId
+    // providerIconId when present, else providerId — a harness-sourced model
+    // carries its HARNESS id ('codex-cli') as providerId, which ProviderIcon
+    // does not know, so the chip face rendered no icon for Codex. See
+    // SelectableModel.providerIconId.
+    faceProviderId = (() => {
+      const m = selectableModels.find((sm) => sm.id === modelValue)
+      return m?.providerIconId ?? m?.providerId
+    })()
     chipTitle = `${item.label}: ${faceLabel}`
     onSelect = (value: string): void => {
       const newModelIsClaude = selectableModels.find((m) => m.id === value)?.isClaude ?? false
