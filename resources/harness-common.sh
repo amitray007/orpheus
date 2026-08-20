@@ -10,11 +10,21 @@
 # aliases are fully available once the harness exits.
 #
 # Safety fallback: if ORPHEUS_USER_PATH is empty/unset (capture failed, or
-# this is the rare first mount before the async spawn resolved), OR if claude
-# is not found on the injected PATH, we source ~/.zshrc as a last resort so
-# users whose `claude` is only on the .zshrc PATH are never left stranded.
+# this is the rare first mount before the async spawn resolved), OR if the
+# harness binary is not found on the injected PATH, we source ~/.zshrc as a
+# last resort so users whose harness binary is only on the .zshrc PATH are
+# never left stranded.
+#
+# ORPHEUS_HARNESS_BINARY names the executable to probe for (descriptor.binary,
+# e.g. 'claude', 'codex') and is injected by buildMountEnv. This file is
+# SHARED by every harness's wrapper script, so the probe must not hardcode
+# 'claude'. The `:-claude` default mirrors ORPHEUS_HARNESS_FLAGS's own
+# rollback contract below: a wrapper script launched by an OLD main process
+# during a partial upgrade/rollback may not have ORPHEUS_HARNESS_BINARY set
+# at all, and falling back to 'claude' keeps that old-main/new-wrapper
+# combination working exactly as it did before this var existed.
 [[ -n "${ORPHEUS_USER_PATH:-}" ]] && export PATH="${ORPHEUS_USER_PATH}"
-command -v claude >/dev/null 2>&1 || { [[ -r ~/.zshrc ]] && source ~/.zshrc 2>/dev/null; }
+command -v "${ORPHEUS_HARNESS_BINARY:-claude}" >/dev/null 2>&1 || { [[ -r ~/.zshrc ]] && source ~/.zshrc 2>/dev/null; }
 # Prepend the Orpheus bin dir (where the `orpheus` CLI shim lives) to PATH.
 # ORPHEUS_BIN_DIR is injected by buildMountEnv to point at Contents/Resources/bin.
 # Prepending after ORPHEUS_USER_PATH is applied so `orpheus` wins over any stale

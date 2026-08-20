@@ -294,4 +294,96 @@ function baseSettings(overrides: Partial<ClaudeGlobalSettings> = {}): ClaudeGlob
   console.log('✓ empty composed flags string round-trips to [] via splitFlagString, per contract')
 }
 
+// ---------------------------------------------------------------------------
+// 3. ORPHEUS_HARNESS_BINARY — buildMountEnv (orpheusSurfaceAdapter.ts) must
+//    emit ORPHEUS_HARNESS_BINARY: descriptor.binary, and resources/
+//    harness-common.sh's shared PATH-probe must read that var (falling back
+//    to 'claude' for the old-wrapper/new-main rollback case) rather than
+//    hardcoding 'claude'. buildMountEnv itself statically imports electron's
+//    `app` plus the native ghostty-surface addon and cannot be called from a
+//    plain `bun run` script even with mock.module() (see
+//    verify-non-claude-launch-behavior.ts's header for why) — so the wiring
+//    is asserted as source text here, same precedent as
+//    verify-runtime-main-integration.ts uses for this exact file. What IS
+//    asserted against real, executed values: CLAUDE_DESCRIPTOR.binary itself
+//    (registry.ts, imported for real above), so this isn't purely textual.
+// ---------------------------------------------------------------------------
+
+{
+  assert.equal(
+    CLAUDE_DESCRIPTOR.binary,
+    'claude',
+    "CLAUDE_DESCRIPTOR.binary must be 'claude' — the value ORPHEUS_HARNESS_BINARY is sourced from"
+  )
+
+  const fs = await import('node:fs')
+  const adapterPath = new URL('../src/main/orpheusSurfaceAdapter.ts', import.meta.url)
+  const adapterSource = fs.readFileSync(adapterPath, 'utf8')
+  assert.ok(
+    adapterSource.includes('ORPHEUS_HARNESS_BINARY: descriptor.binary'),
+    'buildMountEnv must emit ORPHEUS_HARNESS_BINARY sourced from the resolved descriptor.binary'
+  )
+
+  const wrapperPath = new URL('../resources/harness-common.sh', import.meta.url)
+  const wrapperSource = fs.readFileSync(wrapperPath, 'utf8')
+  assert.ok(
+    wrapperSource.includes('command -v "${ORPHEUS_HARNESS_BINARY:-claude}"'),
+    'harness-common.sh must probe ORPHEUS_HARNESS_BINARY (defaulting to claude for old-wrapper rollback), not hardcode claude'
+  )
+  assert.equal(
+    wrapperSource.includes('command -v claude >/dev/null'),
+    false,
+    'harness-common.sh must not still contain the old hardcoded `command -v claude` probe'
+  )
+
+  console.log(
+    '✓ ORPHEUS_HARNESS_BINARY is wired from descriptor.binary and harness-common.sh probes it (with claude fallback)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 4. Auth env scoping — resolveAuthEnvForDescriptor (src/main/harness/
+//    authScope.ts) must merge Claude's auth env ONLY for the 'claude'
+//    descriptor, and must return {} — containing no ANTHROPIC_*/AWS_*/
+//    CLOUD_ML_* keys — for any other harness id. This is the real exported
+//    function (not source text): authScope.ts has zero electron/native/DB
+//    imports, so it's directly importable here unlike buildMountEnv itself.
+// ---------------------------------------------------------------------------
+
+{
+  const { resolveAuthEnvForDescriptor } = await import('../src/main/harness/authScope.ts')
+
+  const fakeAnthropicAuthEnv = {
+    ANTHROPIC_API_KEY: 'sk-ant-fake-secret',
+    ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+    AWS_REGION: 'us-east-1',
+    AWS_BEARER_TOKEN_BEDROCK: 'fake-bedrock-token',
+    CLOUD_ML_REGION: 'us-central1'
+  }
+  const getAuthEnv = (): Record<string, string> => fakeAnthropicAuthEnv
+
+  const claudeAuthEnv = resolveAuthEnvForDescriptor('claude', getAuthEnv)
+  assert.deepEqual(
+    claudeAuthEnv,
+    fakeAnthropicAuthEnv,
+    "resolveAuthEnvForDescriptor('claude', ...) must pass through the full auth env unchanged"
+  )
+
+  for (const nonClaudeId of ['codex-cli', 'some-future-harness', '']) {
+    const env = resolveAuthEnvForDescriptor(nonClaudeId, getAuthEnv)
+    assert.deepEqual(
+      env,
+      {},
+      `resolveAuthEnvForDescriptor(${JSON.stringify(nonClaudeId)}, ...) must return {} — no Claude auth env for a non-Claude descriptor`
+    )
+    for (const leakedKey of Object.keys(fakeAnthropicAuthEnv)) {
+      assert.ok(!(leakedKey in env), `non-Claude descriptor env must not contain ${leakedKey}`)
+    }
+  }
+
+  console.log(
+    '✓ resolveAuthEnvForDescriptor merges Claude auth env for claude only; non-Claude descriptors get {} (no ANTHROPIC_*/AWS_*/CLOUD_ML_* leakage)'
+  )
+}
+
 console.log('\nAll harness launch assertions passed.')

@@ -133,7 +133,7 @@ const { HARNESSES, resolveHarness, getHarnessDescriptor, isKnownHarnessId } =
 // ---------------------------------------------------------------------------
 
 {
-  const removedIds = ['codex-cli', 'gemini-cli', 'some-future-harness-id']
+  const removedIds = ['never-a-real-harness', 'also-never-a-real-harness', 'some-future-harness-id']
   for (const id of removedIds) {
     assert.equal(
       HARNESSES.some((h: HarnessDescriptor) => h.id === id),

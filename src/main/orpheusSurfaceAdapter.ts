@@ -30,6 +30,7 @@ import type { ClaudeRuntimeBinding } from './controlPlane/runtimeLeases'
 import { FLAG_DELIMITER } from '../shared/cliFlags'
 import { getWorkspace } from './workspaces'
 import { resolveHarness } from './harness/registry'
+import { resolveAuthEnvForDescriptor } from './harness/authScope'
 
 // Which data dir the bundled CLI should target, mirroring APP_NAME in
 // appMode.ts. Resolved once at module load — the build variant is a
@@ -147,7 +148,8 @@ export function buildMountEnv(
   // Auth env vars (ANTHROPIC_API_KEY, provider routing flags, etc.).
   // Merged AFTER launch.env so auth always wins on conflict.
   // NEVER log authEnv values — they contain plaintext secrets.
-  const authEnv = getClaudeAuthEnv()
+  // Scoped to Claude ONLY — see resolveAuthEnvForDescriptor's doc comment.
+  const authEnv = resolveAuthEnvForDescriptor(descriptor.id, getClaudeAuthEnv)
 
   // User's full shell PATH captured once at app start (login+interactive shell).
   // Omitted if the promise hasn't settled yet; wrapper falls back to .zshrc.
@@ -193,6 +195,13 @@ export function buildMountEnv(
           ORPHEUS_HARNESS_SETTINGS_JSON: launch.settingsJson
         }
       : {}),
+    // Executable name the shared wrapper (resources/harness-common.sh) probes
+    // for on PATH before falling back to sourcing ~/.zshrc. Sourced from the
+    // resolved descriptor so a non-Claude harness's wrapper probes for its
+    // OWN binary (e.g. 'codex'), not 'claude'. harness-common.sh defaults to
+    // 'claude' when this is absent, so an old tmux session / old wrapper
+    // build that predates this var keeps working unchanged.
+    ORPHEUS_HARNESS_BINARY: descriptor.binary,
     ORPHEUS_WORKSPACE_ID: workspaceId, // always present — load-bearing for CLI guardrails
     ...(sockPath ? { ORPHEUS_SOCK: sockPath } : {}),
     ...(hooksEnabled ? { ORPHEUS_NOTIFY: shimPath() } : {}),

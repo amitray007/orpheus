@@ -39,6 +39,7 @@ import {
   resolveActiveSectionId,
   type SettingsSectionGateHarness
 } from '../src/shared/harness/settingsSectionGating.ts'
+import type { HarnessDescriptor } from '../src/shared/harness/types.ts'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -274,9 +275,8 @@ mock.module(abs('workspaces.ts'), () => ({
 const { HARNESSES } = await import('../src/main/harness/registry.ts')
 
 {
-  assert.equal(HARNESSES.length, 1, 'sanity: only Claude is registered today')
-  const claude = HARNESSES[0]!
-  assert.equal(claude.id, 'claude')
+  const claude = HARNESSES.find((h: HarnessDescriptor) => h.id === 'claude')
+  assert.ok(claude, 'sanity: Claude must be a registered harness')
   assert.equal(
     claude.settingsSections.length,
     11,
