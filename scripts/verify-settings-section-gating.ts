@@ -319,6 +319,48 @@ const { HARNESSES } = await import('../src/main/harness/registry.ts')
 }
 
 // ---------------------------------------------------------------------------
+// 5. TWO-HARNESS REGRESSION PIN (B4) — with Codex now registered alongside
+//    Claude (HARNESSES has grown to length 2), every claude-* section must
+//    STILL resolve as applicable. This is the behaviour most likely to
+//    silently regress from registering a second descriptor: Codex declares
+//    settingsSections: [] (it owns none of Claude's 11 sections — a correct
+//    visual no-op, not a bug — see registry.ts's CODEX_DESCRIPTOR comment),
+//    and isSectionIdApplicable's fail-open/any-registered-harness-declares-it
+//    logic must keep tolerating an empty-declaring second harness the same
+//    way section 4 above already proved it tolerates a LIMITED second
+//    harness (`limitedSecond` there declares only 'claude-general'). Uses
+//    the REAL registry.ts HARNESSES array (already imported above), not a
+//    hand-typed fixture, so this is pinned against the actual shipped
+//    two-harness registry.
+// ---------------------------------------------------------------------------
+
+{
+  assert.equal(HARNESSES.length, 2, 'sanity: HARNESSES must now contain exactly two descriptors')
+
+  const codex = HARNESSES.find((h: HarnessDescriptor) => h.id === 'codex-cli')
+  assert.ok(codex, 'sanity: codex-cli must be a registered harness')
+  assert.deepEqual(
+    codex.settingsSections,
+    [],
+    "sanity: the real Codex descriptor must declare zero settings sections (it owns none of Claude's)"
+  )
+
+  const claude = HARNESSES.find((h: HarnessDescriptor) => h.id === 'claude')
+  assert.ok(claude, 'sanity: claude must still be a registered harness')
+
+  for (const id of CLAUDE_SECTIONS) {
+    assert.equal(
+      isSectionIdApplicable(id, [claude, codex]),
+      true,
+      `REGRESSION PIN (B4): "${id}" must stay applicable against the REAL two-harness registry (Claude + Codex) — registering Codex must not hide a Claude settings page`
+    )
+  }
+  console.log(
+    '✓ REGRESSION PIN (B4): every claude-* section stays applicable against the REAL two-harness registry (Claude + Codex, Codex declaring zero sections)'
+  )
+}
+
+// ---------------------------------------------------------------------------
 // MUTATION TESTS — break the shared functions, confirm a real assertion
 // fails, then restore (inline-stub mutations; a genuine SOURCE mutation was
 // also run manually — see the report).

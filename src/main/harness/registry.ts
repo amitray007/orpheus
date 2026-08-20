@@ -30,6 +30,9 @@ import { isKnownHarnessId as isKnownHarnessIdPure } from '../../shared/harness/m
 import { composeClaudeHarnessLaunch } from './claude/launch'
 import { CLAUDE_CAPABILITIES, CLAUDE_CURATED, CLAUDE_DEFAULT_ARGS } from './claude/curated'
 import { CLAUDE_DEFAULT_ACTIONS } from './claude/actions'
+import { composeCodexHarnessLaunch } from './codex/launch'
+import { CODEX_CAPABILITIES, CODEX_CURATED, CODEX_DEFAULT_ARGS } from './codex/curated'
+import { CODEX_DEFAULT_ACTIONS } from './codex/actions'
 
 // Known-good `claude --version` strings, used by sessionState.ts to warn
 // (once per version, non-fatal) when a session file reports a version this
@@ -107,7 +110,48 @@ const CLAUDE_DESCRIPTOR: HarnessDescriptor = {
   knownGoodVersions: CLAUDE_KNOWN_GOOD_VERSIONS
 }
 
-export const HARNESSES: HarnessDescriptor[] = [CLAUDE_DESCRIPTOR]
+// Known-good `codex --version` string, verified on this machine per B1's
+// live-run provenance note in codex/curated.ts's header.
+const CODEX_KNOWN_GOOD_VERSIONS = new Set(['0.148.0'])
+
+// The Codex CLI descriptor — Phase B's second harness (issue #187).
+const CODEX_DESCRIPTOR: HarnessDescriptor = {
+  // 'codex-cli', NOT bare 'codex'. This is load-bearing, not a style choice:
+  // src/main/routingProxy/providers/registry.ts already defines a ROUTING
+  // PROVIDER with id 'codex', and src/main/models/selectable.ts does
+  // `providerId: harnessId` — harness ids and provider ids share ONE
+  // namespace in the model picker. A bare 'codex' harness id would make the
+  // two indistinguishable there. The '-cli' suffix convention is the locked
+  // decision from issue #187 documented in src/shared/harness/types.ts's
+  // HarnessId doc comment (lines ~36-49) for exactly this reason. Do not
+  // "simplify" this to 'codex'.
+  id: 'codex-cli',
+  label: 'Codex',
+  binary: 'codex',
+  wrapperScript: 'orpheus-codex.sh',
+  // 'codex' here is a SEPARATE field from `id` above — this is the provider
+  // icon id the harness picker resolves via ProviderIcon.tsx's
+  // KnownProviderIconId (renders the OpenAI mark), not the harness's own
+  // identity. icon:'codex' + id:'codex-cli' renders correctly with zero
+  // ProviderIcon changes needed.
+  icon: 'codex',
+  capabilities: CODEX_CAPABILITIES,
+  // Codex owns none of Claude's 11 claude-* settings sections — an empty
+  // list here is a correct visual no-op, not a bug. settingsSectionGating.ts
+  // gates on the REGISTERED SET (`harnesses.some(...)`), not on the active
+  // workspace's harness, because SettingsView is a single app-wide page with
+  // no workspace scope (see that file's header). Claude's 11 sections keep
+  // showing because CLAUDE still declares them; this stays per-registration,
+  // not per-workspace.
+  settingsSections: [],
+  composeLaunch: composeCodexHarnessLaunch,
+  curated: CODEX_CURATED,
+  defaultArgs: CODEX_DEFAULT_ARGS,
+  defaultActions: CODEX_DEFAULT_ACTIONS,
+  knownGoodVersions: CODEX_KNOWN_GOOD_VERSIONS
+}
+
+export const HARNESSES: HarnessDescriptor[] = [CLAUDE_DESCRIPTOR, CODEX_DESCRIPTOR]
 
 /** Returns the descriptor for `id`, or `undefined` if `id` names no known
  *  harness (removed or never-existed). Mirrors the providers registry's

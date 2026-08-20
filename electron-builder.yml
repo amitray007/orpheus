@@ -63,6 +63,11 @@ extraResources:
   # extraResources entry).
   - from: resources/harness-common.sh
     to: harness-common.sh
+  # Codex CLI wrapper script — the Codex sibling of orpheus-claude.sh above.
+  # Also sources harness-common.sh as a sibling file; MUST ship alongside it
+  # for the same reason orpheus-claude.sh must.
+  - from: resources/orpheus-codex.sh
+    to: orpheus-codex.sh
   # Universal tmux hosting: attaches the desktop native surface to the
   # tmux session hostWorkspace() (src/main/tmuxHost.ts) already created —
   # same stay-alive rationale as orpheus-claude.sh above, applied to the

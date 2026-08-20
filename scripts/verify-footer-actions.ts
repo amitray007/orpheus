@@ -146,6 +146,13 @@ let db = createFreshDb()
 
 const footerActions = await import('../src/main/footerActions.ts')
 const { CLAUDE_DEFAULT_ACTIONS } = await import('../src/main/harness/claude/actions.ts')
+// The live registry, not a hardcoded harness list/count — this file must
+// stay correct as harnesses are added or removed. See assertion 3 below for
+// why: a whole-table row-count-is-unchanged assert is only valid for a
+// registry of exactly one harness, and silently breaks (not a bug — a
+// stale assumption) the moment a second harness is registered, exactly as
+// happened when Codex's descriptor landed.
+const { HARNESSES } = await import('../src/main/harness/registry.ts')
 
 function resetDb(): void {
   db = createFreshDb()
@@ -153,6 +160,32 @@ function resetDb(): void {
 
 function globalRowCount(): number {
   return (db.prepare('SELECT COUNT(*) AS c FROM footer_actions_global').get() as { c: number }).c
+}
+
+/** Row count stamped for one specific harness_id (never the whole table). */
+function globalRowCountForHarness(harnessId: string): number {
+  return (
+    db
+      .prepare('SELECT COUNT(*) AS c FROM footer_actions_global WHERE harness_id = ?')
+      .get(harnessId) as { c: number }
+  ).c
+}
+
+/**
+ * Snapshot of per-harness stamped-row counts across the WHOLE live
+ * registry, derived from HARNESSES — never a hardcoded harness id or count.
+ * Used to assert seedDefaultFooterActionsForAllHarnesses() is stable
+ * (idempotent) per-harness, which is the real non-duplication property:
+ * it holds regardless of how many harnesses are registered, unlike a
+ * global-total comparison (which legitimately changes the FIRST time a
+ * new harness is seeded).
+ */
+function perHarnessRowCounts(): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const descriptor of HARNESSES) {
+    counts[descriptor.id] = globalRowCountForHarness(descriptor.id)
+  }
+  return counts
 }
 
 type FullGlobalRow = {
@@ -220,21 +253,52 @@ function globalRows(): FullGlobalRow[] {
 }
 
 // ---------------------------------------------------------------------------
-// 3. seedDefaultFooterActionsForAllHarnesses() after the above is a no-op
-//    for Claude (rows already stamped) — no duplication.
+// 3. seedDefaultFooterActionsForAllHarnesses() seeds every REGISTERED
+//    harness exactly once and is then idempotent — asserted PER HARNESS,
+//    derived from the live HARNESSES registry, never a hardcoded whole-
+//    table total. A whole-table "count before === count after" assertion
+//    is only valid when exactly one harness is ever registered: the first
+//    call here legitimately grows the table (e.g. Codex's defaults get
+//    seeded for the first time), which is correct behavior, not
+//    duplication. The real non-duplication property is that a SECOND call
+//    changes nothing, and that each harness's stamped-row count always
+//    equals its own descriptor.defaultActions.length (or 0 if it declares
+//    none) — both of which hold regardless of how many harnesses exist.
 // ---------------------------------------------------------------------------
 
 {
-  const before = globalRowCount()
   footerActions.seedDefaultFooterActionsForAllHarnesses()
-  const after = globalRowCount()
+  const afterFirstCall = perHarnessRowCounts()
+  for (const descriptor of HARNESSES) {
+    const expected = descriptor.defaultActions?.length ?? 0
+    assert.equal(
+      afterFirstCall[descriptor.id],
+      expected,
+      `harness '${descriptor.id}' must have exactly its own defaultActions.length (${expected}) ` +
+        `stamped rows after seedDefaultFooterActionsForAllHarnesses()`
+    )
+  }
+
+  const beforeRepeat = globalRowCount()
+  footerActions.seedDefaultFooterActionsForAllHarnesses()
+  const afterSecondCall = perHarnessRowCounts()
+  const afterRepeat = globalRowCount()
+
   assert.equal(
-    before,
-    after,
-    'seedDefaultFooterActionsForAllHarnesses() must not duplicate an already-seeded harness'
+    beforeRepeat,
+    afterRepeat,
+    'a second seedDefaultFooterActionsForAllHarnesses() call must not change the total row count ' +
+      '(the real idempotence property — holds for any number of registered harnesses)'
+  )
+  assert.deepEqual(
+    afterSecondCall,
+    afterFirstCall,
+    'a second seedDefaultFooterActionsForAllHarnesses() call must not change ANY harness-specific ' +
+      'row count — no harness gets duplicated once it already has stamped rows'
   )
   console.log(
-    '✓ per-harness seeding is a no-op once a harness already has stamped rows (no duplication)'
+    `✓ per-harness seeding covers all ${HARNESSES.length} registered harness(es) exactly once ` +
+      'and is stable (no duplication) on repeat calls — asserted per-harness, not as a global total'
   )
 }
 
@@ -248,6 +312,14 @@ function globalRows(): FullGlobalRow[] {
 //    row stays NULL forever. See assertion 4b below for the SHARPER,
 //    real-user-shaped version of this same property (a PRUNED subset, not
 //    the full canonical set).
+//
+//    NOTE: seedDefaultFooterActionsForAllHarnesses() legitimately adds NEW
+//    rows here for any OTHER registered harness (e.g. Codex) — that is not
+//    a violation of this property. What must hold is narrower and sharper:
+//    every one of the pre-existing NULL-provenance rows stays byte-
+//    identical (same id/label/position/updated_at/etc.), as an exact
+//    subset of the after-state, never touched or duplicated. See assertion
+//    3 above for the general per-harness non-duplication property.
 // ---------------------------------------------------------------------------
 
 {
@@ -282,20 +354,31 @@ function globalRows(): FullGlobalRow[] {
   footerActions.seedDefaultFooterActionsForAllHarnesses()
 
   const afterRows = globalRows()
+  const afterPreC5Rows = afterRows.filter((r) => beforeRows.some((b) => b.id === r.id))
   assert.equal(
-    afterRows.length,
+    afterPreC5Rows.length,
     beforeRows.length,
-    "an existing user's row COUNT must be unchanged after C5 (no duplication, no seeding-over)"
+    "an existing user's pre-C5 row COUNT must be unchanged after C5 (no duplication, no seeding-over)"
   )
   assert.deepEqual(
-    afterRows,
+    afterPreC5Rows,
     beforeRows,
-    "an existing user's rows must be BYTE-IDENTICAL after C5 — same label/action_id/position, " +
+    "an existing user's pre-C5 rows must be BYTE-IDENTICAL after C5 — same label/action_id/position, " +
       'and NEVER retroactively stamped with a harness_id'
+  )
+  // Any row beyond the pre-existing set must belong to a DIFFERENT,
+  // legitimately-seeded harness (e.g. Codex) — never an unstamped or
+  // 'claude'-stamped duplicate of the pre-C5 rows this assertion protects.
+  const newlySeededRows = afterRows.filter((r) => !beforeRows.some((b) => b.id === r.id))
+  assert.ok(
+    newlySeededRows.every((r) => r.harness_id !== null && r.harness_id !== 'claude'),
+    'any row added beyond the pre-existing NULL-provenance set must be stamped for a non-claude ' +
+      'harness — claude must stay bound by the whole-table check and never seed on top of these rows'
   )
   console.log(
     "✓ an existing user's pre-C5 (NULL-provenance) rows are untouched, unduplicated, and never " +
-      'retroactively stamped — the load-bearing data-safety property'
+      'retroactively stamped — the load-bearing data-safety property (other harnesses may still ' +
+      'seed their own new rows alongside them)'
   )
 }
 
@@ -435,30 +518,52 @@ function globalRows(): FullGlobalRow[] {
 
   // Run the data step (idempotent by design — running it AGAIN afterward
   // must also be a no-op, verified below) plus the full per-harness sweep.
+  // NOTE: seedDefaultFooterActionsForAllHarnesses() legitimately seeds any
+  // OTHER registered harness's defaults (e.g. Codex) alongside this fixture
+  // — the real user's 8 rows are Claude-shaped/NULL-provenance, and Claude
+  // stays bound by the whole-table check, but a second harness has never
+  // been seeded before and correctly gets its own new rows here. So the
+  // assertion below checks the pre-existing 8 rows as an exact BYTE-
+  // IDENTICAL subset, not the whole table.
   footerActions.seedDefaultFooterActions()
   footerActions.seedDefaultFooterActionsForAllHarnesses()
   const afterFirstRun = globalRows()
+  const afterFirstRunRealUserRows = afterFirstRun.filter((r) =>
+    beforeRows.some((b) => b.id === r.id)
+  )
   assert.deepEqual(
-    afterFirstRun,
+    afterFirstRunRealUserRows,
     beforeRows,
     "a real user's deliberately-pruned 8-row footer must be BYTE-IDENTICAL after the seed functions run — " +
       'no /compact, /cost, Archive, or Rename must reappear, and no column (including updated_at) may change'
   )
 
-  // Idempotency: run again — still nothing changes.
+  // Idempotency: run again — the WHOLE table (not just the real-user subset)
+  // must be stable now, since any other harness was already seeded above.
+  const afterFirstRunFullTable = afterFirstRun
   footerActions.seedDefaultFooterActions()
   footerActions.seedDefaultFooterActionsForAllHarnesses()
   const afterSecondRun = globalRows()
   assert.deepEqual(
     afterSecondRun,
+    afterFirstRunFullTable,
+    'running the seed functions a second time against the same real-user-shaped DB must still change ' +
+      'nothing — the whole table, including any other harness already seeded on the first run, is stable'
+  )
+  const afterSecondRunRealUserRows = afterSecondRun.filter((r) =>
+    beforeRows.some((b) => b.id === r.id)
+  )
+  assert.deepEqual(
+    afterSecondRunRealUserRows,
     beforeRows,
-    'running the seed functions a second time against the same real-user-shaped DB must still change nothing'
+    "the real user's 8 rows specifically must still be byte-identical after the second run"
   )
 
   console.log(
     "✓ a real user's deliberately-pruned 8-row footer (modeled on an actual production DB inspected " +
       'read-only) is byte-identical after C5 runs once AND twice — /compact/​/cost/Archive/Rename never ' +
-      're-appear, no column drifts, confirming the guard is presence-of-any-row, never a row-count/shape match'
+      're-appear, no column drifts, confirming the guard is presence-of-any-row, never a row-count/shape ' +
+      'match (other registered harnesses may still seed their own new rows alongside it)'
   )
 }
 

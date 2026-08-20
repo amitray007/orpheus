@@ -70,6 +70,13 @@ const verifiers = [
   // doesn't suffice here) — dispatched via the same [label, command] tuple
   // form to run under plain node instead of bun.
   ['verify-harness-claude-launch.ts', ['node', '--experimental-strip-types']],
+  // Phase B (multi-harness migration) — codex/{curated,launch}.ts, the
+  // Codex CLI descriptor's launch emitter. Same node:sqlite/DatabaseSync
+  // constraint as verify-harness-claude-launch.ts directly above (needs a
+  // real, working harness_settings + claude_workspace_settings DB, not a
+  // throws-if-called stub) — dispatched via the same [label, command] tuple
+  // form to run under plain node instead of bun.
+  ['verify-harness-codex-launch.ts', ['node', '--experimental-strip-types']],
   // U5 — session.ts's claudeSessionArgs. Same node:sqlite/DatabaseSync
   // constraint (getWorkspace needs a real, working `workspaces` table, not
   // a throws-if-called stub) — dispatched under plain node for the same

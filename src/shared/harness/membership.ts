@@ -34,7 +34,7 @@ import type { HarnessId } from './types'
  *  composeLaunch, nothing that would need an electron-reaching import.
  *  Kept in sync with registry.ts's HARNESSES by
  *  scripts/verify-doctor.ts's assertion (see this file's header). */
-export const HARNESS_IDS: readonly string[] = ['claude']
+export const HARNESS_IDS: readonly string[] = ['claude', 'codex-cli']
 
 /** Structural membership check — never true for an id absent from
  *  HARNESS_IDS. `ids` defaults to HARNESS_IDS (the normal call shape for
