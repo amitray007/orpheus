@@ -169,7 +169,15 @@ const verifiers = [
   // literal. Fixed via actionChipMessages.ts's pure actionFailureMessage.
   // No electron/DB dependency at all, so this stays on the plain-bun
   // dispatch path.
-  'verify-action-chip-messages.ts'
+  'verify-action-chip-messages.ts',
+  // support-multi-harness CLI/TUI harness-selection follow-up — `orpheus ws
+  // new --harness <id>` client plumbing (commands/ws-new.ts's
+  // buildCreateArgs, plus the registered usage/flags/--help surface). No
+  // client-side membership check against a hardcoded harness-id list — the
+  // server (commandServer.ts's isKnownHarnessId) is the sole validator; see
+  // this file's own header for why. No SQLite/native dependency, plain bun
+  // like the entry above.
+  'verify-ws-new-harness.ts'
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {

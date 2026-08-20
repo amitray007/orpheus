@@ -157,9 +157,44 @@ function useWizardData(
     // picker applies the SAME per-project curatedOptions overlay the
     // desktop pickers do (WorkspaceDrawer/SettingsDrawer/DropdownChip) —
     // `project` is already this hook's own parameter, not new context.
-    // harnessId is omitted: WizardProject carries none (Claude is the only
-    // harness today), and models.list's own byte-identical-when-omitted
-    // contract means that's equivalent to explicitly passing 'claude'.
+    // harnessId is omitted here (and from buildCreateArgs's workspace.create
+    // payload — see wizardStepMachine.ts): a second harness (Codex CLI,
+    // 'codex-cli') now exists in the registry, but this wizard has no step
+    // to choose one, so every workspace it creates still lands on the
+    // server's default harness (Claude) regardless of which model is
+    // picked. That is a real, known gap for a phone-first TUI user, not a
+    // deliberate one-harness assumption baked into the design — see the
+    // CLI's `orpheus ws new --harness <id>` flag for the equivalent
+    // capability today.
+    //
+    // A real harness step is a bigger change than a row, and is blocked on
+    // something outside this file's reach: there is no socket command the
+    // wizard could call to list known harnesses (checked commandServer.ts —
+    // no 'harness.list' or equivalent read exists), so a step can't be
+    // populated without either (a) a new server-side read, which is out of
+    // this package's ownership, or (b) hardcoding the harness id/label pair
+    // client-side — exactly the drift-prone second source of truth
+    // `ws new --harness`'s own client-side-validation-free design (see
+    // ws-new.ts's buildCreateArgs) was deliberately built to avoid. Also
+    // note `models.list` returns exactly ONE harness's models per call
+    // (src/main/ipc/models.ts defaults harnessId to 'claude';
+    // selectable.ts's baseEntries dispatches to either claudeEntries() or
+    // harnessEntries(), never both) — so a harness step would have to run
+    // BEFORE the model fetch, not alongside it.
+    //
+    // The missing-harnessId bug is therefore LATENT, not live: because this
+    // fetch omits harnessId, the list is Claude's models only, so a Codex
+    // model can never appear here to be picked in the first place. But
+    // buildCreateArgs does not send harnessId either — so if a later change
+    // ever makes this list span harnesses without ALSO threading harnessId
+    // into the create call, picking a Codex model would silently create a
+    // CLAUDE workspace pointed at a Codex model id. Fix both or neither.
+    // Wiring this
+    // properly needs: a harness-list read added server-side first, a new
+    // WizardStep ('harness') ordered before 'model', new state/async
+    // loading, a new step-machine handler + screen, and new 38-column width
+    // assertions in verify-tui-wizard.ts — a scoped follow-up, not a
+    // one-line fix.
     sendCommand('models.list', { projectId: project.id })
       .then((data) => {
         if (cancelled) return

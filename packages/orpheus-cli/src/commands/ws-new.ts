@@ -22,6 +22,11 @@
  *   --model <model>     Workspace-level model override (stored in claude_workspace_settings).
  *   --permission-mode   Workspace-level permission mode (default|acceptEdits|plan|bypassPermissions).
  *   --effort <level>    Workspace-level effort override (auto|low|medium|high|xhigh|max).
+ *   --harness <id>      Harness to run in the new workspace (e.g. 'claude', 'codex-cli').
+ *                       Defaults to the project's/app default harness (Claude) when
+ *                       omitted. Not validated client-side — the server is the single
+ *                       source of truth for known harness ids and rejects an unknown
+ *                       one with a clear error.
  *   --name <name>       Workspace name. Defaults to 'New workspace'.
  *   --project <val>     Project context override (global flag: id, name, or path).
  *   --focus             Navigate the GUI to the new workspace (steals focus from
@@ -162,8 +167,11 @@ export function didRequestedTaskStagingFail(
   )
 }
 
-/** Build the args object for the workspace.create socket call from flags. */
-function buildCreateArgs(
+/** Build the args object for the workspace.create socket call from flags.
+ *  Exported for scripts/verify-ws-new-harness.ts, which calls this directly
+ *  rather than grepping source text — this repo has a documented case
+ *  (project.add) of a source-grep assertion passing against a dead guard. */
+export function buildCreateArgs(
   flags: Record<string, unknown>,
   projectId: string,
   projectCwd: string,
@@ -206,6 +214,17 @@ function buildCreateArgs(
     args.effort = flags.effort
   }
 
+  // NOTE the asymmetry: the CLI flag is `--harness` but the wire arg is
+  // `harnessId` — that's what commandServer.ts expects (see its
+  // workspace.create handler). No client-side membership check against a
+  // hardcoded id list: the server (isKnownHarnessId) is the single source
+  // of truth and already returns a clear `unknown harnessId: <id>` error.
+  // Duplicating that list here would just be a second place for the set of
+  // known harnesses to drift out of sync.
+  if (typeof flags.harness === 'string' && flags.harness !== '') {
+    args.harnessId = flags.harness
+  }
+
   return args
 }
 
@@ -236,7 +255,7 @@ function printNewWorkspaceSummary(ws: WorkspaceRecord): void {
 
 registerCommand('ws new', {
   usage:
-    'ws new (--task <text> | --empty | --fork) [--no-submit] [--name <n>] [--model <m>] [--permission-mode <p>] [--effort <e>] [--project <p>] [--focus | --background]',
+    'ws new (--task <text> | --empty | --fork) [--no-submit] [--name <n>] [--model <m>] [--permission-mode <p>] [--effort <e>] [--harness <id>] [--project <p>] [--focus | --background]',
   help: 'Create a new workspace (declare --task, --empty, or --fork)',
   longDesc:
     'An Orpheus workspace IS a claude session — creating one always starts claude. ' +
@@ -306,6 +325,14 @@ registerCommand('ws new', {
       values: [...CLAUDE_EFFORT_VALUES],
       default: 'inherits the project/global effort setting'
     },
+    harness: {
+      type: 'string',
+      valueHint: '<id>',
+      desc: "Harness to run in the new workspace (e.g. 'claude', 'codex-cli').",
+      default: "the project's/app default harness (Claude)",
+      notes:
+        'Not validated client-side — an unknown id is rejected by the server with a clear error.'
+    },
     focus: {
       type: 'boolean',
       desc: 'Navigate the Orpheus GUI to the new workspace (steals focus from wherever the user currently is).',
@@ -323,6 +350,7 @@ registerCommand('ws new', {
   examples: [
     'orpheus ws new --task "Summarize the auth module and list TODOs"',
     'orpheus ws new --fork --name "reviewer" --permission-mode plan',
+    'orpheus ws new --task "Fix the failing test" --harness codex-cli',
     'orpheus --json ws new --task "run the test suite" | jq -r .workspace.id'
   ],
   handler: async (ctx) => {
