@@ -871,7 +871,26 @@ export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassP
 // values some routed providers report (an off-ladder disable and the lowest
 // standard rung respectively) — kept distinct from each other and from
 // 'low', never conflated (model-routing unit 11).
-export type ClaudeEffort = 'auto' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+// 'ultra' is CODEX's top rung (gpt-5.6-sol/-terra advertise it via
+// `codex debug models`), not a Claude level. It lives on this union because
+// this union is the VALIDATOR vocabulary for the shared
+// claude_workspace_settings/claude_project_settings override tables, which
+// every harness's per-workspace model/effort override writes through — the
+// name is Claude-branded for historical reasons, the storage is not. Without
+// it, picking Ultra on a Codex workspace threw `Invalid effort: ultra` at
+// overridesStore.ts's validator, was rejected again by schema.ts's CHECK
+// constraint, and would have been silently coerced to 'auto' by enumCoerce —
+// so the chip appeared to do nothing at all.
+export type ClaudeEffort =
+  | 'auto'
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra'
 // The single canonical value list for ClaudeEffort (model-routing unit 11)
 // — every validator that needs to check "is this a legal effort value"
 // (schema.ts's EFFORT CHECK constraint, claudeSettings.ts's validatePatch,
@@ -896,7 +915,11 @@ export const CLAUDE_EFFORT_VALUES: readonly ClaudeEffort[] = [
   'medium',
   'high',
   'xhigh',
-  'max'
+  'max',
+  // See ClaudeEffort's own comment: Codex's top rung, present so the
+  // SHARED override tables accept it. Deliberately absent from
+  // CLAUDE_PICKER_EFFORT_VALUES below — a Claude picker must not offer it.
+  'ultra'
 ]
 /**
  * The effort levels the `claude` BINARY itself documents for `--effort`:

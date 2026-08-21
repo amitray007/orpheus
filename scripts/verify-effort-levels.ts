@@ -538,8 +538,19 @@ if (SKIP_SECTION_5_ROUTING_NOOP) {
 {
   assert.deepEqual(
     [...EFFORT],
-    ['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    ['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'schema.ts’s EFFORT enum must exactly match the widened ClaudeEffort union'
+  )
+  // 'ultra' is CODEX's top rung, added to this SHARED validator vocabulary
+  // because claude_workspace_settings/claude_project_settings are the storage
+  // every harness's per-workspace override writes through (Claude-branded
+  // name, harness-agnostic storage). Without it, picking Ultra on a Codex
+  // workspace threw `Invalid effort: ultra` in overridesStore.ts, was
+  // rejected again by this CHECK constraint, and would have been coerced to
+  // 'auto' by enumCoerce — the chip silently did nothing.
+  assert.ok(
+    EFFORT.includes('ultra'),
+    "the shared override tables must ACCEPT 'ultra' — a non-Claude harness's level still writes here"
   )
 
   const db = new Database(':memory:')
@@ -625,7 +636,12 @@ if (SKIP_SECTION_5_ROUTING_NOOP) {
     'medium',
     'high',
     'xhigh',
-    'max'
+    'max',
+    // Codex's top rung — see CLAUDE_EFFORT_VALUES' own comment. This mirror
+    // is hand-maintained ON PURPOSE (a TS union has no runtime members to
+    // enumerate), so it must grow with the union or this guard silently
+    // stops guarding.
+    'ultra'
   ]
   for (const member of EVERY_CLAUDE_EFFORT_MEMBER) {
     assert.ok(
