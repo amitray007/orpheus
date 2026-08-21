@@ -55,11 +55,28 @@
 
 import type { FooterActionDraft } from '../../../shared/types'
 
+// ORDER IS THE RENDER ORDER. Rows are seeded at ascending `position` and the
+// footer renders `ORDER BY position ASC`, so this array literally is what the
+// user sees left-to-right.
+//
+// Model -> Effort -> Fork mirrors the arrangement a real Claude install
+// converged on (Model and Effort lead because they are the two chips users
+// actually change; Fork is occasional). Codex originally shipped the reverse
+// — Fork, Effort, Model — which put the least-used control first and read as
+// broken next to a Claude workspace's footer.
+//
+// NOTE for anyone comparing this against CLAUDE_DEFAULT_ACTIONS: that array
+// still begins with Fork. It is NOT the contradiction it looks like — a real
+// install's Claude rows are USER-REORDERED (verified in the dev DB: Model at
+// position 0, Fork at 2, against a seed array that starts with Fork), and
+// reseeding never rewrites an existing row's position. This array is the
+// FRESH-INSTALL order for Codex, chosen to match what that reordering
+// settled on rather than to match Claude's untouched seed array.
 export const CODEX_DEFAULT_ACTIONS: FooterActionDraft[] = [
   {
-    label: 'Fork',
-    icon: 'GitFork',
-    actionId: 'workspace.fork',
+    label: 'Model',
+    icon: 'Robot',
+    actionId: 'footer.modelSelect',
     params: {},
     visibleWhen: 'always'
   },
@@ -71,9 +88,9 @@ export const CODEX_DEFAULT_ACTIONS: FooterActionDraft[] = [
     visibleWhen: 'always'
   },
   {
-    label: 'Model',
-    icon: 'Robot',
-    actionId: 'footer.modelSelect',
+    label: 'Fork',
+    icon: 'GitFork',
+    actionId: 'workspace.fork',
     params: {},
     visibleWhen: 'always'
   }

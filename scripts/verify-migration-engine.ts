@@ -1309,6 +1309,77 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
   ).c
   assert.equal(rowCountBefore, rowCountAfter)
 
+  // -------------------------------------------------------------------------
+  // codex-footer-actions-order — repairs an install whose Codex footer rows
+  // seeded in the original (reversed) order, WITHOUT touching a set the user
+  // has since arranged themselves.
+  // -------------------------------------------------------------------------
+  {
+    const codexStep = dataSteps.find((st) => st.name === 'codex-footer-actions-order')
+    assert.ok(codexStep, 'the codex-footer-actions-order step must exist')
+
+    const mk = (rows: Array<[string, string, number]>): InstanceType<typeof Database> => {
+      const d = new Database(':memory:')
+      d.exec(
+        `CREATE TABLE footer_actions_global (id TEXT PRIMARY KEY, label TEXT, action_id TEXT, position INTEGER, harness_id TEXT)`
+      )
+      for (const [id, actionId, pos] of rows) {
+        d.prepare('INSERT INTO footer_actions_global VALUES (?,?,?,?,?)').run(
+          id,
+          id,
+          actionId,
+          pos,
+          'codex-cli'
+        )
+      }
+      return d
+    }
+    const order = (d: InstanceType<typeof Database>): string =>
+      (
+        d
+          .prepare(
+            `SELECT action_id FROM footer_actions_global WHERE harness_id='codex-cli' ORDER BY position ASC`
+          )
+          .all() as Array<{ action_id: string }>
+      )
+        .map((r) => r.action_id)
+        .join(',')
+
+    // The originally-seeded (wrong) order is repaired to Model -> Effort -> Fork.
+    const wrong = mk([
+      ['a', 'workspace.fork', 8],
+      ['b', 'footer.effortSelect', 9],
+      ['c', 'footer.modelSelect', 10]
+    ])
+    codexStep.run(wrong)
+    assert.equal(
+      order(wrong),
+      'footer.modelSelect,footer.effortSelect,workspace.fork',
+      'seeded-in-reverse Codex rows must be reordered to Model -> Effort -> Fork'
+    )
+    // Idempotent — the shape check no longer matches, so a rerun changes nothing.
+    codexStep.run(wrong)
+    assert.equal(
+      order(wrong),
+      'footer.modelSelect,footer.effortSelect,workspace.fork',
+      're-running the step must be a no-op'
+    )
+
+    // A user-arranged set must be left completely alone.
+    const userArranged = mk([
+      ['a', 'footer.effortSelect', 8],
+      ['b', 'workspace.fork', 9],
+      ['c', 'footer.modelSelect', 10]
+    ])
+    const before = order(userArranged)
+    codexStep.run(userArranged)
+    assert.equal(
+      order(userArranged),
+      before,
+      "a user's own footer arrangement must never be rewritten by this step"
+    )
+  }
+
   console.log('✓ data-steps')
 }
 

@@ -718,6 +718,73 @@ const dataSteps: DataStep[] = [
         }
       }
     }
+  },
+
+  // -------------------------------------------------------------------------
+  // Reorder an EXISTING install's seeded Codex footer rows to Model -> Effort
+  // -> Fork.
+  //
+  // Codex's defaults originally seeded in the reverse order, which put the
+  // least-used chip first and read as broken beside a Claude workspace's
+  // footer. Fixing CODEX_DEFAULT_ACTIONS only helps a FRESH install: the
+  // per-harness seeder is insert-only and skips a harness that already has
+  // rows, so an install that already seeded keeps the old order forever.
+  //
+  // ONLY touches rows still in the exact original seeded order (Fork, Effort,
+  // Model at three ascending positions). A user who has since reordered,
+  // renamed, or deleted any of them fails that check and is left completely
+  // alone — reordering someone's deliberate arrangement would be worse than
+  // the wrong default. Rewrites only the three `position` values, reusing the
+  // same three slots so nothing else in the table shifts.
+  // -------------------------------------------------------------------------
+  {
+    name: 'codex-footer-actions-order',
+    // legacyThroughVersion: 0 + alwaysRun: true — the pairing every recent
+    // step here uses, and it is REQUIRED, not stylistic. seedLedgerFromLegacy
+    // pre-marks a non-alwaysRun step as applied whenever
+    // `legacyVersion >= step.legacyThroughVersion`, which 0 satisfies for
+    // EVERY existing DB — so a run-once step with version 0 would be recorded
+    // as already-applied and never actually run on the installs it exists to
+    // repair. alwaysRun skips that pre-marking entirely (see its `continue`).
+    //
+    // Safe to re-run: the shape check below only matches rows still in the
+    // exact original seeded order, so once reordered (or once a user has
+    // touched them) every later pass is a no-op.
+    legacyThroughVersion: 0,
+    alwaysRun: true,
+    run: (db) => {
+      const tables = listTables(db)
+      if (!tables.includes('footer_actions_global')) return
+      // The table can EXIST while predating harness_id — this step also runs
+      // against partial-schema fixtures and against a DB mid-upgrade, where
+      // querying the column outright throws "no such column: harness_id" and
+      // (because runDataSteps rolls back and rethrows) would take the whole
+      // migration down. Probe the column, don't assume it.
+      const hasHarnessId = (
+        db.prepare(`PRAGMA table_info("footer_actions_global")`).all() as Array<{ name: string }>
+      ).some((c) => c.name === 'harness_id')
+      if (!hasHarnessId) return
+
+      const rows = db
+        .prepare(
+          `SELECT id, action_id, position FROM footer_actions_global
+             WHERE harness_id = 'codex-cli' ORDER BY position ASC`
+        )
+        .all() as Array<{ id: string; action_id: string; position: number }>
+
+      // Exactly the three seeded rows, still in the original order.
+      const seededOrder = ['workspace.fork', 'footer.effortSelect', 'footer.modelSelect']
+      if (rows.length !== seededOrder.length) return
+      if (!rows.every((r, i) => r.action_id === seededOrder[i])) return
+
+      const desired = ['footer.modelSelect', 'footer.effortSelect', 'workspace.fork']
+      const slots = rows.map((r) => r.position)
+      const update = db.prepare('UPDATE footer_actions_global SET position = ? WHERE id = ?')
+      desired.forEach((actionId, idx) => {
+        const row = rows.find((r) => r.action_id === actionId)
+        if (row) update.run(slots[idx], row.id)
+      })
+    }
   }
 ]
 
