@@ -2946,13 +2946,42 @@ handle('terminal:resize', (_e, { workspaceId, rect, scaleFactor }): void => {
   }
 })
 
-handle('terminal:destroy', (_e, { workspaceId }): void => {
+handle('terminal:destroy', async (_e, { workspaceId, rehost }): Promise<void> => {
   // NOTE: terminal:destroy is called in two distinct scenarios:
   //   1. Workspace death (archive / project-remove) — full teardown happens in
   //      the archive/remove handlers via teardownWorkspaceResources; this path
   //      only handles the surface + transient mount state.
   //   2. Live restart (WorkspaceView.handleRestart) — workspace stays alive;
   //      activity/accumulator/session state must NOT be evicted here.
+  //
+  // `rehost` (support-multi-harness) distinguishes them where it MATTERS.
+  // Destroying the libghostty surface is a no-op for a tmux-hosted workspace
+  // (the default hosting mode): the session, and the harness process inside
+  // it, keep running. So a "restart" that only destroyed the surface then
+  // remounted would hit hostWorkspace()'s idempotent has-session branch and
+  // REATTACH to the same live process — which is why changing a Codex
+  // workspace's model appeared to do nothing until the user closed and
+  // reopened it (close DOES unhost). Callers wanting a genuinely fresh
+  // harness process must pass rehost: true. Archive/remove deliberately do
+  // NOT — they run their own unhostWorkspace in their own handlers, and
+  // double-unhosting here would just be redundant work on a dying workspace.
+  if (rehost === true) {
+    const wsForRehost = getWorkspace(workspaceId)
+    if (wsForRehost != null) {
+      // AWAITED, unlike the fire-and-forget unhosts on the close/archive
+      // paths: the renderer remounts as soon as this resolves, and a mount
+      // racing a still-dying session would reattach to exactly the process
+      // we are trying to replace. Failure is tolerated (unhostWorkspace is
+      // idempotent and tolerates a missing tmux/session) — a workspace that
+      // cannot be unhosted still gets its surface rebuilt, i.e. today's
+      // behavior, rather than a failed restart.
+      try {
+        await unhostWorkspace({ workspaceId, workspaceName: wsForRehost.name })
+      } catch (err) {
+        console.warn('[terminal:destroy] tmux rehost teardown failed for %s:', workspaceId, err)
+      }
+    }
+  }
   //
   // Clean up surface-level mount state that is always safe to evict — it is
   // re-seeded by the next terminal:mount call in both scenarios.

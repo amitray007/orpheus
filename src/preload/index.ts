@@ -228,7 +228,12 @@ const api = {
     hide: (workspaceId: string): Promise<void> => invoke('terminal:hide', { workspaceId }),
     resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number): Promise<void> =>
       invoke('terminal:resize', { workspaceId, rect, scaleFactor }),
-    destroy: (workspaceId: string): Promise<void> => invoke('terminal:destroy', { workspaceId }),
+    /** `rehost: true` ALSO kills the workspace's tmux session, so the next
+     *  mount spawns a fresh harness process instead of reattaching to the
+     *  live one. Required for a settings change (model/effort) to actually
+     *  reach the process — see WorkspaceView.handleRestart. */
+    destroy: (workspaceId: string, rehost?: boolean): Promise<void> =>
+      invoke('terminal:destroy', { workspaceId, ...(rehost ? { rehost: true } : {}) }),
     sendInput: (workspaceId: string, text: string): Promise<ActionResult> =>
       invoke('terminal:sendInput', { workspaceId, text }),
     sendKeys: (workspaceId: string, keys: TerminalSendKeyDescriptor[]): Promise<ActionResult> =>

@@ -979,7 +979,12 @@ export interface InvokeChannelMap {
     req: [{ workspaceId: string; rect: TerminalRect; scaleFactor: number }]
     res: void
   }
-  'terminal:destroy': { req: [{ workspaceId: string }]; res: void }
+  // `rehost` (support-multi-harness): also tear down the workspace's tmux
+  // SESSION, not just its libghostty surface. Default/absent = false, which
+  // is the long-standing behavior every archive/remove caller depends on
+  // (those paths run their own unhostWorkspace separately). Only the live
+  // RESTART path sets it — see WorkspaceView.handleRestart.
+  'terminal:destroy': { req: [{ workspaceId: string; rehost?: boolean }]; res: void }
   'terminal:sendInput': { req: [{ workspaceId: string; text: string }]; res: ActionResult }
   'terminal:sendKeys': {
     req: [{ workspaceId: string; keys: TerminalSendKeyDescriptor[] }]

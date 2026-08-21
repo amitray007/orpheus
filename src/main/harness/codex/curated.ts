@@ -9,7 +9,7 @@
 // than inline in registry.ts to keep the module graph acyclic).
 //
 // PROVENANCE — every fact below was VERIFIED against a live run of
-// codex-cli 0.148.0 on this machine, not guessed from docs. See the B4
+// codex-cli 0.147.0 on this machine, not guessed from docs. See the B4
 // task brief for the exact transcript. In short:
 //   codex -m gpt-5.4-mini -c model_reasoning_effort=low --sandbox read-only "<prompt>"
 // ran end-to-end and the session header echoed back "reasoning effort: low",
@@ -67,16 +67,30 @@ const CODEX_MODEL_SLUGS = [
   'gpt-5.3-codex-spark'
 ] as const
 
-// Union of every effort value ANY listed model accepts (`low`, `medium`,
-// `high`, `xhigh`, `max`, `ultra`), per model listed in the task brief. Note
-// EFFORT VALIDITY IS PER-MODEL — `ultra`/`max` are only valid on
-// gpt-5.6-sol/-terra/-luna, and an invalid pairing fails as an HTTP 400
-// AFTER the session has already started (not a clean upfront CLI rejection).
-// v1 deliberately ships this flat union with no per-model gating; narrowing
-// the offered list to what the CURRENTLY SELECTED model actually supports is
-// a follow-up (curated.options here is a UI suggestion list only, never a
-// validation whitelist — see CuratedField's own doc comment — so shipping
-// the superset is safe, just not maximally helpful).
+// Union of every effort value ANY listed model accepts. EFFORT VALIDITY IS
+// PER-MODEL — re-verified against `codex debug models` on codex-cli 0.147.0:
+//
+//   gpt-5.6-sol          low medium high xhigh max ultra   (default low)
+//   gpt-5.6-terra        low medium high xhigh max ultra   (default medium)
+//   gpt-5.6-luna         low medium high xhigh max         (default medium)
+//   gpt-5.5 / 5.4 /
+//   5.4-mini / spark     low medium high xhigh             (spark default high)
+//
+// An earlier version of this comment claimed ultra/max were valid on
+// sol/terra/LUNA — wrong: luna has max but NOT ultra. Only two models accept
+// ultra. Corrected from the catalog rather than restated.
+//
+// `none` and `minimal` also exist in the binary's config-level effort enum
+// but are advertised by no listed model, so they are deliberately not
+// offered here.
+//
+// v1 ships this flat union with no per-model gating; an invalid pairing is
+// rejected by the API rather than by the CLI upfront. Narrowing the offered
+// list to the SELECTED model's own levels is the natural follow-up, and the
+// catalog JSON already carries both the per-model levels and each model's
+// default_reasoning_level to drive it. Safe meanwhile because
+// curated.options is a UI suggestion list, never a validation whitelist
+// (see CuratedField's own doc comment).
 const CODEX_EFFORT_VALUES = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const
 
 // liveApply is `restartRequired` for BOTH fields below — now VERIFIED, no
@@ -136,18 +150,26 @@ export const CODEX_CURATED = {
  * less aggressive by default, which is exactly why ITS analogous row can
  * safely default to off).
  *
- * `--skip-git-repo-check` ships DISABLED, unlike the two rows above. Codex
- * refuses to run outside a trusted/git directory ("Not inside a trusted
- * directory and --skip-git-repo-check was not specified.") — that is a
- * genuine safety feature (it stops Codex from getting `danger-full-access`
- * sandbox rights in a directory with no version control to recover from a
- * mistake), so a non-git workspace should fail loudly by default and the
- * user opts into skipping the check, not the other way around.
+ * `--skip-git-repo-check` is DELIBERATELY ABSENT from this list. It was
+ * shipped here (disabled) on the belief that it guards interactive Codex in
+ * a non-git directory. IT DOES NOT EXIST ON THE INTERACTIVE BINARY — it is
+ * an `exec`-only flag, and Orpheus launches the interactive TUI. Verified
+ * against codex-cli 0.147.0:
+ *
+ *   codex --skip-git-repo-check --help
+ *     -> error: unexpected argument '--skip-git-repo-check' found
+ *   codex exec --skip-git-repo-check --help   -> accepted
+ *
+ * It is not valid on `codex resume` either, which is the path a bound
+ * workspace takes. So enabling that row would have made the workspace fail
+ * to launch with a clap parse error — a shipped landmine, harmless only
+ * because it defaulted to off. Do not re-add it without exec-gating it.
+ * (The refusal message it was justified by is exec-mode's; the interactive
+ * TUI shows a trust PROMPT in an untrusted directory instead.)
  */
 export const CODEX_DEFAULT_ARGS: HarnessArgRow[] = [
   { key: '--ask-for-approval', value: 'never', enabled: true },
-  { key: '--sandbox', value: 'danger-full-access', enabled: true },
-  { key: '--skip-git-repo-check', enabled: false }
+  { key: '--sandbox', value: 'danger-full-access', enabled: true }
 ]
 
 // ---------------------------------------------------------------------------

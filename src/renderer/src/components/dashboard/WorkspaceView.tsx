@@ -245,7 +245,14 @@ export function WorkspaceView({
 
   const handleRestart = useCallback(() => {
     window.api.terminal
-      .destroy(workspace.id)
+      // rehost: true — ALSO tear down the tmux session, not just the
+      // libghostty surface. Without it this "restart" was a no-op for the
+      // thing users actually restart FOR: tmux hosting means the harness
+      // process outlives the surface, so the remount below reattached to the
+      // same process and a changed model/effort never reached it. That is why
+      // closing and reopening a workspace worked when Restart did not — close
+      // unhosts, this did not.
+      .destroy(workspace.id, true)
       // Bumping remountKey re-fires the mount effect below, which calls terminal.mount
       // with the freshly composed launch params. The main process snapshots the new
       // launch at that point and clears dirty — the chip disappears via dirtyChanged event.

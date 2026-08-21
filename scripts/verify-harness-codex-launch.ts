@@ -33,8 +33,8 @@
 //   3. Curated model emits ['-m', '<slug>'].
 //   4. composeCodexHarnessLaunch returns settingsJson === '' — always, even
 //      with settings configured.
-//   5. CODEX_DEFAULT_ARGS: --ask-for-approval/--sandbox enabled: true,
-//      --skip-git-repo-check enabled: false.
+//   5. CODEX_DEFAULT_ARGS: --ask-for-approval/--sandbox enabled: true, and
+//      NO exec-only flag (the interactive binary rejects them).
 //   6. The model option list contains NO 'codex-auto-review' (visibility=
 //      hide must stay excluded).
 //   7. Every curated effort option is a real string from the union list.
@@ -249,13 +249,24 @@ function setWorkspaceOverride(
   assert.equal(byKey.get('--ask-for-approval')?.value, 'never')
   assert.equal(byKey.get('--sandbox')?.enabled, true, '--sandbox must ship enabled: true')
   assert.equal(byKey.get('--sandbox')?.value, 'danger-full-access')
-  assert.equal(
-    byKey.get('--skip-git-repo-check')?.enabled,
-    false,
-    '--skip-git-repo-check must ship enabled: false (opt-in safety feature)'
-  )
+  // EXEC-ONLY FLAGS MUST NEVER APPEAR HERE. Orpheus launches the INTERACTIVE
+  // `codex` (and `codex resume` for a bound workspace); these flags exist
+  // only on `codex exec`, so a row carrying one would fail the launch with a
+  // clap "unexpected argument" parse error. --skip-git-repo-check shipped
+  // here once, disabled — harmless only because nobody enabled it. Verified
+  // against codex-cli 0.147.0:
+  //   codex --skip-git-repo-check --help -> error: unexpected argument
+  //   codex exec --skip-git-repo-check --help -> accepted
+  for (const execOnly of ['--skip-git-repo-check', '--json', '--output-last-message']) {
+    assert.equal(
+      byKey.has(execOnly),
+      false,
+      `${execOnly} is an exec-only flag — the interactive binary Orpheus launches rejects it, ` +
+        'so shipping it as a default arg row is a latent launch failure'
+    )
+  }
   console.log(
-    '✓ CODEX_DEFAULT_ARGS: approval+sandbox enabled:true, skip-git-repo-check enabled:false'
+    '✓ CODEX_DEFAULT_ARGS: approval+sandbox enabled:true, and no exec-only flag is offered'
   )
 }
 

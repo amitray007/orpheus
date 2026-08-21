@@ -112,7 +112,11 @@ const CLAUDE_DESCRIPTOR: HarnessDescriptor = {
 
 // Known-good `codex --version` string, verified on this machine per B1's
 // live-run provenance note in codex/curated.ts's header.
-const CODEX_KNOWN_GOOD_VERSIONS = new Set(['0.148.0'])
+// Verified against the binary the LOGIN shell resolves — which is what
+// orpheus-codex.sh (`#!/bin/zsh -l`) actually launches. An earlier value of
+// '0.148.0' was wrong: that came from a different shim on PATH, and would
+// have made every real launch report an untested version.
+const CODEX_KNOWN_GOOD_VERSIONS = new Set(['0.147.0', '0.148.0'])
 
 // The Codex CLI descriptor — Phase B's second harness (issue #187).
 const CODEX_DESCRIPTOR: HarnessDescriptor = {

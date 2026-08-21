@@ -211,7 +211,15 @@ export function findCodexUserRolloutId(
 // ---------------------------------------------------------------------------
 
 function codexSessionsRoot(): string {
-  return nodePath.join(os.homedir(), '.codex', 'sessions')
+  // $CODEX_HOME relocates Codex's entire state dir — it is a real, documented
+  // knob (`codex -p/--profile`'s own help refers to
+  // "$CODEX_HOME/<name>.config.toml"). Honouring it matters because the
+  // failure mode is SILENT: scanning ~/.codex when Codex is writing rollouts
+  // elsewhere finds no candidates, so discovery just never binds and every
+  // reopen starts a fresh session with no error anywhere.
+  const codexHome = process.env['CODEX_HOME']?.trim()
+  const home = codexHome && codexHome.length > 0 ? codexHome : nodePath.join(os.homedir(), '.codex')
+  return nodePath.join(home, 'sessions')
 }
 
 /**
