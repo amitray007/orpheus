@@ -363,6 +363,17 @@ export function getCodexUsage(claudeSessionId: string | null): Promise<SessionUs
  * usable shape). A session that genuinely crossed the threshold is
  * under-priced by this reader — an accepted, documented gap, not an
  * oversight.
+ *
+ * HOW REACHABLE IS THAT GAP, measured rather than assumed: the tier fires at
+ * 272,000 context tokens, which is exactly the MAXIMUM context window every
+ * tiered Codex model advertises (`codex debug models`: all six report
+ * context_window=272000; gpt-5.3-codex-spark is 128000 and carries no tiers
+ * at all). A live rollout on this machine reported
+ * model_context_window=258400 — BELOW the threshold. So the higher tier is
+ * only reachable by a session running at essentially the full window, and is
+ * unreachable entirely at the effective window Codex actually reports. The
+ * base tier is therefore the right default, not merely the convenient one.
+ * Revisit if Codex ever raises the effective window past 272k.
  */
 // NOT `async` — see getCodexUsage's own comment on why; same reasoning
 // applies here verbatim (getOpenAiPricingById is synchronous too).
