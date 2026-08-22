@@ -53,10 +53,12 @@ import { isHarnessRowDisabled } from '../../lib/newWorkspaceMenuLogic'
 // enterSubmenu/leaveSubmenu/backToProviders — is deleted from THIS file.
 // None of that machinery was actually about the harness picker; it existed
 // purely to support a flyout submenu that no longer exists here. The pure
-// reducers still live in newWorkspaceMenuLogic.ts and useGenuineHoverGate.ts
-// (support-multi-harness left them in place rather than deleting them in
-// the same pass — see those files for current callers, if any, before
-// assuming they're still load-bearing).
+// reducers backing that machinery (decideHoverIntentAction,
+// computeSubmenuSide, reduceHoverGate, isGenuineHover, reduceRowHover) and
+// the useGenuineHoverGate.ts hook that wrapped them have since been deleted
+// outright (dead-code cleanup, same branch) — they had no live caller left
+// anywhere. newWorkspaceMenuLogic.ts now exports only
+// decideHarnessCreateAction and isHarnessRowDisabled.
 // ---------------------------------------------------------------------------
 
 /** Local/Worktree isolation-mode selector row — a two-way TOGGLE only

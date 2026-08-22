@@ -46,11 +46,9 @@ const verifiers = [
   'verify-model-picker.ts',
   // Harness-selector rebuild of the "+ new workspace" popover
   // (support-multi-harness) — decideHarnessCreateAction/isHarnessRowDisabled
-  // (a harness chip click both selects and creates) plus the submenu-flip/
-  // phantom-hover/hover-intent logic newWorkspaceMenuLogic.ts still carries
-  // (see that file's own header for current status). Was previously
-  // written but never wired into this suite — see this file's own header
-  // comment for why an unwired harness is indistinguishable from no harness.
+  // (a harness chip click both selects and creates). Was previously written
+  // but never wired into this suite — see this file's own header comment
+  // for why an unwired harness is indistinguishable from no harness.
   'verify-new-workspace-menu.ts',
   'verify-harness-registry.ts',
   'verify-doctor.ts',
