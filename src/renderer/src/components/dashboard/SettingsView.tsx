@@ -25,7 +25,6 @@ import {
   Robot,
   Bell,
   Pulse,
-  Lightning,
   Terminal,
   Stack,
   FirstAidKit,
@@ -155,9 +154,6 @@ const HarnessSection = lazy(() =>
 const OrpheusStatusSection = lazy(() =>
   import('./settings/OrpheusStatusSection').then((m) => ({ default: m.OrpheusStatusSection }))
 )
-const OrpheusFooterSection = lazy(() =>
-  import('./settings/OrpheusFooterSection').then((m) => ({ default: m.OrpheusFooterSection }))
-)
 const OrpheusDeveloperSection = lazy(() =>
   import('./settings/OrpheusDeveloperSection').then((m) => ({ default: m.OrpheusDeveloperSection }))
 )
@@ -219,7 +215,6 @@ export type SectionId =
   | 'orpheus-model-routing'
   | 'orpheus-harness'
   | 'orpheus-status'
-  | 'orpheus-footer'
   | 'orpheus-developer'
   | 'orpheus-diagnostics'
   | 'orpheus-health'
@@ -364,12 +359,6 @@ const GROUPS: SectionGroup[] = [
         label: 'Service status',
         icon: Pulse,
         Component: OrpheusStatusSection
-      },
-      {
-        id: 'orpheus-footer',
-        label: 'Quick Actions',
-        icon: Lightning,
-        Component: OrpheusFooterSection
       },
       {
         id: 'orpheus-developer',

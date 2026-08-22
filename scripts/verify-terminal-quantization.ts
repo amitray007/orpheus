@@ -3,63 +3,49 @@
 //
 // Guards the workspace terminal's column height math.
 //
-// THE BUG: the footer's height was subtracted from the available column
-// height UNCONDITIONALLY, and the absorbing wrapper around it painted a
-// flex-1 band with its own background + seam border. WorkspaceFooter itself
-// correctly returned null when the footer was toggled off — but the reserved
-// height and the painted wrapper both remained, so hiding the footer left a
-// footer-sized strip of empty chrome under the terminal instead of giving
-// that space back.
+// The terminal host is snapped DOWN to a whole multiple of the ghostty cell
+// height so the native surface never renders a clipped half-row. Whatever the
+// floor() leaves over is "slack", split above (slackTop) and below the
+// terminal. The footer has been removed from rendering entirely, so this
+// quantizer no longer reserves any height for it — the whole column is
+// available to the terminal.
 //
-// Asserted against the real exported function (no DOM), plus a structural
-// pin that the wrapper is not rendered when the footer is hidden — the
-// wrapper is JSX and cannot be driven from a plain harness.
+// Asserted against the real exported function (no DOM).
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert/strict'
 import { quantizeTerminalColumn } from '../src/renderer/src/lib/terminalQuantization.ts'
 
-const FOOTER = 36
 const CELL = 20 // physical px per ghostty cell row
 
 // ---------------------------------------------------------------------------
-// 1. THE REPORTED BUG: hiding the footer must return its height to the
-//    terminal, not leave a reserved gap.
+// 1. The whole column is available to the terminal — no reserved band.
 // ---------------------------------------------------------------------------
 {
-  const shown = quantizeTerminalColumn(1000, CELL, 1, true, FOOTER)
-  const hidden = quantizeTerminalColumn(1000, CELL, 1, false, FOOTER)
-  assert.ok(shown && hidden)
-  assert.equal(shown.height, 960, 'with the footer shown: floor(1000-36 -> 964) to a 20px multiple')
+  const q = quantizeTerminalColumn(1000, CELL, 1)
+  assert.ok(q)
   assert.equal(
-    hidden.height,
+    q.height,
     1000,
-    'with the footer HIDDEN the terminal gets the whole column — no reserved footer band'
-  )
-  assert.ok(
-    hidden.height > shown.height,
-    'hiding the footer must GROW the terminal; the old code reserved its height either way'
+    'the terminal gets the whole column: 1000 is already a 20px multiple'
   )
 }
 
 // ---------------------------------------------------------------------------
-// 2. Whole-cell-row snapping is preserved in both states — a clipped half-row
-//    is the defect this quantization exists to prevent.
+// 2. Whole-cell-row snapping — a clipped half-row is the defect this
+//    quantization exists to prevent.
 // ---------------------------------------------------------------------------
 {
-  for (const visible of [true, false]) {
-    for (const columnHeight of [500, 733, 1000, 1080]) {
-      const q = quantizeTerminalColumn(columnHeight, CELL, 1, visible, FOOTER)
-      if (!q) continue
-      assert.equal(
-        q.height % CELL,
-        0,
-        `height ${q.height} must be a whole multiple of the cell height (footerVisible=${visible})`
-      )
-      const available = columnHeight - (visible ? FOOTER : 0)
-      assert.ok(q.height <= available, 'the terminal must never exceed the space available to it')
-      assert.ok(available - q.height < CELL, 'slack must be less than one cell row')
-    }
+  for (const columnHeight of [500, 733, 1000, 1080]) {
+    const q = quantizeTerminalColumn(columnHeight, CELL, 1)
+    if (!q) continue
+    assert.equal(
+      q.height % CELL,
+      0,
+      `height ${q.height} must be a whole multiple of the cell height`
+    )
+    assert.ok(q.height <= columnHeight, 'the terminal must never exceed the space available to it')
+    assert.ok(columnHeight - q.height < CELL, 'slack must be less than one cell row')
   }
 }
 
@@ -67,9 +53,9 @@ const CELL = 20 // physical px per ghostty cell row
 // 3. Slack is split, floored — the top spacer never takes more than half.
 // ---------------------------------------------------------------------------
 {
-  const q = quantizeTerminalColumn(1000, CELL, 1, true, FOOTER)
+  const q = quantizeTerminalColumn(733, CELL, 1)
   assert.ok(q)
-  const slack = 1000 - FOOTER - q.height
+  const slack = 733 - q.height
   assert.equal(q.slackTop, Math.floor(slack / 2), 'slackTop is half the leftover, floored')
   assert.ok(q.slackTop <= slack, 'the top spacer can never exceed the total slack')
 }
@@ -79,14 +65,10 @@ const CELL = 20 // physical px per ghostty cell row
 //    rather than committing to a fabricated height.
 // ---------------------------------------------------------------------------
 {
-  assert.equal(quantizeTerminalColumn(1000, null, 1, true, FOOTER), null, 'unknown cell height')
-  assert.equal(quantizeTerminalColumn(1000, 0, 1, true, FOOTER), null, 'zero cell height')
-  assert.equal(
-    quantizeTerminalColumn(20, CELL, 1, true, FOOTER),
-    null,
-    'column smaller than footer'
-  )
-  assert.equal(quantizeTerminalColumn(FOOTER, CELL, 1, true, FOOTER), null, 'exactly the footer')
+  assert.equal(quantizeTerminalColumn(1000, null, 1), null, 'unknown cell height')
+  assert.equal(quantizeTerminalColumn(1000, 0, 1), null, 'zero cell height')
+  assert.equal(quantizeTerminalColumn(0, CELL, 1), null, 'zero column height')
+  assert.equal(quantizeTerminalColumn(-5, CELL, 1), null, 'negative column height')
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +77,7 @@ const CELL = 20 // physical px per ghostty cell row
 //    fractional on a scaled display.
 // ---------------------------------------------------------------------------
 {
-  const q = quantizeTerminalColumn(1000, CELL, 2, true, FOOTER)
+  const q = quantizeTerminalColumn(1000, CELL, 2)
   assert.ok(q)
   assert.equal(
     Math.round(q.height * 2) % CELL,
@@ -105,9 +87,8 @@ const CELL = 20 // physical px per ghostty cell row
 }
 
 // ---------------------------------------------------------------------------
-// 6. Structural: the absorbing wrapper must not render when the footer is
-//    hidden. It is a painted flex-1 band (bg + seam border), so leaving it
-//    would still show an empty strip even with the height fixed above.
+// 6. Structural: the footer wrapper (and its render branching) must be gone
+//    from WorkspaceView — the footer no longer renders at all.
 // ---------------------------------------------------------------------------
 {
   const fs = await import('node:fs')
@@ -115,18 +96,18 @@ const CELL = 20 // physical px per ghostty cell row
     new URL('../src/renderer/src/components/dashboard/WorkspaceView.tsx', import.meta.url),
     'utf8'
   )
-  assert.match(
-    view,
-    /\{!footerVisible \? null : quantized == null \? \(/,
-    'the footer wrapper (and its painted band) must be skipped entirely when the footer is hidden'
+  assert.ok(
+    !/WorkspaceFooter/.test(view),
+    'WorkspaceFooter must not be referenced in WorkspaceView'
   )
+  assert.ok(!/footerVisible/.test(view), 'footerVisible must not survive as a vestigial flag')
   assert.match(
     view,
-    /\}, \[cellHeightPx, footerVisible\]\)/,
-    'the quantizer must recompute when footerVisible flips — the ResizeObserver never fires for it'
+    /\}, \[cellHeightPx\]\)/,
+    'the quantizer must recompute when cellHeightPx resolves/changes'
   )
 }
 
 console.log(
-  '✓ hiding the footer returns its height to the terminal and paints no empty band; whole-cell-row snapping and the slack split are preserved in both states'
+  '✓ the terminal column claims the whole available height with whole-cell-row snapping and a floored slack split; the footer wrapper is gone entirely'
 )

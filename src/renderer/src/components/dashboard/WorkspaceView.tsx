@@ -5,7 +5,6 @@ import type { GhPullRequest, WorkspaceRecord, WorkspaceActivityDetail } from '@s
 import { logDiag } from '@/lib/diag'
 import { DIAG_EVENTS } from '@shared/diagEvents'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
-import { WorkspaceFooter, WORKSPACE_FOOTER_HEIGHT_PX } from './footer/WorkspaceFooter'
 import { WorkspaceTerminalOverlays } from './WorkspaceTerminalOverlays'
 import { WorkbenchPanel } from '../workbench/WorkbenchPanel'
 import { WorkbenchProvider } from '../workbench/WorkbenchProvider'
@@ -18,8 +17,6 @@ import {
   hideOverlayCard,
   noticeBannerId
 } from '@/lib/overlayClient'
-import { useWorkspaceActivity } from '@/lib/activityStore'
-import { useUiState } from '@/lib/uiStateStore'
 import { quantizeTerminalColumn } from '@/lib/terminalQuantization'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import {
@@ -58,14 +55,16 @@ interface WorkspaceViewProps {
    *  via terminal:hide so it stops drawing. When flipped to true the surface
    *  is re-attached via terminal:mount (fast rAF, no 75ms debounce). */
   active?: boolean
-  /** Last-seen activity detail from Dashboard's live cache; seeds the
-   *  footer's activity glyph on re-mount so a tool / compacting / asking
-   *  sub-state survives a navigation round-trip until the next hook event
-   *  refreshes it. */
+  /** Last-seen activity detail from Dashboard's live cache. Currently unused
+   *  within this component (its former consumer, the workspace footer, no
+   *  longer renders) but kept in the prop type — parents still pass it. */
   initialDetail?: WorkspaceActivityDetail
   /** Open PR for this workspace's current branch, fetched at Dashboard level. */
   pr?: GhPullRequest | null
-  /** Callback to navigate to a workspace — used by footer post-fork. */
+  /** Callback to navigate to a workspace. Currently unused within this
+   *  component (its former caller, the workspace footer, no longer renders)
+   *  but kept in the prop type — parents still pass it and other in-flight
+   *  work may still read it. */
   onSelectWorkspace?: (workspaceId: string, projectId: string) => void
   /** All workspaces across projects — used by title bar "forked from" chip. */
   allWorkspaces?: WorkspaceRecord[]
@@ -74,9 +73,7 @@ interface WorkspaceViewProps {
 export function WorkspaceView({
   workspace,
   active = true,
-  initialDetail,
   pr,
-  onSelectWorkspace,
   allWorkspaces
 }: WorkspaceViewProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -195,15 +192,6 @@ export function WorkspaceView({
   //     absorbed by the footer wrapper's flex-1 below the terminal host.
   // A single state object (not two separate useState calls) so a recompute
   // that changes both values only triggers one re-render.
-  // Whether the footer will actually RENDER. WorkspaceFooter returns null
-  // when this is off, but the quantizer below subtracted
-  // WORKSPACE_FOOTER_HEIGHT_PX unconditionally and the wrapper still painted
-  // its flex-1 band — so turning the footer off left a footer-sized strip of
-  // empty chrome under the terminal instead of giving that height back.
-  // `undefined` (uiState still loading) is treated as "will render", matching
-  // WorkspaceFooter's own no-flicker default.
-  const uiState = useUiState()
-  const footerVisible = uiState ? uiState.showWorkspaceFooter : true
   const [quantized, setQuantized] = useState<{ height: number; slackTop: number } | null>(null)
 
   useEffect(() => {
@@ -217,15 +205,7 @@ export function WorkspaceView({
         return
       }
       const columnHeight = columnEl.getBoundingClientRect().height
-      setQuantized(
-        quantizeTerminalColumn(
-          columnHeight,
-          px,
-          window.devicePixelRatio || 1,
-          footerVisible,
-          WORKSPACE_FOOTER_HEIGHT_PX
-        )
-      )
+      setQuantized(quantizeTerminalColumn(columnHeight, px, window.devicePixelRatio || 1))
     }
 
     recompute()
@@ -233,26 +213,13 @@ export function WorkspaceView({
     ro.observe(columnEl)
     return () => ro.disconnect()
     // Re-run whenever cellHeightPx resolves/changes — the ResizeObserver alone
-    // won't fire for that (the column's own size didn't change). Same for
-    // footerVisible: toggling the footer changes how much height the terminal
-    // may claim, but not the column's own size.
-  }, [cellHeightPx, footerVisible])
+    // won't fire for that (the column's own size didn't change).
+  }, [cellHeightPx])
 
   const isClosed = workspace.closedAt !== null
   const isClosedRef = useRef(isClosed)
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation
   isClosedRef.current = isClosed
-
-  // Activity status and detail from the per-key store — re-renders only when
-  // THIS workspace's activity changes (not when any other workspace fires).
-  // Reads from the store that Dashboard's single onActivityBatch subscription
-  // populates, rather than registering a second listener here.
-  const storeDetail = useWorkspaceActivity(workspace.id)
-
-  // detail: prefer live store value; fall back to initialDetail (seed from Dashboard
-  // snapshot passed at mount time) so the drawer glyph is correct before the
-  // first hook event fires.
-  const detail: WorkspaceActivityDetail | undefined = storeDetail ?? initialDetail
 
   const handleRestart = useCallback(() => {
     window.api.terminal
@@ -1040,61 +1007,6 @@ export function WorkspaceView({
                 rendered via the overlay-layer effect above (noticeBanner kind,
                 anchored to this container). */}
           </div>
-
-          {/* Footer-absorb wrapper: only takes over (flex-1, vertically
-              centered content, footer's own background painted across the
-              whole wrapper) once the terminal host above has a quantized
-              height — otherwise the footer keeps its own natural
-              flex-shrink-0 sizing, unchanged from before this quantization
-              scheme existed. justify-center splits ITS share of the leftover
-              (slack - slackTop, since slackTop already went to the top
-              spacer above) evenly above and below the footer content instead
-              of piling it all up below as a dead ledge at the window's
-              bottom edge. Painting the wrapper in bg-surface-raised (the
-              footer's own background — see WorkspaceFooter.tsx) makes the
-              leftover band read as footer chrome rather than a mismatched
-              gap. The seam border (border-t) is relocated here too, off the
-              footer's own root (seamBorder={false} below) — WorkspaceFooter's
-              root no longer sits at the terminal/footer boundary once its
-              content is vertically centered inside this wrapper, so its
-              border would float mid-wrapper with slack above it instead of
-              marking the actual seam. */}
-          {/* When the footer is toggled off, render NOTHING here — not the
-              absorbing wrapper either. WorkspaceFooter already returns null
-              in that case, but the wrapper below is a flex-1 band painted in
-              bg-surface-raised with its own seam border, so it stayed visible
-              as an empty strip of chrome under the terminal. With the footer
-              hidden the quantizer above also stops reserving
-              WORKSPACE_FOOTER_HEIGHT_PX, so the terminal simply grows into
-              the space instead. */}
-          {!footerVisible ? null : quantized == null ? (
-            <WorkspaceFooter
-              workspaceId={workspace.id}
-              harnessId={workspace.harnessId}
-              sessionId={workspace.claudeSessionId}
-              cwd={workspace.cwd}
-              projectId={workspace.projectId}
-              workspaceName={workspace.name}
-              onSelectWorkspace={onSelectWorkspace}
-              activityDetail={detail}
-              onRestart={handleRestart}
-            />
-          ) : (
-            <div className="flex-1 min-h-0 flex flex-col justify-center bg-surface-raised border-t border-border-default/60">
-              <WorkspaceFooter
-                workspaceId={workspace.id}
-                harnessId={workspace.harnessId}
-                sessionId={workspace.claudeSessionId}
-                cwd={workspace.cwd}
-                projectId={workspace.projectId}
-                workspaceName={workspace.name}
-                onSelectWorkspace={onSelectWorkspace}
-                activityDetail={detail}
-                onRestart={handleRestart}
-                seamBorder={false}
-              />
-            </div>
-          )}
         </div>
 
         {/* Workbench frame — dormant/open/expanded geometry driving the tab
