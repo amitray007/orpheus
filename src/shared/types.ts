@@ -769,7 +769,6 @@ export type AppUiState = {
   // Dashboard "Usage" card background poll interval (Dashboard D3)
   usagePollIntervalSec: number // 300 | 600 | 900 | 1800 | 3600; default 600
   // Workspace footer visibility (v45)
-  showWorkspaceFooter: boolean
   // Files-tab editor save mode (v62) — false = manual (Cmd/Ctrl+S only);
   // true = debounced auto-save on idle. Default false (manual).
   filesAutoSave: boolean

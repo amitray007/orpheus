@@ -101,7 +101,6 @@ type AppUiStateRow = {
   // Dashboard "Usage" card background poll interval (D3)
   usage_poll_interval_sec: number | null
   // Workspace footer visibility (v45)
-  show_workspace_footer: number | null
   // Files-tab editor save mode (v62)
   files_auto_save: number | null
   // Files-tab tree view preferences (v67)
@@ -236,7 +235,6 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     // Dashboard "Usage" card background poll interval (D3)
     usagePollIntervalSec: row.usage_poll_interval_sec ?? UI_STATE_DEFAULTS.usagePollIntervalSec,
     // Workspace footer visibility (v45) — default true
-    showWorkspaceFooter: (row.show_workspace_footer ?? 1) === 1,
     // Files-tab editor save mode (v62) — default false (manual save)
     filesAutoSave: (row.files_auto_save ?? 0) === 1,
     // Files-tab tree view preferences (v67) — mirrors UI_STATE_DEFAULTS in
@@ -399,7 +397,6 @@ const NULLABLE_STRING_FIELDS: {
 // validatePatch's original order, so it's validated standalone there rather
 // than folded into this table (keeps the checks in their original sequence).
 const BOOLEAN_FIELDS: { key: keyof AppUiStatePatch; label: string }[] = [
-  { key: 'showWorkspaceFooter', label: 'showWorkspaceFooter' },
   { key: 'filesAutoSave', label: 'filesAutoSave' },
   { key: 'gitDiffWrapLines', label: 'gitDiffWrapLines' },
   { key: 'tokenHoverEnabled', label: 'tokenHoverEnabled' },
@@ -724,7 +721,6 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     muteStatusNotifications: 'mute_status_notifications',
     usagePollIntervalSec: 'usage_poll_interval_sec',
     // Workspace footer visibility (v45)
-    showWorkspaceFooter: 'show_workspace_footer',
     // Files-tab editor save mode (v62)
     filesAutoSave: 'files_auto_save',
     // Files-tab tree view preferences (v67)

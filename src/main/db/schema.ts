@@ -621,8 +621,6 @@ export const schema: SchemaDef = {
       // Dashboard "Usage" card background poll interval (D3)
       // mirrors UI_STATE_DEFAULTS.usagePollIntervalSec in src/shared/uiStateDefaults.ts
       usage_poll_interval_sec: { type: 'INTEGER', notNull: true, default: '600' },
-      // Workspace footer visibility (v45)
-      show_workspace_footer: bool('show_workspace_footer', '1'),
       // Diagnostics capture toggles (v56) — plain INTEGER, no CHECK in source
       diag_error: { type: 'INTEGER', notNull: true, default: '1' },
       diag_lifecycle: { type: 'INTEGER', notNull: true, default: '0' },
@@ -791,7 +789,15 @@ export const schema: SchemaDef = {
     // `columns` above) so the declarative engine actually drops it via
     // ALTER TABLE ... DROP COLUMN on existing DBs — omitting a column from
     // `columns` alone leaves it as a tolerated stray live column forever.
-    dropColumns: ['workbench_enabled']
+    // show_workspace_footer joins workbench_enabled here for the same reason:
+    // the quick-actions footer it toggled no longer exists, so the column is
+    // dead. Listed (not merely omitted from `columns`) so the engine actually
+    // ALTER TABLE ... DROP COLUMNs it — omitting it alone would leave a
+    // tolerated stray live column forever. Unlike the footer_actions_* TABLES,
+    // which hold user rows and must stay declared-but-dead, this column holds
+    // one boolean per install with no recoverable meaning once the feature is
+    // gone, so dropping it loses nothing.
+    dropColumns: ['workbench_enabled', 'show_workspace_footer']
   },
 
   // ---------------------------------------------------------------------
