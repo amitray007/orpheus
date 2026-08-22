@@ -93,9 +93,6 @@ import type {
   ActionAuditEntry,
   ActionKind,
   TerminalSendKeyDescriptor,
-  FooterActionDescriptor,
-  FooterActionDraft,
-  FooterActionScope,
   GhosttyUserConfig,
   DiagEvent,
   HealthReport,
@@ -1114,32 +1111,6 @@ const api = {
         }
       }
     }
-  },
-  footerActions: {
-    listMerged: (workspaceId: string): Promise<FooterActionDescriptor[]> =>
-      invoke('footerActions:listMerged', { workspaceId }),
-
-    listAtScope: (scope: FooterActionScope, scopeId?: string): Promise<FooterActionDescriptor[]> =>
-      invoke('footerActions:listAtScope', { scope, scopeId }),
-
-    create: (
-      scope: FooterActionScope,
-      scopeId: string | null,
-      draft: FooterActionDraft
-    ): Promise<FooterActionDescriptor> => invoke('footerActions:create', { scope, scopeId, draft }),
-
-    update: (id: string, patch: Partial<FooterActionDraft>): Promise<FooterActionDescriptor> =>
-      invoke('footerActions:update', { id, patch }),
-
-    remove: (id: string): Promise<void> => invoke('footerActions:remove', { id }),
-
-    reorder: (
-      scope: FooterActionScope,
-      scopeId: string | null,
-      orderedIds: string[]
-    ): Promise<void> => invoke('footerActions:reorder', { scope, scopeId, orderedIds }),
-
-    resetDefaults: (): Promise<void> => invoke('footerActions:resetDefaults')
   },
   hooks: {
     setEnabled: (enabled: boolean): Promise<{ enabled: boolean }> =>

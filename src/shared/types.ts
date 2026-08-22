@@ -377,8 +377,8 @@ export type WorkspaceRecord = {
   /** Which coding-agent CLI this workspace runs (Phase 1, P1.3). Defaults to
    *  'claude' for every pre-existing row. Read on the live launch path —
    *  orpheusSurfaceAdapter.ts resolves the workspace's harness descriptor
-   *  from this field on every mount, and footerActions.ts reads it too. See
-   *  HarnessId in src/shared/harness/types.ts. */
+   *  from this field on every mount. See HarnessId in
+   *  src/shared/harness/types.ts. */
   harnessId: HarnessId
 }
 
@@ -2245,66 +2245,6 @@ export type SessionLastTurn = {
 export type WorkspaceForkParams = {
   worktree?: boolean
   name?: string
-}
-
-// ---------------------------------------------------------------------------
-// Footer actions — phase 3a storage types
-// ---------------------------------------------------------------------------
-
-export type FooterActionScope = 'global' | 'project' | 'workspace'
-export type FooterActionVisibility = 'always' | 'idle' | 'awaitingInput'
-
-/**
- * A single user-facing prompt that an action needs before it can execute.
- * Used by workspace.rename to ask for the new name inline in the footer.
- */
-export type PromptDescriptor = {
-  /** The param key the value fills (e.g. 'name'). */
-  key: string
-  /** User-visible label shown above the input (e.g. 'New name'). */
-  label: string
-  /** Placeholder text inside the input. */
-  placeholder?: string
-  /**
-   * Pre-fill value — supports {workspaceName}, {sessionId}, {workspaceId},
-   * {cwd} placeholder tokens that are expanded at display time.
-   */
-  default?: string
-}
-
-export type FooterActionDescriptor = {
-  id: string
-  scope: FooterActionScope
-  scopeId: string | null // null for global; projectId or workspaceId otherwise
-  label: string
-  icon: string | null // Phosphor PascalCase icon name (e.g. 'GitFork', 'Clipboard'), optional
-  actionId: string // 'terminal.sendInput' | 'workspace.fork' | 'session.getUsage' | etc.
-  params: Record<string, unknown> // {} or { text: '/copy', submit: true } etc.
-  visibleWhen: FooterActionVisibility
-  position: number
-  createdAt: number
-  updatedAt: number
-  /** Prompts to show before invoking (e.g. ask for new workspace name). */
-  prompts?: PromptDescriptor[]
-  /** (C5, support-multi-harness) Which harness's descriptor.defaultActions
-   *  seeded this row, e.g. 'claude' — GLOBAL scope only (footer_actions_
-   *  project/_workspace rows are always user/prompt-authored, never
-   *  harness-seeded, so this is always undefined for those). `null`/
-   *  undefined means user-authored, OR a row seeded before this field
-   *  existed — either way it applies to EVERY harness and is never filtered
-   *  by harness at list time (see footerActions.ts's FOOTER_ACTION_GATES
-   *  entry for 'terminal.sendInput'). Only footerActions.ts's per-harness
-   *  seeder ever sets this to a real harness id; it must never be guessed
-   *  or backfilled onto an existing row after the fact. */
-  harnessId?: string | null
-}
-
-export type FooterActionDraft = Omit<
-  FooterActionDescriptor,
-  'id' | 'createdAt' | 'updatedAt' | 'scope' | 'scopeId' | 'position'
-> & {
-  /** When omitted on create, the backend assigns max(position)+1 for the scope. */
-  position?: number
 }
 
 export type DiagCategory = 'error' | 'lifecycle' | 'perf' | 'anomaly' | 'trace'

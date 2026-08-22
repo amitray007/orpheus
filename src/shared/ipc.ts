@@ -91,9 +91,6 @@ import type {
   ActionResult,
   ActionKind,
   ActionAuditEntry,
-  FooterActionScope,
-  FooterActionDraft,
-  FooterActionDescriptor,
   KeepAwakeBaseMode,
   TerminalRect,
   TerminalMountResult,
@@ -942,25 +939,6 @@ export interface InvokeChannelMap {
     res: { ok: true }
   }
   'actions:unsubscribe': { req: [{ subscriptionId: string }]; res: { ok: true } }
-  'footerActions:listMerged': { req: [{ workspaceId: string }]; res: FooterActionDescriptor[] }
-  'footerActions:listAtScope': {
-    req: [{ scope: FooterActionScope; scopeId?: string }]
-    res: FooterActionDescriptor[]
-  }
-  'footerActions:create': {
-    req: [{ scope: FooterActionScope; scopeId: string | null; draft: FooterActionDraft }]
-    res: FooterActionDescriptor
-  }
-  'footerActions:update': {
-    req: [{ id: string; patch: Partial<FooterActionDraft> }]
-    res: FooterActionDescriptor
-  }
-  'footerActions:remove': { req: [{ id: string }]; res: void }
-  'footerActions:reorder': {
-    req: [{ scope: FooterActionScope; scopeId: string | null; orderedIds: string[] }]
-    res: void
-  }
-  'footerActions:resetDefaults': { req: []; res: void }
   'keepAwake:get': { req: []; res: KeepAwakeState }
   'keepAwake:setMode': { req: [KeepAwakeBaseMode]; res: KeepAwakeState }
   'keepAwake:setDisplayOn': { req: [boolean]; res: KeepAwakeState }

@@ -1,13 +1,25 @@
 // ---------------------------------------------------------------------------
 // scripts/verify-codex-chip-scoping.ts
 //
-// Guards four defects a Codex workspace's footer chips shipped with. All four
-// were user-reported after THREE incorrect diagnoses, so each is asserted
-// against the real functions with the exact observed symptom as the fixture.
+// Guards defects a Codex workspace's footer Model/Effort chips shipped with.
+// Both were user-reported after THREE incorrect diagnoses, so each is
+// asserted against the real functions with the exact observed symptom as the
+// fixture.
 //
-// THE COMMON TRIGGER for (1) and (3): a workspace with NO stored model.
-// composeCodexHarnessLaunch returns model: '' when nothing is configured, so
-// modelValue is '' in the chip.
+// THE COMMON TRIGGER: a workspace with NO stored model. composeCodexHarness
+// Launch returns model: '' when nothing is configured, so modelValue is ''
+// in the chip.
+//
+// A third guard — footer-ROW provenance gating (a Claude-seeded
+// footer_actions_global row hidden from a Codex workspace) — lived here
+// until the footer-actions backend removal (footer-removal migration,
+// sub-step 3). src/main/footerActions.ts (filterActionsForHarness,
+// rowPassesHarnessProvenance, FOOTER_ACTION_GATES) is gone; that guard was a
+// source-grep against that file and had no other home, so it was deleted
+// with it rather than repointed — there is no successor behavior to guard,
+// the feature it protected no longer exists. The Model/Effort chip-scoping
+// guards below are UNRELATED to footer-actions rows (they gate the DropdownChip
+// picker's option list, not a stored action row) and remain live.
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert/strict'
@@ -70,35 +82,6 @@ const CODEX_EFFORTS = [...(CODEX_CURATED.effort?.options ?? [])]
   )
 }
 
-// ---------------------------------------------------------------------------
-// 3. Footer-row PROVENANCE now gates every action id, not just sendInput.
-//    Claude's seeded Fork/Model/Effort/Context/Cost rows were passing their
-//    capability gates on a Codex workspace, so a Codex workspace showed
-//    Claude's rows AND its own — visible duplicates, plus Context/Cost which
-//    codex/actions.ts deliberately omits (Claude-transcript-shaped handlers).
-// ---------------------------------------------------------------------------
-{
-  const fs = await import('node:fs')
-  const src = fs.readFileSync(new URL('../src/main/footerActions.ts', import.meta.url), 'utf8')
-
-  assert.match(
-    src,
-    /if \(!rowPassesHarnessProvenance\(action, harness\)\) return false/,
-    'filterActionsForHarness must check provenance for EVERY row, before the capability gates'
-  )
-  assert.equal(
-    /action\.actionId === ACTION_TERMINAL_SEND_INPUT/.test(src),
-    false,
-    'the provenance check must no longer be scoped to terminal.sendInput alone'
-  )
-  // The load-bearing safety rule must survive: NULL provenance always passes.
-  assert.match(
-    src,
-    /if \(provenance === null \|\| provenance === undefined\) return true/,
-    'a NULL-provenance row (user-authored, or seeded before this column) must still always pass'
-  )
-}
-
 console.log(
-  "✓ a model-less Codex workspace gets Codex's efforts (with 'ultra', without 'minimal'), Claude's ladder is unchanged, and footer rows are harness-scoped"
+  "✓ a model-less Codex workspace gets Codex's efforts (with 'ultra', without 'minimal'), Claude's ladder is unchanged"
 )

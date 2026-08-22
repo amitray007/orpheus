@@ -29,10 +29,8 @@ import type { HarnessDescriptor, HarnessId } from '../../shared/harness/types'
 import { isKnownHarnessId as isKnownHarnessIdPure } from '../../shared/harness/membership'
 import { composeClaudeHarnessLaunch } from './claude/launch'
 import { CLAUDE_CAPABILITIES, CLAUDE_CURATED, CLAUDE_DEFAULT_ARGS } from './claude/curated'
-import { CLAUDE_DEFAULT_ACTIONS } from './claude/actions'
 import { composeCodexHarnessLaunch } from './codex/launch'
 import { CODEX_CAPABILITIES, CODEX_CURATED, CODEX_DEFAULT_ARGS } from './codex/curated'
-import { CODEX_DEFAULT_ACTIONS } from './codex/actions'
 
 // Known-good `claude --version` strings, used by sessionState.ts to warn
 // (once per version, non-fatal) when a session file reports a version this
@@ -104,9 +102,6 @@ const CLAUDE_DESCRIPTOR: HarnessDescriptor = {
   // args editor as a visible, user-editable row rather than an invisible
   // launch-time prefix.
   defaultArgs: CLAUDE_DEFAULT_ARGS,
-  // R8/U6's seed data — see src/main/harness/claude/actions.ts's header for
-  // why this is not yet wired into any seeding call site.
-  defaultActions: CLAUDE_DEFAULT_ACTIONS,
   knownGoodVersions: CLAUDE_KNOWN_GOOD_VERSIONS
 }
 
@@ -151,7 +146,6 @@ const CODEX_DESCRIPTOR: HarnessDescriptor = {
   composeLaunch: composeCodexHarnessLaunch,
   curated: CODEX_CURATED,
   defaultArgs: CODEX_DEFAULT_ARGS,
-  defaultActions: CODEX_DEFAULT_ACTIONS,
   knownGoodVersions: CODEX_KNOWN_GOOD_VERSIONS
 }
 

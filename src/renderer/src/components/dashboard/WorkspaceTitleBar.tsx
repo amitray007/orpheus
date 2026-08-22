@@ -399,10 +399,8 @@ export function WorkspaceTitleBar({
       ? `${workspace.worktreeParentCwd}\n↳ worktree: ${workspace.cwd}`
       : workspace.cwd
 
-    // session.getUsage/session.getCost are USAGE-capability actions (see
-    // src/main/footerActions.ts's FOOTER_ACTION_GATES, which gates the
-    // footer ROW listing on the same flag) — a harness without
-    // capabilities.usage has no such data source. costLoading only turns
+    // session.getUsage/session.getCost are USAGE-capability actions — a
+    // harness without capabilities.usage has no such data source. costLoading only turns
     // true when the cost fetch is actually going to fire below; otherwise
     // the popover renders cost as not-applicable (no field) instead of a
     // spinner that never resolves. contextLoading still turns true

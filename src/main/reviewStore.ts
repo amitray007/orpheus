@@ -28,9 +28,9 @@
 // an agent can list unresolved comments, act on them (`ws send`), and mark
 // them resolved — all without touching the renderer.
 //
-// CRUD mirrors src/main/footerActions.ts's shape: plain better-sqlite3
-// prepared statements against getDb(), row <-> LocalReviewComment mapping
-// functions, no ORM. Kept as its own module (not folded into github.ts,
+// CRUD is a plain better-sqlite3 shape: prepared statements against
+// getDb(), row <-> LocalReviewComment mapping functions, no ORM. Kept as
+// its own module (not folded into github.ts,
 // which is GitHub-`gh`-CLI-specific) since this store has nothing to do with
 // GitHub at all — it's pure local SQLite.
 // ---------------------------------------------------------------------------

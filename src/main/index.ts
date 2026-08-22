@@ -119,7 +119,6 @@ import type { TerminalSendKeyDescriptor } from '../shared/types'
 import type { SplitTree, PaneLayout, TerminalRect, TerminalMountResult } from '../shared/types'
 import { bootActions, setTerminalAddonRef, registerWebContentsCleanup } from './actions/index'
 import { evictAccumulator } from './actions/session'
-import { seedDefaultFooterActions, seedDefaultFooterActionsForAllHarnesses } from './footerActions'
 import { refreshModelsDevCache, hydrateModelsDevCacheFromDisk } from './models/registry'
 import { installModelsDevPersistence } from './models/modelsDevPersistence'
 import {
@@ -193,7 +192,6 @@ import { registerClaudeAuthIpc } from './ipc/claudeAuth'
 import { getClaudeAuthEnv } from './claudeAuth'
 import { registerClaudeUsageIpc } from './ipc/claudeUsage'
 import { registerClaudeActivityIpc } from './ipc/claudeActivity'
-import { registerFooterActionsIpc } from './ipc/footerActions'
 import { registerReviewsIpc } from './ipc/reviews'
 import { createRendererCommandTransport, registerWorkbenchControlIpc } from './ipc/workbenchControl'
 import { RendererCommandBroker } from './workbenchControl/rendererCommandBroker'
@@ -3132,8 +3130,6 @@ handle('terminal:canInject', (_e, { workspaceId }): boolean => {
 
 registerActionsIpc()
 
-registerFooterActionsIpc()
-
 registerReviewsIpc()
 
 registerPanesIpc({
@@ -3484,28 +3480,6 @@ if (!app.requestSingleInstanceLock()) {
       })
       const controlToolExposure = controlPlaneLifecycle.toolExposure
       bootActions(workspaceControlAdapter)
-
-      // Seed default footer actions on first install (idempotent: no-op if rows exist).
-      try {
-        seedDefaultFooterActions()
-      } catch (err) {
-        console.error('[footerActions] failed to seed defaults:', redactErrorForLog(err))
-      }
-      // C5 (support-multi-harness): additive per-harness seeding — seeds a
-      // harness's own defaultActions the first time footer_actions_global
-      // has zero rows stamped for that harness id, independent of the
-      // whole-table check above. A no-op for Claude on every boot after the
-      // first (its rows are already stamped from the seed above); this is
-      // what makes a SECOND harness's defaults appear without a data
-      // migration once one is registered.
-      try {
-        seedDefaultFooterActionsForAllHarnesses()
-      } catch (err) {
-        console.error(
-          '[footerActions] failed to seed per-harness defaults:',
-          redactErrorForLog(err)
-        )
-      }
 
       // Model context/pricing from models.dev, in two steps.
       //

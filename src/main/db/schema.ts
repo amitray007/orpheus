@@ -845,7 +845,33 @@ export const schema: SchemaDef = {
   },
 
   // ---------------------------------------------------------------------
-  // footer_actions_global
+  // footer_actions_global / footer_actions_project / footer_actions_workspace
+  // — RETIRED (footer-actions removal, sub-step 3). The quick-actions footer
+  // feature is being removed from Orpheus in stages: the renderer UI,
+  // components, and overlay kinds it opened are already gone (prior
+  // commits), and this sub-step retires the main-process machinery that
+  // read/wrote these three tables — src/main/footerActions.ts (the
+  // listGlobal/listForProject/listForWorkspace/listMerged/create/update/
+  // remove/reorder/seed* API), src/main/ipc/footerActions.ts (the
+  // footerActions:* IPC surface), and the two harness descriptors'
+  // `defaultActions` seed data (src/main/harness/claude/actions.ts,
+  // src/main/harness/codex/actions.ts). Nothing in the app reads or writes
+  // these tables any more.
+  //
+  // KEPT DECLARED (not deleted) for the exact reason panes above is kept
+  // declared: the declarative engine has no whole-TABLE drop op —
+  // `planSync` (src/main/db/engine.ts) only diffs tables that are still
+  // keys of `schema` above, so a table dropped from `schema` simply stops
+  // being reconciled, it is never DROPped. Removing these TableDefs would
+  // leave any pre-existing footer_actions_* tables permanently orphaned
+  // (undeclared, unreconciled, silently retained) rather than actually
+  // retired, and CLAUDE.md's migration rule forbids hand-writing a
+  // destructive `DROP TABLE`. A user's existing rows (including any
+  // deliberately-curated footer they built by hand) stay on disk, inert —
+  // silently orphaning them would be worse than a dead table. So these
+  // three tables stay declared-but-dead: structurally reconciled (harmless
+  // — no code reads/writes them anymore) until a future `dropTable`-capable
+  // engine pass can retire them for real.
   // ---------------------------------------------------------------------
   footer_actions_global: {
     columns: {
@@ -865,19 +891,18 @@ export const schema: SchemaDef = {
       // plain ADD COLUMN backfills every pre-existing row with NULL — no
       // data step required for the backfill itself (see engine.ts's
       // addColumn: a nullable column with no default is filled NULL by
-      // SQLite automatically). NULL is the load-bearing meaning here, not
+      // SQLite automatically). NULL was the load-bearing meaning here, not
       // an absent/TODO value: "user-authored, or seeded before this column
-      // existed — applies to every harness, filtered by no gate." Only a
-      // row inserted by C5's per-harness seeding (footerActions.ts's
-      // seedDefaultFooterActionsForHarness) ever gets a non-NULL value, and
-      // that value is always a real HarnessId, never guessed or inferred
-      // from a row's action_id/label after the fact.
+      // existed — applies to every harness, filtered by no gate." This
+      // column, like the rest of the table, is now dead: the seeder and
+      // gate table that gave it meaning (footerActions.ts) are gone (see
+      // this table's header above).
       harness_id: 'TEXT'
     }
   },
 
   // ---------------------------------------------------------------------
-  // footer_actions_project
+  // footer_actions_project — see footer_actions_global's header above.
   // ---------------------------------------------------------------------
   footer_actions_project: {
     columns: footerActionsColumns('project_id'),
@@ -888,7 +913,7 @@ export const schema: SchemaDef = {
   },
 
   // ---------------------------------------------------------------------
-  // footer_actions_workspace
+  // footer_actions_workspace — see footer_actions_global's header above.
   // ---------------------------------------------------------------------
   footer_actions_workspace: {
     columns: footerActionsColumns('workspace_id'),

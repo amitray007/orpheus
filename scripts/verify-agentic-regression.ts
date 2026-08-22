@@ -56,7 +56,6 @@ const verifiers = [
   'verify-doctor.ts',
   'verify-harness-launch.ts',
   'verify-harness-curated.ts',
-  'verify-harness-actions.ts',
   // C4 (support-multi-harness) — pure gating decisions in
   // src/shared/harness/capabilityGating.ts, consumed by Sidebar.tsx/
   // WorkspacesView.tsx/WorkspacesTab.tsx/WorkspaceTitleBar.tsx, plus the
@@ -136,19 +135,6 @@ const verifiers = [
   // which is Bun-only and cannot combine with node:sqlite in any one
   // runtime — see verify-workspace-harness-create.ts's own header.
   ['verify-workspace-harness-create.ts', ['node', '--experimental-strip-types']],
-  // C5 (support-multi-harness) — the per-harness footer-action SEEDING half
-  // of the unit: footerActions.ts's seedDefaultFooterActions/
-  // seedDefaultFooterActionsForHarness/seedDefaultFooterActionsForAllHarnesses,
-  // the new harness_id provenance column, and the terminal.sendInput
-  // provenance gate, exercised end-to-end through listMerged() against a
-  // real footer_actions_global/_project/_workspace + workspaces + projects
-  // schema. Same node:sqlite/DatabaseSync constraint as the other
-  // node-dispatched entries above (needs a real DB with a working
-  // db.transaction() shim — see this file's own header for why
-  // filterActionsForHarness's pure GATING logic is covered separately by
-  // verify-harness-actions.ts, which stays on the plain-bun path since it
-  // never touches SQLite).
-  ['verify-footer-actions.ts', ['node', '--experimental-strip-types']],
   // CALL-SITE fix for tmuxHost.ts's hostWorkspace() — it composed the tmux
   // session launch via claudeSettings.ts's composeClaudeLaunch (the stale,
   // pre-cutover claude_global_settings emitter) instead of
@@ -175,9 +161,9 @@ const verifiers = [
   // only settings sections for a harness that doesn't declare them. Uses
   // mock.module() (Bun-only) to import the REAL registry.ts HARNESSES array
   // for the Claude regression net — same technique/constraint as
-  // verify-harness-actions.ts and verify-harness-capability-gating.ts
-  // above, so this stays on the plain-bun dispatch path, not the
-  // node:sqlite tuple form the surrounding entries use.
+  // verify-harness-capability-gating.ts above, so this stays on the
+  // plain-bun dispatch path, not the node:sqlite tuple form the
+  // surrounding entries use.
   'verify-settings-section-gating.ts',
   // support-multi-harness CLI/TUI harness-selection follow-up — `orpheus ws
   // new --harness <id>` client plumbing (commands/ws-new.ts's
