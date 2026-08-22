@@ -55,6 +55,7 @@ const networkDeniedFetch: typeof fetch = () => {
   setModelsDevCacheForTests(null)
 
   const claudeIds = [
+    'claude-opus-5',
     'claude-opus-4-8',
     'claude-opus-4-7',
     'claude-opus-4-5',
@@ -90,6 +91,33 @@ const networkDeniedFetch: typeof fetch = () => {
   assert.equal(stamped.context, 1_000_000)
   assert.equal(stamped.label, 'Opus 4.7')
   console.log('✓ date-stamped Claude id resolves via longest-prefix match')
+
+  // claude-opus-5 (BUG 2 fix) — exact published pricing/context, not just
+  // "resolves at all". Source: Anthropic's official pricing page
+  // (https://platform.claude.com/docs/en/about-claude/pricing), Model
+  // pricing table, Claude Opus 5 row (fetched 2026-08-23):
+  // input $5/MTok, output $25/MTok, cache read $0.50/MTok,
+  // 5m cache write $6.25/MTok; 1M token context per the page's "Long
+  // context pricing" section (Claude 4.6+ models get the full 1M window).
+  const opus5 = resolveModel('claude-opus-5')
+  assert.equal(opus5.isClaude, true, 'claude-opus-5: expected isClaude')
+  assert.equal(opus5.context, 1_000_000, 'claude-opus-5: expected 1M context')
+  assert.deepEqual(
+    opus5.pricing,
+    { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    'claude-opus-5: expected exact published pricing'
+  )
+  assert.equal(opus5.label, 'Opus 5')
+  console.log('✓ claude-opus-5 resolves with exact published pricing + 1M context')
+
+  // BUG 3 cross-check: effectiveContext (the context-budget path the title
+  // bar actually calls) must also see the real number now, not null.
+  assert.equal(
+    effectiveContext('claude-opus-5'),
+    1_000_000,
+    'effectiveContext must resolve claude-opus-5 to its real context budget, not null'
+  )
+  console.log('✓ effectiveContext("claude-opus-5") resolves the real 1M budget (BUG 3 cross-check)')
 }
 
 // ---------------------------------------------------------------------------

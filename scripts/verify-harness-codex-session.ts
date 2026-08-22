@@ -109,12 +109,12 @@ function createFreshDb(): InstanceType<typeof Database> {
 
 function insertWorkspace(
   db: InstanceType<typeof Database>,
-  row: { id: string; cwd: string; claudeSessionId?: string | null }
+  row: { id: string; cwd: string; claudeSessionId?: string | null; createdAt?: number }
 ): void {
   db.prepare(
-    `INSERT INTO workspaces (id, project_id, name, cwd, claude_session_id, harness_id)
-     VALUES (?, 'proj-1', 'ws', ?, ?, 'codex-cli')`
-  ).run(row.id, row.cwd, row.claudeSessionId ?? null)
+    `INSERT INTO workspaces (id, project_id, name, cwd, claude_session_id, harness_id, created_at)
+     VALUES (?, 'proj-1', 'ws', ?, ?, 'codex-cli', ?)`
+  ).run(row.id, row.cwd, row.claudeSessionId ?? null, row.createdAt ?? Date.now())
 }
 
 const { findCodexUserRolloutId, discoverAndBindCodexSession, codexSessionArgs } =
@@ -444,8 +444,19 @@ const MOUNT_FLOOR_MS = new Date('2026-08-20T19:55:00.000Z').getTime()
 //     in isolation).
 // ---------------------------------------------------------------------------
 {
+  // discoverAndBindCodexSession now derives its own floor from the
+  // workspace's own createdAt (minus the grace constant) rather than
+  // taking a floor argument — so this scenario sets createdAt to a time
+  // just before the fixture rollout's own timestamp, mirroring how a real
+  // workspace's createdAt precedes the Codex process it launches.
   const db = createFreshDb()
-  insertWorkspace(db, { id: 'ws-to-discover', cwd: '/discover/me', claudeSessionId: null })
+  const createdAt = Date.now() - 60_000
+  insertWorkspace(db, {
+    id: 'ws-to-discover',
+    cwd: '/discover/me',
+    claudeSessionId: null,
+    createdAt
+  })
 
   // Point the module's sessions-root resolution at our fixture dir by
   // overriding HOME for this scenario only (session.ts derives the root as
@@ -471,14 +482,13 @@ const MOUNT_FLOOR_MS = new Date('2026-08-20T19:55:00.000Z').getTime()
     // the two are hours apart — bit exactly this in development under
     // Asia/Calcutta (UTC+5:30).
     const realNow = new Date()
-    const realFloorMs = realNow.getTime() - 60_000
     writeRollout(sessionsRoot, realNow, {
       id: 'discovered-real-id',
       cwd: '/discover/me',
       threadSource: 'user',
       timestamp: realNow.toISOString()
     })
-    discoverAndBindCodexSession('ws-to-discover', realFloorMs)
+    discoverAndBindCodexSession('ws-to-discover')
     const ws = getWorkspace('ws-to-discover')
     assert.equal(
       ws?.claudeSessionId,
@@ -494,6 +504,113 @@ const MOUNT_FLOOR_MS = new Date('2026-08-20T19:55:00.000Z').getTime()
 }
 
 // ---------------------------------------------------------------------------
+// B3b. THE REMOUNT-BINDING FIX — the case that was CURRENTLY BROKEN before
+//     the createdAt-anchored floor and must now pass. A naive "Date.now() at
+//     this remount" floor would sit AFTER the workspace's own rollout
+//     timestamp (the rollout was written whenever Codex last ran for this
+//     workspace, which is always in the past relative to "now" at a later
+//     remount) and would incorrectly reject it. The createdAt-anchored floor
+//     fixes this: `ws.createdAt` is set once, at creation, and stays behind
+//     the workspace's own rollout timestamp for its entire lifetime.
+//
+//     Scenario: a workspace was created an hour ago (`createdAt` = now -
+//     1h). Codex started writing its rollout shortly after creation (a
+//     timestamp comfortably after createdAt, comfortably before "now"). The
+//     user is NOW reopening/remounting the workspace, long after that
+//     session started. discoverAndBindCodexSession('ws-remount') — called
+//     with NO floor argument, exactly as a real remount would call it via
+//     scheduleCodexSessionDiscovery — must still bind to that rollout's id.
+// ---------------------------------------------------------------------------
+{
+  const db = createFreshDb()
+  const oneHourAgo = Date.now() - 60 * 60 * 1000
+  insertWorkspace(db, {
+    id: 'ws-remount',
+    cwd: '/remount/me',
+    claudeSessionId: null,
+    createdAt: oneHourAgo
+  })
+
+  const fixtureHome = freshSessionsRoot()
+  const originalHome = process.env.HOME
+  process.env.HOME = fixtureHome
+  try {
+    const sessionsRoot = path.join(fixtureHome, '.codex', 'sessions')
+    // Rollout written ~55 minutes ago: AFTER createdAt (workspace existed
+    // first, then Codex started this session shortly after), but well
+    // BEFORE "now" (the remount happening at test time) — exactly the
+    // "old session, reopened much later" shape that a Date.now()-at-mount
+    // floor rejected.
+    const rolloutTime = new Date(oneHourAgo + 5 * 60 * 1000)
+    writeRollout(sessionsRoot, rolloutTime, {
+      id: 'own-prior-session',
+      cwd: '/remount/me',
+      threadSource: 'user',
+      timestamp: rolloutTime.toISOString()
+    })
+    discoverAndBindCodexSession('ws-remount')
+    const ws = getWorkspace('ws-remount')
+    assert.equal(
+      ws?.claudeSessionId,
+      'own-prior-session',
+      'a remount must bind to this workspace\'s own prior rollout even though its timestamp predates "now" at this remount'
+    )
+  } finally {
+    process.env.HOME = originalHome
+  }
+  console.log(
+    "✓ remount binds to a workspace's own prior session (createdAt-anchored floor, not Date.now()-at-mount)"
+  )
+}
+
+// ---------------------------------------------------------------------------
+// B3c. The discrimination the floor exists for is NOT lost — a rollout that
+//     PREDATES the workspace's own createdAt (a genuinely unrelated `codex`
+//     session the user ran by hand in this cwd before Orpheus ever created
+//     the workspace) must still be excluded, even on the createdAt-anchored
+//     floor.
+// ---------------------------------------------------------------------------
+{
+  const db = createFreshDb()
+  const createdAt = Date.now() - 60 * 60 * 1000
+  insertWorkspace(db, {
+    id: 'ws-remount-excl',
+    cwd: '/remount/me',
+    claudeSessionId: null,
+    createdAt
+  })
+
+  const fixtureHome = freshSessionsRoot()
+  const originalHome = process.env.HOME
+  process.env.HOME = fixtureHome
+  try {
+    const sessionsRoot = path.join(fixtureHome, '.codex', 'sessions')
+    // Well before createdAt (even accounting for MOUNT_FLOOR_GRACE_MS's
+    // 5-minute backward grace) — a manual session that genuinely predates
+    // this workspace's existence.
+    const manualSessionTime = new Date(createdAt - 30 * 60 * 1000)
+    writeRollout(sessionsRoot, manualSessionTime, {
+      id: 'unrelated-manual-session',
+      cwd: '/remount/me',
+      threadSource: 'user',
+      timestamp: manualSessionTime.toISOString()
+    })
+    discoverAndBindCodexSession('ws-remount-excl')
+    const ws = getWorkspace('ws-remount-excl')
+    assert.equal(
+      ws?.claudeSessionId,
+      null,
+      'a rollout predating createdAt (a genuinely unrelated manual session) must still be excluded'
+    )
+  } finally {
+    process.env.HOME = originalHome
+  }
+  console.log(
+    '✓ a rollout predating workspace createdAt (unrelated manual session) is still correctly excluded'
+  )
+}
+
+// ---------------------------------------------------------------------------
 // B4. discoverAndBindCodexSession never throws — missing workspace, and a
 //     sessions root that doesn't exist at all.
 // ---------------------------------------------------------------------------
@@ -501,7 +618,7 @@ const MOUNT_FLOOR_MS = new Date('2026-08-20T19:55:00.000Z').getTime()
   const db = createFreshDb()
   void db
   assert.doesNotThrow(() => {
-    discoverAndBindCodexSession('no-such-workspace', MOUNT_FLOOR_MS)
+    discoverAndBindCodexSession('no-such-workspace')
   }, 'a missing workspace must not throw')
   console.log('✓ discoverAndBindCodexSession never throws for a missing workspace')
 }

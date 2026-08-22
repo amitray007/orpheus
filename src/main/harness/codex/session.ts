@@ -60,6 +60,46 @@
 // dir, a malformed line, or a throwing fs call degrades to "no binding"
 // rather than propagating.
 //
+// THE MOUNT-TIME FLOOR — anchored to WORKSPACE CREATION, not "now". An
+// earlier version of this module computed the floor as `Date.now()` at
+// every `composeCodexHarnessLaunch` call (i.e. at every mount/remount) and
+// passed that value all the way down to findCodexUserRolloutId's
+// `mountFloorMs` parameter. That was broken: a rollout's `timestamp` is
+// when Codex STARTED WRITING it — roughly when the Codex process for a
+// workspace first launched — so on every REMOUNT of an already-used
+// workspace, "now" (this remount's time) is always LATER than the
+// workspace's own prior rollout's timestamp, and `timestampMs <
+// mountFloorMs` rejected it unconditionally. Discovery could never
+// rebind a returning workspace to its own session; only a same-second
+// first-mount ever had a chance of passing.
+//
+// THE FIX: the floor is derived from the WORKSPACE'S OWN `createdAt` (see
+// discoverAndBindCodexSession below), not from wall-clock "now" at mount
+// time. `createdAt` is set exactly once, in workspaces.ts's
+// createWorkspace(), and never updated again — so it is stable across
+// every remount for that workspace's entire lifetime. It still
+// discriminates correctly against the case the floor exists to guard
+// against (a genuinely unrelated `codex` session the user ran BY HAND in
+// the same cwd before Orpheus ever created this workspace): a workspace
+// row must exist before Orpheus can launch Codex into it, so THIS
+// workspace's own rollout can only ever be timestamped AT OR AFTER its
+// `createdAt`, while a pre-existing manual session's rollout predates
+// `createdAt` and is correctly excluded.
+//
+// MOUNT_FLOOR_GRACE_MS backs the floor off by a few minutes to absorb
+// ordinary clock skew between the moment the workspace row is inserted
+// (DB/Orpheus process clock) and the moment Codex's own process clock
+// stamps its rollout's `session_meta.timestamp` — without materially
+// reopening the door to a manual pre-existing session (see the constant's
+// own comment below for the exact residual risk this accepts).
+//
+// findCodexUserRolloutId ITSELF is unchanged: it remains a pure function
+// over an explicit `mountFloorMs` value supplied by its caller — only WHAT
+// value discoverAndBindCodexSession computes and passes as that argument
+// changed. This keeps findCodexUserRolloutId's own signature/tests (which
+// exercise the floor logic directly, independent of where the floor comes
+// from) stable.
+//
 // ACCEPTED RISK — a bound id that Codex later can't resume. `codex archive`
 // and `codex delete` (both real subcommands, per `codex --help`) can remove
 // a session Orpheus has already bound. What `codex resume <id>` does for a
@@ -156,6 +196,13 @@ function readSessionMeta(
  * sessions root, a workspace cwd, and a `now`/`mountFloorMs` pair supplied
  * by the caller, returns the bound-worthy session id or null.
  *
+ * `mountFloorMs` is an opaque cutoff to this function — it doesn't know or
+ * care whether the caller derived it from wall-clock "now" or (as
+ * discoverAndBindCodexSession now does — see this file's header) from the
+ * workspace's own `createdAt`. This function's contract is purely "exclude
+ * anything timestamped before this value"; where that value comes from is
+ * entirely the caller's concern.
+ *
  * MATCHING RULE (the whole point of this unit):
  *   1. Only files whose shard day is `now`'s calendar date OR the day
  *      before (the midnight-boundary case: a workspace mounted at 00:02
@@ -168,8 +215,9 @@ function readSessionMeta(
  *      normalization, matching how Claude's own sessionJsonlExists keys on
  *      an exact cwd string today).
  *   4. Only rows whose `timestamp` is >= `mountFloorMs` — excludes a stale
- *      session that predates this mount (including one from a user running
- *      `codex` by hand in the same cwd before Orpheus ever launched it).
+ *      session that predates the floor (including one from a user running
+ *      `codex` by hand in the same cwd before Orpheus ever created this
+ *      workspace).
  *   5. Among survivors, the NEWEST by timestamp wins; its `payload.id` (the
  *      thread's own id, not `session_id`) is returned.
  * Malformed/missing files, empty shard dirs, and an all-excluded candidate
@@ -222,6 +270,24 @@ export function codexSessionsRoot(): string {
   return nodePath.join(home, 'sessions')
 }
 
+// Backward grace subtracted from a workspace's own `createdAt` before it is
+// used as the discovery floor. Absorbs ordinary clock skew between the
+// moment the workspace row is inserted (Orpheus's DB/process clock) and the
+// moment Codex's own process clock stamps its rollout's
+// `session_meta.timestamp` for the very first turn of that same workspace —
+// without materially reopening the door to the case the floor exists to
+// exclude (a genuinely unrelated `codex` session the user ran by hand in
+// the same cwd before Orpheus ever created this workspace).
+//
+// ACCEPTED RESIDUAL RISK: a manual `codex` session started in the exact same
+// cwd within this window (5 minutes) IMMEDIATELY BEFORE Orpheus creates the
+// workspace would still be found and bound — this is a strictly narrower
+// window than "no floor at all" but is not zero. Widening the grace only
+// widens this window further, so 5 minutes was chosen as generous enough to
+// absorb realistic clock skew (seconds, not minutes, in practice) while
+// keeping the false-positive window small.
+const MOUNT_FLOOR_GRACE_MS = 5 * 60 * 1000
+
 /**
  * Runs discovery for one workspace against the real filesystem/DB and, if a
  * binding is found, persists it via setWorkspaceClaudeSessionId — the same
@@ -231,16 +297,25 @@ export function codexSessionsRoot(): string {
  * separate change). Reusing it means codexSessionArgs and every existing
  * transcript/session-id reader downstream needs zero new plumbing.
  *
+ * THE FLOOR IS COMPUTED HERE, from the workspace's own `createdAt` (minus
+ * MOUNT_FLOOR_GRACE_MS) — NOT passed in by the caller. This is the fix for
+ * the remount-never-binds bug this file's header describes: `createdAt` is
+ * set once at workspace creation and never changes, so unlike a
+ * `Date.now()`-at-mount-time floor, this value doesn't move forward on
+ * every remount, while still excluding a rollout that predates this
+ * workspace's own existence.
+ *
  * READ/WRITE DEFENSIVELY — this runs on a timer after launch, well outside
  * any request/response cycle a caller could handle an exception from.
  * Never throws; a failure here must never surface anywhere but silently
  * leaving the workspace unbound (falls back to a fresh session next mount,
  * exactly like "discovery found nothing").
  */
-export function discoverAndBindCodexSession(workspaceId: string, mountFloorMs: number): void {
+export function discoverAndBindCodexSession(workspaceId: string): void {
   try {
     const ws = getWorkspace(workspaceId)
     if (!ws) return
+    const mountFloorMs = ws.createdAt - MOUNT_FLOOR_GRACE_MS
     const foundId = findCodexUserRolloutId(codexSessionsRoot(), ws.cwd, mountFloorMs)
     if (!foundId) return
     setWorkspaceClaudeSessionId(workspaceId, foundId)
@@ -267,17 +342,18 @@ const DISCOVERY_RETRY_DELAYS_MS = [1500, 4000, 10000]
  * that file for why launch-time (not a dedicated post-mount hook this unit
  * doesn't own a call site for) is the trigger point.
  *
- * mountFloorMs is captured by the CALLER at composition time (i.e. "now",
- * before the process is even spawned) — see this file's header on the
- * mount-time floor's purpose. Passing it in rather than reading Date.now()
- * inside each retry keeps the floor fixed to when THIS launch was
- * requested, not when a given retry happens to fire.
+ * NO TIME ARGUMENT — the discovery floor is no longer a "now, at compose
+ * time" value the caller computes and threads through. discoverAndBind-
+ * CodexSession derives its own floor from the workspace's own `createdAt`
+ * (see that function's doc comment and this file's header), which is
+ * already stable across retries/remounts, so there is nothing time-related
+ * for this function or launch.ts to compute or pass anymore.
  *
  * Uses unref'd timers so a pending discovery attempt can never keep the
  * main process alive on its own (mirrors the discipline every other
  * interval/timeout in this codebase follows for backstop timers).
  */
-export function scheduleCodexSessionDiscovery(workspaceId: string, mountFloorMs: number): void {
+export function scheduleCodexSessionDiscovery(workspaceId: string): void {
   for (const delayMs of DISCOVERY_RETRY_DELAYS_MS) {
     const timer = setTimeout(() => {
       try {
@@ -288,7 +364,7 @@ export function scheduleCodexSessionDiscovery(workspaceId: string, mountFloorMs:
       } catch {
         return
       }
-      discoverAndBindCodexSession(workspaceId, mountFloorMs)
+      discoverAndBindCodexSession(workspaceId)
     }, delayMs)
     timer.unref?.()
   }

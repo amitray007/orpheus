@@ -151,20 +151,25 @@ function withWorkspaceCuratedOverride(
  *   5. settingsJson — ALWAYS '' (see this file's header, divergence 3).
  *
  * SIDE EFFECT: also SCHEDULES discovery (scheduleCodexSessionDiscovery) for
- * this launch, capturing `Date.now()` as the mount-time floor at the moment
- * this function runs (i.e. before the process is even spawned) — see
- * session.ts's header on why that floor matters. This is a launch-time,
- * not a post-mount, hook because composeCodexHarnessLaunch is the only
- * call site this unit owns that fires once per real mount attempt; there is
- * no dedicated post-mount hook available to a harness module without
- * reaching into index.ts. A no-op (no workspaceId) skips scheduling.
+ * this launch. The discovery floor is NOT derived from "now" at compose
+ * time — session.ts computes it internally from the workspace's own
+ * `createdAt` (stable across every remount for that workspace's lifetime),
+ * so this call site passes no time argument at all; see session.ts's header
+ * for why a "now, at this mount" floor was broken (it could never match a
+ * returning workspace's own prior session) and how the createdAt-anchored
+ * floor fixes that while still excluding a genuinely pre-existing manual
+ * session. This is a launch-time, not a post-mount, hook because
+ * composeCodexHarnessLaunch is the only call site this unit owns that fires
+ * once per real mount attempt; there is no dedicated post-mount hook
+ * available to a harness module without reaching into index.ts. A no-op (no
+ * workspaceId) skips scheduling.
  */
 export function composeCodexHarnessLaunch(projectId?: string, workspaceId?: string): HarnessLaunch {
   const resolved = resolveHarnessSettings(HARNESS_ID, projectId)
   const curated = withWorkspaceCuratedOverride(resolved.curated ?? {}, workspaceId)
 
   if (workspaceId) {
-    scheduleCodexSessionDiscovery(workspaceId, Date.now())
+    scheduleCodexSessionDiscovery(workspaceId)
   }
 
   const flagTokens: string[] = [

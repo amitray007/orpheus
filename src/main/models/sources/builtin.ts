@@ -26,6 +26,21 @@ type ClaudeModelDef = {
 // all of these is 'opus' | 'sonnet' | 'haiku' | 'fable', derived from the id.
 const CLAUDE_MODELS: ClaudeModelDef[] = [
   {
+    id: 'claude-opus-5',
+    label: 'Opus 5',
+    // Source: Anthropic's official pricing page
+    // (https://platform.claude.com/docs/en/about-claude/pricing, "Model
+    // pricing" table, fetched 2026-08-23) — Claude Opus 5 row: Base Input
+    // $5/MTok, 5m Cache Writes $6.25/MTok, Cache Hits & Refreshes
+    // $0.50/MTok, Output Tokens $25/MTok. Identical to Opus 4.8/4.7/4.5's
+    // pricing (no price change for this generation's Opus tier).
+    pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    // Context: same page's "Long context pricing" section states Claude 4.6
+    // and later models (which include Opus 5) get the full 1M-token context
+    // window at standard pricing — same tier as Opus 4.8/4.7.
+    context: 1_000_000
+  },
+  {
     id: 'claude-opus-4-8',
     label: 'Opus 4.8',
     pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
