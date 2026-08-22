@@ -81,6 +81,30 @@ let cache: Map<string, CachedEntry> | null = null
 // themselves stamp".
 let anthropicModelIds: string[] = []
 
+// Pricing scoped to ONLY the "openai" provider bucket (models.dev's key for
+// OpenAI's own first-party catalog), keyed by model id — kept separately
+// from the flattened `cache` above for the EXACT same reason
+// anthropicModelIds is kept separate from it (see that field's own doc
+// comment): the flattened `cache`'s first-provider-wins rule can and does
+// pick a RESELLER bucket's price over OpenAI's own. Verified empirically
+// against a live https://models.dev/api.json fetch: 6 of the 7 Codex model
+// ids in harness/codex/curated.ts's CODEX_MODEL_SLUGS resolve, in the
+// flattened cache, to a reseller bucket (ai-router or xpersona) rather than
+// "openai" — e.g. gpt-5.6-luna's ai-router price is input $1/M, output $6/M,
+// a 5x OVERSTATEMENT of OpenAI's own $0.20/$1.20 rate; gpt-5.4-mini's
+// xpersona price ($0.375/$4) UNDERSTATES OpenAI's own ($0.75/$4.5) by
+// roughly 2x. A wrong cost figure that looks authoritative is worse than
+// showing none, so Codex's cost path (harness/codex/usage.ts's
+// getCodexCost) reads pricing from THIS map instead of the flattened
+// `cache` — see getOpenAiPricingById below.
+//
+// Value is `null` for a real "openai"-bucket model with no cost object
+// (mirrors toPricing's own don't-fabricate-zeros discipline); the key is
+// simply ABSENT for a model id the "openai" bucket doesn't carry at all —
+// that distinction is what lets getOpenAiPricingById return `undefined`
+// (not in the bucket) vs `null` (in the bucket, genuinely unpriced).
+let openaiPricing: Map<string, Pricing | null> = new Map()
+
 function toPricing(cost: ModelsDevCost | null | undefined): Pricing | null {
   // A model with no cost object at all, OR an explicit `cost: null`, means
   // "known model, unknown pricing" — a real state, not an error. Return
@@ -96,12 +120,13 @@ function toPricing(cost: ModelsDevCost | null | undefined): Pricing | null {
   }
 }
 
-/** The derived catalog: the flattened id->entry map plus Anthropic's own
- *  bucket of ids. This — NOT models.dev's 3.8 MB raw response — is what gets
- *  persisted and rehydrated. */
+/** The derived catalog: the flattened id->entry map, Anthropic's own bucket
+ *  of ids, and OpenAI's own bucket of pricing. This — NOT models.dev's
+ *  3.8 MB raw response — is what gets persisted and rehydrated. */
 export type ModelsDevCatalog = {
   entries: Map<string, CachedEntry>
   anthropicModelIds: string[]
+  openaiPricing: Map<string, Pricing | null>
 }
 
 /**
@@ -114,6 +139,7 @@ export type ModelsDevCatalog = {
 export function buildCatalogFromResponse(data: ModelsDevResponse): ModelsDevCatalog {
   const entries = new Map<string, CachedEntry>()
   let anthropicIds: string[] = []
+  const openaiPrices = new Map<string, Pricing | null>()
 
   for (const [providerSlug, provider] of Object.entries(data)) {
     const models = provider?.models
@@ -140,15 +166,39 @@ export function buildCatalogFromResponse(data: ModelsDevResponse): ModelsDevCata
     if (providerSlug === 'anthropic') {
       anthropicIds = Object.keys(models)
     }
+    // See openaiPricing's own doc comment: OpenAI's own bucket is the only
+    // trustworthy source of "OpenAI's actual published price" for a Codex
+    // model id — every other bucket may be a reseller advertising its own
+    // (sometimes wildly different) rate under the same id string.
+    //
+    // TIERED PRICING — KNOWN, ACCEPTED SIMPLIFICATION: some "openai"-bucket
+    // entries carry a base cost PLUS a `tiers`/`context_over_200k` field
+    // that roughly doubles the rate once a session's cumulative context
+    // crosses a per-model threshold (e.g. 272k tokens for gpt-5.4). Only
+    // the BASE tier (model.cost) is used here — the tiered/blended rate is
+    // deliberately NOT implemented in this pass. Doing so correctly would
+    // require attributing which tokens were billed at which tier per
+    // request, which Codex's rollout does not expose in a form that makes
+    // that attribution possible (see harness/codex/usage.ts's own doc
+    // comment on why cost is computed from a single cumulative bucket).
+    // Under-pricing a session that genuinely crossed the threshold is an
+    // accepted, documented gap for this phase, not an oversight.
+    if (providerSlug === 'openai') {
+      for (const [modelId, model] of Object.entries(models)) {
+        openaiPrices.set(modelId, toPricing(model.cost))
+      }
+    }
   }
 
-  return { entries, anthropicModelIds: anthropicIds }
+  return { entries, anthropicModelIds: anthropicIds, openaiPricing: openaiPrices }
 }
 
-/** On-disk shape. `entries` is a plain object because JSON has no Map. */
+/** On-disk shape. `entries`/`openaiPricing` are plain objects because JSON
+ *  has no Map. */
 export type PersistedCatalog = {
   entries: Record<string, CachedEntry>
   anthropicModelIds: string[]
+  openaiPricing: Record<string, Pricing | null>
 }
 
 /**
@@ -185,7 +235,8 @@ function persistCatalog(catalog: ModelsDevCatalog): void {
   try {
     persistence.write({
       entries: Object.fromEntries(catalog.entries),
-      anthropicModelIds: catalog.anthropicModelIds
+      anthropicModelIds: catalog.anthropicModelIds,
+      openaiPricing: Object.fromEntries(catalog.openaiPricing)
     })
   } catch (err) {
     console.error('[models/modelsDev] persist failed (cache still live in memory)', err)
@@ -216,11 +267,14 @@ export function hydrateModelsDevCacheFromDisk(): boolean {
     if (!persistence) return false
     const row = persistence.read()
     if (!row?.value || typeof row.value !== 'object') return false
-    const { entries, anthropicModelIds: ids } = row.value
+    const { entries, anthropicModelIds: ids, openaiPricing: openaiPrices } = row.value
     if (!entries || typeof entries !== 'object') return false
 
     cache = new Map(Object.entries(entries))
     anthropicModelIds = Array.isArray(ids) ? ids : []
+    openaiPricing = new Map<string, Pricing | null>(
+      openaiPrices && typeof openaiPrices === 'object' ? Object.entries(openaiPrices) : []
+    )
     console.log(
       `[models/modelsDev] hydrated ${cache.size} models from disk (age ${Math.round(
         (Date.now() - row.fetchedAt) / 1000
@@ -260,6 +314,7 @@ export async function refreshModelsDevCache(fetchImpl: typeof fetch = fetch): Pr
 
     cache = built.entries
     anthropicModelIds = built.anthropicModelIds
+    openaiPricing = built.openaiPricing
     console.log(
       `[models/modelsDev] refreshed cache: ${built.entries.size} models across all providers`
     )
@@ -278,13 +333,19 @@ export async function refreshModelsDevCache(fetchImpl: typeof fetch = fetch): Pr
  *  (listModelsDevCachedIds) independently of `entries` — defaults to [] so
  *  existing call sites that predate this parameter keep compiling/behaving
  *  unchanged (no anthropic ids -> stamped-alias expansion sources nothing
- *  from this test fixture, matching pre-fixture behavior). */
+ *  from this test fixture, matching pre-fixture behavior). `openaiPrices`
+ *  optionally seeds the OPENAI-ONLY pricing bucket (getOpenAiPricingById)
+ *  the same way — defaults to an empty map so existing call sites keep
+ *  behaving unchanged (no openai prices -> getOpenAiPricingById returns
+ *  undefined for everything, same as pre-fixture behavior). */
 export function setModelsDevCacheForTests(
   entries: Record<string, CachedEntry> | null,
-  anthropicIds: string[] = []
+  anthropicIds: string[] = [],
+  openaiPrices: Record<string, Pricing | null> = {}
 ): void {
   cache = entries ? new Map(Object.entries(entries)) : null
   anthropicModelIds = anthropicIds
+  openaiPricing = new Map(Object.entries(openaiPrices))
 }
 
 /**
@@ -313,6 +374,33 @@ export function setModelsDevCacheForTests(
  */
 export function listModelsDevCachedIds(): string[] {
   return anthropicModelIds
+}
+
+/**
+ * OpenAI's own first-party price for a model id, sourced ONLY from
+ * models.dev's "openai" provider bucket — see openaiPricing's own doc
+ * comment above for why this is scoped separately from the flattened
+ * `cache` this source's own resolve() reads (the flatten's
+ * first-provider-wins rule can and does pick a reseller bucket's price
+ * instead of OpenAI's own for several real Codex model ids).
+ *
+ * Three-state return, mirroring toPricing's own "don't fabricate" contract:
+ *   - a Pricing object: the "openai" bucket carries this id with real cost
+ *     data.
+ *   - `null`: the "openai" bucket carries this id, but with no cost object
+ *     (or an incomplete one) — a real, known model with genuinely unknown
+ *     pricing.
+ *   - `undefined`: this id does not appear in the "openai" bucket AT ALL —
+ *     distinct from `null` structurally, though callers that only care
+ *     about "do I have a trustworthy first-party price or not" can treat
+ *     both the same way (fall back to unknown-pricing policy).
+ *
+ * Empty pre-first-fetch, when the network is unavailable, or when a
+ * refresh's response happened to have no "openai" key — same degrade-to-
+ * nothing contract as resolve()/listModelsDevCachedIds.
+ */
+export function getOpenAiPricingById(modelId: string): Pricing | null | undefined {
+  return openaiPricing.get(modelId)
 }
 
 function familyFromId(id: string): string | null {

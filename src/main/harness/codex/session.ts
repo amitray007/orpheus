@@ -210,7 +210,7 @@ export function findCodexUserRolloutId(
 // persisting the result
 // ---------------------------------------------------------------------------
 
-function codexSessionsRoot(): string {
+export function codexSessionsRoot(): string {
   // $CODEX_HOME relocates Codex's entire state dir — it is a real, documented
   // knob (`codex -p/--profile`'s own help refers to
   // "$CODEX_HOME/<name>.config.toml"). Honouring it matters because the
@@ -326,4 +326,63 @@ export function codexSessionArgs(workspaceId?: string): string[] {
   if (!ws?.claudeSessionId) return []
 
   return ['resume', ws.claudeSessionId]
+}
+
+// ---------------------------------------------------------------------------
+// Id -> rollout file path (title-bar usage/cost seam, support-multi-harness
+// Phase 1)
+//
+// findCodexUserRolloutId (above) answers "what id should this workspace
+// bind to at mount time" — it is a DISCOVERY function, run once per launch,
+// that never needs to go back further than yesterday's shard (a workspace
+// mounts, at most, a day or so after Codex last wrote to it before this
+// runs). The usage/cost reader has a DIFFERENT question: "given an id THIS
+// WORKSPACE ALREADY BOUND, possibly weeks ago, which file holds its
+// token_count/rate_limits data RIGHT NOW". A long-lived workspace can sit
+// unopened for a long time — the bound id doesn't expire, so limiting this
+// scan to yesterday/today would silently stop finding usage data for any
+// workspace not opened within a day of its last Codex turn.
+//
+// SCAN WINDOW — bounded, not unbounded. Walking every year/month/day
+// directory under sessionsRoot to find one id would be an unbounded
+// filesystem walk that gets slower the longer a user has been running
+// Codex; that cost is paid on every title-bar usage/cost fetch, not just
+// once at mount. ROLLOUT_ID_LOOKBACK_DAYS below caps it to a fixed, cheap
+// number of shard-day directory listings — generous enough to cover a
+// workspace reopened well after its last Codex activity, without scanning
+// the user's entire Codex history on every poll. A workspace older than the
+// window degrades to "usage unavailable" (see the reader module), which is
+// the correct honest answer for data this function genuinely can't find
+// cheaply — not a crash, not a fabricated number.
+const ROLLOUT_ID_LOOKBACK_DAYS = 60
+
+/**
+ * Finds the rollout file whose `session_meta.payload.id` equals `sessionId`,
+ * scanning shard days backward from `now` (inclusive) for up to
+ * ROLLOUT_ID_LOOKBACK_DAYS days. Returns the file path, or null if no shard
+ * day in the window contains a matching `session_meta` line — never throws
+ * (mirrors every other function in this module's fail-soft discipline;
+ * listShardRolloutFiles/readSessionMeta already swallow their own I/O
+ * errors, so this function's own body has nothing further to catch).
+ *
+ * Unlike findCodexUserRolloutId, this does NOT filter on `thread_source` or
+ * `cwd` — the caller already knows the exact id it's looking for (it came
+ * from this workspace's own persisted binding), so there is no ambiguity to
+ * resolve by cwd/thread-source matching; the id itself is the sole key.
+ */
+export function findCodexRolloutFileById(
+  sessionsRoot: string,
+  sessionId: string,
+  now: Date = new Date()
+): string | null {
+  for (let dayOffset = 0; dayOffset < ROLLOUT_ID_LOOKBACK_DAYS; dayOffset++) {
+    const day = new Date(now.getTime() - dayOffset * 24 * 60 * 60 * 1000)
+    const candidateFiles = listShardRolloutFiles(sessionsRoot, day)
+    for (const filePath of candidateFiles) {
+      const meta = readSessionMeta(filePath)
+      if (!meta) continue
+      if (meta.payload.id === sessionId) return filePath
+    }
+  }
+  return null
 }

@@ -2,13 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import type { ChipDropdownItem, ClaudeEffort, WorkspaceActivityDetail } from '@shared/types'
 import type { HarnessId } from '@shared/harness/types'
-import { buildLiveApplyText } from '@shared/harness/liveApply'
-import { isModelEffectivelyClaude } from '@shared/harness/footerChipGating'
 import {
   capitalize,
   effortDropdownItemsFor,
-  shouldRenderEffortChip,
-  resolveEffortLevelsForScope
+  shouldRenderEffortChip
 } from '@/lib/effortPickerOptions'
 import { IconByName } from './iconMap'
 import {
@@ -25,9 +22,10 @@ import {
 } from '@/lib/overlayClient'
 import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { playSound } from '../../../lib/sound'
-import { useSelectableModels, refetchSelectableModels } from '@/lib/useSelectableModels'
-import { setWorkspaceModel, useWorkspaceModel } from '@/lib/workspaceModelStore'
-import { setWorkspaceEffort, useWorkspaceEffort } from '@/lib/workspaceEffortStore'
+import { setWorkspaceModel } from '@/lib/workspaceModelStore'
+import { setWorkspaceEffort } from '@/lib/workspaceEffortStore'
+import { useModelEffortPickerState } from '@/lib/modelEffortPickerState'
+import { decideModelSelectionEffect, decideEffortSelectionEffect } from '@/lib/modelEffortSelection'
 import { buildModelDropdownItems, buildModelDropdownGroups } from '@/lib/modelPickerOptions'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { useHarnessForWorkspace } from '@/lib/harnessStore'
@@ -239,136 +237,46 @@ export function DropdownChip({
   )
 
   // ---------------------------------------------------------------------
-  // Case 1 — footer.modelSelect: effective model value, read from the
-  // SHARED per-workspace store (workspaceModelStore) rather than a local
-  // useState. Bugfix (model-routing unit 11): the model chip and effort
-  // chip are TWO SEPARATE DropdownChip component instances (see
-  // WorkspaceFooter.tsx) — with a local useState each, switching the model
-  // via ONE chip never updated the OTHER's view of `modelValue`, so the
-  // effort chip kept rendering the PREVIOUS model's effort options until it
-  // happened to remount. Reading from the shared store fixes this: both
-  // instances re-render from the SAME store entry, which the main process
-  // keeps fresh via the workspace:effectiveSettingsChanged push (wired once
-  // in Dashboard.tsx) covering every path that can change a workspace's
-  // model (footer chip, creation menu, settings drawers, CLI).
+  // footer.modelSelect / footer.effortSelect: the shared read-side state
+  // (effective model/effort values, the selectable model list, the current
+  // model's real effort levels, the harness's own flat effort fallback) —
+  // extracted to useModelEffortPickerState (support-multi-harness,
+  // footer-removal migration Phase 1) so the title bar's own Model/Effort
+  // chips (WorkspaceTitleBar.tsx) can assemble the IDENTICAL facts instead
+  // of re-deriving this ~8-hook chain a second time. See that hook's own
+  // doc comment for the full field-by-field rationale (unchanged from what
+  // used to live inline here — this is a lift, not a rewrite).
   //
-  // The one-shot fetch below seeds the SHARED store (not local state) so a
-  // page load with no push yet still gets the real value on first paint;
-  // `enabled` gates it to modelSelect/effortSelect only (BUG B fix,
-  // unchanged from before this rewrite).
+  // `enabled` gates the fetch/subscription to modelSelect/effortSelect only
+  // (BUG B fix: DropdownChip also renders for footer.dropdown, which never
+  // touches the model list — without this gate every chip instance fired
+  // its own redundant models:listSelectable IPC call per workspace mount).
+  // The hook itself is still called unconditionally on every render (Rules
+  // of Hooks); only its internal subscription/IPC is skipped when disabled.
   const isModelSelect = item.actionId === 'footer.modelSelect'
   const isEffortSelect = item.actionId === 'footer.effortSelect'
-  const storeModelValue = useWorkspaceModel(workspaceId)
-  const modelValue = storeModelValue ?? ''
-  // Read via this ref (not the closed-over `modelValue`) inside handleClick
-  // below — that callback is memoized against a deliberately narrow dep list
-  // (see its own eslint-disable comment) and would otherwise stay pinned to
-  // whatever modelValue was current the last time handleClick itself got
-  // recreated, not the actual current one at click time.
+  const needsModelList = isModelSelect || isEffortSelect
+  const {
+    modelValue,
+    effortValue,
+    selectableModels,
+    currentModelIsClaude,
+    currentModelEffortLevels,
+    harnessEffortOptions,
+    refetchAll: refetchPickerState
+  } = useModelEffortPickerState(workspaceId, harness, harnessId, projectId, needsModelList)
+  // Read via these refs (not the closed-over modelValue/effortValue) inside
+  // handleClick below — that callback is memoized against a deliberately
+  // narrow dep list (see its own eslint-disable comment) and would
+  // otherwise stay pinned to whatever value was current the last time
+  // handleClick itself got recreated, not the actual current one at click
+  // time.
   const modelValueRef = useRef(modelValue)
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation, same pattern as WorkspaceView.tsx's activeRef
   modelValueRef.current = modelValue
-  const refetchEffectiveModel = useCallback((): void => {
-    if (!isModelSelect && !isEffortSelect) return
-    window.api.workspaces
-      .getEffectiveModel(workspaceId)
-      .then((r) => setWorkspaceModel(workspaceId, r.model))
-      .catch(() => {})
-  }, [workspaceId, isModelSelect, isEffortSelect])
-  useEffect(() => {
-    refetchEffectiveModel()
-  }, [refetchEffectiveModel])
-
-  // Effective effort value, read early (hoisted above useSelectableModels
-  // below) so its CURRENT value can be threaded straight into that call as
-  // currentEffort — see Case 2's own doc comment further down for the full
-  // rationale on this store read; only the ORDERING is different here, the
-  // read itself is unchanged (a synchronous store lookup keyed only on
-  // workspaceId, safe to read this early).
-  const storeEffortValue = useWorkspaceEffort(workspaceId)
-  const effortValue = storeEffortValue ?? ''
-  // Same staleness-avoidance ref as modelValueRef above — handleClick below
-  // reads BOTH refs rather than the closed-over values, for the identical
-  // reason (its own narrow memoization dep list would otherwise pin this to
-  // whichever effortValue was current the last time handleClick itself got
-  // recreated).
   const effortValueRef = useRef(effortValue)
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation, same pattern as modelValueRef above
   effortValueRef.current = effortValue
-
-  // Data-driven model list (Claude always present; routed models gated on
-  // proxy/provider health server-side) — see useSelectableModels' own doc
-  // comment. `enabled` gates the fetch to the modelSelect AND effortSelect
-  // chips (BUG B fix: DropdownChip also renders for footer.dropdown, which
-  // never touches the model list — without this gate every chip instance
-  // fired its own redundant models:listSelectable IPC call per workspace
-  // mount). effortSelect needs this list too now (model-routing unit 11) to
-  // read the current model's real effortLevels. The hook itself is still
-  // called unconditionally on every render (Rules of Hooks); only its
-  // internal subscription/IPC is skipped when disabled. Passing modelValue
-  // keeps an already-selected-but-now-unavailable routed model represented
-  // (never silently dropped from the dropdown, even though it can no longer
-  // be freshly selected as "available"). harnessId/projectId/effortValue
-  // (B4, support-multi-harness) let the server apply THIS workspace's
-  // harness+project curatedOptions overlay, and keep a hidden-but-selected
-  // effort level represented the same way modelValue already does for a
-  // hidden-but-selected model.
-  const needsModelList = isModelSelect || isEffortSelect
-  const { models: selectableModels, loading: selectableModelsLoading } = useSelectableModels(
-    needsModelList ? modelValue : undefined,
-    needsModelList,
-    harnessId,
-    projectId,
-    needsModelList ? effortValue : undefined
-  )
-  // isClaude lookup for the CURRENT effective model, used below to decide
-  // whether a model switch is live-applicable (see onSelect's own comment).
-  // A model present in the list answers from its own isClaude flag. A model
-  // ABSENT from the list (transient fetch gap, or genuinely unset '') falls
-  // back to whether THIS WORKSPACE's harness is Claude — not an
-  // unconditional "unset means Claude" default, which would wrongly treat
-  // an unset model as Claude on every harness (see
-  // isModelEffectivelyClaude's own doc comment in footerChipGating.ts for
-  // the bug this replaced).
-  const currentModelIsClaude = useMemo(
-    () => isModelEffectivelyClaude(harness.id, selectableModels, modelValue),
-    [harness.id, selectableModels, modelValue]
-  )
-  // The current model's real effort levels (model-routing unit 11) — a
-  // TRI-STATE (see resolveEffortLevelsForScope's own doc comment for the
-  // full null/undefined/string[] contract). `modelValue` doubles as "no
-  // single model to resolve" when it's '' (the genuine, durable "no
-  // explicit override" state — composeClaudeLaunch skips --model entirely
-  // then, so claude picks its own default), matching the SAME concept the
-  // settings drawers' 'default'/'Use global' selection represents at their
-  // own scope. `selectableModelsLoading` is what fixes the "empty effort
-  // chip on a cold direct-to-workspace open" bug — see that function's own
-  // doc comment.
-  const currentModelEffortLevels = useMemo(
-    () =>
-      resolveEffortLevelsForScope(
-        modelValue,
-        selectableModels,
-        selectableModelsLoading,
-        harness.id === 'claude'
-      ),
-    [selectableModels, selectableModelsLoading, modelValue, harness.id]
-  )
-  // Harness-level fallback (support-multi-harness, model/effort picker
-  // harness-scoping unit) — a non-Claude harness's SelectableModel entries
-  // never carry per-model effortLevels (selectable.ts's harnessEntries sets
-  // it to null unconditionally: a generic descriptor has no per-model
-  // ladder concept, only one flat curated.effort.options for the whole
-  // harness — see that function's own doc comment). Without this, EVERY
-  // chip configured `idle`/`awaitingInput`... no — EVERY effort chip on
-  // such a harness would render nothing at all (shouldRenderEffortChip's
-  // old unconditional "null -> hide" rule), even though the harness
-  // genuinely declares curated.effort. This is the harness's OWN options,
-  // read straight from the already-resolved HarnessSummary in scope here —
-  // never fabricated, never per-model, exactly mirroring what
-  // HarnessSection.tsx's settings-drawer editor already shows for the same
-  // field.
-  const harnessEffortOptions = harness.curated?.effort?.options
 
   // PENDING (model-routing unit 11 bugfix): the effort chip's levels are the
   // "unknown yet" tri-state member — render the chip, but non-interactively,
@@ -376,29 +284,6 @@ export function DropdownChip({
   // dropdown with fabricated options. Only meaningful for the effort chip
   // itself; false (never pending) for every other actionId.
   const isEffortPending = isEffortSelect && currentModelEffortLevels === undefined
-
-  // ---------------------------------------------------------------------
-  // Case 2 — footer.effortSelect: effective effort value. storeEffortValue/
-  // effortValue themselves are declared EARLIER (see the hoist comment
-  // above useSelectableModels), read from the SHARED per-workspace store
-  // (workspaceEffortStore) — same rationale as modelValue above. '' means
-  // unset/auto — normalized to 'auto' below. Bugfix (model-routing unit
-  // 11): this is what makes the main process's reconciliation
-  // (clampEffortToSupportedLevel, applied when a DIFFERENT chip/surface
-  // changes the model) visible here too — the reconciled value arrives via
-  // the SAME workspace:effectiveSettingsChanged push that updates
-  // modelValue, so this chip's displayed selection reflects the persisted
-  // value rather than a stale local one.
-  const refetchEffectiveEffort = useCallback((): void => {
-    if (!isEffortSelect) return
-    window.api.workspaces
-      .getEffectiveEffort(workspaceId)
-      .then((r) => setWorkspaceEffort(workspaceId, r.effort))
-      .catch(() => {})
-  }, [workspaceId, isEffortSelect])
-  useEffect(() => {
-    refetchEffectiveEffort()
-  }, [refetchEffectiveEffort])
 
   // ---------------------------------------------------------------------
   // Dispatcher: compute { dropdownItems, selectedValue, faceLabel, onSelect,
@@ -484,46 +369,29 @@ export function DropdownChip({
           playSound('error')
           showTooltip('Model not saved — try again')
         })
-      // The harness's curated.model.liveApply declaration is only
-      // meaningful for a same-backend switch (Claude -> Claude REPL command,
-      // same running process, just a different --model argument). A switch
-      // involving a routed model needs a NEW process with different
-      // ANTHROPIC_BASE_URL/ANTHROPIC_MODEL/ANTHROPIC_AUTH_TOKEN env (see
-      // src/main/modelRouting.ts computeRoutingEnv), which no in-terminal
-      // command can apply — injecting it there would be silently wrong
-      // (either a no-op inside the wrong backend's REPL, or the harness
-      // misinterpreting a routed model id as one of its own). Persisting the
-      // setting above already marks the workspace dirty via the same
-      // isLiveApplicableModelChange gate main-side, so the existing "Restart
-      // to apply" chip (DetailsCard/WorkspaceDrawer, both driven by the same
-      // onRestart/handleRestart) is what surfaces the change if we don't
-      // auto-restart below.
-      if (currentModelIsClaude && newModelIsClaude) {
-        const liveApply = buildLiveApplyText(harness.curated?.model, value)
-        if (liveApply.kind === 'inject') {
-          runInject(liveApply.text, liveApply.submit, 'Model set — applies next turn')
-          return
-        }
-        // 'restartRequired' (or 'none', which shouldn't happen here since
-        // curated.model must be defined — footerActions.ts's visibility gate
-        // already requires it — but is handled the same way defensively)
-        // falls through to the restart-or-dirty-chip path below, exactly
-        // like the routed-model branch.
+      // The actual decision — inject vs. restart vs. dirty-chip-only — is
+      // the extracted pure function decideModelSelectionEffect
+      // (modelEffortSelection.ts, support-multi-harness footer-removal
+      // migration Phase 1). See that function's own doc comment (a direct
+      // port of this block's PRE-EXTRACTION logic) for the full "why" on
+      // each branch — nothing here is a new decision, only the dispatch on
+      // its result.
+      const effect = decideModelSelectionEffect(
+        currentModelIsClaude,
+        newModelIsClaude,
+        harness.curated?.model,
+        value,
+        !!onRestart,
+        activityDetail
+      )
+      if (effect.kind === 'inject') {
+        runInject(effect.text, effect.submit, 'Model set — applies next turn')
+        return
       }
-      // Any switch involving a routed model (Claude->routed, routed->Claude,
-      // routed->routed) needs a brand-new process — no in-terminal command
-      // can apply it. Auto-restart so the switch "just works" WITHOUT the
-      // user hunting for the restart control, UNLESS the workspace is
-      // currently mid-task ('working' == WorkspaceStatus 'in_progress' — see
-      // activityStore.ts's status->detail mapping): destroying the surface
-      // then would silently kill an in-flight agent turn, which is worse
-      // than a visible manual step. In that case fall back to the existing
-      // "Restart to apply" chip — the setting is already persisted+dirty, so
-      // the user sees the prompt as soon as they're free to act on it.
-      if (onRestart && activityDetail !== 'working') {
+      if (effect.kind === 'restart') {
         playSound('success')
         showTooltip('Model set — restarting workspace…')
-        onRestart()
+        onRestart?.()
       } else {
         playSound('success')
         showTooltip('Model set — restart workspace to apply')
@@ -561,48 +429,35 @@ export function DropdownChip({
       window.api.workspaces
         .setEffort(workspaceId, value as ClaudeEffort)
         .then(() => {
-          // Only inject the effort live-apply text into the terminal AFTER
-          // the write is confirmed persisted — a rejected write (e.g. an
-          // out-of-enum value somehow reaching here) must never leave the
-          // running process told about a value the DB doesn't actually
-          // have, silently desyncing UI state from persisted state.
+          // Only decide the live-apply/restart effect AFTER the write is
+          // confirmed persisted — a rejected write (e.g. an out-of-enum
+          // value somehow reaching here) must never leave the running
+          // process told about a value the DB doesn't actually have,
+          // silently desyncing UI state from persisted state.
           //
-          // Previously this fired UNCONDITIONALLY (no gate at all), which
-          // meant a routed (non-Claude) workspace would have `/effort
-          // <value>` typed as literal text into its terminal. That was
-          // later fixed with a `currentModelIsClaude` check — reasonable at
-          // the time, since `/effort` was a hardcoded string. It is wrong
-          // NOW: `harness.curated?.effort.liveApply` is the actual
-          // authority on whether (and how) a value can be live-applied, and
-          // gating on model-provider identity on top of it double-guards
-          // and, worse, silently DROPS a harness's declared liveApply when
-          // its models happen to report isClaude:false —
-          // buildLiveApplyText already degrades safely on its own: no
-          // curated field -> {kind:'none'}, a harness that declares
-          // restartRequired -> {kind:'restartRequired'}, only a real
-          // `replInject` descriptor -> {kind:'inject'}. There is nothing
-          // left for a model-provider check to protect against, so it's
-          // removed rather than left alongside the descriptor check.
-          const liveApply = buildLiveApplyText(harness.curated?.effort, value)
-          if (liveApply.kind === 'inject') {
-            runInject(liveApply.text, liveApply.submit, 'Effort set — applies next turn')
+          // decideEffortSelectionEffect (modelEffortSelection.ts,
+          // support-multi-harness footer-removal migration Phase 1) is the
+          // extracted pure decision — a direct port of this block's
+          // pre-extraction logic. See that function's own doc comment: it
+          // is a straight liveApply-kind dispatch (buildLiveApplyText
+          // degrades safely on its own — no curated field -> 'none', a
+          // harness that declares restartRequired -> 'restartRequired',
+          // only a real `replInject` descriptor -> 'inject') plus the same
+          // restart-unless-mid-task fallback the model chip uses.
+          const effect = decideEffortSelectionEffect(
+            harness.curated?.effort,
+            value,
+            !!onRestart,
+            activityDetail
+          )
+          if (effect.kind === 'inject') {
+            runInject(effect.text, effect.submit, 'Effort set — applies next turn')
             return
           }
-          // 'restartRequired' — the harness has NO way to apply a new effort
-          // to its already-running process, so persisting alone would leave
-          // the chip showing a value the live session isn't using. This
-          // branch previously did not exist, which made the chip a SILENT
-          // NO-OP for such a harness (Codex): the value was written and
-          // nothing else happened, with no feedback and no prompt. Mirrors
-          // the model chip's own restartRequired path above, including its
-          // mid-task guard — auto-restarting while an agent turn is in
-          // flight would silently kill it, which is worse than a visible
-          // manual step, so that case falls back to the "Restart to apply"
-          // chip the dirty state already surfaces.
-          if (onRestart && activityDetail !== 'working') {
+          if (effect.kind === 'restart') {
             playSound('success')
             showTooltip('Effort set — restarting workspace…')
-            onRestart()
+            onRestart?.()
           } else {
             playSound('success')
             showTooltip('Effort set — restart workspace to apply')
@@ -742,21 +597,17 @@ export function DropdownChip({
     setOpen(true)
     // Defense-in-depth for the cold-boot/background-refresh picker-staleness
     // bug: opening the picker is exactly when fresh data matters most.
-    // Refetch the selectable-model list (via the store's own imperative
+    // refetchPickerState (useModelEffortPickerState's returned refetchAll)
+    // refetches the selectable-model list (via the store's own imperative
     // refetch — same coalescing fetchKey already uses, not a parallel fetch
-    // path) plus the effective model/effort, so the picker self-heals here
-    // even if a routingProxy:onSnapshot/workspace:effectiveSettingsChanged
-    // push was ever missed. modelValueRef.current/effortValueRef.current
-    // (not the closed-over modelValue/effortValue) because handleClick's own
-    // memoization can otherwise pin this to a stale value — see
-    // modelValueRef's own doc comment. harnessId/projectId need no ref: they
-    // are props, not per-render derived state, so the closed-over values are
-    // already current.
-    if (needsModelList) {
-      refetchSelectableModels(modelValueRef.current, harnessId, projectId, effortValueRef.current)
-    }
-    refetchEffectiveModel()
-    refetchEffectiveEffort()
+    // path) plus the effective model/effort in one call, so the picker
+    // self-heals here even if a routingProxy:onSnapshot/workspace:
+    // effectiveSettingsChanged push was ever missed. Internally reads
+    // modelValueRef.current/effortValueRef.current (not the closed-over
+    // modelValue/effortValue) for the same staleness reason handleClick's
+    // own memoization would otherwise hit — see modelValueRef's own doc
+    // comment.
+    refetchPickerState()
     const r = chipRef.current.getBoundingClientRect()
     const rect = { x: r.left, y: r.top, w: r.width, h: r.height }
 

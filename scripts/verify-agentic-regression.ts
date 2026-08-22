@@ -225,7 +225,31 @@ const verifiers = [
   // (already computed by Sidebar.tsx's WorkspaceSubRow for other capability
   // gating — no new fetch). No electron/DB dependency, plain bun like the
   // entries above.
-  'verify-workspace-provider-icon.ts'
+  'verify-workspace-provider-icon.ts',
+  // footer-removal migration Phase 1 (support-multi-harness) — the pure
+  // "what happens when a new model value is picked" decision extracted out
+  // of DropdownChip.tsx's onSelect closure into
+  // lib/modelEffortSelection.ts's decideModelSelectionEffect, so the title
+  // bar's own Model chip (TitleBarUsageChips.tsx) shares the identical
+  // decision instead of re-deriving it. No electron/DB dependency (pure
+  // over shared/harness types + the real Claude/Codex curated descriptors),
+  // plain bun like the entries above. decideEffortSelectionEffect's own
+  // branches are covered by verify-effort-chip-restart.ts (already in this
+  // array) instead of a second, near-duplicate harness here.
+  'verify-model-effort-selection.ts',
+  // footer-removal migration Phase 1 — Codex's session.getUsage/
+  // session.getCost reader (src/main/harness/codex/usage.ts), the
+  // harness-neutral seam's Codex-side implementation (see
+  // src/main/actions/sessionUsageReader.ts for the dispatch this plugs
+  // into). Needs the ['node', '--experimental-strip-types'] pairing: its
+  // import chain reaches src/main/harness/codex/session.ts, which
+  // transitively imports ../../workspaces for its OTHER exports (this
+  // script never calls getWorkspace), and workspaces.ts imports `electron`
+  // + the './db' directory module at module scope — same root cause as
+  // verify-harness-codex-session.ts/verify-harness-session.ts, stubbed the
+  // identical way (electron + './db' resolve-hook redirects; no real DB
+  // needed since nothing here calls getDb()).
+  ['verify-codex-usage-reader.ts', ['node', '--experimental-strip-types']]
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {
