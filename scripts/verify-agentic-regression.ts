@@ -179,14 +179,6 @@ const verifiers = [
   // above, so this stays on the plain-bun dispatch path, not the
   // node:sqlite tuple form the surrounding entries use.
   'verify-settings-section-gating.ts',
-  // support-multi-harness harness-neutral-chrome unit — ActionChip.tsx's
-  // failure-tooltip regression: main already returns a harness-neutral
-  // busy message ('Workspace is busy', src/main/actions/terminal.ts), but
-  // the renderer discarded it and substituted a hardcoded 'Claude is busy'
-  // literal. Fixed via actionChipMessages.ts's pure actionFailureMessage.
-  // No electron/DB dependency at all, so this stays on the plain-bun
-  // dispatch path.
-  'verify-action-chip-messages.ts',
   // support-multi-harness CLI/TUI harness-selection follow-up — `orpheus ws
   // new --harness <id>` client plumbing (commands/ws-new.ts's
   // buildCreateArgs, plus the registered usage/flags/--help surface). No
@@ -198,7 +190,6 @@ const verifiers = [
   'verify-harness-create-threading.ts',
   'verify-inherited-pane-env.ts',
   'verify-models-dev-cache.ts',
-  'verify-effort-chip-restart.ts',
   'verify-codex-chip-scoping.ts',
   'verify-restart-rehost.ts',
   'verify-terminal-quantization.ts',
@@ -226,17 +217,6 @@ const verifiers = [
   // gating — no new fetch). No electron/DB dependency, plain bun like the
   // entries above.
   'verify-workspace-provider-icon.ts',
-  // footer-removal migration Phase 1 (support-multi-harness) — the pure
-  // "what happens when a new model value is picked" decision extracted out
-  // of DropdownChip.tsx's onSelect closure into
-  // lib/modelEffortSelection.ts's decideModelSelectionEffect, so the title
-  // bar's own Model chip (TitleBarUsageChips.tsx) shares the identical
-  // decision instead of re-deriving it. No electron/DB dependency (pure
-  // over shared/harness types + the real Claude/Codex curated descriptors),
-  // plain bun like the entries above. decideEffortSelectionEffect's own
-  // branches are covered by verify-effort-chip-restart.ts (already in this
-  // array) instead of a second, near-duplicate harness here.
-  'verify-model-effort-selection.ts',
   // footer-removal migration Phase 1 — Codex's session.getUsage/
   // session.getCost reader (src/main/harness/codex/usage.ts), the
   // harness-neutral seam's Codex-side implementation (see

@@ -18,12 +18,10 @@
 // harness and the user changes model/effort via the HARNESS's OWN controls
 // (e.g. Claude Code's `/model`, Codex's picker). This file no longer renders
 // a Model or Effort chip, nor any of the picker/dropdown/restart machinery
-// that used to back them. THIS IS STEP 1 of a multi-step migration — the
-// footer's OWN Model/Effort chips (components/dashboard/footer/DropdownChip.tsx)
-// and the shared curated model/effort layer (lib/modelEffortSelection.ts,
-// lib/modelEffortPickerState.ts) are UNCHANGED and still fully functional;
-// they are removed in a later phase, not this one. Do not treat their
-// continued presence elsewhere as an oversight.
+// that used to back them. The footer that used to carry those chips, and the
+// shared model/effort selection layer behind it, have since been deleted
+// outright — so this file is the ONLY place Orpheus surfaces per-workspace
+// session facts, and it surfaces exactly two: context and cost.
 //
 // CONTEXT/COST — read via the EXISTING session.getUsage/session.getCost
 // actions (window.api.actions.invoke), the exact same call shape
@@ -50,8 +48,12 @@ import { shouldFetchUsageDetails } from '@shared/harness/capabilityGating'
 // single format function).
 function shortTokens(n: number): string {
   if (n >= 1_000_000) return `${Math.round(n / 1_000_000)}M`
-  if (n >= 1_000) return `${Math.round(n / 1_000)}k`
-  return `${n}`
+  // ALWAYS a `k` suffix below 1M, including 0 and sub-1k values. A bare
+  // `0` next to a gauge icon reads as a broken or unloaded chip; `0k` reads
+  // as a real measurement that happens to be near zero. The unit is what
+  // makes the number self-describing, so it stays even when rounding takes
+  // the value to zero.
+  return `${Math.round(n / 1_000)}k`
 }
 
 /** Compact context-chip label — "1.2k/200k" (no separators/percent — the
