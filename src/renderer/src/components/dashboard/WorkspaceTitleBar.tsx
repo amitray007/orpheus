@@ -90,15 +90,14 @@ interface WorkbenchTopBarRegionProps {
   projectId: string
   /** Threaded through to WorkspaceSettingsPopover so its Plugins/Loco
    *  toggle can gate on this workspace's actual harness — see
-   *  shouldShowLocoToggle's own doc comment in footerChipGating.ts. Also
-   *  threaded to TitleBarUsageChips (footer-removal migration Phase 1) for
-   *  the same harness-scoping reason DropdownChip.tsx needs it. */
+   *  shouldShowLocoToggle's own doc comment in footerChipGating.ts. */
   harnessId?: string | null
-  /** The already-resolved harness descriptor summary (support-multi-harness,
-   *  footer-removal migration Phase 1) — computed once by
-   *  WorkspaceTitleBar via useHarnessForWorkspace and threaded down so
-   *  TitleBarUsageChips doesn't need a second resolveHarnessSummary lookup
-   *  for the same workspace. */
+  /** The already-resolved harness descriptor summary (support-multi-harness)
+   *  — computed once by WorkspaceTitleBar via useHarnessForWorkspace and
+   *  threaded down so TitleBarUsageChips doesn't need a second
+   *  resolveHarnessSummary lookup for the same workspace (it only needs
+   *  `harness.capabilities` to gate its Context/Cost chips — see that
+   *  file's header on the model/effort-removal migration). */
   harness: HarnessSummary
   isDirty: boolean
   onRestart?: () => void
@@ -151,21 +150,16 @@ function WorkbenchTopBarRegion({
       ].join(' ')}
       style={style}
     >
-      {/* Model/Effort/Context/Cost chip row (footer-removal migration
-          Phase 1) — a SIBLING of the dormant/open ternary below, for the
-          EXACT SAME reason the Settings gear right after it is: the
-          Workbench opener button only renders in the dormant branch
-          (replaced by the tab strip once open), so anything that must
-          persist across BOTH dormant and open states has to sit outside
-          that ternary, not inside it. Placed immediately before the gear so
-          it reads to its LEFT. */}
-      <TitleBarUsageChips
-        workspaceId={workspaceId}
-        projectId={projectId}
-        harnessId={harnessId}
-        harness={harness}
-        onRestart={onRestart}
-      />
+      {/* Read-only Context/Cost chip row (model/effort-removal migration
+          Phase 1 — Model/Effort chips were removed from the title bar; see
+          TitleBarUsageChips.tsx's own header) — a SIBLING of the
+          dormant/open ternary below, for the EXACT SAME reason the Settings
+          gear right after it is: the Workbench opener button only renders
+          in the dormant branch (replaced by the tab strip once open), so
+          anything that must persist across BOTH dormant and open states has
+          to sit outside that ternary, not inside it. Placed immediately
+          before the gear so it reads to its LEFT. */}
+      <TitleBarUsageChips workspaceId={workspaceId} harness={harness} />
       {/* Settings gear — a SIBLING of the dormant/open ternary below, not
           inside it. The Workbench opener button only renders in the dormant
           branch (replaced by the tab strip once open), so a Settings button

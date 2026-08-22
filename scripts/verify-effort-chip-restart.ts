@@ -22,18 +22,25 @@
 // decision this file guards — "what happens when a new effort value is
 // picked" — moved out of DropdownChip.tsx's inline onSelect closure into a
 // standalone pure function, decideEffortSelectionEffect
-// (src/renderer/src/lib/modelEffortSelection.ts), so BOTH DropdownChip.tsx
-// (the footer chip) and TitleBarUsageChips.tsx (the new title-bar chip) can
-// call the identical decision instead of each re-deriving it. This file now
-// asserts THAT function's branches directly — a strictly BETTER assertion
-// than the structural source-text grep it replaces (the missing-`else` bug
-// above is now impossible to reintroduce silently: any caller ignoring a
+// (src/renderer/src/lib/modelEffortSelection.ts). This file now asserts
+// THAT function's branches directly — a strictly BETTER assertion than the
+// structural source-text grep it replaces (the missing-`else` bug above is
+// now impossible to reintroduce silently: any caller ignoring a
 // SelectionEffect variant is a TypeScript exhaustiveness gap the compiler
-// can flag, not a runtime-only omission a grep had to backstop). The two
-// call sites are still checked structurally (section 3 below), narrowly
-// scoped to "do they call decideEffortSelectionEffect and dispatch on
-// 'inject'/'restart'/'dirtyOnly' at all" — not to re-verify the DECISION
-// logic itself, which section 1/1b already do against the real function.
+// can flag, not a runtime-only omission a grep had to backstop).
+//
+// UPDATED AGAIN (support-multi-harness, model/effort-removal migration
+// Phase 1 — the title-bar chip row change): the title bar's Model/Effort
+// chips were removed entirely (see TitleBarUsageChips.tsx's own header) —
+// the title bar's chip row is now READ-ONLY Context/Cost only. It no longer
+// calls decideEffortSelectionEffect, or any model/effort selection logic,
+// at all. That is by DESIGN, not a regression this file should catch: the
+// footer's DropdownChip.tsx is the sole remaining caller (and stays fully
+// functional — the footer itself is removed in a later migration phase,
+// not this one). Section 3 below now checks only that one real call site,
+// narrowly scoped to "does it call decideEffortSelectionEffect and dispatch
+// on 'inject'/'restart' at all" — not to re-verify the DECISION logic
+// itself, which section 1/1b already do against the real function.
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert/strict'
@@ -128,24 +135,27 @@ import { decideEffortSelectionEffect } from '../src/renderer/src/lib/modelEffort
 }
 
 // ---------------------------------------------------------------------------
-// 3. Structural backstop: BOTH real call sites (the footer chip and the
-//    title-bar chip, support-multi-harness footer-removal migration Phase 1)
-//    must still call decideEffortSelectionEffect and dispatch on its result
-//    — narrowly scoped to "do they call the shared decision function and
-//    handle 'inject'/'restart' at all", not to re-verify the DECISION logic
-//    itself (section 1/1b already do that against the real function). A
-//    caller that stopped calling decideEffortSelectionEffect (e.g. reverted
-//    to reimplementing the branching inline) would silently duplicate this
-//    logic rather than sharing it — exactly the drift CLAUDE.md's footer-
-//    removal migration guidance warns against, since the footer dies in a
-//    later phase and any UN-shared duplicate becomes orphaned.
+// 3. Structural backstop: the footer chip (DropdownChip.tsx) — the sole
+//    remaining call site as of the model/effort-removal migration Phase 1
+//    title-bar change (support-multi-harness) — must still call
+//    decideEffortSelectionEffect and dispatch on its result. Narrowly scoped
+//    to "does it call the shared decision function and handle
+//    'inject'/'restart' at all", not to re-verify the DECISION logic itself
+//    (section 1/1b already do that against the real function). A caller
+//    that stopped calling decideEffortSelectionEffect (e.g. reverted to
+//    reimplementing the branching inline) would silently duplicate this
+//    logic rather than sharing it.
+//
+//    TitleBarUsageChips.tsx is DELIBERATELY NOT in this list — the title
+//    bar's chip row no longer has an Effort chip at all (removed, not
+//    reimplemented elsewhere), so it no longer calls
+//    decideEffortSelectionEffect. Its absence here reflects that removal by
+//    design; do not re-add it unless the title bar grows model/effort UI
+//    again.
 // ---------------------------------------------------------------------------
 {
   const fs = await import('node:fs')
-  const callSites = [
-    '../src/renderer/src/components/dashboard/footer/DropdownChip.tsx',
-    '../src/renderer/src/components/dashboard/TitleBarUsageChips.tsx'
-  ]
+  const callSites = ['../src/renderer/src/components/dashboard/footer/DropdownChip.tsx']
   for (const relPath of callSites) {
     const src = fs.readFileSync(new URL(relPath, import.meta.url), 'utf8')
     assert.ok(
@@ -164,5 +174,5 @@ import { decideEffortSelectionEffect } from '../src/renderer/src/lib/modelEffort
 }
 
 console.log(
-  '✓ the Effort chip acts on BOTH live-apply kinds: Claude injects /effort, a restartRequired harness (Codex) restarts (unless mid-task) — never a silent no-op, verified against the shared decideEffortSelectionEffect and both its real call sites'
+  "✓ the Effort chip acts on BOTH live-apply kinds: Claude injects /effort, a restartRequired harness (Codex) restarts (unless mid-task) — never a silent no-op, verified against the shared decideEffortSelectionEffect and its one real call site (the footer's DropdownChip.tsx; the title bar no longer has an Effort chip)"
 )
