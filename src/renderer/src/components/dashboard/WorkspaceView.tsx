@@ -19,6 +19,8 @@ import {
   noticeBannerId
 } from '@/lib/overlayClient'
 import { useWorkspaceActivity } from '@/lib/activityStore'
+import { useUiState } from '@/lib/uiStateStore'
+import { quantizeTerminalColumn } from '@/lib/terminalQuantization'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import {
   setActiveWatchdogWorkspace,
@@ -193,6 +195,15 @@ export function WorkspaceView({
   //     absorbed by the footer wrapper's flex-1 below the terminal host.
   // A single state object (not two separate useState calls) so a recompute
   // that changes both values only triggers one re-render.
+  // Whether the footer will actually RENDER. WorkspaceFooter returns null
+  // when this is off, but the quantizer below subtracted
+  // WORKSPACE_FOOTER_HEIGHT_PX unconditionally and the wrapper still painted
+  // its flex-1 band — so turning the footer off left a footer-sized strip of
+  // empty chrome under the terminal instead of giving that height back.
+  // `undefined` (uiState still loading) is treated as "will render", matching
+  // WorkspaceFooter's own no-flicker default.
+  const uiState = useUiState()
+  const footerVisible = uiState ? uiState.showWorkspaceFooter : true
   const [quantized, setQuantized] = useState<{ height: number; slackTop: number } | null>(null)
 
   useEffect(() => {
@@ -206,17 +217,15 @@ export function WorkspaceView({
         return
       }
       const columnHeight = columnEl.getBoundingClientRect().height
-      const available = columnHeight - WORKSPACE_FOOTER_HEIGHT_PX
-      if (available <= 0) {
-        setQuantized(null)
-        return
-      }
-      const dpr = window.devicePixelRatio || 1
-      const snappedPhysH = Math.floor((available * dpr) / px) * px
-      const snappedCss = snappedPhysH / dpr
-      const slack = available - snappedCss
-      const slackTop = Math.floor(slack / 2)
-      setQuantized({ height: snappedCss, slackTop })
+      setQuantized(
+        quantizeTerminalColumn(
+          columnHeight,
+          px,
+          window.devicePixelRatio || 1,
+          footerVisible,
+          WORKSPACE_FOOTER_HEIGHT_PX
+        )
+      )
     }
 
     recompute()
@@ -224,8 +233,10 @@ export function WorkspaceView({
     ro.observe(columnEl)
     return () => ro.disconnect()
     // Re-run whenever cellHeightPx resolves/changes — the ResizeObserver alone
-    // won't fire for that (the column's own size didn't change).
-  }, [cellHeightPx])
+    // won't fire for that (the column's own size didn't change). Same for
+    // footerVisible: toggling the footer changes how much height the terminal
+    // may claim, but not the column's own size.
+  }, [cellHeightPx, footerVisible])
 
   const isClosed = workspace.closedAt !== null
   const isClosedRef = useRef(isClosed)
@@ -1048,7 +1059,15 @@ export function WorkspaceView({
               content is vertically centered inside this wrapper, so its
               border would float mid-wrapper with slack above it instead of
               marking the actual seam. */}
-          {quantized == null ? (
+          {/* When the footer is toggled off, render NOTHING here — not the
+              absorbing wrapper either. WorkspaceFooter already returns null
+              in that case, but the wrapper below is a flex-1 band painted in
+              bg-surface-raised with its own seam border, so it stayed visible
+              as an empty strip of chrome under the terminal. With the footer
+              hidden the quantizer above also stops reserving
+              WORKSPACE_FOOTER_HEIGHT_PX, so the terminal simply grows into
+              the space instead. */}
+          {!footerVisible ? null : quantized == null ? (
             <WorkspaceFooter
               workspaceId={workspace.id}
               harnessId={workspace.harnessId}
