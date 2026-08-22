@@ -8,10 +8,10 @@
 // mode + which harness was clicked + branch text), decideHoverIntentAction/
 // computeSubmenuSide/reduceHoverGate/isGenuineHover/reduceRowHover (all
 // still exercised here even though THIS popover no longer has a flyout
-// submenu — see newWorkspaceMenuLogic.ts's own header comment: these are
-// shared with ChipGroupedDropdown.tsx, the footer Model chip's own,
-// still-present provider -> model flyout, which reuses this exact module
-// rather than re-deriving its own copy of these fixes).
+// submenu — see newWorkspaceMenuLogic.ts's own header comment for their
+// current status; the footer Model chip's own provider -> model flyout that
+// used to reuse this module, ChipGroupedDropdown.tsx, has since been
+// removed).
 //
 // REMOVED in the harness-selector rebuild: decideCreateAction (superseded by
 // decideHarnessCreateAction below) and decideProviderRowIntent/

@@ -24,7 +24,7 @@
 // 'Custom…' escape hatch (unit 01) shared by every picker.
 // ---------------------------------------------------------------------------
 
-import type { ChipDropdownGroup, ChipDropdownItem, SelectableModel } from '@shared/types'
+import type { ChipDropdownItem, SelectableModel } from '@shared/types'
 
 export const MODEL_CUSTOM_VALUE = 'custom'
 
@@ -66,53 +66,10 @@ export function buildModelDropdownItems(models: SelectableModel[]): ChipDropdown
     value: m.id,
     label: labelFor(m),
     sublabel: m.providerLabel,
-    // The ICON id, not the grouping id. A harness-sourced model's providerId
+    // The ICON id, not the harness id. A harness-sourced model's providerId
     // is its HARNESS id ('codex-cli'), which ProviderIcon does not know — so
-    // rows rendered no icon for Codex. Grouping below still keys on the real
-    // providerId; only what the icon component receives changes. See
-    // SelectableModel.providerIconId.
+    // rows rendered no icon for Codex. Only what the icon component receives
+    // changes here. See SelectableModel.providerIconId.
     providerId: m.providerIconId ?? m.providerId
   }))
-}
-
-/**
- * Build the footer Model chip's provider -> model FLYOUT groups (the
- * ChipGroupedDropdown overlay kind's data source). This groups EVERY
- * provider the server returned — the footer chip is the general-purpose
- * model switcher for an already-running workspace and must keep offering
- * whatever a workspace could already be routed to. (The "+ new workspace"
- * popover no longer has an equivalent curated grouping of its own — the
- * support-multi-harness rebuild replaced its provider/model list with a
- * harness selector, see NewWorkspaceMenu.tsx's own header comment.) Group
- * order is first-seen order from `models` (server's own ordering, Claude
- * first by construction of buildSelectableModels); labels come straight
- * from providerLabel, the SAME canonical label the flat dropdown's sublabel
- * already showed, so switching to the grouped view doesn't rename any
- * provider the user already recognizes.
- */
-export function buildModelDropdownGroups(models: SelectableModel[]): ChipDropdownGroup[] {
-  const order: string[] = []
-  const byProvider = new Map<string, SelectableModel[]>()
-  for (const m of models) {
-    let list = byProvider.get(m.providerId)
-    if (!list) {
-      list = []
-      byProvider.set(m.providerId, list)
-      order.push(m.providerId)
-    }
-    list.push(m)
-  }
-  return order.map((providerId) => {
-    const group = byProvider.get(providerId)!
-    return {
-      // Group header icon: same providerIconId-else-providerId rule as the
-      // rows, so a Codex group header shows the OpenAI mark rather than
-      // nothing. The map key (`providerId`, above) is untouched — grouping
-      // must stay keyed on the harness id so two harnesses can never
-      // collapse into one group.
-      providerId: group[0]?.providerIconId ?? providerId,
-      label: group[0]?.providerLabel ?? providerId,
-      models: buildModelDropdownItems(group)
-    }
-  })
 }

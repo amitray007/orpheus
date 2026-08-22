@@ -14,16 +14,14 @@
 //      separate top-line/Enter step (see decideHarnessCreateAction below and
 //      this module's header comment update).
 //   2. The submenu flip/clamp placement decision, and the phantom-hover /
-//      row-hover / hover-intent-timer machinery — ALL STILL LIVE, but no
-//      longer used by THIS menu (its provider -> model flyout submenu is
-//      gone along with the model list). They're kept here because
-//      ChipGroupedDropdown.tsx (the footer Model chip's own provider ->
-//      model flyout, for an ALREADY-RUNNING workspace) reuses every one of
-//      them for its own, still-present submenu — see that file's own header
-//      comment ("THIS COMPONENT DELIBERATELY REUSES newWorkspaceMenuLogic.ts
-//      RATHER THAN RE-DERIVING ITS OWN COPY"). Moving them out of this file
-//      would just rename the shared module, not remove any code, so they
-//      stay put.
+//      row-hover / hover-intent-timer machinery — no longer used by THIS
+//      menu (its provider -> model flyout submenu is gone along with the
+//      model list), and the footer Model chip's own provider -> model
+//      flyout (ChipGroupedDropdown.tsx) that used to reuse them was removed
+//      outright (support-multi-harness). They are left in this module for
+//      now rather than deleted in the same pass — check for a current
+//      caller (scripts/verify-new-workspace-menu.ts still exercises them
+//      directly) before assuming they back a live overlay kind.
 //
 // REMOVED in the harness-selector rebuild (support-multi-harness): the old
 // decideCreateAction (isolation + selectedModelId + branch -> create

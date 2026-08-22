@@ -52,12 +52,11 @@ import { isHarnessRowDisabled } from '../../lib/newWorkspaceMenuLogic'
 // (computeSubmenuSide), labelFor, hoverProvider/pickProvider/pickModel/
 // enterSubmenu/leaveSubmenu/backToProviders — is deleted from THIS file.
 // None of that machinery was actually about the harness picker; it existed
-// purely to support a flyout submenu that no longer exists here. It still
-// lives on in newWorkspaceMenuLogic.ts and useGenuineHoverGate.ts because
-// ChipGroupedDropdown.tsx (the footer Model chip's OWN provider -> model
-// flyout, for picking a model on an ALREADY-RUNNING workspace) still needs
-// every one of those fixes for its own, still-present submenu — see that
-// file's header comment.
+// purely to support a flyout submenu that no longer exists here. The pure
+// reducers still live in newWorkspaceMenuLogic.ts and useGenuineHoverGate.ts
+// (support-multi-harness left them in place rather than deleting them in
+// the same pass — see those files for current callers, if any, before
+// assuming they're still load-bearing).
 // ---------------------------------------------------------------------------
 
 /** Local/Worktree isolation-mode selector row — a two-way TOGGLE only

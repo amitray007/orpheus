@@ -2759,7 +2759,7 @@ console.log(
 // resolves this file's other cross-boundary imports (harnessEntries,
 // modelsDev, etc.).
 {
-  const { buildModelSelectOptions, buildModelDropdownGroups, labelFor } =
+  const { buildModelSelectOptions, labelFor } =
     await import('../src/renderer/src/lib/modelPickerOptions.ts')
   const { effortDropdownItemsFor, shouldRenderEffortChip } =
     await import('../src/renderer/src/lib/effortPickerOptions.ts')
@@ -2861,58 +2861,6 @@ console.log(
     }
 
     // -------------------------------------------------------------------
-    // G2.3 — the grouped flyout's data source still groups by provider
-    // (dormant multi-provider case, Phase 6 re-land target) — but for
-    // TODAY's always-one-harness reality, it always produces <= 1 group,
-    // which is exactly what ChipGroupedDropdown.tsx's dispatcher uses to
-    // pick FlatModelDropdown over the two-panel GroupedModelPanel. This
-    // section asserts the DATA CONTRACT that dispatch decision depends on
-    // — the rendering itself is a React component, out of reach for this
-    // Electron-free/DOM-free harness (see verify-model-picker.ts's own
-    // header on why this file stays offline/renderer-free).
-    // -------------------------------------------------------------------
-    {
-      const singleHarnessModels: SelectableModel[] = [
-        {
-          id: 'model-a',
-          label: 'Model A',
-          providerId: 'codex-cli',
-          providerLabel: 'Codex CLI',
-          isClaude: false,
-          available: true,
-          contextWindow: null,
-          effortLevels: null,
-          provisional: false
-        },
-        {
-          id: 'model-b',
-          label: 'Model B',
-          providerId: 'codex-cli',
-          providerLabel: 'Codex CLI',
-          isClaude: false,
-          available: true,
-          contextWindow: null,
-          effortLevels: null,
-          provisional: false
-        }
-      ]
-      const groups = buildModelDropdownGroups(singleHarnessModels)
-      assert.equal(
-        groups.length,
-        1,
-        'G2.3: a single-harness model list must still produce exactly ONE group (grouping logic itself is untouched — only the RENDER path flattens it)'
-      )
-      assert.equal(
-        groups[0]?.models.length,
-        2,
-        'G2.3: the single group must contain every model, in order'
-      )
-      console.log(
-        '✓ G2.3: buildModelDropdownGroups still groups by provider (dormant Phase-6 logic, untouched) — today always exactly one group, the data contract ChipGroupedDropdown.tsx dispatches a flat render from'
-      )
-    }
-
-    // -------------------------------------------------------------------
     // G2.4 — effort chip harness-level fallback.
     // -------------------------------------------------------------------
     {
@@ -2990,15 +2938,8 @@ console.log(
         [...CLAUDE_MODEL_OPTIONS.map((o) => o.value), 'custom'],
         'G2.5: Claude picker option order must be byte-identical to today (no separators ever existed for Claude — single provider — so flattening is a true no-op)'
       )
-      const claudeGroups = buildModelDropdownGroups(claudeResult)
-      assert.equal(
-        claudeGroups.length,
-        1,
-        'G2.5: Claude must still produce exactly one group (unchanged from before this unit)'
-      )
-      assert.equal(claudeGroups[0]?.label, 'Claude', 'G2.5: Claude group label unchanged')
       console.log(
-        "✓ G2.5: Claude's picker (labels, flat order, single group) is byte-identical to before this unit — the whole model/effort picker change is a no-op for Claude"
+        "✓ G2.5: Claude's picker (labels, flat order) is byte-identical to before this unit — the whole model/effort picker change is a no-op for Claude"
       )
     }
 

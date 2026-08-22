@@ -2540,28 +2540,17 @@ export type NoticeBannerProps = {
 }
 
 // ---------------------------------------------------------------------------
-// Overlay kinds: chipTooltip / chipPrompt — U9 React migration of the footer
-// ActionChip's two in-page `Overlay` usages (`ChipTooltip` component,
-// `PromptPopover` component in ActionChip.tsx), both of which opened
-// bottom-full (upward into the terminal rect) and were occluded by the live
-// terminal. Anchored to the chip element, preferredSide 'top', matching the
-// original upward-opening placement.
+// Overlay kind: chipTooltip — U9 React migration of the footer ActionChip's
+// in-page `Overlay` usage (`ChipTooltip` component in ActionChip.tsx), which
+// opened bottom-full (upward into the terminal rect) and was occluded by the
+// live terminal. Anchored to the chip element, preferredSide 'top', matching
+// the original upward-opening placement.
 // ---------------------------------------------------------------------------
 
 /** Transient hover-label card — non-interactive, matches today's tooltip styling. */
 export type ChipTooltipProps = {
   text: string
 }
-
-/** Interactive prompt popover — same fields/labels/order as PromptDescriptor[]. */
-export type ChipPromptProps = {
-  prompts: PromptDescriptor[]
-  /** Pre-filled default values (already placeholder-expanded by the caller). */
-  values: Record<string, string>
-}
-
-/** Resolves on Apply/Enter; caller resolves `null` on Cancel/Escape/outside-click/IPC failure. */
-export type ChipPromptResult = { values: Record<string, string> } | null
 
 /** One selectable item in a chip dropdown (e.g. a model option). `destructive`
  *  is optional and additive — only PanesView's ⋯ layout-options menu sets it
@@ -2590,59 +2579,6 @@ export type ChipDropdownProps = {
 
 /** Resolves on row click/Enter; caller resolves `null` on Cancel/Escape/outside-click/IPC failure. */
 export type ChipDropdownResult = { kind: 'select'; value: string } | null
-
-// ---------------------------------------------------------------------------
-// Overlay kind: chipGroupedDropdown — the footer Model chip's provider ->
-// model FLYOUT variant of chipDropdown (model-routing unit 10-creation,
-// footer follow-up). Deliberately a SEPARATE overlay kind rather than a mode
-// flag on chipDropdown/ChipDropdownProps: chipDropdown is shared by
-// footer.effortSelect and footer.dropdown (author-configured custom options),
-// neither of which has a provider concept at all, and its flat single-panel
-// contract (ChipDropdownProps/ChipDropdownResult above) stays completely
-// untouched by this addition. The flyout mechanics (single-hovered-row,
-// genuine-hover gate, left/right flip, diagonal-traversal close-delay) are
-// NOT reimplemented here — the kind (ChipGroupedDropdown.tsx) imports the
-// SAME pure reducers newWorkspaceMenuLogic.ts already exports
-// (computeSubmenuSide/reduceHoverGate/isGenuineHover/reduceRowHover), proven
-// by scripts/verify-new-workspace-menu.ts, rather than re-deriving them.
-// ---------------------------------------------------------------------------
-
-/** One provider group in the grouped dropdown's provider list — a thin,
- *  serializable projection the call site computes (DropdownChip.tsx via
- *  buildModelDropdownGroups); the kind never groups/filters models itself. */
-export type ChipDropdownGroup = {
-  providerId: string
-  label: string
-  models: ChipDropdownItem[]
-}
-
-/** Interactive provider -> model flyout popover — opens upward from its
- *  anchor chip (same anchoring contract as ChipDropdownProps), but the
- *  top-level list is providers; picking one opens a submenu of that
- *  provider's models beside it (mirrors NewWorkspaceMenuProps' groups/view
- *  shape, minus the creation-only isolation/branch fields this chip has no
- *  use for). */
-export type ChipGroupedDropdownProps = {
-  groups: ChipDropdownGroup[]
-  /** Currently-selected model value — drives both the provider row's
-   *  submenu-open state (whichever group contains it) and the `●`/checkmark
-   *  inside that group's model list. */
-  selectedValue?: string
-  title?: string
-}
-
-/** Partial props pushed via `overlay:update` as the call site's own live
- *  selectable-model subscription changes — same shallow-merge contract
- *  NewWorkspaceMenuPatch/WorkspaceSettingsCardPatch use. Lets the footer
- *  Model chip's flyout (unlike the flat ChipDropdown it's a sibling of)
- *  reflect a background catalog refresh — including one triggered by its
- *  OWN "Refresh models" button — without the user closing and reopening it. */
-export type ChipGroupedDropdownPatch = Partial<ChipGroupedDropdownProps>
-
-/** Resolves on a model row click/Enter; caller resolves `null` on
- *  Cancel/Escape/outside-click/IPC failure — same settle contract as
- *  ChipDropdownResult. */
-export type ChipGroupedDropdownResult = { kind: 'select'; value: string } | null
 
 // ---------------------------------------------------------------------------
 // Overlay kind: workspaceSettingsCard — the workspace title bar's Settings

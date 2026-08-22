@@ -99,24 +99,6 @@ const CODEX_EFFORTS = [...(CODEX_CURATED.effort?.options ?? [])]
   )
 }
 
-// ---------------------------------------------------------------------------
-// 4. The FLAT model panel renders a provider mark. This is the path the model
-//    chip actually opens (groups.length <= 1 today); it previously rendered
-//    only the label, so NO model row had an icon — Claude's included.
-// ---------------------------------------------------------------------------
-{
-  const fs = await import('node:fs')
-  const panel = fs.readFileSync(
-    new URL('../src/renderer/src/overlay/kinds/ChipGroupedDropdown.tsx', import.meta.url),
-    'utf8'
-  )
-  assert.match(
-    panel,
-    /\{m\.providerId && <ProviderIcon providerId=\{m\.providerId\} size=\{12\} \/>\}/,
-    'the flat model panel must render each row a ProviderIcon from its (icon-id-carrying) providerId'
-  )
-}
-
 console.log(
-  "✓ a model-less Codex workspace gets Codex's efforts (with 'ultra', without 'minimal'), Claude's ladder is unchanged, footer rows are harness-scoped, and flat model rows render provider marks"
+  "✓ a model-less Codex workspace gets Codex's efforts (with 'ultra', without 'minimal'), Claude's ladder is unchanged, and footer rows are harness-scoped"
 )

@@ -14,11 +14,13 @@ import { reduceHoverGate, isGenuineHover } from './newWorkspaceMenuLogic'
 // (scripts/verify-new-workspace-menu.ts); this hook is just their
 // side-effecting continuation (real DOM listeners driving a ref).
 //
-// Shared by every overlay kind whose card can resize as a side effect of its
-// own hover handling — currently NewWorkspaceMenu.tsx (the "+ new workspace"
-// popover) and ChipGroupedDropdown.tsx (the footer Model chip's provider ->
-// model flyout) — so the fix lives in exactly one place rather than being
-// re-derived per kind.
+// Meant to be shared by every overlay kind whose card can resize as a side
+// effect of its own hover handling, so the fix lives in exactly one place
+// rather than being re-derived per kind. NewWorkspaceMenu.tsx no longer uses
+// it (support-multi-harness replaced its flyout submenu with a flat harness
+// list) and the footer Model chip's own flyout (ChipGroupedDropdown.tsx) was
+// removed outright — check for a current caller before assuming this hook
+// is still wired into a live overlay kind.
 //
 // `onResize` is invoked from the SAME native 'resize' listener that closes
 // the gate — callers use this as the clear point for their own JS-tracked
