@@ -38,7 +38,7 @@
 
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import { Gauge, CurrencyDollarSimple } from '@phosphor-icons/react'
+import { Gauge } from '@phosphor-icons/react'
 import type { HarnessSummary, SessionUsage, SessionCost } from '@shared/types'
 import { shouldFetchUsageDetails } from '@shared/harness/capabilityGating'
 
@@ -60,10 +60,14 @@ function shortTokens(n: number): string {
  *  wants it, see this file's own header on why that popover is untouched).
  *  '—' when either side is unknown, matching formatContextText's
  *  never-fabricate discipline in workspaceTitleBar.helpers.ts's sibling. */
-function shortContextLabel(usage: SessionUsage | null, contextBudget: number | null): string {
-  if (contextBudget === null) return usage ? `${shortTokens(usage.lastTurnContextTokens)}/—` : '—'
-  if (!usage) return `—/${shortTokens(contextBudget)}`
-  return `${shortTokens(usage.lastTurnContextTokens)}/${shortTokens(contextBudget)}`
+function shortContextLabel(usage: SessionUsage | null): string {
+  // USED TOKENS ONLY — deliberately not `used/budget`. The budget is a
+  // constant per model, so repeating it in a space-constrained title bar
+  // spends width on something that never changes and never prompts an
+  // action. The full `used / budget (pct)` breakdown is still one hover
+  // away in the chip's title attribute, which is where the detail belongs.
+  if (!usage) return '—'
+  return shortTokens(usage.lastTurnContextTokens)
 }
 
 /** Compact cost-chip label. Mirrors formatCostText's hasUnknownPricing
@@ -105,9 +109,15 @@ function ChipButton({ icon, label, title }: ChipButtonProps): React.JSX.Element 
       title={title}
       aria-label={title}
     >
-      <span className="flex-shrink-0 flex items-center" style={{ width: 12, height: 12 }}>
-        {icon}
-      </span>
+      {/* The icon slot is a fixed 12x12 box so icons align across chips —
+          but only when there IS an icon. Rendering it unconditionally for an
+          icon-less chip (Cost) would reserve 12px plus the flex gap and read
+          as a mis-aligned indent. */}
+      {icon != null && (
+        <span className="flex-shrink-0 flex items-center" style={{ width: 12, height: 12 }}>
+          {icon}
+        </span>
+      )}
       <span className="truncate" style={{ maxWidth: MAX_LABEL_WIDTH_PX }}>
         {label}
       </span>
@@ -180,7 +190,7 @@ export function TitleBarUsageChips({
       {canFetchUsage && (
         <ChipButton
           icon={<Gauge size={12} />}
-          label={shortContextLabel(usage, usage?.contextBudget ?? null)}
+          label={shortContextLabel(usage)}
           title={
             usage?.contextBudget != null
               ? `Context: ${usage.lastTurnContextTokens.toLocaleString()} / ${usage.contextBudget.toLocaleString()} tokens (${Math.round(usage.usedPct)}%)`
@@ -190,7 +200,10 @@ export function TitleBarUsageChips({
       )}
       {canFetchUsage && (
         <ChipButton
-          icon={<CurrencyDollarSimple size={12} />}
+          // No icon: the label is already `$0.00`, so a currency glyph beside
+          // it is pure redundancy in a width-constrained bar. Context keeps
+          // its gauge because `12k` alone doesn't say what it measures.
+          icon={null}
           label={shortCostLabel(cost)}
           title={
             cost
