@@ -46,6 +46,9 @@
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
 import { DatabaseSync } from 'node:sqlite'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 
 class Database extends DatabaseSync {}
 
@@ -152,6 +155,58 @@ function insertWorkspace(
     `INSERT INTO workspaces (id, project_id, name, cwd, claude_session_id, harness_id)
      VALUES (?, 'proj-1', 'ws', ?, ?, 'codex-cli')`
   ).run(row.id, row.cwd, row.claudeSessionId ?? null)
+}
+
+// ---------------------------------------------------------------------------
+// Fixture rollout support — codexSessionArgs (src/main/harness/codex/
+// session.ts) now gates its `resume` emission on codexRolloutExists, which
+// scans real files under codexSessionsRoot() (CODEX_HOME/sessions, or
+// ~/.codex/sessions). Every scenario below that expects a `['resume', <id>]`
+// prefix must therefore point CODEX_HOME at a throwaway fixture dir holding a
+// matching rollout file, or the (now correctly) existence-gated
+// codexSessionArgs will find nothing and degrade to a fresh session — see
+// scripts/verify-harness-codex-session.ts for the dedicated coverage of that
+// gate itself; this file only needs enough fixture plumbing to keep its own
+// session-continuity scenarios exercising the ['resume', <id>] shape they're
+// actually testing, not the [] shape.
+let codexHomeCounter = 0
+function freshCodexHome(): string {
+  codexHomeCounter += 1
+  const dir = fs.mkdtempSync(
+    path.join(os.tmpdir(), `orpheus-codex-launch-test-home-${codexHomeCounter}-`)
+  )
+  return dir
+}
+
+/** Writes a minimal fixture rollout so codexRolloutExists(sessionId) finds
+ *  it — same session_meta shape as verify-harness-codex-session.ts's
+ *  writeRollout, trimmed to just what that existence check reads. */
+function writeFixtureRollout(codexHome: string, sessionId: string, cwd: string): void {
+  const now = new Date()
+  const yyyy = String(now.getFullYear())
+  const mm = String(now.getMonth() + 1).padStart(2, '0')
+  const dd = String(now.getDate()).padStart(2, '0')
+  const dir = path.join(codexHome, 'sessions', yyyy, mm, dd)
+  fs.mkdirSync(dir, { recursive: true })
+  const line = JSON.stringify({
+    timestamp: now.toISOString(),
+    type: 'session_meta',
+    payload: { id: sessionId, session_id: sessionId, cwd, thread_source: 'user' }
+  })
+  fs.writeFileSync(path.join(dir, `rollout-fixture-${sessionId}.jsonl`), line + '\n')
+}
+
+/** Runs `fn` with CODEX_HOME pointed at `codexHome`, restoring the prior
+ *  value afterward — mirrors verify-harness-codex-session.ts's withCodexHome. */
+function withCodexHome<T>(codexHome: string, fn: () => T): T {
+  const original = process.env.CODEX_HOME
+  process.env.CODEX_HOME = codexHome
+  try {
+    return fn()
+  } finally {
+    if (original === undefined) delete process.env.CODEX_HOME
+    else process.env.CODEX_HOME = original
+  }
 }
 
 const { setHarnessSettings } = await import('../src/main/harness/settings.ts')
@@ -379,7 +434,9 @@ function setWorkspaceOverride(
     curated: { model: 'gpt-5.4-mini' },
     args: [{ key: '--verbose', enabled: true }]
   })
-  const launch = composeCodexHarnessLaunch('proj-1', 'ws-bound')
+  const codexHome = freshCodexHome()
+  writeFixtureRollout(codexHome, 'codex-real-session-id', '/repo')
+  const launch = withCodexHome(codexHome, () => composeCodexHarnessLaunch('proj-1', 'ws-bound'))
   assert.deepEqual(
     splitFlagString(launch.flags),
     ['resume', 'codex-real-session-id', '-m', 'gpt-5.4-mini', '--verbose'],
@@ -402,10 +459,12 @@ function setWorkspaceOverride(
   const db = createFreshDb()
   insertWorkspace(db, { id: 'ws-bound-2', cwd: '/repo', claudeSessionId: 'codex-real-session-id' })
   const { codexSessionArgs } = await import('../src/main/harness/codex/session.ts')
+  const codexHome = freshCodexHome()
+  writeFixtureRollout(codexHome, 'codex-real-session-id', '/repo')
   assert.deepEqual(
-    codexSessionArgs('ws-bound-2'),
+    withCodexHome(codexHome, () => codexSessionArgs('ws-bound-2')),
     ['resume', 'codex-real-session-id'],
-    'codexSessionArgs must emit ["resume", <id>] for a bound workspace'
+    'codexSessionArgs must emit ["resume", <id>] for a bound workspace whose rollout exists'
   )
   assert.deepEqual(
     codexSessionArgs(undefined),
@@ -664,7 +723,11 @@ mustFail('a resume prefix placed AFTER curated flags (wrong order) is caught', (
     claudeSessionId: 'codex-real-session-id'
   })
   setHarnessSettings('codex-cli', 'global', undefined, { curated: { model: 'gpt-5.4-mini' } })
-  const real = composeCodexHarnessLaunch('proj-mutation-3', 'ws-mutation-order')
+  const codexHome = freshCodexHome()
+  writeFixtureRollout(codexHome, 'codex-real-session-id', '/repo')
+  const real = withCodexHome(codexHome, () =>
+    composeCodexHarnessLaunch('proj-mutation-3', 'ws-mutation-order')
+  )
   // Simulate the bug this unit must not ship: resume tokens appended AFTER
   // curated flags instead of prepended before them. `resume` is a codex
   // SUBCOMMAND (verified against `codex resume --help`/`codex --help`) --

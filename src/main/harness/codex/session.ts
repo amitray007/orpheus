@@ -100,24 +100,24 @@
 // exercise the floor logic directly, independent of where the floor comes
 // from) stable.
 //
-// ACCEPTED RISK — a bound id that Codex later can't resume. `codex archive`
-// and `codex delete` (both real subcommands, per `codex --help`) can remove
-// a session Orpheus has already bound. What `codex resume <id>` does for a
-// valid-shaped-but-gone id was deliberately NOT tested against a real
-// session (this unit is static-verification-only — no live Codex process,
-// per its own test discipline). If that hard-errors instead of falling back
-// to a fresh session, a workspace with a since-deleted binding would fail to
-// launch rather than degrade — this codebase's launch composition
-// (composeCodexHarnessLaunch) is synchronous and pre-spawn, with no
-// visibility into what the spawned process actually does, so it cannot
-// detect or recover from that at this layer. The window is narrow (the
-// bound id always comes from a rollout Codex itself just wrote for this
-// exact workspace; reaching this state requires the user to separately
-// archive/delete that specific session between mounts) and accepted for v1.
-// A future unit could mitigate by re-running discovery and clearing a stale
-// binding when the corresponding rollout is confirmed gone, but that needs
-// a verified read on Codex's actual resume-of-deleted-session behavior
-// first — do not guess at recovery logic without that.
+// FIXED — a bound id that Codex later can't resume (was ACCEPTED RISK,
+// v1). `codex archive`/`codex delete` (real subcommands per `codex --help`),
+// a moved/reset CODEX_HOME, or an in-progress rollout-layout migration can
+// all remove the rollout a bound id points at, and what `codex resume <id>`
+// does for a valid-shaped-but-gone id was never verified against a real
+// process (this unit stays static-verification-only — no live Codex, per
+// its own test discipline) and was NOT worth the risk of finding out live:
+// this codebase's launch composition (composeCodexHarnessLaunch) is
+// synchronous and pre-spawn, with no visibility into what the spawned
+// process actually does, so a hard error there could not be detected or
+// recovered from at this layer. codexSessionArgs (below) now mirrors
+// Claude's sessionJsonlExists discipline exactly: before emitting `resume`,
+// it confirms the bound id's rollout can still be found on disk
+// (codexRolloutExists, reusing findCodexRolloutFileById — the same "given an
+// id, find its file right now" scan the usage/cost reader already needed),
+// and degrades to a FRESH session ([]) rather than a hard error when it
+// cannot. This closes the asymmetry with Claude's session.ts, which has
+// always gated its own --resume emission the same way.
 // ---------------------------------------------------------------------------
 
 import * as fs from 'node:fs'
@@ -374,6 +374,45 @@ export function scheduleCodexSessionDiscovery(workspaceId: string): void {
 // Resume argv
 // ---------------------------------------------------------------------------
 
+// One-way-true cache for "does a rollout file for this bound id still exist"
+// checks — same shape and same reasoning as Claude's session.ts
+// sessionJsonlExistsCache: a rollout, once confirmed present, is never
+// deleted mid-session by ordinary use, but a not-yet-flushed rollout can
+// legitimately appear absent on an earlier check and present on a later one,
+// so only the TRUE result is safe to cache. Keyed on the id alone (unlike
+// Claude's `${cwd}:${sessionId}` key) because findCodexRolloutFileById's own
+// contract is id-only — it does not take or filter on cwd (see that
+// function's doc comment).
+const codexRolloutExistsCache = new Map<string, true>()
+
+/**
+ * Returns true if a rollout file for this bound Codex session id can still
+ * be found on disk. THE FIX for the bug this module's header now documents:
+ * codexSessionArgs used to emit `['resume', id]` for ANY non-null bound id,
+ * with no check that Codex could actually resume it. A rollout can vanish
+ * out from under a bound id — `codex archive`/`codex delete` (real
+ * subcommands per `codex --help`), a moved/reset CODEX_HOME, or an
+ * in-progress rollout-layout migration (`migrate-rollouts` — see this
+ * module's header) — and `codex resume <gone-id>` was never verified to
+ * degrade gracefully; per the header's "ACCEPTED RISK" note, the safer
+ * choice is to never ask Codex to resume an id this process cannot itself
+ * confirm still has a transcript, and fall back to a fresh session instead.
+ *
+ * Reuses findCodexRolloutFileById (below) rather than re-implementing a scan
+ * — that function already answers exactly this question ("given a bound id,
+ * which file holds its data right now") for the usage/cost reader; a
+ * from-scratch existence check here would be the same scan maintained twice.
+ *
+ * Read defensively: findCodexRolloutFileById already never throws (its own
+ * doc comment), so nothing further to catch here.
+ */
+function codexRolloutExists(sessionId: string): boolean {
+  if (codexRolloutExistsCache.has(sessionId)) return true
+  const found = findCodexRolloutFileById(codexSessionsRoot(), sessionId) !== null
+  if (found) codexRolloutExistsCache.set(sessionId, true)
+  return found
+}
+
 /**
  * Composes the session-continuity argv tokens for a Codex workspace —
  * `['resume', <id>]` as the LEADING tokens (subcommand-first; see this
@@ -382,11 +421,18 @@ export function scheduleCodexSessionDiscovery(workspaceId: string): void {
  * CAPABILITY GATING — same discipline as claudeSessionArgs:
  * capabilities.resume === false short-circuits to [] before touching the DB.
  *
+ * EXISTENCE-GATED — mirrors claudeSessionArgs's sessionJsonlExists check:
+ * a bound id whose rollout is no longer found on disk degrades to a FRESH
+ * session ([]) rather than emitting `resume` against an id Codex itself may
+ * no longer be able to resume. See codexRolloutExists's doc comment for why
+ * this exists and what it guards against.
+ *
  * Returns [] (never throws) when workspaceId is undefined, the workspace
  * can't be found, the DB read itself throws (see the try/catch — this keeps
  * a caller with no `workspaces` table, e.g. a narrower test fixture, from
- * crashing rather than degrading to "no binding"), or it has no bound
- * session id yet — matching claudeSessionArgs's early-return shape.
+ * crashing rather than degrading to "no binding"), it has no bound session
+ * id yet, or the bound id's rollout can no longer be found — matching
+ * claudeSessionArgs's early-return shape.
  */
 export function codexSessionArgs(workspaceId?: string): string[] {
   const capabilities = CODEX_CAPABILITIES
@@ -400,6 +446,7 @@ export function codexSessionArgs(workspaceId?: string): string[] {
     return []
   }
   if (!ws?.claudeSessionId) return []
+  if (!codexRolloutExists(ws.claudeSessionId)) return []
 
   return ['resume', ws.claudeSessionId]
 }

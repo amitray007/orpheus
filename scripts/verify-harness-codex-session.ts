@@ -380,20 +380,80 @@ const MOUNT_FLOOR_MS = new Date('2026-08-20T19:55:00.000Z').getTime()
   console.log('✓ among multiple valid candidates, the newest wins')
 }
 
+// All codexSessionArgs scenarios below point CODEX_HOME at a throwaway
+// fixture dir rather than touching the real user's ~/.codex — codexRolloutExists
+// (the fix under test) now calls codexSessionsRoot(), which prefers
+// CODEX_HOME over os.homedir() precisely so tests (and real users who
+// relocate their Codex state) can redirect it without touching HOME
+// wholesale. Restored in a finally so a later scenario that relies on the
+// ambient/unset value (there are none left, but this is the safe default)
+// isn't affected.
+function withCodexHome<T>(sessionsRoot: string, fn: () => T): T {
+  const original = process.env.CODEX_HOME
+  process.env.CODEX_HOME = sessionsRoot
+  try {
+    return fn()
+  } finally {
+    if (original === undefined) delete process.env.CODEX_HOME
+    else process.env.CODEX_HOME = original
+  }
+}
+
 // ---------------------------------------------------------------------------
 // B1. codexSessionArgs — resume argv token ORDER: ["resume", id], subcommand
-//     first, exactly two tokens.
+//     first, exactly two tokens. THE EXISTENCE GATE (this file's fix): this
+//     must pass ONLY because a real fixture rollout for 'real-codex-id'
+//     exists under the fixture CODEX_HOME — codexSessionArgs now checks for
+//     it via codexRolloutExists before ever emitting 'resume'.
 // ---------------------------------------------------------------------------
 {
   const db = createFreshDb()
   insertWorkspace(db, { id: 'ws-bound', cwd: '/repo', claudeSessionId: 'real-codex-id' })
-  const tokens = codexSessionArgs('ws-bound')
+  const codexHome = freshSessionsRoot()
+  const sessionsRoot = path.join(codexHome, 'sessions')
+  writeRollout(sessionsRoot, NOW, {
+    id: 'real-codex-id',
+    cwd: '/repo',
+    threadSource: 'user',
+    timestamp: '2026-08-20T19:58:00.000Z'
+  })
+  const tokens = withCodexHome(codexHome, () => codexSessionArgs('ws-bound'))
   assert.deepEqual(
     tokens,
     ['resume', 'real-codex-id'],
-    'codexSessionArgs must emit exactly ["resume", <id>], subcommand-first'
+    'codexSessionArgs must emit exactly ["resume", <id>], subcommand-first, when the bound id\'s rollout still exists on disk'
   )
-  console.log('✓ codexSessionArgs resume argv token order: ["resume", id], subcommand-first')
+  console.log(
+    '✓ codexSessionArgs resume argv token order: ["resume", id], subcommand-first (rollout exists)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// B1b. THE BUG THIS FILE FIXES — a workspace bound to an id whose rollout is
+//     GONE (archived/deleted, CODEX_HOME moved, or never existed) must
+//     degrade to a FRESH session ([]), never emit `resume` against an id
+//     Codex can no longer find. This is the missing half of Claude's
+//     sessionJsonlExists discipline that this module's header now documents
+//     as fixed.
+// ---------------------------------------------------------------------------
+{
+  const db = createFreshDb()
+  insertWorkspace(db, {
+    id: 'ws-bound-gone',
+    cwd: '/repo',
+    claudeSessionId: 'archived-or-deleted-id'
+  })
+  // Empty CODEX_HOME — no rollout for this id anywhere.
+  const codexHome = freshSessionsRoot()
+  const tokens = withCodexHome(codexHome, () => codexSessionArgs('ws-bound-gone'))
+  assert.deepEqual(
+    tokens,
+    [],
+    'a bound id whose rollout cannot be found on disk must degrade to a fresh session ([]), not ["resume", <gone id>]'
+  )
+  console.log(
+    "✓ codexSessionArgs degrades to [] when the bound id's rollout is missing (archived/deleted/moved CODEX_HOME)"
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -419,21 +479,40 @@ const MOUNT_FLOOR_MS = new Date('2026-08-20T19:55:00.000Z').getTime()
 // file so far, is either [] or exactly ['resume', <id>] — never a bare
 // ['resume'] (which would trigger Codex's interactive picker). This is a
 // structural sweep, not a single case, precisely because "never emit a bare
-// resume" is an invariant about EVERY call, not one fixture.
+// resume" is an invariant about EVERY call, not one fixture. ws-sweep-bound's
+// rollout fixture exists on disk so this sweep still exercises the
+// ['resume', <id>] shape post-existence-gate, not just the [] shape.
 {
   const db = createFreshDb()
   insertWorkspace(db, { id: 'ws-sweep-bound', cwd: '/repo', claudeSessionId: 'sweep-id' })
   insertWorkspace(db, { id: 'ws-sweep-unbound', cwd: '/repo', claudeSessionId: null })
-  for (const id of [undefined, 'ws-sweep-bound', 'ws-sweep-unbound', 'ws-sweep-missing']) {
-    const tokens = codexSessionArgs(id)
-    const isEmpty = tokens.length === 0
-    const isResumeWithId = tokens.length === 2 && tokens[0] === 'resume' && tokens[1].length > 0
-    assert.ok(
-      isEmpty || isResumeWithId,
-      `codexSessionArgs(${String(id)}) must be [] or ["resume", <non-empty id>] — got ${JSON.stringify(tokens)}`
+  const codexHome = freshSessionsRoot()
+  const sessionsRoot = path.join(codexHome, 'sessions')
+  writeRollout(sessionsRoot, NOW, {
+    id: 'sweep-id',
+    cwd: '/repo',
+    threadSource: 'user',
+    timestamp: '2026-08-20T19:58:00.000Z'
+  })
+  withCodexHome(codexHome, () => {
+    for (const id of [undefined, 'ws-sweep-bound', 'ws-sweep-unbound', 'ws-sweep-missing']) {
+      const tokens = codexSessionArgs(id)
+      const isEmpty = tokens.length === 0
+      const isResumeWithId = tokens.length === 2 && tokens[0] === 'resume' && tokens[1].length > 0
+      assert.ok(
+        isEmpty || isResumeWithId,
+        `codexSessionArgs(${String(id)}) must be [] or ["resume", <non-empty id>] — got ${JSON.stringify(tokens)}`
+      )
+    }
+    assert.deepEqual(
+      codexSessionArgs('ws-sweep-bound'),
+      ['resume', 'sweep-id'],
+      'ws-sweep-bound has a real fixture rollout, so this sweep must still exercise the resume shape, not just []'
     )
-  }
-  console.log('✓ codexSessionArgs never emits a bare ["resume"] with no id, across every scenario')
+  })
+  console.log(
+    '✓ codexSessionArgs never emits a bare ["resume"] with no id, across every scenario (including a real resume case)'
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -753,7 +832,15 @@ console.log('mutation test: a missing mount-time floor is correctly caught as a 
 mustFail('resume argv token order (flags-before-subcommand) is caught', () => {
   const db = createFreshDb()
   insertWorkspace(db, { id: 'ws-order-check', cwd: '/repo', claudeSessionId: 'order-check-id' })
-  const real = codexSessionArgs('ws-order-check')
+  const codexHome = freshSessionsRoot()
+  const sessionsRoot = path.join(codexHome, 'sessions')
+  writeRollout(sessionsRoot, NOW, {
+    id: 'order-check-id',
+    cwd: '/repo',
+    threadSource: 'user',
+    timestamp: '2026-08-20T19:58:00.000Z'
+  })
+  const real = withCodexHome(codexHome, () => codexSessionArgs('ws-order-check'))
   const wrongOrder = ['order-check-id', 'resume'] // reversed
   assert.deepEqual(
     wrongOrder,
@@ -763,6 +850,31 @@ mustFail('resume argv token order (flags-before-subcommand) is caught', () => {
 })
 console.log(
   'mutation test: reversed resume argv token order is correctly caught as a failing assertion'
+)
+
+mustFail('existence gate (codexRolloutExists check) removed is caught', () => {
+  const db = createFreshDb()
+  insertWorkspace(db, {
+    id: 'ws-existence-gate-check',
+    cwd: '/repo',
+    claudeSessionId: 'no-rollout-for-this-id'
+  })
+  // Deliberately empty CODEX_HOME — no rollout anywhere for this id. The
+  // real (fixed) codexSessionArgs must return [] here; a mutated version
+  // with the codexRolloutExists check deleted would instead return
+  // ['resume', 'no-rollout-for-this-id'] unconditionally (the old, buggy
+  // behavior this file's fix replaces).
+  const codexHome = freshSessionsRoot()
+  const real = withCodexHome(codexHome, () => codexSessionArgs('ws-existence-gate-check'))
+  const mutatedNoGate = ['resume', 'no-rollout-for-this-id']
+  assert.deepEqual(
+    mutatedNoGate,
+    real,
+    'a mutated (existence-gate-less) result must disagree with the real, correctly-empty result'
+  )
+})
+console.log(
+  'mutation test: removing the codexRolloutExists existence gate is correctly caught as a failing assertion'
 )
 
 fs.rmSync(tmpRoot, { recursive: true, force: true })
