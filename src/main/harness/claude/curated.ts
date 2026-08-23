@@ -203,5 +203,13 @@ export const CLAUDE_CAPABILITIES: HarnessCapabilities = {
   // P1.7 will assert this is the ONLY descriptor with modelRouting: true,
   // which is a statement about the future non-Claude harnesses (Codex
   // CLI/Gemini CLI), not a contradiction of Claude having the capability.
-  modelRouting: true
+  modelRouting: true,
+  // False — Claude already derives a good sidebar title from its own
+  // transcript (see CLAUDE.md's Session domain-model paragraph and
+  // resolveWorkspaceName's session-title rung), so the fm/codex-exec
+  // background title generator (src/main/harness/codex/titleGeneration.ts)
+  // has nothing useful to add here and must stay a complete no-op for every
+  // Claude workspace. This is the flag that scheduler gates on, never
+  // `harnessId === 'codex-cli'`.
+  titleGeneration: false
 }

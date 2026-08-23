@@ -153,8 +153,11 @@ const WorkspaceNameCell = memo(function WorkspaceNameCell({
   // the reference shape and src/shared/harness/capabilityGating.ts for the
   // pure decisions.
   const harness = useHarnessForWorkspace(ws.harnessId)
-  // Subscribe to this workspace's key only — re-renders only when this key changes.
-  const rawActivity = useWorkspaceActivity(ws.id)
+  // Subscribe to this workspace's key only — re-renders only when this key
+  // changes. Falls back to this workspace's own persisted status while the
+  // live store has no entry yet (e.g. right after an app restart) — see
+  // useWorkspaceActivity's fallback param.
+  const rawActivity = useWorkspaceActivity(ws.id, ws.status)
   const activity = shouldClaimLiveActivity(harness.capabilities) ? rawActivity : undefined
   const terminalTitle = useWorkspaceTitle(ws.id)
   const isPinned = ws.pinnedAt !== null

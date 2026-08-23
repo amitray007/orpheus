@@ -278,6 +278,25 @@ mock.module(abs('workspaces.ts'), () => ({
     throw new Error(
       'setWorkspaceClaudeSessionId() must not be called resolving HARNESSES for this fixture'
     )
+  },
+  // support-multi-harness — registry.ts's Codex path now also transitively
+  // reaches codex/titleGeneration.ts (via codex/launch.ts), which imports
+  // these three from this same module at module scope. Same "throw if
+  // actually invoked" discipline as the exports above.
+  hasCodexTitleGenerationRun: () => {
+    throw new Error(
+      'hasCodexTitleGenerationRun() must not be called resolving HARNESSES for this fixture'
+    )
+  },
+  markCodexTitleGenerationRun: () => {
+    throw new Error(
+      'markCodexTitleGenerationRun() must not be called resolving HARNESSES for this fixture'
+    )
+  },
+  setWorkspaceLastTitle: () => {
+    throw new Error(
+      'setWorkspaceLastTitle() must not be called resolving HARNESSES for this fixture'
+    )
   }
 }))
 

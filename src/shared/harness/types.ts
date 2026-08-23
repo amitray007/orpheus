@@ -102,6 +102,17 @@ export interface HarnessCapabilities {
    *  models (e.g. Claude's model picker + provider routing). When false,
    *  model-selection UI should not be offered for this harness. */
   modelRouting: boolean
+  /** The app should attempt to generate a sidebar title for a new workspace
+   *  on this harness from the user's first prompt (a local-model best-effort
+   *  background task — see src/main/harness/codex/titleGeneration.ts). False
+   *  for a harness whose own title-derivation already works, so this stays
+   *  a no-op there rather than a redundant second title source: Claude
+   *  already derives a good sidebar title from its own transcript (see
+   *  CLAUDE.md's Session domain-model paragraph), so this flag exists
+   *  specifically for a harness whose terminal-title fallback is otherwise
+   *  useless (Codex sets the terminal title to the git repo folder name,
+   *  identical across every workspace in that repo). */
+  titleGeneration: boolean
 }
 
 // ---------------------------------------------------------------------------

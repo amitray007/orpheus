@@ -44,6 +44,11 @@ type WorkspaceRow = {
   worktree_branch: string | null
   // Multi-harness migration (Phase 1, P1.3)
   harness_id: HarnessId
+  // support-multi-harness: Codex title-generation "already attempted" gate.
+  // See schema.ts's own column comment for why this is a dedicated column
+  // rather than inferring "already generated" from last_title being
+  // non-null.
+  codex_title_generated: number
 }
 
 type ProjectRow = {
@@ -537,6 +542,40 @@ export function getAllWorkspaceLastTitles(): Array<{ id: string; title: string }
     )
     .all() as Array<{ id: string; last_title: string }>
   return rows.map((r) => ({ id: r.id, title: r.last_title }))
+}
+
+// ---------------------------------------------------------------------------
+// Codex title-generation "already attempted" tracking (support-multi-harness)
+//
+// Main-process-only — deliberately NOT mirrored onto WorkspaceRecord/
+// src/shared/types.ts. The renderer has no use for "has generation been
+// attempted"; it only ever needs the resulting title, which already flows
+// through the existing lastTitle field. Adding renderer-facing plumbing for
+// a value only src/main/harness/codex/titleGeneration.ts's scheduler reads
+// would be exactly the "plumbing you don't need" this repo's conventions
+// warn against.
+// ---------------------------------------------------------------------------
+
+/** True once this workspace's one-shot Codex title-generation attempt has
+ *  already run (success OR failure — see titleGeneration.ts's header for why
+ *  this is single-attempt-ever, not retried). Returns false for an unknown
+ *  workspace id rather than throwing, matching this file's other read
+ *  helpers' fail-soft shape. */
+export function hasCodexTitleGenerationRun(id: string): boolean {
+  const db = getDb()
+  const row = db.prepare('SELECT codex_title_generated FROM workspaces WHERE id = ?').get(id) as
+    | { codex_title_generated: number }
+    | undefined
+  return row?.codex_title_generated === 1
+}
+
+/** Marks this workspace's Codex title-generation attempt as having run.
+ *  Called exactly once per workspace by the scheduler in titleGeneration.ts,
+ *  regardless of whether that attempt produced a usable title — see this
+ *  column's own schema.ts comment for the single-attempt-ever reasoning. */
+export function markCodexTitleGenerationRun(id: string): void {
+  const db = getDb()
+  db.prepare('UPDATE workspaces SET codex_title_generated = 1 WHERE id = ?').run(id)
 }
 
 // ---------------------------------------------------------------------------

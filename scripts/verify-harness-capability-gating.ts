@@ -94,7 +94,8 @@ const ALL_FALSE: HarnessCapabilities = {
   usage: false,
   hooks: false,
   inlineSettingsJson: false,
-  modelRouting: false
+  modelRouting: false,
+  titleGeneration: false
 }
 
 function makeSummary(id: string, capabilities: HarnessCapabilities): HarnessSummary {
@@ -111,11 +112,31 @@ function makeSummary(id: string, capabilities: HarnessCapabilities): HarnessSumm
 // ---------------------------------------------------------------------------
 
 function testClaudeEquivalence(): void {
+  // ALL TRUE EXCEPT titleGeneration (support-multi-harness) — Claude already
+  // derives a real sidebar title from its own transcript (see
+  // shouldUseTranscriptDerivedTitle's assertion just below), so the
+  // fm/codex-exec background title generator
+  // (src/main/harness/codex/titleGeneration.ts) has nothing to add for a
+  // Claude workspace and is DELIBERATELY false — see CLAUDE_CAPABILITIES's
+  // own doc comment in curated.ts. This is not a gated decision this module
+  // (capabilityGating.ts) exposes a function for; titleGeneration is read
+  // directly by titleGeneration.ts's own scheduler, so there is no
+  // shouldXxx(CLAUDE_CAPABILITIES) assertion for it here — the exclusion
+  // below is what keeps this fixture-sanity check meaningful post-addition.
   assert.equal(
-    Object.values(CLAUDE_CAPABILITIES).every((v) => v === true),
+    Object.entries(CLAUDE_CAPABILITIES)
+      .filter(([key]) => key !== 'titleGeneration')
+      .every(([, value]) => value === true),
     true,
-    'fixture sanity: CLAUDE_CAPABILITIES must be all-true today — if this fails, Claude capability ' +
-      'values changed and the "byte-identical" regression net below is no longer meaningful as written'
+    'fixture sanity: CLAUDE_CAPABILITIES must be all-true (aside from the deliberate titleGeneration ' +
+      'exception above) — if this fails, a Claude capability value changed and the "byte-identical" ' +
+      'regression net below is no longer meaningful as written'
+  )
+  assert.equal(
+    CLAUDE_CAPABILITIES.titleGeneration,
+    false,
+    'fixture sanity: CLAUDE_CAPABILITIES.titleGeneration must stay false — Claude already derives a ' +
+      'real title from its own transcript, so this generator must never run for a Claude workspace'
   )
 
   assert.equal(

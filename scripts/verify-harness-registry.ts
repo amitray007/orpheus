@@ -87,6 +87,25 @@ mock.module(abs('workspaces.ts'), () => ({
     throw new Error(
       'setWorkspaceClaudeSessionId() must not be called by the registry lookup functions'
     )
+  },
+  // support-multi-harness — registry.ts's Codex path now also transitively
+  // reaches codex/titleGeneration.ts (via codex/launch.ts), which imports
+  // these three from this same module at module scope. Same "throw if
+  // actually invoked" discipline: this script only exercises the pure
+  // registry lookup functions, never a real launch composition, so none of
+  // these should ever run.
+  hasCodexTitleGenerationRun: () => {
+    throw new Error(
+      'hasCodexTitleGenerationRun() must not be called by the registry lookup functions'
+    )
+  },
+  markCodexTitleGenerationRun: () => {
+    throw new Error(
+      'markCodexTitleGenerationRun() must not be called by the registry lookup functions'
+    )
+  },
+  setWorkspaceLastTitle: () => {
+    throw new Error('setWorkspaceLastTitle() must not be called by the registry lookup functions')
   }
 }))
 

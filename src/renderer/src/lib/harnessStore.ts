@@ -57,7 +57,8 @@ const UNKNOWN_CAPABILITIES_SUMMARY: HarnessSummary = {
     usage: false,
     hooks: false,
     inlineSettingsJson: false,
-    modelRouting: false
+    modelRouting: false,
+    titleGeneration: false
   },
   icon: 'claude',
   // settingsSections: [] (not the real Claude descriptor's 11 ids) — this

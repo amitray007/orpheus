@@ -9,7 +9,7 @@ import {
   projectCardId,
   type ProjectCardProps
 } from '@/lib/overlayClient'
-import { getActivitySnapshot } from '@/lib/activityStore'
+import { getActivityDetailWithFallback } from '@/lib/activityStore'
 import { getTitleSnapshot } from '@/lib/titleStore'
 import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { useHarnessList, resolveHarnessSummary } from '@/lib/harnessStore'
@@ -83,8 +83,10 @@ const ProjectTile = memo(function ProjectTile({
     hoverCard.handleMouseEnter(() => {
       if (!buttonRef.current) return
 
-      // Snapshot activity and title store at show-time (no hooks in a loop).
-      const activityMap = getActivitySnapshot()
+      // Snapshot title store at show-time (no hooks in a loop). Activity is
+      // read per-workspace below via getActivityDetailWithFallback, which
+      // falls back to that workspace's own persisted status while the live
+      // store has no entry yet (e.g. right after an app restart).
       const titles = getTitleSnapshot()
       const activeWorkspaces = workspaces.filter((w) => w.archivedAt === null)
       const capped = activeWorkspaces.slice(0, 8)
@@ -112,7 +114,7 @@ const ProjectTile = memo(function ProjectTile({
               : displayName
           const harness = resolveHarnessSummary(harnesses, w.harnessId)
           const rawActivity = shouldClaimLiveActivity(harness.capabilities)
-            ? activityMap.get(w.id)
+            ? getActivityDetailWithFallback(w.id, w.status)
             : undefined
           return {
             name,

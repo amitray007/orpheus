@@ -213,7 +213,33 @@ const verifiers = [
   // verify-harness-codex-session.ts/verify-harness-session.ts, stubbed the
   // identical way (electron + './db' resolve-hook redirects; no real DB
   // needed since nothing here calls getDb()).
-  ['verify-codex-usage-reader.ts', ['node', '--experimental-strip-types']]
+  ['verify-codex-usage-reader.ts', ['node', '--experimental-strip-types']],
+  // support-multi-harness status-indicator unit — Codex's own
+  // structuredStatus source (src/main/harness/codex/statusMap.ts):
+  // mapCodexStatus (rollout task-event + thread-writer-lock liveness ->
+  // WorkspaceStatus, incl. the stuck-indicator fix where lock-gone wins
+  // over a fresh task_started) and findLastCodexTaskEvent (last-line-wins
+  // scan of a rollout file's task_started/task_complete event_msg lines,
+  // tolerant of a truncated trailing line). No electron/db/fs dependency —
+  // statusMap.ts is a pure leaf module by design (mirrors sessionStatusMap
+  // ts's own reason for existing standalone) — so plain bun like
+  // verify-session-status.ts above.
+  'verify-codex-status.ts',
+  // support-multi-harness — Codex's background sidebar-title generator
+  // (src/main/harness/codex/titleGeneration.ts): extractFirstCodexPrompt
+  // (event_msg/user_message only, never the message/role=user form that
+  // picks up injected AGENTS.md/plugin/memory context — verified across 60
+  // real rollouts), sanitizeGeneratedTitle (ANSI/quote stripping,
+  // whitespace collapse, empty rejection, length cap+truncation), and
+  // isFmUnavailable (the exact Apple Foundation Models CLI legal-notice
+  // marker triggers fallback to codex exec; the unrelated Private Cloud
+  // Compute stderr warning must NOT — that case is verified SUCCESS).
+  // Same node:sqlite-free but electron-reaching import chain as
+  // verify-codex-usage-reader.ts above (titleGeneration.ts -> ../../
+  // workspaces -> electron/./db at module scope, never actually invoked by
+  // this script's pure-function-only call path) — same
+  // ['node', '--experimental-strip-types'] dispatch + resolve-hook stubs.
+  ['verify-codex-title-generation.ts', ['node', '--experimental-strip-types']]
 ] as const
 
 function run(label: string, command: readonly [string, ...string[]]): void {

@@ -113,15 +113,6 @@ function deriveGroup(
   return 'waiting'
 }
 
-// Map persisted workspace status → a display activity for rows where no
-// live event has fired yet (gives the ActivityIndicator something to show)
-function fallbackActivity(ws: WorkspaceRecord): WorkspaceActivityDetail {
-  if (ws.status === 'attention') return 'attention'
-  if (ws.status === 'awaiting_input') return 'ready'
-  if (ws.status === 'in_progress') return 'working'
-  return 'idle'
-}
-
 // ---------------------------------------------------------------------------
 // Column config
 // ---------------------------------------------------------------------------
@@ -191,7 +182,10 @@ const WorkspaceCard = memo(function WorkspaceCard({
 
   // Subscribe to this workspace's data from per-key stores — re-renders only
   // when THIS card's keys change, not when any other workspace changes.
-  const activityDetail = useWorkspaceActivity(workspace.id)
+  // Falls back to this workspace's own persisted status while the live
+  // store has no entry yet (e.g. right after an app restart) — see
+  // useWorkspaceActivity's fallback param.
+  const activityDetail = useWorkspaceActivity(workspace.id, workspace.status)
   const terminalTitle = useWorkspaceTitle(workspace.id)
   const gitStatus = useGitStatus(workspace.id)
   const pr = usePr(workspace.id)
@@ -202,12 +196,14 @@ const WorkspaceCard = memo(function WorkspaceCard({
   const dn = resolveWorkspaceName({ workspace, terminalTitle, sessionTitle })
 
   // Effective indicator: live activity wins; fall back to persisted status
-  // glyph. Gating the WHOLE expression (not just the live half) matters —
-  // ws.status is itself only meaningful for a structuredStatus-capable
-  // harness (see sessionState.ts), so an incapable harness must not claim
-  // EITHER half; it renders a neutral 'idle' glyph instead.
+  // glyph — activityDetail already resolves live-or-fallback-from-status via
+  // useWorkspaceActivity's fallback param above. Gating the WHOLE expression
+  // (not just the live half) matters — ws.status is itself only meaningful
+  // for a structuredStatus-capable harness (see sessionState.ts), so an
+  // incapable harness must not claim EITHER half; it renders a neutral
+  // 'idle' glyph instead.
   const effectiveActivity: WorkspaceActivityDetail = shouldClaimLiveActivity(harness.capabilities)
-    ? (activityDetail ?? fallbackActivity(workspace))
+    ? (activityDetail ?? 'idle')
     : 'idle'
 
   const timestamp = workspace.lastOpenedAt ?? workspace.createdAt

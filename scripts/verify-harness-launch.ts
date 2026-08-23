@@ -67,6 +67,21 @@ mock.module(abs('workspaces.ts'), () => ({
     throw new Error(
       'setWorkspaceClaudeSessionId() must not be called when workspaceId is undefined'
     )
+  },
+  // support-multi-harness — registry.ts's Codex path now also transitively
+  // reaches codex/titleGeneration.ts (via codex/launch.ts), which imports
+  // these three from this same module at module scope. Same "throw if
+  // actually invoked" discipline as the exports above.
+  hasCodexTitleGenerationRun: () => {
+    throw new Error('hasCodexTitleGenerationRun() must not be called when workspaceId is undefined')
+  },
+  markCodexTitleGenerationRun: () => {
+    throw new Error(
+      'markCodexTitleGenerationRun() must not be called when workspaceId is undefined'
+    )
+  },
+  setWorkspaceLastTitle: () => {
+    throw new Error('setWorkspaceLastTitle() must not be called when workspaceId is undefined')
   }
 }))
 

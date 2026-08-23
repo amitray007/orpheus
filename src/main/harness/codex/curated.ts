@@ -183,14 +183,45 @@ export const CODEX_DEFAULT_ARGS: HarnessArgRow[] = [
  */
 export const CODEX_CAPABILITIES: HarnessCapabilities = {
   // Codex has no PID/session-status registry analogous to Claude's
-  // ~/.claude/sessions/<pid>.json. Its own machine-readable event stream is
-  // `codex exec --json`, which is a DIFFERENT invocation mode than the
-  // interactive TUI launch this harness composes (`codex -m ... "<prompt>"`
-  // / plain interactive `codex`) — Orpheus's terminal-hosted launch path
-  // never runs `codex exec`, so that JSON stream is not reachable from here.
-  // False until (if ever) a follow-up wires a status source that actually
-  // fits the interactive launch path.
-  structuredStatus: false,
+  // ~/.claude/sessions/<pid>.json, and `codex exec --json` (its
+  // machine-readable event stream) is a DIFFERENT invocation mode than the
+  // interactive TUI launch this harness composes — Orpheus's terminal-hosted
+  // launch path never runs `codex exec`, so that JSON stream was never
+  // reachable from here. TRUE as of the status-indicator unit
+  // (support-multi-harness): a status source that DOES fit the interactive
+  // launch path was found and wired instead —
+  // src/main/harness/codex/statusState.ts combines on-disk signals the
+  // interactive `codex` binary already produces as a side effect of running:
+  // (1) the last recognized turn-lifecycle event_msg line in the workspace's
+  // bound rollout file (~/.codex/sessions/<date>/rollout-*.jsonl, see
+  // session.ts) — task_started/task_complete, plus turn_aborted as a real
+  // third terminal marker (a turn that ends without a clean task_complete,
+  // e.g. user-interrupted or errored) and turn_started/turn_complete as
+  // defensive rename-aliases that do not currently occur in practice; (2)
+  // whether a ~/.codex/thread-writer-locks/<session-uuid>.lock file still
+  // exists (liveness — removed when the codex process exits, and this
+  // unconditionally wins over any lifecycle event — the stuck-indicator
+  // fix); and (3) for a terminal event, how long ago it happened compared
+  // against the same staleAfterMinutes setting Claude's own status path
+  // uses, to distinguish "just finished" (awaiting_input, renders as ready)
+  // from "finished a while ago" (idle). See statusMap.ts's mapCodexStatus
+  // for the exact truth table.
+  //
+  // ATTENTION IS DELIBERATELY NOT IMPLEMENTED — NOT AN OVERSIGHT, AND NOT
+  // BECAUSE CODEX LACKS THE CONCEPT. Codex's shipped binary genuinely
+  // contains approval-request event variants (exec_approval_request,
+  // apply_patch_approval_request, request_user_input, elicitation_request,
+  // collab_waiting_begin/_end) — approvals are real, and approved/denied/
+  // abort decisions really happen. But these are emitted only on Codex's
+  // LIVE event stream and are NEVER persisted into the on-disk rollout file
+  // this status source reads. Verified empirically: 17 real rollouts ran
+  // with approval_policy="on-request" (approvals genuinely enabled) across
+  // 2088 patch/exec actions, and produced ZERO approval-shaped records in
+  // the rollout files. Since the rollout is our only read-only source,
+  // 'attention' is not derivable — a limitation of THIS OBSERVATION
+  // CHANNEL, not of Codex's protocol. Do not "fix" this into a synthetic
+  // attention state guessed from indirect signals.
+  structuredStatus: true,
   // Codex writes its own on-disk conversation history (mirroring Claude's
   // ~/.claude/projects/<cwd>/*.jsonl transcript store in spirit, if not in
   // exact format) — the capability itself is real; ONLY this unit's own
@@ -252,5 +283,13 @@ export const CODEX_CAPABILITIES: HarnessCapabilities = {
   // modelRouting" is an easy mistake to make from the name alone — do not
   // make it here, and do not let a future reader "fix" this to true because
   // the model picker looks similar to Claude's.
-  modelRouting: false
+  modelRouting: false,
+  // True — the whole reason this flag exists. Codex sets the terminal
+  // title to the git repo folder name (verified: identical across every
+  // Codex workspace in the same repo), so unlike Claude there is no useful
+  // fallback title today. src/main/harness/codex/titleGeneration.ts's
+  // scheduler is gated on this flag (never on `harnessId === 'codex-cli'`
+  // — see CLAUDE.md's capability-gating rule) and is wired from
+  // composeCodexHarnessLaunch (./launch.ts).
+  titleGeneration: true
 }

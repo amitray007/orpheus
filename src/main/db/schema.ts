@@ -254,7 +254,21 @@ export const schema: SchemaDef = {
       // implicitly Claude today, so the DEFAULT backfills them with zero
       // data migration — see HarnessId in src/shared/harness/types.ts for
       // why 'claude' (not 'claude-cli') is the bare default value.
-      harness_id: { type: 'TEXT', notNull: true, default: "'claude'" }
+      harness_id: { type: 'TEXT', notNull: true, default: "'claude'" },
+      // Codex title-generation tracking (support-multi-harness). NOT the
+      // same question as "does last_title have a value" — last_title can
+      // already be non-null for a Codex workspace from an UNRELATED source
+      // (a user manually renamed it, or index.ts's performClose captured the
+      // live terminal title before this generator ever ran) — see
+      // titleGeneration.ts's header for the full reasoning. This column
+      // tracks ONLY "has this workspace's own generation attempt already
+      // run", independent of what last_title currently holds, so a
+      // user-renamed or terminal-captured title is both (a) never
+      // overwritten by a later generation attempt and (b) never mistaken for
+      // "already generated" and used to skip the one attempt this workspace
+      // is entitled to. 0/1 boolean-as-INTEGER, same convention as
+      // name_is_auto above.
+      codex_title_generated: { type: 'INTEGER', notNull: true, default: '0' }
     },
     foreignKeys: [{ columns: ['project_id'], ref: 'projects(id)', onDelete: 'CASCADE' }],
     indexes: {

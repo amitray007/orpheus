@@ -59,6 +59,7 @@ import { resolveHarnessSettings, type HarnessSettingRow } from '../settings'
 import { CODEX_CURATED, buildCuratedArgs, buildCuratedEnv } from './curated'
 import { getClaudeWorkspaceSettings } from '../../claudeWorkspaceSettings'
 import { codexSessionArgs, scheduleCodexSessionDiscovery } from './session'
+import { scheduleCodexTitleGeneration } from './titleGeneration'
 
 const HARNESS_ID = 'codex-cli'
 
@@ -170,6 +171,14 @@ export function composeCodexHarnessLaunch(projectId?: string, workspaceId?: stri
 
   if (workspaceId) {
     scheduleCodexSessionDiscovery(workspaceId)
+    // Piggybacks off the same per-mount composition call site as session
+    // discovery above, but runs its OWN, longer-tailed retry schedule — see
+    // titleGeneration.ts's header for why a first-prompt-availability wait
+    // can't reuse session discovery's short binding-focused cadence.
+    // Capability-gated internally (CODEX_CAPABILITIES.titleGeneration) and
+    // a complete no-op for a harness that doesn't declare it, so this call
+    // site needs no isClaude()-style guard of its own.
+    scheduleCodexTitleGeneration(workspaceId)
   }
 
   const flagTokens: string[] = [

@@ -258,6 +258,20 @@ export function findCodexUserRolloutId(
 // persisting the result
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolves Codex's state-dir root, honoring $CODEX_HOME the same way
+ * `codex` itself does. Shared by codexSessionsRoot below (the rollout
+ * store, `<home>/sessions`) and statusState.ts (the liveness lock store,
+ * `<home>/thread-writer-locks`) so both readers agree on where "home" is
+ * without duplicating the trim/fallback logic — see codexSessionsRoot's own
+ * comment for why $CODEX_HOME matters (the failure mode of getting this
+ * wrong is silent: scanning the wrong dir just finds nothing, forever).
+ */
+export function codexHomeDir(): string {
+  const codexHome = process.env['CODEX_HOME']?.trim()
+  return codexHome && codexHome.length > 0 ? codexHome : nodePath.join(os.homedir(), '.codex')
+}
+
 export function codexSessionsRoot(): string {
   // $CODEX_HOME relocates Codex's entire state dir — it is a real, documented
   // knob (`codex -p/--profile`'s own help refers to
@@ -265,9 +279,7 @@ export function codexSessionsRoot(): string {
   // failure mode is SILENT: scanning ~/.codex when Codex is writing rollouts
   // elsewhere finds no candidates, so discovery just never binds and every
   // reopen starts a fresh session with no error anywhere.
-  const codexHome = process.env['CODEX_HOME']?.trim()
-  const home = codexHome && codexHome.length > 0 ? codexHome : nodePath.join(os.homedir(), '.codex')
-  return nodePath.join(home, 'sessions')
+  return nodePath.join(codexHomeDir(), 'sessions')
 }
 
 // Backward grace subtracted from a workspace's own `createdAt` before it is

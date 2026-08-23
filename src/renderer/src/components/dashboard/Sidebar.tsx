@@ -22,7 +22,11 @@ import type { ContextMenuItem } from '../ContextMenu'
 import { ActivityIndicator } from './ActivityIndicator'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import { SidebarBoundsContext, useSidebarBounds } from './SidebarBoundsContext'
-import { useWorkspaceActivity, useActiveIdsKey, getActivitySnapshot } from '@/lib/activityStore'
+import {
+  useWorkspaceActivity,
+  useActiveIdsKey,
+  getActivityDetailWithFallback
+} from '@/lib/activityStore'
 import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
@@ -251,8 +255,11 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   // assuming Claude (C4, support-multi-harness). See
   // src/shared/harness/capabilityGating.ts for the pure decisions.
   const harness = useHarnessForWorkspace(workspace.harnessId)
-  // Subscribe to this workspace's key only — no re-render on other workspaces
-  const rawActivity = useWorkspaceActivity(workspace.id)
+  // Subscribe to this workspace's key only — no re-render on other workspaces.
+  // Falls back to this workspace's own persisted status while the live store
+  // has no entry yet (e.g. right after an app restart, before the first
+  // push for this workspace) — see useWorkspaceActivity's fallback param.
+  const rawActivity = useWorkspaceActivity(workspace.id, workspace.status)
   const activity = shouldClaimLiveActivity(harness.capabilities) ? rawActivity : undefined
   const isBusy = activity === 'working'
   const isClosed = workspace.closedAt !== null
@@ -595,9 +602,22 @@ const PinnedRow = memo(function PinnedRow({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const sidebarBoundsRef = useSidebarBounds()
 
+  // This workspace's harness descriptor — gates the live-activity claim
+  // below on real capabilities instead of assuming Claude, matching
+  // WorkspaceSubRow above. PRE-EXISTING GAP FIXED HERE (support-multi-
+  // harness status-indicator unit): this row previously called
+  // useWorkspaceActivity raw, with no shouldClaimLiveActivity gate at all —
+  // harmless while every non-Claude harness's activityMap entry was empty,
+  // but wrong in principle, and no longer harmless now that Codex genuinely
+  // populates real status via statusState.ts/orpheusNotify.
+  const harness = useHarnessForWorkspace(workspace.harnessId)
+
   // Subscribe to this workspace's data from per-key stores — re-renders only
   // when THIS pinned row's key changes, not when any other workspace changes.
-  const activity = useWorkspaceActivity(workspace.id)
+  // Falls back to this workspace's own persisted status while the live store
+  // has no entry yet — see useWorkspaceActivity's fallback param.
+  const rawActivity = useWorkspaceActivity(workspace.id, workspace.status)
+  const activity = shouldClaimLiveActivity(harness.capabilities) ? rawActivity : undefined
   const terminalTitle = useWorkspaceTitle(workspace.id)
 
   // Session title is per-project; we don't pull it for cross-project pinned
@@ -859,11 +879,15 @@ const ProjectRow = memo(function ProjectRow({
   // leaves the count unchanged), so the partition below is recomputed from a
   // fresh snapshot instead of going stale on same-count membership changes.
   useActiveIdsKey(workspaceIds)
-  const snap = getActivitySnapshot()
   const actives: WorkspaceRecord[] = []
   const idles: WorkspaceRecord[] = []
   for (const ws of workspaces) {
-    const detail = snap.get(ws.id)
+    // Falls back to this workspace's own persisted status while the live
+    // store has no entry yet (e.g. right after an app restart, before the
+    // first push for this workspace) — see getActivityDetailWithFallback's
+    // doc comment. Not inside a per-workspace hook call (plain for-loop
+    // over an array), so use the non-hook snapshot-based twin.
+    const detail = getActivityDetailWithFallback(ws.id, ws.status)
     if (detail === 'working' || detail === 'attention' || detail === 'ready') {
       actives.push(ws)
     } else {

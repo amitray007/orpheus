@@ -11,7 +11,8 @@
  */
 
 import { useCallback, useMemo, useSyncExternalStore } from 'react'
-import type { WorkspaceActivityDetail } from '@shared/types'
+import type { WorkspaceActivityDetail, WorkspaceStatus } from '@shared/types'
+import { resolveActivityDetail } from '@shared/activityDetail'
 import { createPerKeyStore } from './createPerKeyStore'
 
 // Identity-only write guard (matches the original `store.get(key) === detail`).
@@ -45,9 +46,35 @@ export function getActivitySnapshot(): ReadonlyMap<string, WorkspaceActivityDeta
  * Subscribe to a single workspace's activity detail.
  * Components calling this re-render ONLY when that specific key changes,
  * not when any other workspace's activity changes.
+ *
+ * `fallbackStatus` — this workspace's own persisted WorkspaceStatus (from
+ * its already-loaded WorkspaceRecord) — is used ONLY while the live store
+ * has no entry for this workspace yet (e.g. right after an app restart,
+ * before the first 'workspace:activityBatch' push has landed for it). A
+ * live entry always wins the instant one exists; see resolveActivityDetail
+ * in src/shared/activityDetail.ts for the exact precedence rule, shared with
+ * the non-hook snapshot lookup in getActivityDetailWithFallback below.
  */
-export function useWorkspaceActivity(workspaceId: string): WorkspaceActivityDetail | undefined {
-  return store.useKey(workspaceId)
+export function useWorkspaceActivity(
+  workspaceId: string,
+  fallbackStatus?: WorkspaceStatus
+): WorkspaceActivityDetail | undefined {
+  const live = store.useKey(workspaceId)
+  return resolveActivityDetail(live, fallbackStatus)
+}
+
+/**
+ * Non-hook counterpart to useWorkspaceActivity's fallback logic, for call
+ * sites that read a one-off snapshot outside of React's render (e.g.
+ * CollapsedProjectList's mouse-enter hover-card snapshot, which cannot call
+ * a hook inside its per-workspace map callback). Same precedence rule: a
+ * live store entry always wins over the fallback status.
+ */
+export function getActivityDetailWithFallback(
+  workspaceId: string,
+  fallbackStatus?: WorkspaceStatus
+): WorkspaceActivityDetail | undefined {
+  return resolveActivityDetail(store.getSnapshot().get(workspaceId), fallbackStatus)
 }
 
 const ACTIVE_DETAILS = new Set<WorkspaceActivityDetail>(['working', 'attention', 'ready'])
