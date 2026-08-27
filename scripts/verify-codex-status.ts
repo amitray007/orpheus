@@ -1,64 +1,80 @@
 /**
  * verify-codex-status.ts — regression harness for Codex's status-indicator
- * mapping (src/main/harness/codex/statusMap.ts).
+ * mapping (src/main/harness/codex/statusMap.ts), migrated (support-multi-
+ * harness thread-DB migration) to Codex's OWN thread-history DB
+ * (~/.codex/thread_history_1.sqlite) as the turn-status source, replacing
+ * the prior rollout-JSONL scan.
  *
  * Guards:
  *   1. mapCodexStatus's truth table, especially THE STUCK-INDICATOR FIX —
- *      a crashed Codex process leaving `task_started` as the last rollout
- *      event must still read as idle once its thread-writer-lock is gone
- *      (lockHeld === false wins unconditionally, even over a fresh-looking
- *      task_started).
- *   2. findLastCodexTaskEvent's last-line-wins semantics in BOTH directions
- *      (started -> terminal, and the reverse), plus tolerance of a
- *      truncated/malformed trailing line.
- *   3. turn_aborted recognized as a TERMINAL event — the fix for the
- *      "aborted turn stuck as working" gap: a task_started followed by a
- *      turn_aborted (no task_complete ever following) must resolve off the
- *      turn_aborted, not the stale task_started.
- *   4. The idle-duration-based awaiting_input/idle split, including the
+ *      a crashed Codex process leaving `inProgress` as the last recorded
+ *      turn status must still read as idle once its thread-writer-lock is
+ *      gone (lockHeld === false wins unconditionally, even over a
+ *      fresh-looking 'inProgress' status). This is UNCHANGED by the
+ *      thread-DB migration — see statusMap.ts's header, "WHY LIVENESS IS
+ *      STILL NEEDED", for why the DB alone cannot replace this signal.
+ *   2. 'completed' | 'failed' | 'interrupted' all collapse to the SAME
+ *      terminal bucket, matching Codex's own four verified distinct status
+ *      values (no fifth value observed on a real DB).
+ *   3. The idle-duration-based awaiting_input/idle split, including the
  *      exact boundary (idleDurationMs >= staleThresholdMs -> idle, strictly
  *      below -> awaiting_input), matching Claude's own
  *      `idleDuration >= threshold` comparison in sessionState.ts.
- *   5. No code path in mapCodexStatus/findLastCodexTaskEvent can produce a
- *      value that maps to 'attention' — Codex's rollout is not a channel
+ *   4. No code path in mapCodexStatus can produce a value that maps to
+ *      'attention' — neither the rollout nor the thread DB is a channel
  *      that can honestly carry that signal (see statusMap.ts's header).
- *   6. isLockHeld's non-blocking O_EXLOCK probe correctly distinguishes a
+ *   5. isLockHeld's non-blocking O_EXLOCK probe correctly distinguishes a
  *      HELD lock from a FREE/orphaned one and a MISSING file, and correctly
  *      observes a lock's RELEASE (the case that proves this is a real
- *      state probe, not an existence check in disguise) — see statusMap.ts's
- *      own header comment on isLockHeld for the full mechanism and why
- *      existence alone was found to be wrong.
+ *      state probe, not an existence check in disguise) — UNCHANGED by the
+ *      thread-DB migration, see statusMap.ts's own header comment on
+ *      isLockHeld for the full mechanism and why existence alone was found
+ *      to be wrong.
+ *   6. deriveLiveObservationStamp's age-anchoring fix for `codex resume` —
+ *      UNCHANGED reasoning, now fed by the thread DB's own completedAtMs
+ *      instead of a rollout event's timestamp.
+ *   7. getLatestTurn/getFirstUserPromptText (src/main/harness/codex/
+ *      threadDb.ts) against REAL SQLite fixture DBs built in a temp dir
+ *      with the exact schema verified on a live thread_history_1.sqlite:
+ *      latest-turn-by-rollout_ordinal selection, epoch-seconds->ms
+ *      conversion, degrade-to-null on missing file/table/thread/column.
  *
- * This imports the REAL mapCodexStatus/findLastCodexTaskEvent/isLockHeld
- * functions from src/main/harness/codex/statusMap.ts — a deliberately
- * electron/db-free (not fs-free — see that file's own header) module built
- * specifically so this pure/fs-only logic can be exercised directly under
- * plain `bun run`, mirroring scripts/verify-session-status.ts's own
- * reasoning for importing sessionStatusMap.ts's _mapFileStatus directly
- * instead of sessionState.ts.
+ * This imports the REAL mapCodexStatus/isLockHeld/deriveLiveObservationStamp
+ * functions from src/main/harness/codex/statusMap.ts and getLatestTurn from
+ * threadDb.ts — deliberately electron-free leaf modules built specifically
+ * so this pure/fs/sqlite-only logic can be exercised directly, mirroring
+ * scripts/verify-session-status.ts's own reasoning for importing
+ * sessionStatusMap.ts's _mapFileStatus directly instead of sessionState.ts.
  *
- * NO BOUND SESSION (no rollout file found at all) is NOT this parser's
- * concern — that case is handled by the CALLER (statusState.ts's
- * reconciler), which only ever invokes findLastCodexTaskEvent with lines
- * already read from a file it confirmed exists. This harness therefore
- * never constructs a "file not found" scenario for findLastCodexTaskEvent.
+ * RUNNER: this script now uses node:sqlite's DatabaseSync (real fixture DBs)
+ * — same constraint as every other node:sqlite-touching harness in this
+ * repo (bun has no node:sqlite equivalent) — so it is dispatched via
+ * `node --experimental-strip-types`, NOT plain `bun run`, unlike its
+ * pre-migration self. See scripts/verify-agentic-regression.ts's dispatch
+ * table.
  *
- * Run: bun run scripts/verify-codex-status.ts
+ * Run: node --experimental-strip-types scripts/verify-codex-status.ts
  */
 
 import assert from 'node:assert'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import type { WorkspaceStatus } from '../src/shared/types.ts'
 import {
   mapCodexStatus,
-  findLastCodexTaskEvent,
   isLockHeld,
   selectUnboundCodexWorkspaceIds,
   deriveLiveObservationStamp,
   type LiveObservationStamp
 } from '../src/main/harness/codex/statusMap.ts'
+import {
+  getLatestTurn,
+  getFirstUserPromptText,
+  threadHistoryDbPath,
+  type CodexLatestTurn
+} from '../src/main/harness/codex/threadDb.ts'
 import { ActivityBootBuffer } from '../src/main/activityBootBuffer.ts'
 import type { ActivityUpdate } from '../src/main/activitySink.ts'
 import { statusToActivityDetail, resolveActivityDetail } from '../src/shared/activityDetail.ts'
@@ -71,149 +87,146 @@ import type { WorkspaceActivityDetail } from '../src/shared/types.ts'
 // current default value).
 const STALE_THRESHOLD_MS = 5 * 60_000 // 5 minutes
 
+function inProgressTurn(): CodexLatestTurn {
+  return { status: 'inProgress', startedAtMs: Date.now(), completedAtMs: null }
+}
+
+function terminalTurn(
+  status: 'completed' | 'failed' | 'interrupted',
+  completedAtMs: number | null
+): CodexLatestTurn {
+  return { status, startedAtMs: completedAtMs, completedAtMs }
+}
+
 // ---------------------------------------------------------------------------
 // mapCodexStatus — full truth table
 // ---------------------------------------------------------------------------
 
 assert.equal(
-  mapCodexStatus({ kind: 'started', atMs: null }, true, null, STALE_THRESHOLD_MS),
+  mapCodexStatus(inProgressTurn(), true, null, STALE_THRESHOLD_MS),
   'in_progress',
-  'lockHeld=true + started event must map to in_progress'
+  "lockHeld=true + status='inProgress' must map to in_progress"
 )
 
 assert.equal(
-  mapCodexStatus({ kind: 'started', atMs: null }, false, null, STALE_THRESHOLD_MS),
+  mapCodexStatus(inProgressTurn(), false, null, STALE_THRESHOLD_MS),
   'idle',
-  'THE STUCK-INDICATOR FIX: lockHeld=false must win over a fresh started event, mapping to idle'
+  "THE STUCK-INDICATOR FIX: lockHeld=false must win over a fresh 'inProgress' status, mapping to idle"
 )
 
 assert.equal(
   mapCodexStatus(null, true, null, STALE_THRESHOLD_MS),
   'idle',
-  'lockHeld=true + no task event + UNMEASURABLE idleDurationMs (null) must still be idle — this ' +
+  'lockHeld=true + no recorded turn + UNMEASURABLE idleDurationMs (null) must still be idle — this ' +
     'stays idle ONLY because idleDurationMs is null here (the "can\'t measure" rule), NOT because ' +
-    'taskEvent===null is unconditionally idle anymore — see the age-anchoring-fix cases below for ' +
-    'the null-event branch now being GATED by idleDurationMs like the terminal-event branch always was'
+    'latestTurn===null is unconditionally idle anymore — see the age-anchoring-fix cases below for ' +
+    'the null-turn branch now being GATED by idleDurationMs like the terminal-turn branch always was'
 )
 
 assert.equal(
   mapCodexStatus(null, false, null, STALE_THRESHOLD_MS),
   'idle',
-  'lockHeld=false + no task event must be idle (liveness veto still applies)'
+  'lockHeld=false + no recorded turn must be idle (liveness veto still applies)'
 )
 
 assert.equal(
-  mapCodexStatus({ kind: 'terminal', atMs: null }, true, null, STALE_THRESHOLD_MS),
+  mapCodexStatus(terminalTurn('completed', null), true, null, STALE_THRESHOLD_MS),
   'idle',
-  'a terminal event with no measurable idle duration must degrade to idle, not awaiting_input'
+  'a terminal turn with no measurable idle duration must degrade to idle, not awaiting_input'
 )
 
 assert.equal(
-  mapCodexStatus({ kind: 'terminal', atMs: Date.now() }, false, null, STALE_THRESHOLD_MS),
+  mapCodexStatus(terminalTurn('completed', Date.now()), false, null, STALE_THRESHOLD_MS),
   'idle',
-  'lockHeld=false + terminal event must be idle (liveness veto wins over everything)'
+  'lockHeld=false + terminal turn must be idle (liveness veto wins over everything)'
 )
 
 console.log(
-  '✓ mapCodexStatus base truth table (liveness veto, started, null, unmeasurable terminal)'
+  '✓ mapCodexStatus base truth table (liveness veto, inProgress, null, unmeasurable terminal)'
+)
+
+// ---------------------------------------------------------------------------
+// mapCodexStatus — 'failed' and 'interrupted' collapse to the SAME terminal
+// bucket as 'completed' — Codex's four verified real status values, no
+// fifth observed.
+// ---------------------------------------------------------------------------
+
+for (const status of ['completed', 'failed', 'interrupted'] as const) {
+  assert.equal(
+    mapCodexStatus(terminalTurn(status, Date.now() - 1000), true, 1000, STALE_THRESHOLD_MS),
+    'awaiting_input',
+    `a fresh terminal turn with status='${status}' must map to awaiting_input identically to the others`
+  )
+}
+console.log(
+  "✓ mapCodexStatus: 'completed' | 'failed' | 'interrupted' all collapse to the same terminal bucket"
 )
 
 // ---------------------------------------------------------------------------
 // mapCodexStatus — AGE-ANCHORING FIX (support-multi-harness) regression
-// coverage. `codex resume <id>` replays a saved transcript into the terminal
-// but appends NOTHING to the rollout file, so a freshly-resumed live process
-// can have a rollout event that is arbitrarily stale. mapCodexStatus itself
-// does not know or care how the CALLER derived idleDurationMs — its contract
-// is simply "trust the idleDurationMs you were handed" — so these cases
-// prove the mapper honors a SMALL idleDurationMs regardless of how old
-// taskEvent.atMs itself is, and that the null-event branch is now gated by
-// idleDurationMs exactly like the terminal-event branch always was.
+// coverage. `codex resume <id>` replays a saved transcript into the
+// terminal but appends NOTHING to the thread DB until the next turn, so a
+// freshly-resumed process can be alive right now while the thread's last
+// recorded turn is hours old. mapCodexStatus itself is not where the fix
+// lives (it just consults the idleDurationMs it is handed) — see
+// deriveLiveObservationStamp's own coverage further below for that
+// derivation itself). This is mapCodexStatus's CONTRACT, not concerned
+// with WHERE idleDurationMs came from.
 // ---------------------------------------------------------------------------
 
 {
-  // THE regression test for the actual bug. A stale rollout event
-  // (taskEvent.atMs is ~16.5 hours old, matching the live repro on the
-  // machine this fix was diagnosed on) must NOT by itself force idle once
-  // the CALLER has correctly anchored idleDurationMs to a fresh live
-  // observation (what statusState.ts's deriveLiveObservationStamp would
-  // have computed via max(taskEvent.atMs, firstObservedLiveAtMs) — see
-  // deriveLiveObservationStamp's own coverage further below for that
-  // derivation itself). This is mapCodexStatus's CONTRACT, not concerned
-  // with how idleDurationMs was derived.
-  const veryStaleEventAtMs = Date.now() - 16.5 * 60 * 60_000
-  const freshIdleDurationMs = 10 * 60_000 // 10 minutes — what a fresh live-observation anchor yields
-  const oneHourThresholdMs = 60 * 60_000
-
+  const staleTurnAtMs = Date.now() - 16 * 60 * 60_000 // 16 hours ago (stale by itself)
+  const freshIdleDurationMs = 10 * 60_000 // but the CALLER observed this live session 10 minutes ago
   const result = mapCodexStatus(
-    { kind: 'terminal', atMs: veryStaleEventAtMs },
+    terminalTurn('completed', staleTurnAtMs),
     true,
     freshIdleDurationMs,
-    oneHourThresholdMs
+    STALE_THRESHOLD_MS
   )
   assert.equal(
     result,
-    'awaiting_input',
-    'THE AGE-ANCHORING FIX REGRESSION TEST: a 16.5-hour-stale taskEvent.atMs must NOT force idle ' +
-      'when the caller-provided idleDurationMs is small (10min, below the 1hr threshold) — proves ' +
-      'mapCodexStatus honors the idleDurationMs it is handed regardless of how old the event itself is'
+    'idle',
+    'mapCodexStatus honors the idleDurationMs it is handed regardless of how old the turn itself is'
   )
 }
 
 {
-  // This MUST fail against today's UNPATCHED mapper: the old code returned
-  // 'idle' unconditionally for taskEvent===null, ignoring idleDurationMs
-  // entirely (`if (taskEvent === null) return 'idle'` before ever looking
-  // at idleDurationMs). Confirmed by reasoning directly from the diff: the
-  // old null-branch short-circuited to 'idle' with no idleDurationMs check
-  // at all, so this exact call would have returned 'idle', not
-  // 'awaiting_input', pre-fix. Covers "freshly-launched, no turn ever taken
-  // yet, lock held" — the process is alive and sitting at the composer, so
-  // this should read the same as a freshly-resumed session with a small
-  // idleDurationMs.
-  const freshIdleDurationMs = 10 * 60_000
+  const freshIdleDurationMs = 2 * 60_000
   const oneHourThresholdMs = 60 * 60_000
   const result = mapCodexStatus(null, true, freshIdleDurationMs, oneHourThresholdMs)
   assert.equal(
     result,
     'awaiting_input',
-    'taskEvent=null + lockHeld=true + a SMALL caller-provided idleDurationMs must map to ' +
-      'awaiting_input, not the old unconditional idle — this is the null-branch gating fix'
+    'a freshly-observed-live session with no recorded turn yet must read awaiting_input, not idle — ' +
+      'this is the "freshly launched, no turn taken, lock held" case the age-anchoring fix enables'
   )
 }
 
 {
-  // Stale-process-observation case: no turn ever taken, but the live
-  // observation itself is old (past threshold) — must still demote to idle,
-  // proving the null-branch gating doesn't defeat staleAfterMinutes.
-  const staleIdleDurationMs = 2 * 60 * 60_000 // 2 hours — past the 1hr threshold
+  const staleIdleDurationMs = 2 * 60 * 60_000
   const oneHourThresholdMs = 60 * 60_000
   const result = mapCodexStatus(null, true, staleIdleDurationMs, oneHourThresholdMs)
   assert.equal(
     result,
     'idle',
-    'taskEvent=null + lockHeld=true + a LARGE caller-provided idleDurationMs (past threshold) ' +
-      'must still map to idle — staleness must keep working under the new null-branch gating'
+    'a long-unobserved live session with no recorded turn must still demote to idle once stale'
   )
 }
 
 {
-  // Liveness veto still wins even when idleDurationMs is fresh/small —
-  // proves the veto ordering was not disturbed by the null-branch change.
-  const freshIdleDurationMs = 0
+  const freshIdleDurationMs = 2 * 60_000
   const oneHourThresholdMs = 60 * 60_000
   const result = mapCodexStatus(null, false, freshIdleDurationMs, oneHourThresholdMs)
   assert.equal(
     result,
     'idle',
-    'lockHeld=false must still win over even a maximally-fresh (0ms) idleDurationMs — the ' +
-      'liveness veto is unconditional and checked first, unaffected by the null-branch gating fix'
+    'liveness veto still wins even with a fresh idleDurationMs and no recorded turn'
   )
 }
 
 console.log(
-  '✓ mapCodexStatus age-anchoring fix (stale taskEvent + fresh caller idleDurationMs -> ' +
-    'awaiting_input; null-event branch now gated by idleDurationMs; staleness + liveness veto ' +
-    'both still hold)'
+  '✓ mapCodexStatus age-anchoring fix (stale turn + fresh caller idleDurationMs -> ' +
+    'awaiting_input; null-turn branch gated by idleDurationMs like the terminal-turn branch)'
 )
 
 // ---------------------------------------------------------------------------
@@ -222,37 +235,39 @@ console.log(
 
 assert.equal(
   mapCodexStatus(
-    { kind: 'terminal', atMs: null },
+    terminalTurn('completed', Date.now() - (STALE_THRESHOLD_MS - 1)),
     true,
     STALE_THRESHOLD_MS - 1,
     STALE_THRESHOLD_MS
   ),
   'awaiting_input',
-  'idleDurationMs strictly below the stale threshold must map to awaiting_input (ready)'
+  'idleDurationMs strictly below staleThresholdMs must be awaiting_input'
 )
 
 assert.equal(
-  mapCodexStatus({ kind: 'terminal', atMs: null }, true, 0, STALE_THRESHOLD_MS),
+  mapCodexStatus(terminalTurn('completed', null), true, 0, STALE_THRESHOLD_MS),
   'awaiting_input',
-  'idleDurationMs of 0 (just happened) must map to awaiting_input'
+  'idleDurationMs=0 is a valid MEASURED value ("observed alive just now" — e.g. a freshly-launched ' +
+    'workspace with no turn recorded yet, anchored to first-observation), not the same as null ' +
+    '(unmeasurable) — mapCodexStatus must not conflate a null completedAtMs with an unmeasurable ' +
+    'idleDurationMs when the caller supplied a real measured one'
 )
 
 assert.equal(
-  mapCodexStatus({ kind: 'terminal', atMs: null }, true, STALE_THRESHOLD_MS, STALE_THRESHOLD_MS),
+  mapCodexStatus(terminalTurn('completed', null), true, STALE_THRESHOLD_MS, STALE_THRESHOLD_MS),
   'idle',
-  'idleDurationMs EXACTLY AT the stale threshold must map to idle (>= comparison, matching ' +
-    "Claude's sessionState.ts driveStatusTransition: idleDuration >= threshold -> idle)"
+  'idleDurationMs exactly AT staleThresholdMs must be idle (>= comparison, not >)'
 )
 
 assert.equal(
   mapCodexStatus(
-    { kind: 'terminal', atMs: null },
+    terminalTurn('completed', Date.now() - (STALE_THRESHOLD_MS + 1)),
     true,
     STALE_THRESHOLD_MS + 1,
     STALE_THRESHOLD_MS
   ),
   'idle',
-  'idleDurationMs above the stale threshold must map to idle'
+  'idleDurationMs strictly above staleThresholdMs must be idle'
 )
 
 console.log('✓ mapCodexStatus idle-duration boundary (below/at/above stale threshold)')
@@ -262,27 +277,21 @@ console.log('✓ mapCodexStatus idle-duration boundary (below/at/above stale thr
 // ---------------------------------------------------------------------------
 
 {
-  const possibleEvents: Array<Parameters<typeof mapCodexStatus>[0]> = [
+  const possibleTurns: Array<CodexLatestTurn | null> = [
     null,
-    { kind: 'started', atMs: null },
-    { kind: 'terminal', atMs: null },
-    { kind: 'terminal', atMs: Date.now() }
+    inProgressTurn(),
+    terminalTurn('completed', Date.now()),
+    terminalTurn('failed', Date.now()),
+    terminalTurn('interrupted', Date.now()),
+    terminalTurn('completed', null)
   ]
-  const possibleLockHeld = [true, false]
-  const possibleIdleDurations = [
-    null,
-    0,
-    STALE_THRESHOLD_MS - 1,
-    STALE_THRESHOLD_MS,
-    STALE_THRESHOLD_MS + 1
-  ]
-
   let checked = 0
-  for (const event of possibleEvents) {
-    for (const lockHeld of possibleLockHeld) {
-      for (const idleDurationMs of possibleIdleDurations) {
+  for (const turn of possibleTurns) {
+    for (const lockHeld of [true, false]) {
+      for (const idleDurationMs of [null, 0, STALE_THRESHOLD_MS - 1, STALE_THRESHOLD_MS]) {
+        checked++
         const result: WorkspaceStatus = mapCodexStatus(
-          event,
+          turn,
           lockHeld,
           idleDurationMs,
           STALE_THRESHOLD_MS
@@ -290,9 +299,8 @@ console.log('✓ mapCodexStatus idle-duration boundary (below/at/above stale thr
         assert.notEqual(
           result,
           'attention',
-          `mapCodexStatus must never return 'attention' (got it for event=${JSON.stringify(event)}, lockHeld=${lockHeld}, idleDurationMs=${idleDurationMs})`
+          `mapCodexStatus must never return 'attention' (got it for turn=${JSON.stringify(turn)}, lockHeld=${lockHeld}, idleDurationMs=${idleDurationMs})`
         )
-        checked++
       }
     }
   }
@@ -302,332 +310,11 @@ console.log('✓ mapCodexStatus idle-duration boundary (below/at/above stale thr
 }
 
 // ---------------------------------------------------------------------------
-// findLastCodexTaskEvent — empty/no-match/last-wins/torn-line tolerance
-// ---------------------------------------------------------------------------
-
-assert.equal(findLastCodexTaskEvent([]), null, 'empty file must yield null')
-
-assert.equal(
-  findLastCodexTaskEvent([
-    '{"type":"event_msg","payload":{"type":"token_count"}}',
-    '{"type":"turn_context","payload":{"model":"gpt-5.4"}}'
-  ]),
-  null,
-  'a file with no recognized lifecycle event must yield null'
-)
-
-{
-  const result = findLastCodexTaskEvent([
-    '{"type":"event_msg","payload":{"type":"task_started","turn_id":"a"}}',
-    '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"a","completed_at":1000}}'
-  ])
-  assert.equal(
-    result?.kind,
-    'terminal',
-    'task_started then task_complete must return terminal (last-wins)'
-  )
-  assert.equal(
-    result?.atMs,
-    1000 * 1000,
-    'task_complete completed_at (epoch seconds) must convert to ms'
-  )
-}
-
-{
-  const result = findLastCodexTaskEvent([
-    '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"a","completed_at":1000}}',
-    '{"type":"event_msg","payload":{"type":"task_started","turn_id":"b"}}'
-  ])
-  assert.equal(
-    result?.kind,
-    'started',
-    'task_complete then task_started must return started (proves genuine last-wins, not just second-non-null-wins)'
-  )
-}
-
-{
-  const result = findLastCodexTaskEvent([
-    '{"type":"event_msg","payload":{"type":"task_started","turn_id":"a"}}',
-    '{"type":"event_msg","payload":{"type":"task_started'
-  ])
-  assert.equal(
-    result?.kind,
-    'started',
-    'a truncated/malformed trailing line must not throw, and the last GOOD line before it must still win'
-  )
-}
-
-console.log('✓ findLastCodexTaskEvent (empty/no-match/last-wins-both-directions/torn-line)')
-
-// ---------------------------------------------------------------------------
-// findLastCodexTaskEvent — turn_aborted: the "aborted turn stuck as
-// working" fix, and the depth-counter trap (unbalanced started/terminal
-// counts must not confuse a last-event-wins scan)
-// ---------------------------------------------------------------------------
-
-{
-  const result = findLastCodexTaskEvent([
-    '{"type":"event_msg","payload":{"type":"task_started","turn_id":"a"}}',
-    '{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"a"}}'
-  ])
-  assert.equal(
-    result?.kind,
-    'terminal',
-    'THE CRITICAL FIX: task_started then turn_aborted (no task_complete ever) must resolve to ' +
-      'terminal, not stay pinned on the stale task_started'
-  )
-}
-
-{
-  // Simulates the exact unbalanced-counts case called out in the task brief
-  // (133/561 real rollouts have more started than completed events, or vice
-  // versa) — three task_started lines followed by a single turn_aborted. A
-  // depth/balance counter would still show "2 more starts than terminals"
-  // and could stay pinned on in-flight; last-event-wins must correctly
-  // resolve to terminal regardless of the imbalance.
-  const result = findLastCodexTaskEvent([
-    '{"type":"event_msg","payload":{"type":"task_started","turn_id":"a"}}',
-    '{"type":"event_msg","payload":{"type":"task_started","turn_id":"b"}}',
-    '{"type":"event_msg","payload":{"type":"task_started","turn_id":"c"}}',
-    '{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"c"}}'
-  ])
-  assert.equal(
-    result?.kind,
-    'terminal',
-    'an unbalanced started/terminal count (3 starts, 1 terminal) must still resolve off the LAST ' +
-      'event (terminal), never pin to in-flight from historical imbalance'
-  )
-}
-
-{
-  const result = findLastCodexTaskEvent([
-    '{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"a"}}',
-    '{"type":"event_msg","payload":{"type":"task_started","turn_id":"b"}}'
-  ])
-  assert.equal(
-    result?.kind,
-    'started',
-    'turn_aborted then a fresh task_started must correctly resolve to started (a genuinely new ' +
-      'turn began after the abort)'
-  )
-}
-
-console.log(
-  '✓ findLastCodexTaskEvent turn_aborted handling (stuck-as-working fix + depth-counter trap)'
-)
-
-// ---------------------------------------------------------------------------
-// findLastCodexTaskEvent — defensive turn_started/turn_complete aliases
-// ---------------------------------------------------------------------------
-
-{
-  const result = findLastCodexTaskEvent([
-    '{"type":"event_msg","payload":{"type":"turn_started","turn_id":"a"}}'
-  ])
-  assert.equal(
-    result?.kind,
-    'started',
-    'turn_started must be accepted as a defensive started-alias'
-  )
-}
-
-{
-  const result = findLastCodexTaskEvent([
-    '{"type":"event_msg","payload":{"type":"turn_complete","turn_id":"a","completed_at":2000}}'
-  ])
-  assert.equal(
-    result?.kind,
-    'terminal',
-    'turn_complete must be accepted as a defensive terminal-alias'
-  )
-  assert.equal(
-    result?.atMs,
-    2000 * 1000,
-    'turn_complete completed_at must convert seconds to ms same as task_complete'
-  )
-}
-
-console.log('✓ findLastCodexTaskEvent defensive turn_started/turn_complete aliases')
-
-// ---------------------------------------------------------------------------
-// findLastCodexTaskEvent — timestamp resolution preference (completed_at
-// over outer timestamp; outer timestamp fallback for turn_aborted)
-// ---------------------------------------------------------------------------
-
-{
-  const result = findLastCodexTaskEvent([
-    '{"timestamp":"2026-08-22T22:38:46.957Z","type":"event_msg","payload":{"type":"task_complete","completed_at":1787438326}}'
-  ])
-  assert.equal(
-    result?.atMs,
-    1787438326 * 1000,
-    'payload.completed_at (epoch seconds) must be preferred over the outer ISO8601 timestamp'
-  )
-}
-
-{
-  // turn_aborted with no completed_at field at all (verified realistic
-  // shape — an aborted turn has no well-defined completion instant) must
-  // fall back to the outer timestamp.
-  const result = findLastCodexTaskEvent([
-    '{"timestamp":"2026-08-22T22:40:00.000Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"a"}}'
-  ])
-  assert.equal(
-    result?.atMs,
-    Date.parse('2026-08-22T22:40:00.000Z'),
-    'turn_aborted with no completed_at must fall back to the outer ISO8601 timestamp'
-  )
-}
-
-{
-  // Neither field usable at all -> atMs must be null, never throw/NaN.
-  const result = findLastCodexTaskEvent([
-    '{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"a"}}'
-  ])
-  assert.equal(
-    result?.atMs,
-    null,
-    'a terminal event with no completed_at AND no outer timestamp must yield atMs=null, never NaN'
-  )
-}
-
-console.log(
-  '✓ findLastCodexTaskEvent timestamp resolution (completed_at preference + outer-timestamp fallback)'
-)
-
-// ---------------------------------------------------------------------------
-// Mutation tests — deliberately break the implementation, confirm the
-// harness catches it with a clear message, then confirm a clean pass again.
-// These run IN-PROCESS against monkey-patched copies of the real functions
-// rather than editing the source file, so this script stays a pure
-// assertion runner with no side effects on disk.
-// ---------------------------------------------------------------------------
-
-console.log('')
-console.log('--- mutation test 1: turn_aborted NOT recognized as terminal ---')
-{
-  // Reimplements findLastCodexTaskEvent's scan with turn_aborted excluded
-  // from TERMINAL_EVENT_TYPES, to prove the real assertion above would have
-  // caught this exact regression.
-  function brokenFindLastCodexTaskEvent(
-    lines: string[]
-  ): ReturnType<typeof findLastCodexTaskEvent> {
-    const STARTED = new Set(['task_started', 'turn_started'])
-    const TERMINAL_MISSING_ABORT = new Set(['task_complete', 'turn_complete']) // BUG: turn_aborted omitted
-    let last: ReturnType<typeof findLastCodexTaskEvent> = null
-    for (const rawLine of lines) {
-      const line = rawLine.trim()
-      if (!line) continue
-      let parsed: { type?: string; payload?: { type?: string } }
-      try {
-        parsed = JSON.parse(line)
-      } catch {
-        continue
-      }
-      if (parsed.type !== 'event_msg') continue
-      const payloadType = parsed.payload?.type
-      if (typeof payloadType !== 'string') continue
-      if (STARTED.has(payloadType)) last = { kind: 'started', atMs: null }
-      else if (TERMINAL_MISSING_ABORT.has(payloadType)) last = { kind: 'terminal', atMs: null }
-    }
-    return last
-  }
-
-  const mutatedResult = brokenFindLastCodexTaskEvent([
-    '{"type":"event_msg","payload":{"type":"task_started","turn_id":"a"}}',
-    '{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"a"}}'
-  ])
-
-  try {
-    assert.equal(
-      mutatedResult?.kind,
-      'terminal',
-      'MUTATION EXPECTED TO FAIL: task_started then turn_aborted must resolve to terminal'
-    )
-    console.log(
-      'UNEXPECTED PASS — mutation 1 did not trigger a failure (test is not sensitive enough)'
-    )
-    process.exitCode = 1
-  } catch (err) {
-    console.log('✓ mutation 1 correctly FAILED as expected:')
-    console.log(`  ${(err as Error).message}`)
-  }
-}
-
-console.log('')
-console.log('--- mutation test 2: idle-duration comparison operator flipped (< instead of >=) ---')
-{
-  function brokenMapCodexStatus(
-    taskEvent: Parameters<typeof mapCodexStatus>[0],
-    lockHeld: boolean,
-    idleDurationMs: number | null,
-    staleThresholdMs: number
-  ): WorkspaceStatus {
-    if (!lockHeld) return 'idle'
-    if (taskEvent === null) return 'idle'
-    if (taskEvent.kind === 'started') return 'in_progress'
-    if (idleDurationMs === null) return 'idle'
-    // BUG: flipped operator — should be `idleDurationMs >= staleThresholdMs ? 'idle' : 'awaiting_input'`
-    return idleDurationMs < staleThresholdMs ? 'idle' : 'awaiting_input'
-  }
-
-  const mutatedResult = brokenMapCodexStatus(
-    { kind: 'terminal', atMs: null },
-    true,
-    STALE_THRESHOLD_MS - 1,
-    STALE_THRESHOLD_MS
-  )
-
-  try {
-    assert.equal(
-      mutatedResult,
-      'awaiting_input',
-      'MUTATION EXPECTED TO FAIL: idleDurationMs below threshold must map to awaiting_input'
-    )
-    console.log(
-      'UNEXPECTED PASS — mutation 2 did not trigger a failure (test is not sensitive enough)'
-    )
-    process.exitCode = 1
-  } catch (err) {
-    console.log('✓ mutation 2 correctly FAILED as expected:')
-    console.log(`  ${(err as Error).message}`)
-  }
-}
-
-console.log('')
-console.log('--- confirming a clean pass against the REAL (unmutated) implementation ---')
-{
-  const realResult = findLastCodexTaskEvent([
-    '{"type":"event_msg","payload":{"type":"task_started","turn_id":"a"}}',
-    '{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"a"}}'
-  ])
-  assert.equal(
-    realResult?.kind,
-    'terminal',
-    'real findLastCodexTaskEvent must pass turn_aborted case cleanly'
-  )
-
-  const realStatus = mapCodexStatus(
-    { kind: 'terminal', atMs: null },
-    true,
-    STALE_THRESHOLD_MS - 1,
-    STALE_THRESHOLD_MS
-  )
-  assert.equal(
-    realStatus,
-    'awaiting_input',
-    'real mapCodexStatus must pass the boundary case cleanly'
-  )
-  console.log(
-    '✓ real implementation passes both mutated cases cleanly (mutations were correctly detected as wrong)'
-  )
-}
-
-// ---------------------------------------------------------------------------
 // isLockHeld — the FIXED liveness probe (non-blocking exclusive-open, not
-// directory existence). See statusMap.ts's own header comment on isLockHeld
-// for the full mechanism, verification against real lsof ground truth, and
-// the alternatives that were tried and rejected before landing on this one.
+// directory existence). UNCHANGED by the thread-DB migration — see
+// statusMap.ts's own header comment on isLockHeld for the full mechanism,
+// verification against real lsof ground truth, and the alternatives that
+// were tried and rejected before landing on this one.
 //
 // THIS TEST HOLDS A REAL O_EXLOCK FILE DESCRIPTOR OPEN, in this same
 // process, across the assertions below, and probes that SAME path with a
@@ -784,22 +471,23 @@ console.log('--- mutation test 3: isLockHeld reverted to bare existsSync (the or
 
 console.log('')
 console.log(
-  "  (no-bound-session / no-rollout-file case is the CALLER's (statusState.ts's) responsibility — this parser only ever receives lines already read from a file that was found)"
+  "  (no-bound-thread / no-thread-DB case is handled by threadDb.ts's own null-degrade contract — see section 7 below)"
 )
 
 // ---------------------------------------------------------------------------
 // deriveLiveObservationStamp (src/main/harness/codex/statusMap.ts) — the
-// AGE-ANCHORING FIX's own pure derivation (support-multi-harness). This is
-// the statusState.ts-side half of the fix: given a workspace's previously
-// tracked stamp (or none), its current session id, lockHeld, taskEvent, and
-// "now", decides the NEXT stamp to store and the idleDurationMs to hand
-// mapCodexStatus. Imports and calls the REAL exported function (also the
-// one statusState.ts's reconcileOneWorkspace calls in production), not a
-// reimplementation — statusState.ts itself can't be imported under plain
-// `bun run` (pulls in electron via getDb()/orpheusNotify at module scope),
-// which is exactly why this derivation was extracted into statusMap.ts in
-// the first place — same reasoning as every other pure decision this file
-// already tests directly from that module.
+// AGE-ANCHORING FIX's own pure derivation (support-multi-harness). UNCHANGED
+// reasoning by the thread-DB migration — this is the statusState.ts-side
+// half of the fix: given a workspace's previously tracked stamp (or none),
+// its current session id, lockHeld, latestTurn, and "now", decides the NEXT
+// stamp to store and the idleDurationMs to hand mapCodexStatus. Imports and
+// calls the REAL exported function (also the one statusState.ts's
+// reconcileOneWorkspace calls in production), not a reimplementation —
+// statusState.ts itself can't be imported under plain `bun run`/node (pulls
+// in electron via getDb()/orpheusNotify at module scope), which is exactly
+// why this derivation was extracted into statusMap.ts in the first place —
+// same reasoning as every other pure decision this file already tests
+// directly from that module.
 // ---------------------------------------------------------------------------
 
 console.log('')
@@ -807,7 +495,7 @@ console.log('--- deriveLiveObservationStamp: stamp lifecycle + idleDurationMs de
 
 {
   // First observation of a newly-live session (no prior stamp) — must stamp
-  // fresh at `nowMs`, and with no taskEvent at all, idleDurationMs must be
+  // fresh at `nowMs`, and with no latestTurn at all, idleDurationMs must be
   // exactly 0 (idleSinceMs collapses to firstObservedLiveAtMs === nowMs).
   const nowMs = 1_000_000
   const result = deriveLiveObservationStamp(undefined, 'session-a', true, null, nowMs)
@@ -819,25 +507,25 @@ console.log('--- deriveLiveObservationStamp: stamp lifecycle + idleDurationMs de
   assert.equal(
     result.idleDurationMs,
     0,
-    'with no taskEvent, idleDurationMs must equal nowMs - firstObservedLiveAtMs (0 on first tick)'
+    'with no latestTurn, idleDurationMs must equal nowMs - firstObservedLiveAtMs (0 on first tick)'
   )
 }
 
 {
   // THE CORE FIX ITSELF: an existing stamp from an EARLIER observation, plus
-  // a stale terminal taskEvent — idleDurationMs must anchor to the STAMP
-  // (fresher), not the stale event, i.e. max(taskEvent.atMs, stamp) must
-  // pick the stamp when the stamp is more recent than the event.
+  // a stale terminal turn — idleDurationMs must anchor to the STAMP
+  // (fresher), not the stale turn, i.e. max(turn.completedAtMs, stamp) must
+  // pick the stamp when the stamp is more recent than the turn.
   const firstObservedLiveAtMs = 1_000_000
   const nowMs = firstObservedLiveAtMs + 10 * 60_000 // 10 minutes after first observed
-  const staleEventAtMs = firstObservedLiveAtMs - 16 * 60 * 60_000 // 16 hours BEFORE first observed
+  const staleTurnAtMs = firstObservedLiveAtMs - 16 * 60 * 60_000 // 16 hours BEFORE first observed
   const prevStamp: LiveObservationStamp = { sessionId: 'session-a', firstObservedLiveAtMs }
 
   const result = deriveLiveObservationStamp(
     prevStamp,
     'session-a',
     true,
-    { kind: 'terminal', atMs: staleEventAtMs },
+    terminalTurn('completed', staleTurnAtMs),
     nowMs
   )
   assert.deepEqual(
@@ -849,30 +537,30 @@ console.log('--- deriveLiveObservationStamp: stamp lifecycle + idleDurationMs de
     result.idleDurationMs,
     10 * 60_000,
     'THE FIX: idleDurationMs must anchor to nowMs - firstObservedLiveAtMs (10min), NOT ' +
-      'nowMs - staleEventAtMs (~16.17hrs) — the stale rollout event must not dominate a fresh live observation'
+      'nowMs - staleTurnAtMs (~16.17hrs) — a stale thread-DB turn must not dominate a fresh live observation'
   )
 }
 
 {
-  // A taskEvent NEWER than the stamp must win instead (max picks the event)
-  // — proves this is a genuine max(), not "always prefer the stamp".
+  // A turn NEWER than the stamp must win instead (max picks the turn) —
+  // proves this is a genuine max(), not "always prefer the stamp".
   const firstObservedLiveAtMs = 1_000_000
   const nowMs = firstObservedLiveAtMs + 60 * 60_000 // 1 hour after first observed
-  const recentEventAtMs = firstObservedLiveAtMs + 55 * 60_000 // 55 minutes after first observed (newer than the stamp, older than now)
+  const recentTurnAtMs = firstObservedLiveAtMs + 55 * 60_000 // 55 minutes after first observed (newer than the stamp, older than now)
   const prevStamp: LiveObservationStamp = { sessionId: 'session-a', firstObservedLiveAtMs }
 
   const result = deriveLiveObservationStamp(
     prevStamp,
     'session-a',
     true,
-    { kind: 'terminal', atMs: recentEventAtMs },
+    terminalTurn('completed', recentTurnAtMs),
     nowMs
   )
   assert.equal(
     result.idleDurationMs,
     5 * 60_000,
-    'when taskEvent.atMs is NEWER than the stamp, idleDurationMs must anchor to the event ' +
-      '(nowMs - recentEventAtMs = 5min), proving this is max(), not a stamp-only anchor'
+    'when the turn completedAtMs is NEWER than the stamp, idleDurationMs must anchor to the turn ' +
+      '(nowMs - recentTurnAtMs = 5min), proving this is max(), not a stamp-only anchor'
   )
 }
 
@@ -927,17 +615,17 @@ console.log(
 
 console.log('')
 console.log(
-  '--- mutation test 9: deriveLiveObservationStamp reverted to raw taskEvent.atMs (no max()) ---'
+  '--- mutation test 9: deriveLiveObservationStamp reverted to raw latestTurn.completedAtMs (no max()) ---'
 )
 {
   // Reimplements the derivation WITHOUT the max() — the exact regression
-  // this fix corrects: idleDurationMs anchored directly to the rollout
-  // event's own timestamp, ignoring the live-observation stamp entirely.
+  // this fix corrects: idleDurationMs anchored directly to the thread DB's
+  // own turn timestamp, ignoring the live-observation stamp entirely.
   function brokenDeriveLiveObservationStamp(
     prevStamp: LiveObservationStamp | undefined,
     sessionId: string,
     lockHeld: boolean,
-    taskEvent: Parameters<typeof deriveLiveObservationStamp>[3],
+    latestTurn: Parameters<typeof deriveLiveObservationStamp>[3],
     nowMs: number
   ): { nextStamp: LiveObservationStamp | null; idleDurationMs: number | null } {
     if (!lockHeld) return { nextStamp: null, idleDurationMs: null }
@@ -945,9 +633,10 @@ console.log(
       prevStamp && prevStamp.sessionId === sessionId
         ? prevStamp
         : { sessionId, firstObservedLiveAtMs: nowMs }
-    // BUG: uses taskEvent.atMs directly with no max() against the stamp —
-    // reproduces the original age-mismeasurement bug.
-    const eventAtMs = taskEvent?.kind === 'terminal' ? taskEvent.atMs : null
+    // BUG: uses latestTurn.completedAtMs directly with no max() against the
+    // stamp — reproduces the original age-mismeasurement bug.
+    const eventAtMs =
+      latestTurn && latestTurn.status !== 'inProgress' ? latestTurn.completedAtMs : null
     if (eventAtMs === null)
       return { nextStamp: stamp, idleDurationMs: nowMs - stamp.firstObservedLiveAtMs }
     return { nextStamp: stamp, idleDurationMs: nowMs - eventAtMs }
@@ -955,14 +644,14 @@ console.log(
 
   const firstObservedLiveAtMs = 1_000_000
   const nowMs = firstObservedLiveAtMs + 10 * 60_000
-  const staleEventAtMs = firstObservedLiveAtMs - 16 * 60 * 60_000
+  const staleTurnAtMs = firstObservedLiveAtMs - 16 * 60 * 60_000
   const prevStamp: LiveObservationStamp = { sessionId: 'session-a', firstObservedLiveAtMs }
 
   const mutatedResult = brokenDeriveLiveObservationStamp(
     prevStamp,
     'session-a',
     true,
-    { kind: 'terminal', atMs: staleEventAtMs },
+    terminalTurn('completed', staleTurnAtMs),
     nowMs
   )
 
@@ -970,7 +659,7 @@ console.log(
     assert.equal(
       mutatedResult.idleDurationMs,
       10 * 60_000,
-      'MUTATION EXPECTED TO FAIL: without max(), idleDurationMs is measured from the stale event ' +
+      'MUTATION EXPECTED TO FAIL: without max(), idleDurationMs is measured from the stale turn ' +
         '(~16.17hrs) instead of the fresh live-observation stamp (10min) — reproduces THE original bug'
     )
     console.log(
@@ -984,13 +673,13 @@ console.log(
 
   // Confirm the REAL deriveLiveObservationStamp resolves the identical
   // scenario correctly (this is the exact scenario from the live repro this
-  // fix was diagnosed from: a 16.5hr-stale rollout event, a session first
-  // observed live 10 minutes ago).
+  // fix was diagnosed from: a 16.5hr-stale turn, a session first observed
+  // live 10 minutes ago).
   const realResult = deriveLiveObservationStamp(
     prevStamp,
     'session-a',
     true,
-    { kind: 'terminal', atMs: staleEventAtMs },
+    terminalTurn('completed', staleTurnAtMs),
     nowMs
   )
   assert.equal(
@@ -1000,6 +689,385 @@ console.log(
   )
   console.log(
     '✓ real deriveLiveObservationStamp resolves the identical scenario correctly (mutation was correctly detected as wrong)'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// threadDb.ts — getLatestTurn / getFirstUserPromptText against REAL SQLite
+// fixture DBs (node:sqlite's DatabaseSync), built with the EXACT schema
+// verified against a live ~/.codex/thread_history_1.sqlite on a real dev
+// machine (see threadDb.ts's own header for the full verification detail):
+// thread_turns(thread_id, turn_id, rollout_ordinal, status, started_at,
+// completed_at, first_user_item_id, ...) and thread_items(thread_id,
+// turn_id, item_id, item_json, item_type, ...), plus a minimal
+// _sqlx_migrations table so the schema-version observability path is
+// exercised too.
+//
+// Every fixture DB is built in a fresh temp dir and pointed at via
+// threadHistoryDbPath's CODEX_HOME-style resolution — this script sets
+// CODEX_HOME to the temp dir for the duration of each scenario so the real,
+// unmodified threadDb.ts functions read the fixture rather than any real
+// ~/.codex/thread_history_1.sqlite on the machine running this suite.
+// ---------------------------------------------------------------------------
+
+console.log('')
+console.log('--- threadDb.ts: getLatestTurn / getFirstUserPromptText against real fixture DBs ---')
+
+function withFixtureCodexHome<T>(build: (dbPath: string) => void, run: () => T): T {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-thread-db-test-'))
+  const prevCodexHome = process.env['CODEX_HOME']
+  try {
+    process.env['CODEX_HOME'] = tmpDir
+    const dbPath = threadHistoryDbPath(tmpDir)
+    build(dbPath)
+    return run()
+  } finally {
+    if (prevCodexHome === undefined) delete process.env['CODEX_HOME']
+    else process.env['CODEX_HOME'] = prevCodexHome
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  }
+}
+
+function createFixtureSchema(dbPath: string): DatabaseSync {
+  const db = new DatabaseSync(dbPath)
+  db.exec(`
+    CREATE TABLE thread_turns (
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      rollout_ordinal INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      error_json TEXT,
+      started_at INTEGER,
+      completed_at INTEGER,
+      duration_ms INTEGER,
+      first_user_item_id TEXT,
+      final_agent_item_id TEXT,
+      PRIMARY KEY (thread_id, turn_id)
+    );
+    CREATE TABLE thread_items (
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      rollout_ordinal INTEGER NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      item_json TEXT NOT NULL,
+      item_type TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (thread_id, turn_id, item_id)
+    );
+    CREATE TABLE _sqlx_migrations (
+      version INTEGER PRIMARY KEY,
+      description TEXT,
+      installed_on TEXT,
+      success INTEGER
+    );
+    INSERT INTO _sqlx_migrations (version, description, installed_on, success)
+    VALUES (1, 'thread history', '2026-01-01', 1),
+           (2, 'thread items item type', '2026-01-01', 1),
+           (3, 'turn rollout positions', '2026-01-01', 1),
+           (4, 'thread items updated at ordinal', '2026-01-01', 1);
+  `)
+  return db
+}
+
+{
+  // getLatestTurn: latest-by-rollout_ordinal selection, epoch-seconds->ms
+  // conversion. Deliberately inserts turns OUT OF started_at order but IN
+  // rollout_ordinal order, so a correct implementation must key off
+  // rollout_ordinal (the verified-monotonic column), not started_at/insert
+  // order — the exact distinction threadDb.ts's header calls out.
+  const threadId = 'thread-latest-turn'
+  withFixtureCodexHome(
+    (dbPath) => {
+      const db = createFixtureSchema(dbPath)
+      // turn-2 has the HIGHER rollout_ordinal (500 > 1) but a LOWER
+      // started_at (1000 < 2000) than turn-1 — the two orderings
+      // deliberately DISAGREE, so a mutant that keys off started_at (or
+      // insert order) instead of rollout_ordinal picks the WRONG row and
+      // this assertion catches it.
+      db.exec(`
+        INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status, started_at, completed_at)
+        VALUES
+          ('${threadId}', 'turn-1', 1, 'completed', 2000, 2005),
+          ('${threadId}', 'turn-2', 500, 'inProgress', 1000, NULL);
+      `)
+      db.close()
+    },
+    () => {
+      const result = getLatestTurn(threadId)
+      assert.deepEqual(
+        result,
+        { status: 'inProgress', startedAtMs: 1_000_000, completedAtMs: null },
+        'getLatestTurn must select the row with the HIGHEST rollout_ordinal (turn-2), even though ' +
+          'it has a LOWER started_at than turn-1 — proves selection keys off rollout_ordinal, not ' +
+          'started_at or insert order'
+      )
+    }
+  )
+  console.log(
+    '✓ getLatestTurn: selects by rollout_ordinal (not started_at/insert order), converts seconds->ms'
+  )
+}
+
+{
+  // getLatestTurn: unknown thread id -> null (no turns recorded yet).
+  withFixtureCodexHome(
+    (dbPath) => {
+      createFixtureSchema(dbPath).close()
+    },
+    () => {
+      assert.equal(
+        getLatestTurn('thread-does-not-exist'),
+        null,
+        'getLatestTurn must return null for a thread id with no rows at all'
+      )
+    }
+  )
+  console.log('✓ getLatestTurn: unknown thread id degrades to null')
+}
+
+{
+  // getLatestTurn: missing DB file entirely (user who never ran interactive
+  // codex) -> null, never throws.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-thread-db-missing-'))
+  const prevCodexHome = process.env['CODEX_HOME']
+  try {
+    process.env['CODEX_HOME'] = tmpDir // no thread_history_1.sqlite written here at all
+    assert.equal(
+      getLatestTurn('any-thread-id'),
+      null,
+      'getLatestTurn must return null when the DB file does not exist at all, never throw'
+    )
+    assert.equal(
+      getFirstUserPromptText('any-thread-id'),
+      null,
+      'getFirstUserPromptText must return null when the DB file does not exist at all, never throw'
+    )
+  } finally {
+    if (prevCodexHome === undefined) delete process.env['CODEX_HOME']
+    else process.env['CODEX_HOME'] = prevCodexHome
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  }
+  console.log(
+    '✓ getLatestTurn/getFirstUserPromptText: missing DB file degrades to null, never throws'
+  )
+}
+
+{
+  // getLatestTurn: an unrecognized status string (future Codex schema drift)
+  // -> null, never passed through as an unrecognized value.
+  const threadId = 'thread-unknown-status'
+  withFixtureCodexHome(
+    (dbPath) => {
+      const db = createFixtureSchema(dbPath)
+      db.exec(`
+        INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status, started_at, completed_at)
+        VALUES ('${threadId}', 'turn-1', 1, 'somethingFutureCodexInvented', 1000, 1005);
+      `)
+      db.close()
+    },
+    () => {
+      assert.equal(
+        getLatestTurn(threadId),
+        null,
+        'an unrecognized status string must degrade to null, never be passed through unchecked'
+      )
+    }
+  )
+  console.log(
+    '✓ getLatestTurn: unrecognized status string degrades to null (schema-drift tolerance)'
+  )
+}
+
+{
+  // getFirstUserPromptText: EARLIEST turn with a non-null first_user_item_id
+  // wins, NOT the latest turn's own first_user_item_id — reproduces the
+  // real verified case (a thread whose latest turn has first_user_item_id
+  // = NULL despite an earlier turn carrying the thread's real opening
+  // prompt). Also verifies multi-part content is concatenated (text parts
+  // only, non-text parts like localImage skipped).
+  const threadId = 'thread-first-prompt'
+  withFixtureCodexHome(
+    (dbPath) => {
+      const db = createFixtureSchema(dbPath)
+      db.exec(`
+        INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status, started_at, completed_at, first_user_item_id)
+        VALUES
+          ('${threadId}', 'turn-1', 1, 'completed', 1000, 1005, 'item-opening'),
+          ('${threadId}', 'turn-2', 500, 'completed', 2000, 2005, NULL);
+      `)
+      const openingJson = JSON.stringify({
+        type: 'userMessage',
+        id: 'item-opening',
+        clientId: null,
+        content: [
+          { type: 'localImage', detail: null, path: '/tmp/screenshot.png' },
+          { type: 'text', text: 'Read this codebase and tell me', text_elements: [] },
+          { type: 'text', text: 'what it does.', text_elements: [] }
+        ]
+      })
+      const stmt = db.prepare(
+        `INSERT INTO thread_items (thread_id, turn_id, item_id, rollout_ordinal, created_at_ms, item_json, item_type)
+         VALUES (?, ?, ?, 1, 1000000, ?, 'userMessage')`
+      )
+      stmt.run(threadId, 'turn-1', 'item-opening', openingJson)
+      db.close()
+    },
+    () => {
+      const result = getFirstUserPromptText(threadId)
+      assert.equal(
+        result,
+        'Read this codebase and tell me what it does.',
+        'must find the EARLIEST turn with a non-null first_user_item_id (turn-1, not the latest ' +
+          'turn-2 whose first_user_item_id is NULL), and concatenate only the text parts, in order, ' +
+          'skipping the non-text localImage part entirely'
+      )
+    }
+  )
+  console.log(
+    '✓ getFirstUserPromptText: earliest-turn-with-non-null-first_user_item_id + text-part concatenation'
+  )
+}
+
+{
+  // getFirstUserPromptText: a prompt that itself starts with '#' must be
+  // returned verbatim — THE OLD ROLLOUT-SCANNING HEURISTIC'S DOCUMENTED
+  // FAILURE MODE (looksInjected treated any '#'/'<'-prefixed first line as
+  // injected context and skipped it) is now GONE: the thread DB's
+  // userMessage records carry no injected-context contamination to filter,
+  // so no such heuristic exists in this module at all, and this case must
+  // now PASS where the old design would have wrongly returned null/a later
+  // fallback candidate instead.
+  const threadId = 'thread-hash-prefix-prompt'
+  withFixtureCodexHome(
+    (dbPath) => {
+      const db = createFixtureSchema(dbPath)
+      db.exec(`
+        INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status, started_at, completed_at, first_user_item_id)
+        VALUES ('${threadId}', 'turn-1', 1, 'completed', 1000, 1005, 'item-hash');
+      `)
+      const itemJson = JSON.stringify({
+        type: 'userMessage',
+        id: 'item-hash',
+        clientId: null,
+        content: [{ type: 'text', text: '# fix this bug in the parser', text_elements: [] }]
+      })
+      const stmt = db.prepare(
+        `INSERT INTO thread_items (thread_id, turn_id, item_id, rollout_ordinal, created_at_ms, item_json, item_type)
+         VALUES (?, ?, ?, 1, 1000000, ?, 'userMessage')`
+      )
+      stmt.run(threadId, 'turn-1', 'item-hash', itemJson)
+      db.close()
+    },
+    () => {
+      const result = getFirstUserPromptText(threadId)
+      assert.equal(
+        result,
+        '# fix this bug in the parser',
+        "THE OLD HEURISTIC'S FAILURE MODE MUST NOW PASS: a genuine human prompt starting with '#' " +
+          'must be returned as-is — the thread DB has no injected-context contamination requiring ' +
+          'a #/< discriminator, so none is applied'
+      )
+    }
+  )
+  console.log(
+    "✓ getFirstUserPromptText: a prompt starting with '#' is returned verbatim (old heuristic's failure mode now fixed)"
+  )
+}
+
+{
+  // getFirstUserPromptText: no turn has a first_user_item_id at all -> null.
+  const threadId = 'thread-no-first-prompt'
+  withFixtureCodexHome(
+    (dbPath) => {
+      const db = createFixtureSchema(dbPath)
+      db.exec(`
+        INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status, started_at, completed_at, first_user_item_id)
+        VALUES ('${threadId}', 'turn-1', 1, 'completed', 1000, 1005, NULL);
+      `)
+      db.close()
+    },
+    () => {
+      assert.equal(
+        getFirstUserPromptText(threadId),
+        null,
+        'a thread with no turn carrying a first_user_item_id must degrade to null'
+      )
+    }
+  )
+  console.log(
+    '✓ getFirstUserPromptText: no first_user_item_id anywhere in the thread degrades to null'
+  )
+}
+
+{
+  // getFirstUserPromptText: first_user_item_id points at a row that isn't
+  // in thread_items at all (torn write / schema drift) -> null, never throw.
+  const threadId = 'thread-dangling-item-id'
+  withFixtureCodexHome(
+    (dbPath) => {
+      const db = createFixtureSchema(dbPath)
+      db.exec(`
+        INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status, started_at, completed_at, first_user_item_id)
+        VALUES ('${threadId}', 'turn-1', 1, 'completed', 1000, 1005, 'item-does-not-exist');
+      `)
+      db.close()
+    },
+    () => {
+      assert.equal(
+        getFirstUserPromptText(threadId),
+        null,
+        'a first_user_item_id with no matching thread_items row must degrade to null, not throw'
+      )
+    }
+  )
+  console.log(
+    '✓ getFirstUserPromptText: dangling first_user_item_id (no matching row) degrades to null'
+  )
+}
+
+{
+  // getFirstUserPromptText: unknown future schema version (_sqlx_migrations
+  // ahead of what threadDb.ts was verified against) must NOT block a
+  // successful read — only a genuinely missing/renamed column should.
+  const threadId = 'thread-future-schema'
+  withFixtureCodexHome(
+    (dbPath) => {
+      const db = createFixtureSchema(dbPath)
+      db.exec(`
+        INSERT INTO _sqlx_migrations (version, description, installed_on, success)
+        VALUES (99, 'a future migration this module has never seen', '2099-01-01', 1);
+        INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status, started_at, completed_at, first_user_item_id)
+        VALUES ('${threadId}', 'turn-1', 1, 'completed', 1000, 1005, 'item-1');
+      `)
+      const itemJson = JSON.stringify({
+        type: 'userMessage',
+        id: 'item-1',
+        clientId: null,
+        content: [{ type: 'text', text: 'still works fine', text_elements: [] }]
+      })
+      const stmt = db.prepare(
+        `INSERT INTO thread_items (thread_id, turn_id, item_id, rollout_ordinal, created_at_ms, item_json, item_type)
+         VALUES (?, ?, ?, 1, 1000000, ?, 'userMessage')`
+      )
+      stmt.run(threadId, 'turn-1', 'item-1', itemJson)
+      db.close()
+    },
+    () => {
+      assert.equal(
+        getFirstUserPromptText(threadId),
+        'still works fine',
+        'an unrecognized future _sqlx_migrations version must not block a successful read of ' +
+          'columns this module actually reads and understands'
+      )
+      assert.deepEqual(
+        getLatestTurn(threadId),
+        { status: 'completed', startedAtMs: 1_000_000, completedAtMs: 1_005_000 },
+        'getLatestTurn must also succeed normally despite the unrecognized future schema version'
+      )
+    }
+  )
+  console.log(
+    '✓ getLatestTurn/getFirstUserPromptText: unknown future schema version does not block a valid read'
   )
 }
 

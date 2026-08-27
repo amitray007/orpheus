@@ -146,6 +146,18 @@ export function setOverlayFallbackTimer(workspaceId: string, timer: NodeJS.Timeo
   overlayFallbackTimers.set(workspaceId, timer)
 }
 
+/** Read-only check: is a fallback timer currently armed for this workspace?
+ *  Used to gate the early-dismissal path (support-multi-harness Bug 1) —
+ *  attempting an early dismissal is only meaningful when there's actually a
+ *  pending fallback to preempt; a workspace with no armed timer either
+ *  already dismissed via the immediate-ready path in handlePostMountOverlay
+ *  or never had an overlay armed at all (e.g. a harness with no structured
+ *  status), and calling hideLoadingOverlay again in either case would just
+ *  be a harmless but pointless extra call. */
+export function hasOverlayFallbackTimer(workspaceId: string): boolean {
+  return overlayFallbackTimers.has(workspaceId)
+}
+
 /** Clears + deletes the fallback timer for a workspace. No-op if absent. */
 export function clearOverlayFallbackTimer(workspaceId: string): void {
   const timer = overlayFallbackTimers.get(workspaceId)

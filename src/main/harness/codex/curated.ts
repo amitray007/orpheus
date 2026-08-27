@@ -188,20 +188,21 @@ export const CODEX_CAPABILITIES: HarnessCapabilities = {
   // interactive TUI launch this harness composes — Orpheus's terminal-hosted
   // launch path never runs `codex exec`, so that JSON stream was never
   // reachable from here. TRUE as of the status-indicator unit
-  // (support-multi-harness): a status source that DOES fit the interactive
-  // launch path was found and wired instead —
-  // src/main/harness/codex/statusState.ts combines on-disk signals the
-  // interactive `codex` binary already produces as a side effect of running:
-  // (1) the last recognized turn-lifecycle event_msg line in the workspace's
-  // bound rollout file (~/.codex/sessions/<date>/rollout-*.jsonl, see
-  // session.ts) — task_started/task_complete, plus turn_aborted as a real
-  // third terminal marker (a turn that ends without a clean task_complete,
-  // e.g. user-interrupted or errored) and turn_started/turn_complete as
-  // defensive rename-aliases that do not currently occur in practice; (2)
-  // whether a ~/.codex/thread-writer-locks/<session-uuid>.lock file still
-  // exists (liveness — removed when the codex process exits, and this
-  // unconditionally wins over any lifecycle event — the stuck-indicator
-  // fix); and (3) for a terminal event, how long ago it happened compared
+  // (support-multi-harness), MIGRATED to Codex's own thread-history DB in a
+  // follow-up unit: a status source that DOES fit the interactive launch
+  // path was found and wired instead —
+  // src/main/harness/codex/statusState.ts combines two signals the
+  // interactive `codex` binary already produces as a side effect of
+  // running: (1) the latest turn's status for the workspace's bound thread,
+  // read directly from Codex's own ~/.codex/thread_history_1.sqlite
+  // (`thread_turns.status`: 'inProgress' | 'completed' | 'failed' |
+  // 'interrupted' — see threadDb.ts/statusMap.ts); (2) whether a
+  // ~/.codex/thread-writer-locks/<session-uuid>.lock file still exists
+  // (liveness — removed when the codex process exits, and this
+  // unconditionally wins over any turn status — the stuck-indicator fix,
+  // still required even against the thread DB: a crashed process leaves its
+  // last-written 'inProgress' row forever, with nothing to ever correct
+  // it); and (3) for a terminal turn, how long ago it completed compared
   // against the same staleAfterMinutes setting Claude's own status path
   // uses, to distinguish "just finished" (awaiting_input, renders as ready)
   // from "finished a while ago" (idle). See statusMap.ts's mapCodexStatus
@@ -213,11 +214,12 @@ export const CODEX_CAPABILITIES: HarnessCapabilities = {
   // apply_patch_approval_request, request_user_input, elicitation_request,
   // collab_waiting_begin/_end) — approvals are real, and approved/denied/
   // abort decisions really happen. But these are emitted only on Codex's
-  // LIVE event stream and are NEVER persisted into the on-disk rollout file
-  // this status source reads. Verified empirically: 17 real rollouts ran
-  // with approval_policy="on-request" (approvals genuinely enabled) across
-  // 2088 patch/exec actions, and produced ZERO approval-shaped records in
-  // the rollout files. Since the rollout is our only read-only source,
+  // LIVE event stream and are NEVER persisted into any read-only Codex data
+  // source available to this app — neither the rollout file nor the
+  // thread-history DB records an approval-shaped event of any kind
+  // (verified empirically against the rollout files: 17 real rollouts ran
+  // with approval_policy="on-request", approvals genuinely enabled, across
+  // 2088 patch/exec actions, and produced ZERO approval-shaped records).
   // 'attention' is not derivable — a limitation of THIS OBSERVATION
   // CHANNEL, not of Codex's protocol. Do not "fix" this into a synthetic
   // attention state guessed from indirect signals.

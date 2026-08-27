@@ -17,11 +17,16 @@
  *   Codex: TWO independent signals that must be combined (see
  *   statusMap.ts's header and mapCodexStatus's truth table), plus a THIRD
  *   derived value for the ready/idle split:
- *     1. the last recognized turn-lifecycle event_msg line in the
- *        workspace's bound rollout file (what Codex last WROTE) —
- *        task_started/task_complete, with turn_aborted as a real third
- *        terminal marker and turn_started/turn_complete as defensive
- *        rename-aliases (see statusMap.ts's header for verified counts),
+ *     1. Codex's OWN latest-turn status for the bound thread, read from
+ *        ~/.codex/thread_history_1.sqlite's `thread_turns` table
+ *        (threadDb.ts's getLatestTurn — support-multi-harness thread-DB
+ *        migration) — 'inProgress' | 'completed' | 'failed' | 'interrupted'.
+ *        This REPLACES the prior design's rollout-JSONL turn-lifecycle
+ *        line scan: Codex already computes and persists this status itself,
+ *        so reading it directly is both simpler and more accurate than
+ *        re-deriving it from raw event_msg lines. See threadDb.ts's header
+ *        for the full schema/verification detail and statusMap.ts's header
+ *        for why this migration does NOT eliminate the need for signal 2.
  *     2. whether a ~/.codex/thread-writer-locks/<session-uuid>.lock file is
  *        currently HELD by a live process (whether the WRITER is still
  *        alive) — a non-blocking advisory-lock probe (isLockHeld,
@@ -30,25 +35,31 @@
  *        rather than exiting cleanly, and existence-only was found to
  *        misreport exactly that orphaned case as still held — see
  *        isLockHeld's own doc comment for the full mechanism and why it was
- *        chosen over the alternatives that were tried and rejected, and
+ *        chosen over the alternatives that were tried and rejected. THE
+ *        THREAD DB ALONE CANNOT REPLACE THIS SIGNAL — see statusMap.ts's
+ *        header, "WHY LIVENESS IS STILL NEEDED", for the full reasoning: a
+ *        crashed process leaves its last-written turn status (e.g.
+ *        'inProgress') in the DB forever, with nothing to ever correct it,
+ *        exactly the same stuck-indicator risk the rollout design had.
  *     3. HOW LONG AGO this workspace's live session was last observed
- *        "fresh" (idleDurationMs) — NOT simply the rollout event's own
- *        timestamp vs. Date.now(). `codex resume <id>` replays a saved
- *        transcript into the terminal but appends NOTHING to the rollout
- *        file, so a freshly-resumed process can be alive right now while the
- *        rollout's last event is hours old — measuring idleDurationMs
- *        directly from that stale event would misreport a genuinely-alive
- *        session as long-idle (the exact bug the age-anchoring fix,
- *        support-multi-harness, corrects). Instead idleDurationMs is derived
- *        by deriveLiveObservationStamp (statusMap.ts, PURE — see
- *        reconcileOneWorkspace below and that function's own doc comment)
- *        as `Date.now() - max(the rollout event's own timestamp, when THIS
- *        live session was FIRST observed lock-held)`, compared against the
- *        same staleAfterMinutes app setting Claude's own
- *        driveStatusTransition reads, to decide awaiting_input ("just
- *        finished, or just observed alive") vs. idle ("stale a while now").
- *   Neither of the first two signals alone is trustworthy: the rollout
- *   alone can say "task_started" forever after a crash (the stuck-indicator
+ *        "fresh" (idleDurationMs) — NOT simply the latest turn's own
+ *        completion timestamp vs. Date.now(). `codex resume <id>` replays a
+ *        saved transcript into the terminal but appends NOTHING new until
+ *        the next turn, so a freshly-resumed process can be alive right now
+ *        while the thread's last recorded turn is hours old — measuring
+ *        idleDurationMs directly from that stale turn would misreport a
+ *        genuinely-alive session as long-idle (the exact bug the
+ *        age-anchoring fix, support-multi-harness, corrects). Instead
+ *        idleDurationMs is derived by deriveLiveObservationStamp
+ *        (statusMap.ts, PURE — see reconcileOneWorkspace below and that
+ *        function's own doc comment) as `Date.now() - max(the latest turn's
+ *        own completion timestamp, when THIS live session was FIRST
+ *        observed lock-held)`, compared against the same staleAfterMinutes
+ *        app setting Claude's own driveStatusTransition reads, to decide
+ *        awaiting_input ("just finished, or just observed alive") vs. idle
+ *        ("stale a while now").
+ *   Neither of the first two signals alone is trustworthy: the thread DB
+ *   alone can say "inProgress" forever after a crash (the stuck-indicator
  *   bug this whole feature exists to fix); pid-liveness has no equivalent
  *   here at all, since Orpheus never captured Codex's own pid the way it
  *   captures claude's.
@@ -56,9 +67,10 @@
  * ATTENTION IS NOT PRODUCED BY THIS SERVICE. See statusMap.ts's
  * mapCodexStatus doc comment for the full, verified explanation of why —
  * short version: Codex's approval-request events are real but never
- * persisted to the rollout this service reads, so 'attention' cannot be
- * honestly derived here. Read that comment before touching anything in
- * this file that looks like it could synthesize one.
+ * persisted to any read-only Codex data source this service reads
+ * (rollout, thread DB, or otherwise), so 'attention' cannot be honestly
+ * derived here. Read that comment before touching anything in this file
+ * that looks like it could synthesize one.
  *
  * THIS MODULE SATISFIES THE SAME 7 STABILITY PROPERTIES sessionState.ts
  * does, each called out at its point of implementation below:
@@ -83,16 +95,17 @@
  *   4. Single-flight — its own small reconcileRunning/dirty guard, a
  *      deliberate duplication of sessionState.ts's pattern rather than a
  *      shared extraction (see the guard's own comment for why).
- *   5. Torn-read tolerance — delegates per-line parsing to
- *      findLastCodexTaskEvent (already try/catch-per-line), and this
- *      module's own file-read wrapper degrades to a null event on any
- *      read error.
+ *   5. Torn-read tolerance — threadDb.ts's getLatestTurn/getFirstUserPromptText
+ *      already wrap their entire SQLite read in try/catch and degrade to
+ *      null on ANY failure (missing file, torn read, schema drift) — this
+ *      module never needs its own read-error handling around them, unlike
+ *      the prior design's per-line rollout parsing.
  *   6. Freshness/dedupe — lastDrivenStatus Map, only calls setStatusFromFile
  *      when the computed status actually changed for that workspace.
  *   7. Pure mapping — every decision routes through mapCodexStatus/
- *      findLastCodexTaskEvent/deriveLiveObservationStamp (statusMap.ts); no
- *      decision logic is duplicated here. This module holds only the
- *      impure liveObservationStamps Map and Date.now() and hands both to
+ *      deriveLiveObservationStamp (statusMap.ts); no decision logic is
+ *      duplicated here. This module holds only the impure
+ *      liveObservationStamps Map and Date.now() and hands both to
  *      deriveLiveObservationStamp, exactly as it hands mapCodexStatus its
  *      own impure inputs — see property 1 above.
  *
@@ -149,16 +162,11 @@ import { DIAG_EVENTS } from '../../../shared/diagEvents'
 import type { WorkspaceStatus } from '../../../shared/types'
 import { getAppUiState } from '../../uiState'
 import { UI_STATE_DEFAULTS } from '../../../shared/uiStateDefaults'
-import {
-  codexHomeDir,
-  codexSessionsRoot,
-  findCodexRolloutFileById,
-  discoverAndBindCodexSession
-} from './session'
+import { codexHomeDir, discoverAndBindCodexSession } from './session'
 import { scheduleCodexTitleGeneration } from './titleGeneration'
+import { getLatestTurn } from './threadDb'
 import {
   mapCodexStatus,
-  findLastCodexTaskEvent,
   isLockHeld,
   selectUnboundCodexWorkspaceIds,
   deriveLiveObservationStamp,
@@ -251,6 +259,37 @@ let stopped = false
  */
 export function hasObservedCodexStatus(workspaceId: string): boolean {
   return observedWorkspaces.has(workspaceId)
+}
+
+/** Registered via setCodexReadyObserver — see that function's doc comment.
+ *  null means "nobody is listening" (e.g. before index.ts wires it up, or in
+ *  scripts/verify-codex-status.ts, which imports this module directly and
+ *  has no overlay to dismiss). */
+let readyObserver: ((workspaceId: string) => void) | null = null
+
+/**
+ * Registers a callback fired every time reconcileOneWorkspace evaluates a
+ * workspace for the FIRST time (i.e. exactly when hasObservedCodexStatus
+ * flips from false to true for that workspaceId) — the statusState.ts-side
+ * seam of the loading-overlay early-dismissal fix (support-multi-harness
+ * Bug 1). Mirrors sessionState.ts's setSessionReadyHandler precedent: that
+ * module invokes ITS handler the instant Claude's own session file reports
+ * a concrete status; this is Codex's equivalent "readiness just flipped
+ * true" notification, from Codex's own readiness source instead of
+ * Claude's.
+ *
+ * Deliberately fired on every first-observation regardless of the computed
+ * status (an 'idle' first observation is still "no longer waiting" from the
+ * overlay's point of view — matches hasObservedCodexStatus's own semantics),
+ * and fired UNCONDITIONALLY even if no overlay is currently armed for this
+ * workspace — the subscriber (index.ts) is responsible for checking whether
+ * there's actually a fallback timer to clear before doing anything, exactly
+ * as it already does for the terminal-title seam. This module has no
+ * knowledge of overlays, timers, or harnessId gating; it only reports "this
+ * workspace's Codex readiness signal was just observed for the first time."
+ */
+export function setCodexReadyObserver(fn: ((workspaceId: string) => void) | null): void {
+  readyObserver = fn
 }
 
 /**
@@ -519,22 +558,6 @@ function retryLateBinding(workspaceId: string): void {
 // still held, which is documented in full there.
 
 /**
- * PROPERTY 5 — torn-read tolerance. Reads the rollout file's lines and
- * delegates to findLastCodexTaskEvent (already per-line try/catch); the
- * read itself is wrapped so a missing file, permissions error, or any other
- * fs failure degrades to `null` (no task event observed) rather than
- * throwing and aborting the whole tick for every other workspace.
- */
-function readTaskEventForFile(filePath: string): ReturnType<typeof findLastCodexTaskEvent> {
-  try {
-    const contents = fs.readFileSync(filePath, 'utf8')
-    return findLastCodexTaskEvent(contents.split('\n'))
-  } catch {
-    return null
-  }
-}
-
-/**
  * Reads the SAME app setting Claude's own driveStatusTransition
  * (src/main/sessionState.ts) reads for its own idle->awaiting_input/idle
  * split — no new setting is introduced for Codex; both harnesses share one
@@ -547,50 +570,53 @@ function readStaleThresholdMs(): number {
 }
 
 /**
- * One workspace's reconcile step: resolve its rollout file (reusing
- * findCodexRolloutFileById — see this function's own doc comment on why no
- * second discovery mechanism is written here), compute its last lifecycle
- * event and lock-held state, derive idle duration for a terminal event (the
- * IMPURE part — Date.now() + getAppUiState() live here, never inside
- * statusMap.ts's pure functions, mirroring exactly how sessionState.ts's
- * driveStatusTransition computes its own idleDuration/threshold inline
- * rather than inside _mapFileStatus), map to a WorkspaceStatus via
- * mapCodexStatus (PROPERTY 7 — no decision logic duplicated here), and
- * drive setStatusFromFile only on an actual change (PROPERTY 6).
+ * One workspace's reconcile step: reads its latest turn from Codex's OWN
+ * state DB (threadDb.ts's getLatestTurn — support-multi-harness thread-DB
+ * migration; already fails soft to null on any error, see that module's
+ * header, so no wrapping try/catch is needed here the way the prior
+ * rollout-scanning design needed one) and lock-held state, derives idle
+ * duration for a terminal turn (the IMPURE part — Date.now() +
+ * getAppUiState() live here, never inside statusMap.ts's pure functions,
+ * mirroring exactly how sessionState.ts's driveStatusTransition computes
+ * its own idleDuration/threshold inline rather than inside _mapFileStatus),
+ * maps to a WorkspaceStatus via mapCodexStatus (PROPERTY 7 — no decision
+ * logic duplicated here), and drives setStatusFromFile only on an actual
+ * change (PROPERTY 6).
  *
- * NO ROLLOUT FILE FOUND degrades safely without a special case: taskEvent
+ * NO TURN RECORDED YET degrades safely without a special case: latestTurn
  * stays null and lockHeld is still probed as normal (a narrow startup race
- * can have the lock created before the rollout file's first line is
- * flushed) — deriveLiveObservationStamp/mapCodexStatus already resolve this
- * correctly either way: with no rollout event at all, idleDurationMs is
+ * can have the lock created before the thread DB has any row for this
+ * thread id at all) — deriveLiveObservationStamp/mapCodexStatus already
+ * resolve this correctly either way: with no turn at all, idleDurationMs is
  * still measurable (anchored to first-observed-live-time — see
  * deriveLiveObservationStamp's doc comment in statusMap.ts), so a freshly
  * launched workspace with no turn taken yet but a held lock now correctly
  * reads awaiting_input rather than idle, exactly like a freshly RESUMED
- * workspace whose rollout event is stale.
+ * workspace whose latest turn is stale.
  *
  * IDLE-DURATION ANCHORING (support-multi-harness age-anchoring fix) — the
  * IMPURE part of this computation: `codex resume <id>` replays a saved
- * transcript into the terminal but appends NOTHING to the rollout file, so
- * after an app restart the process can be brand new (lock freshly held)
- * while the rollout's last lifecycle event is arbitrarily old. Measuring
- * idleDurationMs directly from that stale rollout timestamp would
- * misclassify a genuinely-alive, freshly-resumed session as long-idle. The
- * fix: idleDurationMs is derived via deriveLiveObservationStamp
- * (statusMap.ts, PURE — this module only owns the impure
- * liveObservationStamps Map and Date.now(), never the decision itself),
- * which anchors "idle since" to max(the rollout event's own timestamp, when
- * THIS specific live session was first observed lock-held) — see that
- * function's own doc comment for the full reasoning, including why the
- * anchor is "first observation of this session" and NOT app boot time or a
- * per-tick re-stamp (both would break staleAfterMinutes in the opposite
- * direction).
+ * transcript into the terminal but appends NOTHING new until the next turn,
+ * so after an app restart the process can be brand new (lock freshly held)
+ * while the thread's latest recorded turn is arbitrarily old. Measuring
+ * idleDurationMs directly from that stale turn timestamp would misclassify
+ * a genuinely-alive, freshly-resumed session as long-idle. The fix:
+ * idleDurationMs is derived via deriveLiveObservationStamp (statusMap.ts,
+ * PURE — this module only owns the impure liveObservationStamps Map and
+ * Date.now(), never the decision itself), which anchors "idle since" to
+ * max(the latest turn's own completion timestamp, when THIS specific live
+ * session was first observed lock-held) — see that function's own doc
+ * comment for the full reasoning, including why the anchor is "first
+ * observation of this session" and NOT app boot time or a per-tick re-stamp
+ * (both would break staleAfterMinutes in the opposite direction). This
+ * anchoring logic is UNCHANGED by the thread-DB migration — only the source
+ * of the turn timestamp itself changed (see statusMap.ts's header).
  *
  * TIME-BASED RE-FIRING IS INTENTIONAL, NOT A BUG TO SUPPRESS. A workspace
  * sitting at 'awaiting_input' (rendered 'ready') for longer than the stale
  * threshold SHOULD eventually transition to 'idle' on a later tick purely
  * because idleDurationMs grows every tick even though the underlying
- * rollout/lock state hasn't changed — exactly like Claude's own stale-
+ * turn/lock state hasn't changed — exactly like Claude's own stale-
  * demotion. This still holds under the new anchoring: firstObservedLiveAtMs
  * is set ONCE per liveness window (not re-stamped every tick), so
  * idleDurationMs keeps growing tick over tick for a session left alive and
@@ -600,15 +626,14 @@ function readStaleThresholdMs(): number {
  * awaiting_input -> idle transition once the threshold is crossed.
  */
 function reconcileOneWorkspace(ws: CodexWorkspaceRow): void {
-  const filePath = findCodexRolloutFileById(codexSessionsRoot(), ws.claude_session_id)
-  const taskEvent = filePath ? readTaskEventForFile(filePath) : null
+  const latestTurn = getLatestTurn(ws.claude_session_id)
   const lockHeld = isLockHeld(path.join(locksDir(), `${ws.claude_session_id}.lock`))
 
   const { nextStamp, idleDurationMs } = deriveLiveObservationStamp(
     liveObservationStamps.get(ws.id),
     ws.claude_session_id,
     lockHeld,
-    taskEvent,
+    latestTurn,
     Date.now()
   )
   if (nextStamp) {
@@ -619,9 +644,17 @@ function reconcileOneWorkspace(ws: CodexWorkspaceRow): void {
 
   const staleThresholdMs = readStaleThresholdMs()
 
-  const status = mapCodexStatus(taskEvent, lockHeld, idleDurationMs, staleThresholdMs)
+  const status = mapCodexStatus(latestTurn, lockHeld, idleDurationMs, staleThresholdMs)
 
+  const wasObserved = observedWorkspaces.has(ws.id)
   observedWorkspaces.add(ws.id)
+  // Fire only on the false->true transition (matches hasObservedCodexStatus's
+  // own semantics) — re-notifying on every later tick would be harmless but
+  // pointless: the overlay is either already dismissed or its fallback timer
+  // already cleared by the first notification.
+  if (!wasObserved) {
+    readyObserver?.(ws.id)
+  }
 
   if (lastDrivenStatus.get(ws.id) !== status) {
     setStatusFromFile(ws.id, status)
@@ -645,9 +678,10 @@ function pruneStaleEntries(activeWorkspaceIds: ReadonlySet<string>): void {
   }
 }
 
-// NOT `async` — every step here is synchronous (fs.readFileSync, the
-// per-workspace isLockHeld openSync/closeSync probe, the getDb() query), so
-// there is no `await` to make an async function body meaningful (see
+// NOT `async` — every step here is synchronous (threadDb.ts's synchronous
+// node:sqlite DatabaseSync open/query/close, the per-workspace isLockHeld
+// openSync/closeSync probe, the getDb() query), so there is no `await` to
+// make an async function body meaningful (see
 // usage.ts's getCodexUsage/getCodexCost for the same reasoning). The
 // Promise-returning signature matches _runReconcile's `await reconcile()`
 // call, mirroring sessionState.ts's own reconcile() shape.

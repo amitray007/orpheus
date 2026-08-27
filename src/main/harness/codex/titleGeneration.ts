@@ -82,7 +82,6 @@
 // ---------------------------------------------------------------------------
 
 import * as childProcess from 'node:child_process'
-import * as fs from 'node:fs'
 import { promisify } from 'node:util'
 import {
   getWorkspace,
@@ -91,65 +90,45 @@ import {
   setWorkspaceLastTitle
 } from '../../workspaces'
 import { CODEX_CAPABILITIES } from './curated'
-import { codexSessionsRoot, findCodexRolloutFileById } from './session'
+import { getFirstUserPromptText } from './threadDb'
 
 const execFile = promisify(childProcess.execFile)
 
 // ---------------------------------------------------------------------------
-// 1. First-prompt extraction (PURE)
+// 1. First-prompt extraction
 // ---------------------------------------------------------------------------
-
-type EventMsgUserMessage = {
-  type: 'event_msg'
-  payload: { type: 'user_message'; message: string }
-}
-
-/**
- * Scans a rollout file's already-read lines for the FIRST record matching
- * `type === 'event_msg' && payload.type === 'user_message'`, returning its
- * trimmed `payload.message`, or null if none is found.
- *
- * CRITICAL — do NOT widen this to also accept
- * `payload.type === 'message' && payload.role === 'user'`. That form picks
- * up injected context (`<recommended_plugins>`, `# AGENTS.md instructions`,
- * `## Memory`) BEFORE the real human prompt — verified across 60 real
- * rollouts. The event_msg/user_message form is a strict subset that never
- * appears without the other and is the only reliable source of the human's
- * actual typed text. A blocklist on the message/role form was considered
- * and rejected: upstream keeps adding new injected block types, so a
- * blocklist would need constant upkeep and could never be complete: the
- * event_msg form sidesteps the problem entirely rather than chasing it.
- *
- * TORN/INVALID LINES TOLERATED — same discipline as session.ts's
- * readSessionMeta: a truncated trailing write (mid-flush) or any other
- * non-JSON/malformed line is skipped, never thrown. A rollout is an
- * append-only log that can legitimately be read while Codex is still
- * writing it.
- */
-export function extractFirstCodexPrompt(lines: readonly string[]): string | null {
-  for (const line of lines) {
-    const trimmedLine = line.trim()
-    if (!trimmedLine) continue
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(trimmedLine)
-    } catch {
-      continue
-    }
-    if (typeof parsed !== 'object' || parsed === null) continue
-    const record = parsed as Record<string, unknown>
-    if (record.type !== 'event_msg') continue
-    const payload = record.payload
-    if (typeof payload !== 'object' || payload === null) continue
-    const payloadRecord = payload as Record<string, unknown>
-    if (payloadRecord.type !== 'user_message') continue
-    if (typeof payloadRecord.message !== 'string') continue
-    const message = (record as unknown as EventMsgUserMessage).payload.message.trim()
-    if (!message) continue
-    return message
-  }
-  return null
-}
+//
+// support-multi-harness thread-DB migration — extraction is now a thin
+// pass-through to threadDb.ts's getFirstUserPromptText(threadId), which
+// reads Codex's OWN ~/.codex/thread_history_1.sqlite instead of re-parsing
+// the rollout `.jsonl` transcript by hand.
+//
+// THE OLD DESIGN THIS REPLACES scanned rollout lines across two tiers
+// (event_msg/user_message preferred, response_item/message/role=user
+// fallback) and applied a "looks injected, not human-typed" heuristic — a
+// candidate was skipped whenever its first line started with `#` or `<` —
+// because injected context (AGENTS.md instructions, recommended_plugins,
+// environment_context blocks, etc.) could land in the SAME text field as,
+// or ahead of, the real human prompt within that raw event stream.
+//
+// THE THREAD DB DOES NOT HAVE THIS PROBLEM, VERIFIED DIRECTLY. Codex's own
+// `thread_items` table already stores a clean, structured `userMessage`
+// record — {type:'userMessage', content:[{type:'text', text}, ...]} — with
+// no injected-context contamination mixed in: checked against 8/8 recent
+// real threads on this machine, including prompts that themselves start
+// with `#`, which the old heuristic would have WRONGLY skipped (its own
+// documented, accepted failure mode — now eliminated rather than carried
+// forward, since the data source no longer needs that discriminator at
+// all). No blocklist, no `#`/`<` heuristic, no two-tier fallback — Codex
+// already did the work of isolating the real human message; this module
+// just reads it. See threadDb.ts's getFirstUserPromptText for the query
+// (earliest turn with a non-null first_user_item_id, joined to its
+// thread_items row) and its own header for the full verification detail.
+//
+// TORN/MISSING DATA TOLERATED — getFirstUserPromptText already degrades to
+// null on every failure mode (DB missing, thread not found, malformed JSON,
+// unexpected shape — see threadDb.ts's header), so readFirstPromptForWorkspace
+// below needs no try/catch of its own around this call.
 
 // ---------------------------------------------------------------------------
 // 2. Output sanitization (PURE)
@@ -450,20 +429,15 @@ async function runOneAttempt(workspaceId: string, firstPrompt: string): Promise<
 }
 
 /**
- * Reads the workspace's bound rollout file (via findCodexRolloutFileById,
- * reused rather than re-implemented — see this module's header) and
- * extracts the first user prompt, or null if there is no binding yet, no
- * file, or no user_message record yet. Never throws.
+ * Reads the workspace's bound thread's first user prompt from Codex's own
+ * thread_history_1.sqlite (threadDb.ts's getFirstUserPromptText — see this
+ * module's header, section 1) — or null if there is no binding yet, no
+ * thread DB, or no user message recorded yet for this thread. Never throws
+ * — getFirstUserPromptText already fails soft on every error (see its own
+ * doc comment in threadDb.ts).
  */
 function readFirstPromptForWorkspace(claudeSessionId: string): string | null {
-  try {
-    const filePath = findCodexRolloutFileById(codexSessionsRoot(), claudeSessionId)
-    if (!filePath) return null
-    const contents = fs.readFileSync(filePath, 'utf8')
-    return extractFirstCodexPrompt(contents.split('\n'))
-  } catch {
-    return null
-  }
+  return getFirstUserPromptText(claudeSessionId)
 }
 
 // Retry cadence for "does a first prompt exist yet". Longer-tailed than

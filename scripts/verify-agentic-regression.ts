@@ -188,7 +188,20 @@ const verifiers = [
   // suite — an unwired harness is indistinguishable from no harness (see
   // this file's own header rule). No electron/DB dependency (loadingOverlay
   // ts is a leaf module with a fake-clock test hook), plain bun like the
-  // entries above.
+  // entries above. EXTENDED (support-multi-harness Bug 1, sticky-overlay
+  // follow-up): a brand-new Codex workspace's readiness was almost always
+  // still false at mount time, so nothing ever re-checked it after mount —
+  // the overlay rode the full 10s fallback on every single Codex launch.
+  // index.ts now re-checks readiness at the two seams where it can flip
+  // true (the terminal title callback, and statusState.ts's reconcile via
+  // setCodexReadyObserver) and dismisses early via
+  // clearOverlayFallbackTimer + hide(). verify-loading-overlay.ts's new
+  // assertions re-compose that same decision out of the REAL exported
+  // pieces (hasOverlayFallbackTimer/resolveCodexOverlayReadiness/
+  // clearOverlayFallbackTimer, from workspaceResources.ts and
+  // terminalLiveness.ts — neither electron-touching) since index.ts itself
+  // can't be imported here, and prove the fallback timer is genuinely
+  // cancelled (real clearTimeout observed) and that Claude's path is inert.
   'verify-loading-overlay.ts',
   // support-multi-harness bug fix — the sidebar's per-workspace provider
   // icon rendered nothing for a Codex workspace because
@@ -214,27 +227,30 @@ const verifiers = [
   // identical way (electron + './db' resolve-hook redirects; no real DB
   // needed since nothing here calls getDb()).
   ['verify-codex-usage-reader.ts', ['node', '--experimental-strip-types']],
-  // support-multi-harness status-indicator unit — Codex's own
-  // structuredStatus source (src/main/harness/codex/statusMap.ts):
-  // mapCodexStatus (rollout task-event + thread-writer-lock liveness ->
-  // WorkspaceStatus, incl. the stuck-indicator fix where lock-gone wins
-  // over a fresh task_started) and findLastCodexTaskEvent (last-line-wins
-  // scan of a rollout file's task_started/task_complete event_msg lines,
-  // tolerant of a truncated trailing line). No electron/db/fs dependency —
-  // statusMap.ts is a pure leaf module by design (mirrors sessionStatusMap
-  // ts's own reason for existing standalone) — so plain bun like
-  // verify-session-status.ts above.
-  'verify-codex-status.ts',
+  // support-multi-harness status-indicator unit, migrated to Codex's OWN
+  // thread-history DB (src/main/harness/codex/statusMap.ts + threadDb.ts):
+  // mapCodexStatus (latest thread_turns.status + thread-writer-lock
+  // liveness -> WorkspaceStatus, incl. the stuck-indicator fix where
+  // lock-gone wins over a fresh 'inProgress' status) and
+  // deriveLiveObservationStamp (the age-anchoring fix for `codex resume`).
+  // Uses node:sqlite's DatabaseSync against real fixture DBs it builds in a
+  // temp dir — same node:sqlite/DatabaseSync constraint as the harness-*
+  // entries below, so this dispatches via the node tuple form, not plain
+  // bun, unlike its pre-thread-DB-migration self.
+  ['verify-codex-status.ts', ['node', '--experimental-strip-types']],
   // support-multi-harness — Codex's background sidebar-title generator
-  // (src/main/harness/codex/titleGeneration.ts): extractFirstCodexPrompt
-  // (event_msg/user_message only, never the message/role=user form that
-  // picks up injected AGENTS.md/plugin/memory context — verified across 60
-  // real rollouts), sanitizeGeneratedTitle (ANSI/quote stripping,
-  // whitespace collapse, empty rejection, length cap+truncation), and
-  // isFmUnavailable (the exact Apple Foundation Models CLI legal-notice
-  // marker triggers fallback to codex exec; the unrelated Private Cloud
-  // Compute stderr warning must NOT — that case is verified SUCCESS).
-  // Same node:sqlite-free but electron-reaching import chain as
+  // (src/main/harness/codex/titleGeneration.ts), migrated to read its first
+  // prompt from Codex's OWN thread-history DB (threadDb.ts's
+  // getFirstUserPromptText) instead of scanning rollout JSONL — this
+  // removed the old two-tier scan and its `#`/`<` "looks injected"
+  // heuristic entirely (Codex's own userMessage records carry no injected
+  // context to filter out). Covers sanitizeGeneratedTitle (ANSI/quote
+  // stripping, whitespace collapse, empty rejection, length
+  // cap+truncation), isFmUnavailable (the exact Apple Foundation Models CLI
+  // legal-notice marker triggers fallback to codex exec; the unrelated
+  // Private Cloud Compute stderr warning must NOT — that case is verified
+  // SUCCESS), and getFirstUserPromptText itself against real fixture DBs
+  // (node:sqlite's DatabaseSync). Same electron-reaching import chain as
   // verify-codex-usage-reader.ts above (titleGeneration.ts -> ../../
   // workspaces -> electron/./db at module scope, never actually invoked by
   // this script's pure-function-only call path) — same

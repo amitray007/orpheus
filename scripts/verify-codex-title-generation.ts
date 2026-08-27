@@ -2,50 +2,74 @@
 // scripts/verify-codex-title-generation.ts
 //
 // Behavior guard for src/main/harness/codex/titleGeneration.ts
-// (support-multi-harness) — the background sidebar-title generator for
-// Codex workspaces (Codex sets the terminal title to the git repo folder
-// name, identical across every workspace in that repo, so this module
-// generates a real one from the user's first prompt via a local model).
+// (support-multi-harness, migrated in the thread-DB unit) — the background
+// sidebar-title generator for Codex workspaces (Codex sets the terminal
+// title to the git repo folder name, identical across every workspace in
+// that repo, so this module generates a real one from the user's first
+// prompt via a local model).
 //
-// Covers the THREE pure, directly-callable, exported functions this unit's
-// task brief calls out as standalone testable units:
-//   1. extractFirstCodexPrompt — picks the event_msg/user_message form,
-//      rejects the message/role=user form (the bug this extraction exists
-//      to avoid — that form picks up injected AGENTS.md/plugin/memory
-//      context before the real human prompt), picks the FIRST matching
-//      record when multiple exist, and tolerates a torn/invalid JSON line
-//      mixed into otherwise-valid lines without throwing.
+// Covers:
+//   1. First-prompt extraction, now a thin pass-through to threadDb.ts's
+//      getFirstUserPromptText — exercised here against REAL SQLite fixture
+//      DBs (node:sqlite's DatabaseSync) with the schema verified on a real
+//      ~/.codex/thread_history_1.sqlite, NOT the prior rollout-JSONL
+//      two-tier scan (deleted along with its `#`/`<` "looks injected"
+//      heuristic — see titleGeneration.ts's own header for why the thread
+//      DB's userMessage records carry no injected-context contamination to
+//      filter, so that heuristic's documented failure mode — a genuine
+//      prompt starting with `#` or `<` being wrongly skipped — is now
+//      simply GONE rather than carried forward). threadDb.ts's own
+//      dedicated harness (scripts/verify-codex-status.ts, section 7)
+//      already covers getFirstUserPromptText's own query logic in depth
+//      (earliest-turn selection, text-part concatenation, degrade-to-null
+//      paths) — the assertions here re-confirm the SAME function through
+//      titleGeneration.ts's actual call path (readFirstPromptForWorkspace),
+//      including the '#'-prefix regression case specific to this unit's
+//      history, rather than duplicating every one of that harness's cases.
 //   2. sanitizeGeneratedTitle — strips ANSI escapes, strips one layer of
 //      surrounding quotes (straight and smart), collapses internal
 //      newlines/whitespace to single spaces, rejects empty/whitespace-only
 //      input, and caps length at the module's chosen cap with real
-//      truncation asserted on an over-long input.
+//      truncation asserted on an over-long input. UNCHANGED by the
+//      thread-DB migration.
 //   3. isFmUnavailable — the exact legal-notice string (in either stdout or
 //      stderr) triggers "unavailable"; ordinary successful output does not;
 //      stderr-only content that is NOT the legal-notice string (e.g. the
 //      Private Cloud Compute warning `fm respond` can print while still
 //      succeeding) must NOT trigger "unavailable", since that case is
-//      required to read as SUCCESS.
+//      required to read as SUCCESS. UNCHANGED by the thread-DB migration.
+//   4. scheduleCodexTitleGeneration idempotency across two callers
+//      (launch.ts + statusState.ts's late-bind retry) — UNCHANGED
+//      reasoning, still exercised via the same fake-global-timers approach;
+//      the workspace fixture's `claudeSessionId` now doubles as the
+//      thread-DB thread_id (CODEX_HOME is pointed at a fixture DB with NO
+//      matching thread rather than "no rollout file on disk").
 //
-// FUNCTIONALLY DB-FREE, BUT THE IMPORT CHAIN STILL TOUCHES ELECTRON: this
-// script only ever calls the three pure functions above, never
-// scheduleCodexTitleGeneration/runOneAttempt (which do touch getWorkspace/
-// setWorkspaceLastTitle) — but titleGeneration.ts imports those from
-// ../../workspaces at MODULE SCOPE, and workspaces.ts imports `electron` at
-// module scope for getDb(). That import happens whether or not this script
-// ever calls a DB-touching export, so plain `bun run`/`node` alone fails to
-// even resolve the module graph. Same node:module register() resolve-hook
-// technique as scripts/verify-codex-usage-reader.ts (and
+// FUNCTIONALLY DB-FREE (electron/better-sqlite3-wise), BUT THE IMPORT CHAIN
+// STILL TOUCHES ELECTRON: this script never calls a getWorkspace/
+// setWorkspaceLastTitle DB write for real (the fixture store below stands
+// in), but titleGeneration.ts imports those from ../../workspaces at MODULE
+// SCOPE, and workspaces.ts imports `electron` at module scope for getDb().
+// That import happens whether or not this script ever calls a DB-touching
+// export, so plain `bun run`/`node` alone fails to even resolve the module
+// graph. Same node:module register() resolve-hook technique as
+// scripts/verify-codex-usage-reader.ts (and
 // verify-harness-codex-session.ts/verify-harness-session.ts before it),
 // stubbing `electron` and `./db`/`../../db` — neither stub is ever
 // exercised by this script's call path, they only need to exist so the
-// import graph resolves.
+// import graph resolves. threadDb.ts's own `node:sqlite` import is REAL
+// (no stub) — it has no electron dependency and this script needs the real
+// DatabaseSync to build and read fixture DBs anyway.
 //
 // Run: node --experimental-strip-types scripts/verify-codex-title-generation.ts
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 const electronStubSource = `
 export const app = {}
@@ -65,14 +89,16 @@ export function getDb() {
 // Fake ../../workspaces module for section 4's scheduleCodexTitleGeneration
 // idempotency test — a small, controllable in-memory store standing in for
 // getWorkspace/hasCodexTitleGenerationRun/markCodexTitleGenerationRun/
-// setWorkspaceLastTitle (imported by titleGeneration.ts) PLUS
-// setWorkspaceClaudeSessionId (imported by ./session, which titleGeneration.ts
-// itself imports from for codexSessionsRoot/findCodexRolloutFileById — so
-// the whole module graph needs this export to resolve even though this
-// script's own scheduleCodexTitleGeneration call path never calls it).
-// Exposed on globalThis so this script (loaded through the SAME resolve
-// hook, not a separate process) can read/reset it between assertions
-// without re-importing titleGeneration.ts.
+// setWorkspaceLastTitle (imported by titleGeneration.ts). Exposed on
+// globalThis so this script (loaded through the SAME resolve hook, not a
+// separate process) can read/reset it between assertions without
+// re-importing titleGeneration.ts.
+//
+// setWorkspaceClaudeSessionId IS NO LONGER STUBBED HERE (thread-DB
+// migration) — titleGeneration.ts no longer imports ./session at all (it
+// reads threadDb.ts's getFirstUserPromptText directly, keyed by the
+// workspace's already-bound claudeSessionId), so the module graph this
+// script exercises has one fewer stub to carry.
 // ---------------------------------------------------------------------------
 
 const workspacesStubSource = `
@@ -81,11 +107,6 @@ globalThis.__verifyCodexTitleGenStore = store
 
 export function getWorkspace(id) {
   return store.get(id) ?? null
-}
-
-export function setWorkspaceClaudeSessionId(id, sessionId) {
-  const ws = store.get(id)
-  if (ws) ws.claudeSessionId = sessionId
 }
 
 export function hasCodexTitleGenerationRun(id) {
@@ -106,10 +127,63 @@ export function setWorkspaceLastTitle(id, title) {
 }
 `
 
+// ---------------------------------------------------------------------------
+// Fake 'node:child_process' for section 1's real-generation-path assertions.
+//
+// WHY THIS EXISTS: titleGeneration.ts's generateTitleForPrompt spawns REAL
+// `fm`/`codex exec` subprocesses. CI runs every verify-* harness on
+// ubuntu-latest (see .github/workflows/ci.yml) — `fm` (Apple Foundation
+// Models CLI) does not exist on Linux at all, and even on a real macOS dev
+// machine, depending on a live subprocess call (network, model
+// availability, real wall-clock latency) makes an assertion harness flaky
+// for reasons that have nothing to do with the code under test. Stubbing
+// `node:child_process`'s execFile here — the ONE function
+// titleGeneration.ts actually calls (via promisify(childProcess.execFile))
+// — keeps section 1's assertions deterministic and platform-independent
+// while still exercising the REAL scheduleCodexTitleGeneration ->
+// runOneAttempt -> generateTitleForPrompt -> tryFmBackend call chain.
+//
+// The stub always succeeds via the 'fm' path (first callback arg) with a
+// short canned title, so runOneAttempt reaches setWorkspaceLastTitle /
+// markCodexTitleGenerationRun deterministically and quickly — what these
+// assertions verify is that readFirstPromptForWorkspace found a prompt at
+// all (via threadDb.ts), not what a live model would generate from it
+// (already covered by sections 2/3's pure sanitizeGeneratedTitle/
+// isFmUnavailable assertions).
+const childProcessStubSource = `
+import { promisify } from 'node:util'
+
+function execFileCallback(file, args, options, callback) {
+  const cb = typeof options === 'function' ? options : callback
+  queueMicrotask(() => cb(null, 'Stubbed Title', ''))
+  return { unref: () => undefined }
+}
+// titleGeneration.ts calls promisify(childProcess.execFile) — Node's REAL
+// child_process.execFile carries a util.promisify.custom implementation
+// that resolves { stdout, stderr } (not a bare string), which is why a
+// plain callback-shaped stub isn't enough on its own: without this custom
+// symbol, promisify falls back to its default "resolve with the single
+// callback arg after err" behavior, resolving with just stdout as a raw
+// string and leaving result.stderr undefined — exactly the
+// "Cannot read properties of undefined (reading 'includes')" failure this
+// stub exists to avoid (isFmUnavailable reads both stdout AND stderr).
+execFileCallback[promisify.custom] = (file, args, options) => {
+  return new Promise((resolve) => {
+    queueMicrotask(() => resolve({ stdout: 'Stubbed Title', stderr: '' }))
+  })
+}
+
+export function execFile(...args) {
+  return execFileCallback(...args)
+}
+execFile[promisify.custom] = execFileCallback[promisify.custom]
+`
+
 const hooks = `
 const electronStubUrl = ${JSON.stringify('data:text/javascript,' + encodeURIComponent(electronStubSource))}
 const dbStubUrl = ${JSON.stringify('data:text/javascript,' + encodeURIComponent(dbStubSource))}
 const workspacesStubUrl = ${JSON.stringify('data:text/javascript,' + encodeURIComponent(workspacesStubSource))}
+const childProcessStubUrl = ${JSON.stringify('data:text/javascript,' + encodeURIComponent(childProcessStubSource))}
 
 export async function resolve(specifier, context, nextResolve) {
   if (specifier === 'electron') {
@@ -117,6 +191,9 @@ export async function resolve(specifier, context, nextResolve) {
   }
   if (specifier === './db' || specifier === '../db' || specifier === '../../db') {
     return { url: dbStubUrl, shortCircuit: true }
+  }
+  if (specifier === 'node:child_process') {
+    return { url: childProcessStubUrl, shortCircuit: true }
   }
   if (specifier === '../../workspaces' || specifier === '../../workspaces.ts') {
     return { url: workspacesStubUrl, shortCircuit: true }
@@ -133,12 +210,9 @@ export async function resolve(specifier, context, nextResolve) {
 `
 register('data:text/javascript,' + encodeURIComponent(hooks), import.meta.url)
 
-const {
-  extractFirstCodexPrompt,
-  sanitizeGeneratedTitle,
-  isFmUnavailable,
-  scheduleCodexTitleGeneration
-} = await import('../src/main/harness/codex/titleGeneration.ts')
+const { sanitizeGeneratedTitle, isFmUnavailable, scheduleCodexTitleGeneration } =
+  await import('../src/main/harness/codex/titleGeneration.ts')
+const { threadHistoryDbPath } = await import('../src/main/harness/codex/threadDb.ts')
 
 // The resolve hook above intercepts titleGeneration.ts's OWN import of
 // ../../workspaces (a relative specifier from inside that file), which is
@@ -150,87 +224,258 @@ const workspacesStore = (
 ).__verifyCodexTitleGenStore
 
 // ---------------------------------------------------------------------------
-// 1. extractFirstCodexPrompt
+// Fixture thread-history DB helpers — same schema as
+// scripts/verify-codex-status.ts's fixtures (kept in sync deliberately;
+// both scripts build the identical CREATE TABLE statements verified against
+// a real ~/.codex/thread_history_1.sqlite — see threadDb.ts's own header).
 // ---------------------------------------------------------------------------
 
+function createFixtureSchema(dbPath: string): DatabaseSync {
+  const db = new DatabaseSync(dbPath)
+  db.exec(`
+    CREATE TABLE thread_turns (
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      rollout_ordinal INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      started_at INTEGER,
+      completed_at INTEGER,
+      first_user_item_id TEXT,
+      PRIMARY KEY (thread_id, turn_id)
+    );
+    CREATE TABLE thread_items (
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      rollout_ordinal INTEGER NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      item_json TEXT NOT NULL,
+      item_type TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (thread_id, turn_id, item_id)
+    );
+  `)
+  return db
+}
+
+function insertUserMessageTurn(
+  db: DatabaseSync,
+  threadId: string,
+  turnId: string,
+  rolloutOrdinal: number,
+  itemId: string,
+  promptText: string
+): void {
+  db.prepare(
+    `INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status, started_at, completed_at, first_user_item_id)
+     VALUES (?, ?, ?, 'completed', 1000, 1005, ?)`
+  ).run(threadId, turnId, rolloutOrdinal, itemId)
+  const itemJson = JSON.stringify({
+    type: 'userMessage',
+    id: itemId,
+    clientId: null,
+    content: [{ type: 'text', text: promptText, text_elements: [] }]
+  })
+  db.prepare(
+    `INSERT INTO thread_items (thread_id, turn_id, item_id, rollout_ordinal, created_at_ms, item_json, item_type)
+     VALUES (?, ?, ?, ?, 1000000, ?, 'userMessage')`
+  ).run(threadId, turnId, itemId, rolloutOrdinal, itemJson)
+}
+
+/** Runs `run` with CODEX_HOME pointed at a fresh temp dir whose
+ *  thread_history_1.sqlite is built by `build`, then tears the dir down. */
+async function withFixtureCodexHome<T>(
+  build: (db: DatabaseSync) => void,
+  run: () => Promise<T> | T
+): Promise<T> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-title-gen-thread-db-'))
+  const prevCodexHome = process.env['CODEX_HOME']
+  try {
+    process.env['CODEX_HOME'] = tmpDir
+    const db = createFixtureSchema(threadHistoryDbPath(tmpDir))
+    build(db)
+    db.close()
+    return await run()
+  } finally {
+    if (prevCodexHome === undefined) delete process.env['CODEX_HOME']
+    else process.env['CODEX_HOME'] = prevCodexHome
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. First-prompt extraction, via titleGeneration.ts's real call path
+//    (scheduleCodexTitleGeneration -> readFirstPromptForWorkspace ->
+//    threadDb.ts's getFirstUserPromptText), exercised end-to-end against
+//    real fixture DBs.
+// ---------------------------------------------------------------------------
+
+// A workspace whose readFirstPromptForWorkspace finds a real prompt reaches
+// runOneAttempt, which calls generateTitleForPrompt — stubbed via the
+// 'node:child_process' resolve-hook stub above (see this file's header:
+// the real fm/codex-exec backends are never invoked from this harness, so
+// this resolves near-instantly and deterministically, cross-platform).
+//
+// UNLIKE section 4's idempotency assertions — where every scheduled
+// attempt early-returns BEFORE runOneAttempt (no claudeSessionId bound), so
+// firing all five setTimeout registrations back-to-back is harmless — a
+// workspace here genuinely reaches runOneAttempt on its FIRST scheduled
+// attempt. In real production, TITLE_RETRY_DELAYS_MS's five delays are
+// staggered real wall-clock seconds apart, so the first attempt's
+// runOneAttempt (and its markCodexTitleGenerationRun) always completes long
+// before the second timer fires. Draining all five fake timers
+// SYNCHRONOUSLY back-to-back (withFakeGlobalTimers' normal drain loop)
+// breaks that ordering: all five callbacks' synchronous guard checks
+// (hasCodexTitleGenerationRun) run before any of their awaited
+// runOneAttempt calls resolve, so every one of them would reach
+// runOneAttempt — a test-harness artifact of firing timers without their
+// real relative delays, not a real production race. drainOneTimerAtATime
+// below fixes this by flushing microtasks BETWEEN each fired timer, exactly
+// modelling the real "each attempt fully resolves before the next timer's
+// delay would even elapse" property.
+async function drainOneTimerAtATime(run: () => void): Promise<void> {
+  const realSetTimeout = globalThis.setTimeout
+  const realClearTimeout = globalThis.clearTimeout
+  const pending: Array<() => void> = []
+
+  // @ts-expect-error — see withFakeGlobalTimers below for the same narrowed-signature note.
+  globalThis.setTimeout = ((fn: () => void) => {
+    pending.push(fn)
+    return { unref: () => undefined } as unknown as NodeJS.Timeout
+  }) as typeof setTimeout
+  globalThis.clearTimeout = (() => undefined) as typeof clearTimeout
+
+  try {
+    run()
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+    globalThis.clearTimeout = realClearTimeout
+  }
+
+  while (pending.length > 0) {
+    const fn = pending.shift()
+    fn?.()
+    await flushMicrotasks()
+  }
+}
+
 {
-  // The message/role=user form appears BEFORE the real event_msg/
-  // user_message form — exactly the shape a real rollout has (injected
-  // AGENTS.md/plugin context lands as a message/role=user record before the
-  // human's first real event_msg/user_message).
-  const lines = [
-    JSON.stringify({
-      type: 'message',
-      role: 'user',
-      content: '# AGENTS.md instructions\n<recommended_plugins>...'
-    }),
-    JSON.stringify({
-      type: 'event_msg',
-      payload: { type: 'user_message', message: 'fix the login bug' }
-    })
-  ]
-  const result = extractFirstCodexPrompt(lines)
+  // Baseline: a bound workspace whose thread has a real first prompt must
+  // have it picked up, reaching runOneAttempt (markCalls incremented)
+  // rather than early-returning at the `if (!firstPrompt) return` guard —
+  // proving readFirstPromptForWorkspace found the prompt via threadDb.ts.
+  const workspaceId = 'ws-real-prompt'
+  const threadId = 'thread-real-prompt'
+  workspacesStore.set(workspaceId, {
+    id: workspaceId,
+    lastTitle: null,
+    claudeSessionId: threadId,
+    codexTitleGenerated: false,
+    markCalls: 0
+  })
+
+  await withFixtureCodexHome(
+    (db) => {
+      insertUserMessageTurn(db, threadId, 'turn-1', 1, 'item-1', 'What is this codebase about?')
+    },
+    async () => {
+      await drainOneTimerAtATime(() => {
+        scheduleCodexTitleGeneration(workspaceId)
+      })
+    }
+  )
+
+  const after = workspacesStore.get(workspaceId)!
   assert.equal(
-    result,
-    'fix the login bug',
-    'must pick the event_msg/user_message record, not the message/role=user one'
+    after.markCalls,
+    1,
+    'a workspace whose bound thread has a real first prompt must reach runOneAttempt (markCalls=1), ' +
+      'proving readFirstPromptForWorkspace found the prompt via threadDb.ts rather than early-returning'
+  )
+  assert.equal(
+    after.lastTitle,
+    'Stubbed Title',
+    'runOneAttempt must persist the (stubbed) generated title via setWorkspaceLastTitle'
   )
 }
 
 {
-  // FIRST matching record wins when multiple event_msg/user_message records
-  // exist.
-  const lines = [
-    JSON.stringify({
-      type: 'event_msg',
-      payload: { type: 'user_message', message: 'first prompt' }
-    }),
-    JSON.stringify({
-      type: 'event_msg',
-      payload: { type: 'user_message', message: 'second prompt' }
-    })
-  ]
+  // THE OLD ROLLOUT-SCANNING HEURISTIC'S DOCUMENTED FAILURE MODE, NOW FIXED:
+  // a genuine human prompt whose first line starts with '#' must be found
+  // and used — the old extractFirstCodexPrompt's looksInjected() would have
+  // wrongly skipped this (treating it as an injected AGENTS.md/persona
+  // block). The thread DB's userMessage records carry no such
+  // contamination, so no such heuristic exists in the new call path at all.
+  const workspaceId = 'ws-hash-prefix-prompt'
+  const threadId = 'thread-hash-prefix'
+  workspacesStore.set(workspaceId, {
+    id: workspaceId,
+    lastTitle: null,
+    claudeSessionId: threadId,
+    codexTitleGenerated: false,
+    markCalls: 0
+  })
+
+  await withFixtureCodexHome(
+    (db) => {
+      insertUserMessageTurn(db, threadId, 'turn-1', 1, 'item-1', '# fix this bug in the parser')
+    },
+    async () => {
+      await drainOneTimerAtATime(() => {
+        scheduleCodexTitleGeneration(workspaceId)
+      })
+    }
+  )
+
+  const after = workspacesStore.get(workspaceId)!
   assert.equal(
-    extractFirstCodexPrompt(lines),
-    'first prompt',
-    'must return the FIRST matching event_msg/user_message record'
+    after.markCalls,
+    1,
+    "THE OLD HEURISTIC'S FAILURE MODE MUST NOW PASS: a genuine prompt starting with '#' must reach " +
+      'runOneAttempt (markCalls=1) via threadDb.ts, not be silently skipped the way the old ' +
+      "rollout-scanning extractFirstCodexPrompt's looksInjected() would have skipped it"
   )
 }
 
 {
-  // Torn/invalid JSON line mixed in with valid lines must not throw, and
-  // the valid prompt after it must still be found.
-  const lines = [
-    '{"type":"event_msg","payload":{"type":"user_mess', // truncated mid-write
-    'not json at all {{{',
-    JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'real prompt' } })
-  ]
-  let result: string | null = null
-  assert.doesNotThrow(() => {
-    result = extractFirstCodexPrompt(lines)
-  }, 'must tolerate a torn/invalid JSON line without throwing')
-  assert.equal(result, 'real prompt', 'must still find the valid prompt after a torn line')
-}
+  // No thread found at all (unbound, or a thread id the fixture DB has no
+  // rows for) -> readFirstPromptForWorkspace returns null ->
+  // `if (!firstPrompt) return` -> generation never attempted, markCalls
+  // stays 0. This is the "no rollout file"-equivalent degrade case under
+  // the new design.
+  const workspaceId = 'ws-no-prompt'
+  workspacesStore.set(workspaceId, {
+    id: workspaceId,
+    lastTitle: null,
+    claudeSessionId: 'thread-with-no-rows-in-fixture-db',
+    codexTitleGenerated: false,
+    markCalls: 0
+  })
 
-{
-  // No matching record at all -> null.
-  const lines = [
-    JSON.stringify({ type: 'session_meta', payload: { id: 'abc' } }),
-    JSON.stringify({ type: 'message', role: 'user', content: 'not the right shape' }),
-    JSON.stringify({
-      type: 'event_msg',
-      payload: { type: 'agent_message', message: 'not a user message' }
-    })
-  ]
+  await withFixtureCodexHome(
+    () => {
+      // No rows inserted at all — the DB exists but has nothing for this thread id.
+    },
+    async () => {
+      await withFakeGlobalTimers(async () => {
+        scheduleCodexTitleGeneration(workspaceId)
+      })
+      await flushMicrotasks()
+    }
+  )
+
+  const after = workspacesStore.get(workspaceId)!
   assert.equal(
-    extractFirstCodexPrompt(lines),
-    null,
-    'must return null when no event_msg/user_message record exists'
+    after.markCalls,
+    0,
+    'a bound thread id with no rows in the fixture DB must never reach runOneAttempt — ' +
+      'readFirstPromptForWorkspace degrades to null, and the scheduler early-returns'
   )
 }
 
 console.log(
-  '✓ extractFirstCodexPrompt: event_msg/user_message form only, first-wins, torn-line tolerant'
+  "✓ first-prompt extraction via threadDb.ts (real fixture DBs, through titleGeneration.ts's actual call path): " +
+    "finds a real prompt, finds a '#'-prefixed prompt (old heuristic's failure mode now fixed), " +
+    'degrades cleanly when the thread has no rows'
 )
 
 // ---------------------------------------------------------------------------
@@ -380,7 +625,7 @@ console.log(
 console.log('')
 console.log('--- scheduleCodexTitleGeneration: idempotent across two callers ---')
 
-function withFakeGlobalTimers<T>(run: () => T): T {
+async function withFakeGlobalTimers<T>(run: () => Promise<T> | T): Promise<T> {
   const realSetTimeout = globalThis.setTimeout
   const realClearTimeout = globalThis.clearTimeout
   const pending: Array<() => void> = []
@@ -396,7 +641,7 @@ function withFakeGlobalTimers<T>(run: () => T): T {
   globalThis.clearTimeout = (() => undefined) as typeof clearTimeout
 
   try {
-    const result = run()
+    const result = await run()
     // Drain in registration order (== delay order, since
     // scheduleCodexTitleGeneration registers TITLE_RETRY_DELAYS_MS in
     // ascending order) — mirrors real timers firing in sequence. Each
@@ -429,14 +674,15 @@ async function flushMicrotasks(): Promise<void> {
 
 {
   const workspaceId = 'ws-idempotency-test'
-  // No claudeSessionId bound and no rollout file on disk — every scheduled
-  // attempt's readFirstPromptForWorkspace/findCodexRolloutFileById call
-  // will resolve to null (`if (!ws.claudeSessionId) return`), so no attempt
-  // ever reaches runOneAttempt/execFile — this test isolates the
-  // SCHEDULING/guard idempotency the task brief asks for, not the
-  // generation backends themselves (already covered by isFmUnavailable/
-  // sanitizeGeneratedTitle above, and by verify-codex-status.ts's/this
-  // file's other sections).
+  // No claudeSessionId bound and no thread-history DB at all (CODEX_HOME
+  // left unset/pointed at whatever the ambient environment has, same
+  // "nothing to find" shape as the old "no rollout file on disk" case) —
+  // every scheduled attempt's readFirstPromptForWorkspace call will resolve
+  // to null (`if (!ws.claudeSessionId) return`), so no attempt ever reaches
+  // runOneAttempt/execFile — this test isolates the SCHEDULING/guard
+  // idempotency the task brief asks for, not the generation backends
+  // themselves (already covered by isFmUnavailable/sanitizeGeneratedTitle
+  // above, and by section 1's real-fixture-DB assertions).
   workspacesStore.set(workspaceId, {
     id: workspaceId,
     lastTitle: null,
@@ -446,7 +692,7 @@ async function flushMicrotasks(): Promise<void> {
   })
 
   // First caller (simulates launch.ts's call at launch time).
-  withFakeGlobalTimers(() => {
+  await withFakeGlobalTimers(() => {
     scheduleCodexTitleGeneration(workspaceId)
   })
   await flushMicrotasks()
@@ -461,16 +707,16 @@ async function flushMicrotasks(): Promise<void> {
 
   // Simulate a late bind happening between the two callers (exactly what
   // statusState.ts's retryLateBinding observes right before it calls
-  // scheduleCodexTitleGeneration a second time) — still no rollout file on
-  // disk, so readFirstPromptForWorkspace will still return null and no
-  // REAL generation attempt fires; what this proves is that the SECOND
-  // caller's timers run through the exact same guard chain without
-  // duplicating work.
-  afterFirstCaller.claudeSessionId = 'a-late-bound-session-id'
+  // scheduleCodexTitleGeneration a second time) — still no thread-history
+  // rows for this thread id, so readFirstPromptForWorkspace will still
+  // return null and no REAL generation attempt fires; what this proves is
+  // that the SECOND caller's timers run through the exact same guard chain
+  // without duplicating work.
+  afterFirstCaller.claudeSessionId = 'a-late-bound-session-id-with-no-fixture-rows'
 
   // Second caller (simulates statusState.ts's retryLateBinding calling it
   // again after a late bind).
-  withFakeGlobalTimers(() => {
+  await withFakeGlobalTimers(() => {
     scheduleCodexTitleGeneration(workspaceId)
   })
   await flushMicrotasks()
@@ -498,7 +744,7 @@ async function flushMicrotasks(): Promise<void> {
     markCalls: 1
   })
 
-  withFakeGlobalTimers(() => {
+  await withFakeGlobalTimers(() => {
     scheduleCodexTitleGeneration(workspaceId)
   })
   await flushMicrotasks()
@@ -526,5 +772,5 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 console.log(
-  '\nAll codex title-generation assertions passed: first-prompt extraction, output sanitization, fm-unavailable detection, scheduleCodexTitleGeneration idempotency across two callers.'
+  '\nAll codex title-generation assertions passed: first-prompt extraction via threadDb.ts (real fixture DBs), output sanitization, fm-unavailable detection, scheduleCodexTitleGeneration idempotency across two callers.'
 )

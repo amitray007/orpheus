@@ -13,7 +13,11 @@ import {
   isWorkspaceSessionReady,
   getWorkspaceFileInfo
 } from './sessionState'
-import { startCodexStatusService, hasObservedCodexStatus } from './harness/codex/statusState'
+import {
+  startCodexStatusService,
+  hasObservedCodexStatus,
+  setCodexReadyObserver
+} from './harness/codex/statusState'
 import {
   markTerminalTitleObserved,
   hasObservedTerminalTitle,
@@ -171,6 +175,7 @@ import {
   setOverlayFallbackTimer,
   clearOverlayFallbackTimer,
   takeOverlayFallbackTimer,
+  hasOverlayFallbackTimer,
   withInjectLock,
   teardownWorkspaceState
 } from './workspaceResources'
@@ -490,6 +495,16 @@ function ensureLoadingOverlayWiring(addon: GhosttySurfaceAddon): void {
   setSessionReadyHandler((workspaceId: string) => {
     hideLoadingOverlay(workspaceId)
   })
+  // Seam (b) of the loading-overlay early-dismissal fix (support-multi-
+  // harness Bug 1): statusState.ts's Codex equivalent of the Claude handler
+  // just above — fired the instant hasObservedCodexStatus flips false ->
+  // true for a workspace. Routed through attemptEarlyOverlayDismissal (not
+  // a direct hideLoadingOverlay call) so the harnessId dispatch and the
+  // "only if a fallback timer is actually armed" gate are shared with seam
+  // (a) rather than duplicated — see that function's doc comment.
+  setCodexReadyObserver((workspaceId: string) => {
+    attemptEarlyOverlayDismissal(workspaceId, getWorkspace(workspaceId)?.harnessId ?? 'claude')
+  })
 }
 
 function ensureTerminalCallbackWiring(addon: GhosttySurfaceAddon): void {
@@ -541,6 +556,13 @@ function ensureTerminalCallbackWiring(addon: GhosttySurfaceAddon): void {
     // Codex both); only ever consulted for codex-cli in
     // isWorkspaceSessionReadyForHarness.
     markTerminalTitleObserved(workspaceId)
+    // Seam (a) of the loading-overlay early-dismissal fix (support-multi-
+    // harness Bug 1): this may be the exact call that just flipped this
+    // workspace's readiness from false to true (hasObservedTerminalTitle),
+    // so re-check right here rather than waiting for the 10s fallback.
+    // Cheap no-op for every call after the first and for every Claude
+    // workspace — see attemptEarlyOverlayDismissal's own doc comment.
+    attemptEarlyOverlayDismissal(workspaceId, getWorkspace(workspaceId)?.harnessId ?? 'claude')
 
     // Skip if nothing changed — guards the per-frame spinner churn.
     if (getTitle(workspaceId) === (cleaned ?? undefined)) return
@@ -1906,6 +1928,54 @@ function isWorkspaceSessionReadyForHarness(workspaceId: string, harnessId: strin
     )
   }
   return isWorkspaceSessionReady(workspaceId)
+}
+
+/**
+ * Early-dismissal seam for Bug 1 (support-multi-harness): handlePostMountOverlay
+ * only checks isWorkspaceSessionReadyForHarness ONCE, at mount time — for a
+ * brand-new Codex workspace that check is almost always still false then
+ * (neither hasObservedCodexStatus nor hasObservedTerminalTitle has had a
+ * chance to fire yet), so the 10s fallback timer always arms, and nothing
+ * previously re-checked readiness after mount. Contrast with Claude, whose
+ * setSessionReadyHandler wiring above (ensureLoadingOverlayWiring) calls
+ * hideLoadingOverlay the instant its OWN session file reports a concrete
+ * status. This function is Codex's structural equivalent, called from both
+ * seams where a Codex readiness signal can flip false -> true after mount:
+ * the title callback (ensureTerminalCallbackWiring, right after
+ * markTerminalTitleObserved) and statusState.ts's reconcileOneWorkspace (via
+ * setCodexReadyObserver, wired below).
+ *
+ * Harness-agnostic in MECHANISM: this does not hardcode `harnessId ===
+ * 'codex-cli'` as the dismissal gate. It re-runs the same
+ * isWorkspaceSessionReadyForHarness dispatch handlePostMountOverlay itself
+ * uses, gated only on "is a fallback timer actually armed for this
+ * workspace" (hasOverlayFallbackTimer). In practice only Codex workspaces
+ * ever have a fallback timer armed while their readiness signals are still
+ * false at call time (Claude's own branch of isWorkspaceSessionReadyForHarness
+ * is driven by setSessionReadyHandler instead, which already dismisses via a
+ * SEPARATE path and is untouched by this function), but nothing here assumes
+ * that — a future harness that reaches this seam would be handled the same
+ * way, automatically.
+ *
+ * hasOverlayFallbackTimer is checked FIRST specifically so this is a cheap
+ * no-op on the hot per-frame title-callback path for the overwhelming
+ * majority of calls (every title update after the first, and every Claude
+ * workspace ever) — isWorkspaceSessionReadyForHarness is only ever evaluated
+ * once a timer is confirmed armed.
+ *
+ * clearOverlayFallbackTimer (NOT takeOverlayFallbackTimer) is required here:
+ * the timer has NOT fired yet at this call site (we're preempting it), so
+ * takeOverlayFallbackTimer's "already fired, just remove the stale map
+ * entry" semantics would be wrong — clearOverlayFallbackTimer both cancels
+ * the pending setTimeout and removes the entry, which is exactly what's
+ * needed to guarantee the stale timer can never later fire and hide a
+ * DIFFERENT overlay mounted for the same workspaceId after this one.
+ */
+function attemptEarlyOverlayDismissal(workspaceId: string, harnessId: string): void {
+  if (!hasOverlayFallbackTimer(workspaceId)) return
+  if (!isWorkspaceSessionReadyForHarness(workspaceId, harnessId)) return
+  clearOverlayFallbackTimer(workspaceId)
+  hideLoadingOverlay(workspaceId)
 }
 
 /** Post-mount overlay handling: show the "Starting workspace" overlay only when a
@@ -4076,7 +4146,8 @@ if (!app.requestSingleInstanceLock()) {
 
         // Codex's own status-reconciliation service (support-multi-harness) —
         // sibling to sessionState's above, but Codex-scoped: watches
-        // ~/.codex/thread-writer-locks + bound rollout files instead of
+        // ~/.codex/thread-writer-locks + reads Codex's own
+        // ~/.codex/thread_history_1.sqlite thread-history DB instead of
         // ~/.claude/sessions/<pid>.json. See harness/codex/statusState.ts's
         // header for why this is a separate service rather than a branch
         // inside sessionState.ts.
