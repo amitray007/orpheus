@@ -1,4 +1,5 @@
 import type { ControlConsumer, ControlPermission } from '../controlPlane/types'
+import type { HarnessId } from '../../shared/harness/types'
 
 export type WorkspacePresentation = 'background' | 'focus'
 export type WorkspaceMode = 'local' | 'worktree'
@@ -90,6 +91,12 @@ export type CreateWorkspaceInput = {
   fork?: boolean
   branch?: string
   presentation?: WorkspacePresentation
+  /** Which harness the new workspace runs (support-multi-harness C1).
+   *  Omitted defaults to Claude — see createWorkspace's own doc comment in
+   *  src/main/workspaces.ts, the ultimate consumer of this field. Validated
+   *  against the registry there (isKnownHarnessId), not here — this type is
+   *  shared-safe (DB-free) and the registry check is main-process-only. */
+  harnessId?: HarnessId
 }
 
 export type StartTaskInput = {
@@ -194,6 +201,11 @@ export type WorkspaceCreateRecord = {
   forkedFromConversationId: string | null
   worktreeParentCwd: string | null
   worktreeBranch: string | null
+  /** Undefined (not null) mirrors createWorkspace's own optional param — see
+   *  CreateWorkspaceInput.harnessId above for why omitted must mean "let the
+   *  DB default decide," not an explicit value the store port has to
+   *  interpret. */
+  harnessId?: HarnessId
 }
 
 export type WorkspaceStorePort = {
@@ -257,11 +269,23 @@ export type WorktreePreflight = {
 }
 
 export type WorkspaceWorktreePort = {
-  derivePath: (input: { project: ProjectSnapshot; workspaceId: string; name: string }) => string
+  derivePath: (input: {
+    project: ProjectSnapshot
+    workspaceId: string
+    name: string
+    /** Which harness this workspace runs (support-multi-harness follow-up)
+     *  — decides the worktree's parent directory
+     *  (`.<harnessId>/worktrees/`). Optional so an older caller that
+     *  predates harness-scoped worktrees still compiles; the adapter
+     *  defaults to 'claude', matching every workspace before this field
+     *  existed. */
+    harnessId?: string
+  }) => string
   create: (input: {
     project: ProjectSnapshot
     path: string
     branch?: string
+    harnessId?: string
   }) => { path: string; branch: string } | Promise<{ path: string; branch: string }>
   rollbackCreate: (input: {
     project: ProjectSnapshot

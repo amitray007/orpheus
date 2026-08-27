@@ -78,7 +78,7 @@ export type TerminalObservationServiceDeps = {
   getSessionInfo: (workspaceId: string) => TerminalSessionInfo
   isWorkspaceReady: (workspaceId: string) => boolean
   getWorkspaceActivity: (workspaceId: string) => string
-  workspaceClaudeCommand: () => string
+  workspaceClaudeCommand: (harnessId?: string) => string
   workbenchCommand: () => string
   readTranscript: (
     workspaceId: string,
@@ -756,7 +756,7 @@ export class TerminalObservationService implements TerminalObservationHandlers {
       }
       const offline = this.safePhase(target.surfaceId) === 'none'
       return present(
-        { command: this.deps.workspaceClaudeCommand(), cwd: workspace.cwd },
+        { command: this.deps.workspaceClaudeCommand(workspace.harnessId), cwd: workspace.cwd },
         'configured-runtime',
         observedAt,
         workspace.lastOpenedAt,

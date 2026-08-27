@@ -36,6 +36,15 @@ import {
 import type { ClaudeWorkspaceSettings, ClaudeEffort } from '../../shared/types'
 import { withReconciledEffort } from '../effortReconciliation'
 import {
+  setCuratedModelEffort,
+  getHarnessSettings,
+  setHarnessSettings,
+  setShellInit
+} from '../harness/settings'
+import { resolveHarness } from '../harness/registry'
+import { CLAUDE_PERMISSION_MODE_ARG_KEY } from '../harness/claude/curated'
+import { applyProjectDrawerPatch } from '../../shared/harness/projectDrawerSettings'
+import {
   getLaunchSnapshot,
   setLaunchSnapshot,
   deleteLaunchSnapshot,
@@ -183,15 +192,20 @@ function broadcastEffectiveSettingsForMountedWorkspaces(
   if (launchSnapshotCount() === 0) return
   const win = getMainWindow()
   if (!win || win.isDestroyed()) return
-  const globalSettings = getClaudeGlobalSettings()
   for (const [workspaceId] of launchSnapshotEntries()) {
     const ws = getWorkspace(workspaceId)
     if (!ws) continue // evicted by recomputeDirty's own pass; nothing to push
-    const fresh = composeClaudeLaunch(ws.projectId, workspaceId, globalSettings)
+    // A2 (support-multi-harness): resolve through the workspace's harness
+    // descriptor rather than composeClaudeLaunch directly, so `fresh.effort`
+    // is read structurally instead of grepping `fresh.flags` for `--effort`
+    // — see workspace:getEffectiveModel/getEffectiveEffort above for the
+    // same conversion and its rationale.
+    const descriptor = resolveHarness(ws.harnessId)
+    const fresh = descriptor.composeLaunch(ws.projectId, workspaceId)
     win.webContents.send(PUSH_CHANNELS.workspaceEffectiveSettingsChanged, {
       workspaceId,
       model: fresh.model,
-      effort: findFlagValue(fresh.flags, '--effort') ?? ''
+      effort: fresh.effort
     })
   }
 }
@@ -273,6 +287,27 @@ function reconcileFlagsExceptTarget(
   return patchedTokens.join(FLAG_DELIMITER)
 }
 
+// A0 (support-multi-harness) WORKSPACE-SCOPE DECISION — harness_settings
+// only has 'global' and 'project' scope (settings.ts's own doc comment: "a
+// parameter that silently does nothing is worse than one that does not
+// exist" — no workspace scope was added). The footer Model/Effort chips are
+// a per-WORKSPACE control: picking Opus in one workspace must NOT change
+// what a sibling workspace in the same project effectively launches with.
+// Promoting a workspace-originated write to harness_settings PROJECT scope
+// was considered and rejected — it would silently clobber every sibling
+// workspace's effective curated model/effort the moment any one workspace's
+// footer chip changes it (verified: this is invisible in a DB with 0
+// workspaces, but a real production project with multiple workspaces would
+// see every workspace snap to whichever one was changed last).
+//
+// So this stays a WRITE to claude_workspace_settings only, unchanged from
+// before — no harness_settings write happens here at all. The read side
+// (composeClaudeHarnessLaunch in launch.ts) is where the split-brain is
+// actually closed: it layers claude_workspace_settings' model/effort
+// override ON TOP of harness_settings' resolved (global -> project)
+// curated values, so a workspace override still wins at launch time without
+// ever being written into (or clobbering) the project-scope harness_settings
+// row. See launch.ts's own comment at the call site for the exact layering.
 function setWorkspaceSettingAndSuppressDirty(
   workspaceId: string,
   patch: Partial<{ model: string; effort: ClaudeEffort }>,
@@ -347,6 +382,17 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
   handle('claudeSettings:update', (_e, patch) => {
     const reconciledPatch = withReconciledEffort(patch, undefined, undefined)
     const result = updateClaudeGlobalSettings(reconciledPatch)
+    // A0 (support-multi-harness): keep harness_settings.curated — the launch
+    // emitter's actual source of truth — in sync with this global-scope
+    // write. Only fires when the patch actually touches model/effort; a
+    // patch touching neither leaves the existing curated values alone (see
+    // setCuratedModelEffort's own "undefined = leave alone" contract).
+    if (reconciledPatch.model !== undefined || reconciledPatch.effort !== undefined) {
+      setCuratedModelEffort('claude', 'global', undefined, {
+        model: reconciledPatch.model,
+        effort: reconciledPatch.effort
+      })
+    }
     recomputeDirty()
     broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
     return result
@@ -366,9 +412,65 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
   handle('claudeProjectSettings:update', (_e, args) => {
     const reconciledPatch = withReconciledEffort(args.patch, args.projectId, undefined)
     const result = updateClaudeProjectSettings(args.projectId, reconciledPatch)
+    // A0 (support-multi-harness): same harness_settings sync as
+    // claudeSettings:update above, at project scope.
+    if (reconciledPatch.model !== undefined || reconciledPatch.effort !== undefined) {
+      setCuratedModelEffort('claude', 'project', args.projectId, {
+        model: reconciledPatch.model,
+        effort: reconciledPatch.effort
+      })
+    }
     recomputeDirty()
     broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
     return result
+  })
+
+  // H1 (support-multi-harness) — the project Settings drawer's harness-aware
+  // write path. Unlike claudeProjectSettings:update above (which writes the
+  // now-dead-at-launch claude_project_settings table and syncs ONLY
+  // model/effort into harness_settings as a side effect), this writes
+  // harness_settings DIRECTLY — the storage the live launch emitter
+  // (composeClaudeHarnessLaunch, via each harness descriptor's composeLaunch)
+  // actually reads — for the drawer's five surviving fields: model, effort
+  // (both `curated`), customCliFlags/customEnvVars (`args`/`env` rows), and
+  // preLaunchSnippet (a dedicated HarnessSettings field — see that type's
+  // own doc comment in harness/settings.ts). `permissionMode` is ALSO still
+  // supported by this handler (see below) even though, per the user's
+  // decision on this unit, the drawer itself no longer sends it — the
+  // storage and merge logic stay correct for whichever OTHER caller still
+  // relies on that row (Settings > Harness page, default-args seeding).
+  //
+  // ONLY permissionMode IS CLAUDE-SPECIFIC, not the other four. See
+  // shared/harness/types.ts's CuratedField header: different harnesses
+  // express the permission-mode INTENT as genuinely different argv shapes
+  // (Codex needs TWO flags, Copilot one, Gemini a bare `-y`), so there is no
+  // single arg-row key a non-Claude harness could plug into
+  // CLAUDE_PERMISSION_MODE_ARG_KEY — hence the `harnessId === 'claude'`
+  // gate stripping ONLY that one field for any other harness. model/effort
+  // are already harness-scoped by `resolveHarnessSettings(harnessId, ...)`
+  // itself (no gate needed here). customCliFlags/customEnvVars/
+  // preLaunchSnippet are equally harness-agnostic — arbitrary args/env rows
+  // and a free-text shell snippet apply to ANY harness's own wrapper/argv,
+  // so they are passed through unconditionally rather than gated.
+  handle('harness:settings:updateProjectDrawer', (_e, { harnessId, projectId, patch }) => {
+    const existing = getHarnessSettings(harnessId, 'project', projectId)
+    const effectivePatch = harnessId === 'claude' ? patch : { ...patch, permissionMode: undefined }
+    const next = applyProjectDrawerPatch(existing, effectivePatch, CLAUDE_PERMISSION_MODE_ARG_KEY)
+    setHarnessSettings(harnessId, 'project', projectId, next)
+    recomputeDirty()
+    broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
+    return getHarnessSettings(harnessId, 'project', projectId)
+  })
+
+  // Global Settings page (ClaudeToolsSection.tsx) write path — see
+  // harness:settings:updateShellInit's own doc comment (shared/ipc.ts).
+  // Global scope only, scopeId omitted (setShellInit/getHarnessSettings
+  // both normalize a missing scopeId to the '' global sentinel).
+  handle('harness:settings:updateShellInit', (_e, { harnessId, patch }) => {
+    setShellInit(harnessId, 'global', undefined, patch)
+    recomputeDirty()
+    broadcastEffectiveSettingsForMountedWorkspaces(deps.getMainWindow)
+    return getHarnessSettings(harnessId, 'global')
   })
 
   // ---------------------------------------------------------------------------
@@ -381,7 +483,11 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
 
   // Reconciles effort against a model change at workspace scope (e.g. a
   // model switch made via WorkspaceDrawer rather than the footer chip) — see
-  // withReconciledEffort's own doc comment.
+  // withReconciledEffort's own doc comment. A0 (support-multi-harness): this
+  // stays a claude_workspace_settings-only write, deliberately NOT promoted
+  // to harness_settings — see setWorkspaceSettingAndSuppressDirty's own
+  // WORKSPACE-SCOPE DECISION comment for why a workspace-scoped write must
+  // never land in harness_settings' (global|project)-only scope tiers.
   handle('claudeWorkspaceSettings:update', (_e, args) => {
     const ws = getWorkspace(args.workspaceId)
     const reconciledPatch = withReconciledEffort(args.patch, ws?.projectId, args.workspaceId)
@@ -423,15 +529,18 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
 
   // Footer Model chip: read the TRUE effective model a workspace would launch
   // with right now (workspace override → project override → global setting),
-  // by reusing composeClaudeLaunch verbatim — the single source of truth for
-  // launch composition — instead of duplicating its resolution precedence.
-  // findFlagValue is position-independent (no start-anchor needed, unlike
-  // the old regex) — it finds --model by name wherever it lands in the
-  // composed token stream.
+  // by resolving the workspace's harness descriptor and reading its
+  // composed HarnessLaunch's structured `model` field directly — A2
+  // (support-multi-harness) replaces the old composeClaudeLaunch + grep
+  // pattern, which only worked because Claude happens to express model as
+  // `--model <value>`; a harness that expresses it differently (e.g. an env
+  // var) would silently break the grep. resolveHarness never throws and
+  // falls back to the Claude descriptor for a missing/unknown harnessId.
   handle('workspace:getEffectiveModel', (_e, args) => {
     const ws = getWorkspace(args.workspaceId)
-    const launch = composeClaudeLaunch(ws?.projectId, args.workspaceId)
-    return { model: findFlagValue(launch.flags, '--model') ?? '' }
+    const descriptor = resolveHarness(ws?.harnessId)
+    const launch = descriptor.composeLaunch(ws?.projectId, args.workspaceId)
+    return { model: launch.model }
   })
 
   // Footer Effort chip: persist an effort override and suppress the resulting
@@ -447,13 +556,15 @@ export function registerClaudeSettingsIpc(deps: ClaudeSettingsIpcDeps): void {
     )
   })
 
-  // Footer Effort chip: read the TRUE effective effort a workspace would launch
-  // with right now, by reusing composeClaudeLaunch verbatim. findFlagValue is
-  // position-independent by construction (finds --effort by name wherever it
-  // lands in the composed token stream), so no start-anchor caveat applies.
+  // Footer Effort chip: read the TRUE effective effort a workspace would
+  // launch with right now, by resolving the workspace's harness descriptor
+  // and reading its composed HarnessLaunch's structured `effort` field
+  // directly — see workspace:getEffectiveModel above for why this replaced
+  // the old composeClaudeLaunch + grep pattern (A2, support-multi-harness).
   handle('workspace:getEffectiveEffort', (_e, args) => {
     const ws = getWorkspace(args.workspaceId)
-    const launch = composeClaudeLaunch(ws?.projectId, args.workspaceId)
-    return { effort: findFlagValue(launch.flags, '--effort') ?? '' }
+    const descriptor = resolveHarness(ws?.harnessId)
+    const launch = descriptor.composeLaunch(ws?.projectId, args.workspaceId)
+    return { effort: launch.effort }
   })
 }

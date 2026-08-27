@@ -6,9 +6,7 @@ import { ProjectCard } from './kinds/ProjectCard'
 import { ConfirmModal } from './kinds/ConfirmModal'
 import { NoticeBanner } from './kinds/NoticeBanner'
 import { ChipTooltip } from './kinds/ChipTooltip'
-import { ChipPrompt } from './kinds/ChipPrompt'
 import { ChipDropdown } from './kinds/ChipDropdown'
-import { ChipGroupedDropdown } from './kinds/ChipGroupedDropdown'
 import { WorkspaceSettingsCard } from './kinds/WorkspaceSettingsCard'
 import { NewWorkspaceMenu } from './kinds/NewWorkspaceMenu'
 
@@ -28,9 +26,7 @@ export const registry: Record<string, React.ComponentType<OverlayKindProps>> = {
   confirmModal: ConfirmModal,
   noticeBanner: NoticeBanner,
   chipTooltip: ChipTooltip,
-  chipPrompt: ChipPrompt,
   chipDropdown: ChipDropdown,
-  chipGroupedDropdown: ChipGroupedDropdown,
   workspaceSettingsCard: WorkspaceSettingsCard,
   newWorkspaceMenu: NewWorkspaceMenu
 }

@@ -200,7 +200,7 @@ function WeekdayAxis({ todayIndex }: { todayIndex: number | null }): React.JSX.E
 
 function LoadingSkeleton(): React.JSX.Element {
   return (
-    <div className="flex flex-1 flex-col" aria-label="Preparing Claude activity" aria-busy="true">
+    <div className="flex flex-1 flex-col" aria-label="Preparing agent activity" aria-busy="true">
       <div className="grid h-10 grid-cols-2 gap-4 border-b border-border-default pb-2">
         {[0, 1].map((item) => (
           <div key={item} className="flex min-w-0 flex-col justify-center gap-1">
@@ -279,7 +279,7 @@ export function ActivityChart({
     <div
       className="flex flex-1 flex-col"
       role="group"
-      aria-label={`Claude activity: ${sessionsTotal} sessions and ${messagesTotal} transcript events for the selected week`}
+      aria-label={`Agent activity: ${sessionsTotal} sessions and ${messagesTotal} transcript events for the selected week`}
     >
       <div className="grid h-10 grid-cols-2 gap-4 border-b border-border-default pb-2">
         <div className="flex min-w-0 flex-col justify-center">

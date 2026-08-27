@@ -10,9 +10,10 @@ import {
   setWorkspaceClaudeSessionId
 } from './workspaces'
 import { resolveContextBudget } from './models/registry'
-import { composeClaudeLaunch, getClaudeGlobalSettings } from './claudeSettings'
+import { getClaudeGlobalSettings } from './claudeSettings'
 import { encodePathToClaudeDir } from './claudeProjectDir'
-import { findFlagValue } from '../shared/cliFlags'
+import { resolveHarness } from './harness/registry'
+import { worktreeDirSegment } from '../shared/harness/worktreePaths'
 import {
   branchExists,
   createWorktree,
@@ -1340,6 +1341,21 @@ export async function createWorktreeResumingSession(
 
   // Extract the worktree slug from the jsonl_path encoded dir segment.
   // A worktree path encodes as: …--claude-worktrees-<slug>/<sessionId>.jsonl
+  //
+  // THIS MARKER IS CLAUDE'S OWN TRANSCRIPT-PATH ENCODING (support-multi-
+  // harness follow-up) — NOT Orpheus's worktree directory layout, and the
+  // two must not be conflated even though today they happen to share the
+  // literal '.claude'. This whole function only ever resumes a Claude
+  // session: `sessions` rows are sourced entirely from Claude's own
+  // ~/.claude/projects/<encoded-cwd>/*.jsonl transcript store (see
+  // CLAUDE.md's Session domain-model paragraph) — no other harness writes
+  // there, and the `sessions` table itself has no harness_id column,
+  // because every row IS a Claude session by construction. A future
+  // harness with its own transcript store would need its OWN marker
+  // format and its own version of this function, not a parameterized
+  // WORKTREE_MARKER — Claude chose to encode 'claude-worktrees' into its
+  // path scheme, that choice is Claude's, and this constant decodes
+  // exactly that. Left hardcoded on purpose.
   const WORKTREE_MARKER = '--claude-worktrees-'
   let branch: string | null = null
   if (sessionRow?.jsonl_path) {
@@ -1370,8 +1386,17 @@ export async function createWorktreeResumingSession(
   // cwd matches the worktree directory.  The worktree cwd is reconstructed as
   // <repoRoot>/.claude/worktrees/<slug> and its correct branch may differ from
   // the slug (e.g. a branch named "feature/foo" becomes slug "feature-foo").
+  //
+  // UNLIKE WORKTREE_MARKER above, this reconstruction is Orpheus's OWN
+  // directory layout, not Claude's transcript format — it asserts where the
+  // worktree actually lives on disk, via worktreeDirSegment (support-multi-
+  // harness follow-up), the SAME function createWorktree used to create it.
+  // This session row is always Claude's (see WORKTREE_MARKER's comment
+  // above), so 'claude' here is not a simplification pending a future
+  // harness — it is the harness this function has always resumed and the
+  // only one this function's marker-decode can ever recognize.
   const slugFromPath = worktreeSlug(branch)
-  const expectedWorktreePath = nodePath.join(repoRoot, '.claude', 'worktrees', slugFromPath)
+  const expectedWorktreePath = nodePath.join(repoRoot, worktreeDirSegment('claude'), slugFromPath)
   const storedRow = getDb()
     .prepare<
       [string, string],
@@ -1395,7 +1420,12 @@ export async function createWorktreeResumingSession(
       slug,
       branch: branch,
       mode,
-      baseRef
+      baseRef,
+      // This function only ever resumes a Claude session — see
+      // WORKTREE_MARKER's comment above. Explicit rather than relying on
+      // createWorktree's own 'claude' default so this call site states its
+      // own reasoning rather than borrowing an unrelated function's.
+      harnessId: 'claude'
     })
 
     let ws: WorkspaceRecord
@@ -1493,10 +1523,14 @@ export type ContextBudgetResult = {
 export function getContextBudget(workspaceId: string): ContextBudgetResult {
   const db = getDb()
 
-  // Pull the workspace row so we can get projectId + claudeSessionId
+  // Pull the workspace row so we can get projectId + claudeSessionId +
+  // harnessId (A2, support-multi-harness — needed to resolve the harness
+  // descriptor below instead of grepping composeClaudeLaunch's flags).
   const ws = db
-    .prepare('SELECT project_id, claude_session_id FROM workspaces WHERE id = ?')
-    .get(workspaceId) as { project_id: string; claude_session_id: string | null } | undefined
+    .prepare('SELECT project_id, claude_session_id, harness_id FROM workspaces WHERE id = ?')
+    .get(workspaceId) as
+    | { project_id: string; claude_session_id: string | null; harness_id: string | null }
+    | undefined
 
   // 1. Try the session's cached model column first — avoids reading the JSONL.
   //    Fall back to extractModel() only when the DB column is NULL (not yet populated).
@@ -1513,14 +1547,22 @@ export function getContextBudget(workspaceId: string): ContextBudgetResult {
     }
   }
 
-  // 2. Compose launch settings to get the merged model (workspace → project → global)
+  // 2. Compose launch settings to get the merged model (workspace → project → global),
+  //    resolved through the workspace's harness descriptor (A2,
+  //    support-multi-harness) rather than composeClaudeLaunch + a
+  //    findFlagValue grep on `--model` — reads the composed HarnessLaunch's
+  //    structured `model` field directly. resolveHarness never throws and
+  //    falls back to the Claude descriptor for a missing/unknown harnessId.
   let modelFromSettings: string | null = null
   if (ws) {
     try {
-      const launch = composeClaudeLaunch(ws.project_id, workspaceId)
-      // findFlagValue is the single parser for composed (0x1F-delimited)
-      // flags strings — see src/shared/cliFlags.ts.
-      modelFromSettings = findFlagValue(launch.flags, '--model')
+      const descriptor = resolveHarness(ws.harness_id)
+      const launch = descriptor.composeLaunch(ws.project_id, workspaceId)
+      // Empty string means "claude's own default" (see HarnessLaunch's doc
+      // comment) — preserve findFlagValue's old null-when-absent contract
+      // so downstream `modelFromJSONL ?? modelFromSettings ?? 'sonnet'`
+      // fallback logic is unchanged.
+      modelFromSettings = launch.model || null
     } catch {
       // ignore — settings DB may not be ready
     }

@@ -4,7 +4,7 @@
 // Workbench Git tab — Phase 4d. Typed IPC surface for the LOCAL
 // (Orpheus-owned) review-comment store (src/main/reviewStore.ts). Pure
 // passthrough, no injected deps needed (reviewStore.ts talks to getDb()
-// directly, same as footerActions.ts) — mirrors ipc/footerActions.ts's shape.
+// directly).
 // ---------------------------------------------------------------------------
 
 import { handle } from './handle'

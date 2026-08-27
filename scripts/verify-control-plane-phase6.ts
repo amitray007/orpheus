@@ -11,7 +11,7 @@ import type {
   ProjectRecord,
   WorkspaceRecord
 } from '../src/shared/types.ts'
-import type { ClaudeLaunch } from '../src/main/claudeSettings.ts'
+import type { HarnessLaunch } from '../src/shared/harness/types.ts'
 import { bootControlRegistry } from '../src/main/controlPlane/boot.ts'
 import { createConfiguredControlRegistry } from '../src/main/controlPlane/configuredRegistry.ts'
 import { AutomationGrantPolicy } from '../src/main/controlPlane/automationPolicy.ts'
@@ -133,7 +133,17 @@ let now = 1_000
 const audits: WorkspaceControlAuditRecord[] = []
 const updates: ClaudeWorkspaceSettingsOverrides[] = []
 
-function composeLaunch(projectId?: string, workspaceId?: string): ClaudeLaunch {
+// The composeHarnessLaunch seam (SettingsResourceServiceDeps), exercised by
+// settingsResourceService.ts's effectiveForWorkspace. Returns the structured
+// HarnessLaunch shape (model/effort as real fields, not flags to grep), and
+// increments composeCalls — effectiveForWorkspace calls this exactly once
+// per invocation, and this file's `assert.equal(composeCalls, 1)` checks
+// that call-once contract.
+function composeHarnessLaunch(
+  _harnessId: string | undefined,
+  projectId?: string,
+  workspaceId?: string
+): HarnessLaunch {
   composeCalls++
   assert.equal(projectId, 'project-1')
   assert.ok(workspaceId === workspace.id || workspaceId === sibling.id)
@@ -144,7 +154,13 @@ function composeLaunch(projectId?: string, workspaceId?: string): ClaudeLaunch {
     targetSettings.overrides.effort ?? projectSettings.overrides.effort ?? globalSettings.effort
   const tokens = model ? ['--model', model] : []
   if (effort !== 'auto') tokens.push('--effort', effort)
-  return { flags: tokens.join(FLAG_DELIMITER), settingsJson: '', env: {}, model }
+  return {
+    flags: tokens.join(FLAG_DELIMITER),
+    settingsJson: '',
+    env: {},
+    model,
+    effort: effort === 'auto' ? '' : effort
+  }
 }
 
 const serviceDeps = {
@@ -162,7 +178,7 @@ const serviceDeps = {
     projectId === 'project-1' ? projectSettings : { projectId, overrides: {}, updatedAt: 0 },
   getWorkspaceSettings: (workspaceId) =>
     workspaceId === workspace.id ? workspaceSettings : siblingSettings,
-  composeLaunch,
+  composeHarnessLaunch,
   updateWorkspaceSettings: (workspaceId, patch) => {
     assert.equal(workspaceId, workspace.id)
     if (failNextUpdate) {

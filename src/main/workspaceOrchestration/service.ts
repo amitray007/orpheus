@@ -337,10 +337,16 @@ export class WorkspaceOrchestrationService {
       let branch: string | null = null
       let worktreeParentCwd: string | null = null
       if (input.mode === 'worktree') {
-        const derivedPath = this.ports.worktrees.derivePath({ project, workspaceId, name })
+        const derivedPath = this.ports.worktrees.derivePath({
+          project,
+          workspaceId,
+          name,
+          harnessId: input.harnessId
+        })
         const created = await this.ports.worktrees.create({
           project,
           path: derivedPath,
+          harnessId: input.harnessId,
           ...(input.branch == null ? {} : { branch: input.branch.trim() })
         })
         cwd = created.path
@@ -368,7 +374,8 @@ export class WorkspaceOrchestrationService {
           forkedFromConversationId:
             input.fork === true ? (parent?.claudeConversationId ?? null) : null,
           worktreeParentCwd,
-          worktreeBranch: branch
+          worktreeBranch: branch,
+          harnessId: input.harnessId
         })
       } catch {
         effects.push(receipt('db.write', 'failed', workspaceId, undefined, 'Effect failed.'))

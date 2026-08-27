@@ -9,7 +9,13 @@ import {
   SquaresFour,
   X
 } from '@phosphor-icons/react'
-import type { GhPullRequest, WorkspaceRecord, SessionUsage, SessionCost } from '@shared/types'
+import type {
+  GhPullRequest,
+  WorkspaceRecord,
+  SessionUsage,
+  SessionCost,
+  HarnessSummary
+} from '@shared/types'
 import { PrChip } from '../github/PrChip'
 import { useGitStatus } from '@/lib/gitStore'
 import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
@@ -24,11 +30,14 @@ import {
 } from '@/lib/overlayClient'
 import type { DetailsCardProps } from '@shared/types'
 import { contextBudgetCache } from './workspaceTitleBar.helpers'
-import { ClaudeGlyph } from '../workbench/ClaudeGlyph'
+import { ProviderIcon } from '../ProviderIcon'
 import { useWorkbenchApi, type WorkbenchApi } from '../workbench/workbenchReducer'
 import { WorkbenchTabStrip } from '../workbench/WorkbenchTabStrip'
 import { DEFAULT_WORKBENCH_WIDTH } from '../../lib/workbenchStore'
 import { WorkspaceSettingsPopover } from './WorkspaceSettingsPopover'
+import { TitleBarUsageChips } from './TitleBarUsageChips'
+import { useHarnessForWorkspace } from '@/lib/harnessStore'
+import { shouldFetchUsageDetails } from '@shared/harness/capabilityGating'
 
 // ---------------------------------------------------------------------------
 // Short token helper — same as contextLabel but without the " ctx" suffix.
@@ -79,6 +88,17 @@ interface WorkbenchTopBarRegionProps {
   style: React.CSSProperties
   workspaceId: string
   projectId: string
+  /** Threaded through to WorkspaceSettingsPopover so its Plugins/Loco
+   *  toggle can gate on this workspace's actual harness — see
+   *  shouldShowLocoToggle's own doc comment in footerChipGating.ts. */
+  harnessId?: string | null
+  /** The already-resolved harness descriptor summary (support-multi-harness)
+   *  — computed once by WorkspaceTitleBar via useHarnessForWorkspace and
+   *  threaded down so TitleBarUsageChips doesn't need a second
+   *  resolveHarnessSummary lookup for the same workspace (it only needs
+   *  `harness.capabilities` to gate its Context/Cost chips — see that
+   *  file's header on the model/effort-removal migration). */
+  harness: HarnessSummary
   isDirty: boolean
   onRestart?: () => void
 }
@@ -88,6 +108,8 @@ function WorkbenchTopBarRegion({
   style,
   workspaceId,
   projectId,
+  harnessId,
+  harness,
   isDirty,
   onRestart
 }: WorkbenchTopBarRegionProps): React.JSX.Element {
@@ -128,6 +150,16 @@ function WorkbenchTopBarRegion({
       ].join(' ')}
       style={style}
     >
+      {/* Read-only Context/Cost chip row (model/effort-removal migration
+          Phase 1 — Model/Effort chips were removed from the title bar; see
+          TitleBarUsageChips.tsx's own header) — a SIBLING of the
+          dormant/open ternary below, for the EXACT SAME reason the Settings
+          gear right after it is: the Workbench opener button only renders
+          in the dormant branch (replaced by the tab strip once open), so
+          anything that must persist across BOTH dormant and open states has
+          to sit outside that ternary, not inside it. Placed immediately
+          before the gear so it reads to its LEFT. */}
+      <TitleBarUsageChips workspaceId={workspaceId} harness={harness} />
       {/* Settings gear — a SIBLING of the dormant/open ternary below, not
           inside it. The Workbench opener button only renders in the dormant
           branch (replaced by the tab strip once open), so a Settings button
@@ -136,6 +168,7 @@ function WorkbenchTopBarRegion({
       <WorkspaceSettingsPopover
         workspaceId={workspaceId}
         projectId={projectId}
+        harnessId={harnessId}
         isDirty={isDirty}
         onRestart={onRestart}
       />
@@ -204,6 +237,74 @@ interface WorkspaceTitleBarProps {
   onRestart?: () => void
 }
 
+// ---------------------------------------------------------------------------
+// HarnessBackControl — the ◂ (Back to <harness>) button (expanded workbench)
+// or the harness's own glyph (not expanded), leading the "Claude region".
+// Extracted from WorkspaceTitleBar's own render (support-multi-harness)
+// specifically to keep that component's cognitive-complexity budget under
+// the 20-warning threshold — this block's own branching (isExpanded,
+// harness.icon presence) was pushing the parent over on its own.
+// ---------------------------------------------------------------------------
+
+function HarnessBackControl({
+  isExpanded,
+  harness,
+  backToClaudeRef,
+  pendingCollapseFocusRef,
+  workbenchApi
+}: {
+  isExpanded: boolean
+  harness: HarnessSummary
+  backToClaudeRef: React.RefObject<HTMLButtonElement | null>
+  pendingCollapseFocusRef: React.RefObject<boolean>
+  workbenchApi: WorkbenchApi | null
+}): React.JSX.Element | null {
+  if (isExpanded) {
+    return (
+      <button
+        ref={backToClaudeRef}
+        type="button"
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          pendingCollapseFocusRef.current = document.activeElement === e.currentTarget
+          workbenchApi?.restoreToOpen()
+        }}
+        // Derived from harness.label (support-multi-harness) — "Back to
+        // Claude Code" for Claude today, was the hardcoded "Back to
+        // Claude". UNLIKE SettingsView.tsx's group-label call (kept
+        // static there — a section header has no functional stake in
+        // naming the harness, it's a list category), this string's
+        // entire job IS to name the specific agent the user is
+        // returning to: on a future non-Claude workspace, "Back to
+        // Claude" would be an actively WRONG claim, not just
+        // differently worded — the exact class of bug this unit exists
+        // to fix. "Claude Code" vs "Claude" is the harness's own
+        // canonical label gaining two words, not a wrong one.
+        title={`Back to ${harness.label}`}
+        aria-label={`Back to ${harness.label}`}
+        className="flex items-center justify-center w-5 h-5 -ml-0.5 rounded-sm text-text-muted hover:text-text-primary hover:bg-surface-overlay/60 transition-colors duration-150 flex-shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+      >
+        <CaretLeft size={13} />
+      </button>
+    )
+  }
+  if (!harness.icon) return null
+  // ProviderIcon (support-multi-harness), not ClaudeGlyph — same 'claude'
+  // id, but a DIFFERENT (newer) SVG asset than ClaudeGlyph.tsx's
+  // @/assets/claude-icon.svg (verified: different fill color #D97757 vs
+  // #D77655, different viewBox/path — not a re-export of the same file).
+  // ProviderIcon's mark is already what every other Claude-icon surface in
+  // the app renders (HarnessPicker, WorkspaceProviderIcon/Sidebar, the
+  // footer model/effort chips, NewWorkspaceMenu) — this title bar's
+  // ClaudeGlyph was the sole outlier still on the older asset, so this is
+  // a minor visual CONSISTENCY fix alongside the harness-neutrality
+  // change, not a silent regression: the user already sees ProviderIcon's
+  // mark everywhere else in the app.
+  return (
+    <ProviderIcon providerId={harness.icon} size={13} className="text-text-muted flex-shrink-0" />
+  )
+}
+
 export function WorkspaceTitleBar({
   workspace,
   pr,
@@ -220,6 +321,13 @@ export function WorkspaceTitleBar({
 
   // Git status for the details popover
   const gitStatus = useGitStatus(workspace.id)
+
+  // This workspace's harness descriptor — gates the usage/cost hover-card
+  // fetches below (session.getUsage/session.getCost are USAGE-capability
+  // actions; a harness without capabilities.usage has no such data source —
+  // see openDetailsPopover's usage/cost blocks and
+  // src/shared/harness/capabilityGating.ts's shouldFetchUsageDetails).
+  const harness = useHarnessForWorkspace(workspace.harnessId)
 
   // Dirty ("Restart to apply") state — surfaced in the title-hover details
   // popover instead of the (removed) gear's WorkspaceDrawer. Mirrors the
@@ -291,12 +399,22 @@ export function WorkspaceTitleBar({
       ? `${workspace.worktreeParentCwd}\n↳ worktree: ${workspace.cwd}`
       : workspace.cwd
 
+    // session.getUsage/session.getCost are USAGE-capability actions — a
+    // harness without capabilities.usage has no such data source. costLoading only turns
+    // true when the cost fetch is actually going to fire below; otherwise
+    // the popover renders cost as not-applicable (no field) instead of a
+    // spinner that never resolves. contextLoading still turns true
+    // unconditionally: getContextBudget (below) is a SEPARATE,
+    // non-actions IPC call independent of usage capability and always
+    // fires — only the NESTED session.getUsage call inside its .then() is
+    // usage-gated.
+    const canFetchUsage = shouldFetchUsageDetails(harness.capabilities)
     const initialProps: DetailsCardProps = {
       pr: prToCard(pr ?? null),
       git: gitStatus ? gitStatusToCard(gitStatus) : undefined,
       cwd: cwdDisplay,
       contextLoading: true,
-      costLoading: true,
+      costLoading: canFetchUsage,
       isDirty
     }
     showDetailsCard(workspace.id, detailsButtonRef.current, initialProps)
@@ -317,6 +435,17 @@ export function WorkspaceTitleBar({
         if (!result) return
         if (workspace.claudeSessionId !== null) {
           contextBudgetCache.set(cacheKey, result)
+        }
+        if (!canFetchUsage) {
+          // No usage data source for this harness — render the context
+          // budget alone (no token/pct breakdown) rather than firing
+          // session.getUsage and rendering whatever it happens to return.
+          updateDetails({
+            model: result.modelLabel,
+            contextText: formatContextText(null, result.contextBudget),
+            contextLoading: false
+          })
+          return
         }
         // Fetch usage too so we can compose "1.2k / 200k · 85%"
         return window.api.actions
@@ -342,6 +471,11 @@ export function WorkspaceTitleBar({
       })
 
     // ── Async: cost ──────────────────────────────────────────────────────────
+    // Gated on capabilities.usage — see canFetchUsage above. Skipped
+    // entirely (not fired-and-shown-empty) for a harness with no usage/cost
+    // data source; costLoading was never set true for that case (see
+    // initialProps above), so the popover renders cost as not-applicable.
+    if (!canFetchUsage) return
     window.api.actions
       .invoke({ id: 'session.getCost', params: {}, workspaceId: workspace.id }, 'workspace-details')
       .then((result) => {
@@ -474,9 +608,10 @@ export function WorkspaceTitleBar({
   const isDormant = state === 'dormant'
   const workbenchWidth = workbenchApi?.width ?? DEFAULT_WORKBENCH_WIDTH
 
-  // Focus continuity for the ◂ (Back to Claude) control: it only exists while
-  // expanded, and clicking it collapses to 'open' — which unmounts ◂ and
-  // swaps in the (non-focusable) ClaudeGlyph, dropping keyboard focus. When
+  // Focus continuity for the ◂ (Back to <harness>) control: it only exists
+  // while expanded, and clicking it collapses to 'open' — which unmounts ◂
+  // and swaps in the (non-focusable) harness ProviderIcon, dropping
+  // keyboard focus. When
   // the collapse was keyboard-driven, hand focus to the workbench region's
   // expand (⤢) toggle, which is present + focusable in 'open' (queried by a
   // stable data attribute so the parent stays decoupled from the child that
@@ -529,24 +664,13 @@ export function WorkspaceTitleBar({
           isExpanded ? 'flex-shrink-0' : 'flex-1'
         ].join(' ')}
       >
-        {isExpanded ? (
-          <button
-            ref={backToClaudeRef}
-            type="button"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              pendingCollapseFocusRef.current = document.activeElement === e.currentTarget
-              workbenchApi?.restoreToOpen()
-            }}
-            title="Back to Claude"
-            aria-label="Back to Claude"
-            className="flex items-center justify-center w-5 h-5 -ml-0.5 rounded-sm text-text-muted hover:text-text-primary hover:bg-surface-overlay/60 transition-colors duration-150 flex-shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-          >
-            <CaretLeft size={13} />
-          </button>
-        ) : (
-          <ClaudeGlyph size={13} className="text-text-muted flex-shrink-0" />
-        )}
+        <HarnessBackControl
+          isExpanded={isExpanded}
+          harness={harness}
+          backToClaudeRef={backToClaudeRef}
+          pendingCollapseFocusRef={pendingCollapseFocusRef}
+          workbenchApi={workbenchApi}
+        />
 
         <span
           ref={detailsButtonRef}
@@ -579,6 +703,8 @@ export function WorkspaceTitleBar({
           style={workbenchRegionStyle}
           workspaceId={workspace.id}
           projectId={workspace.projectId}
+          harnessId={workspace.harnessId}
+          harness={harness}
           isDirty={isDirty}
           onRestart={onRestart}
         />

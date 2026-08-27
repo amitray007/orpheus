@@ -81,15 +81,16 @@ import type {
   ProviderDescriptorSummary,
   ProviderConfigSummary,
   ProviderApiKeyEntrySummary,
+  HarnessSummary,
+  HarnessId,
+  HarnessSettings,
+  HarnessSettingsScope,
   SelectableModel,
   ModelAliasesState,
   ModelAliasTargetOption,
   ActionResult,
   ActionKind,
   ActionAuditEntry,
-  FooterActionScope,
-  FooterActionDraft,
-  FooterActionDescriptor,
   KeepAwakeBaseMode,
   TerminalRect,
   TerminalMountResult,
@@ -136,6 +137,7 @@ import type {
   IconPackCatalogResult
 } from './types'
 import type { RendererControlAck, RendererControlRequest } from './workbenchControl'
+import type { ProjectDrawerFieldPatch } from './harness/projectDrawerSettings'
 
 // ---------------------------------------------------------------------------
 // Invoke channels (request/response)
@@ -234,7 +236,9 @@ export interface InvokeChannelMap {
     res: WorkspaceRecord[]
   }
   'workspaces:create': {
-    req: [{ projectId: string; name: string; cwd: string }]
+    // harnessId (support-multi-harness C1) is optional — omitted defaults to
+    // Claude, matching createWorkspace's own default in src/main/workspaces.ts.
+    req: [{ projectId: string; name: string; cwd: string; harnessId?: HarnessId }]
     res: WorkspaceRecord
   }
   'workspaces:createWorktree': {
@@ -314,8 +318,21 @@ export interface InvokeChannelMap {
   // marked `available: false`, so a workspace's stored setting is never
   // silently dropped from the picker. See models:listSelectable's own doc
   // comment in src/main/ipc/models.ts for the full gating rules.
+  //
+  // `harnessId`/`projectId` (B4, support-multi-harness) are BOTH optional,
+  // additively so — every existing caller that omits them must get
+  // BYTE-IDENTICAL results to before this unit (see resolveSelectableModels'
+  // own doc comment for the exact fallback: an omitted harnessId resolves
+  // as the Claude descriptor, mirroring main's never-throws resolveHarness();
+  // an omitted projectId resolves global scope only). They let the handler
+  // apply that (harness, project) scope's HarnessSettings.curatedOptions
+  // overlay (added in c2932f43) to the returned model list — without them
+  // there is nothing to key that lookup on, and the list falls back to the
+  // shipped descriptor order unfiltered, same as pre-B4 behavior.
   'models:listSelectable': {
-    req: [{ currentModelId?: string }]
+    req: [
+      { currentModelId?: string; harnessId?: string; projectId?: string; currentEffort?: string }
+    ]
     res: SelectableModel[]
   }
   'claudeSettings:get': { req: []; res: ClaudeGlobalSettings }
@@ -766,6 +783,93 @@ export interface InvokeChannelMap {
     res: ProviderConfigSummary[]
   }
 
+  // Harness settings (U8, multi-harness architecture plan) — the generic
+  // Settings UI for a harness's (coding-agent CLI) args/env/curated concepts.
+  // See src/main/harness/settings.ts (getHarnessSettings/setHarnessSettings/
+  // resolveHarnessSettings) and src/main/harness/registry.ts (HARNESSES) for
+  // the main-process implementations these channels wrap. 'harness:list'
+  // returns the renderer-safe HarnessSummary projection (no composeLaunch
+  // function refs, no knownGoodVersions Set). 'harness:settings:get'/`:set`
+  // read/write ONE exact (harnessId, scope, scopeId) row — the renderer
+  // fetches global+project+workspace+resolved in parallel and computes
+  // inherited-scope provenance client-side (see harnessSettingsLogic.ts's
+  // resolveProvenance) rather than the main process doing that diffing, to
+  // keep this IPC surface small and put the diffing logic in a pure,
+  // unit-testable renderer-side module.
+  'harness:list': { req: []; res: HarnessSummary[] }
+  'harness:settings:get': {
+    req: [{ harnessId: string; scope: HarnessSettingsScope; scopeId?: string }]
+    res: HarnessSettings
+  }
+  'harness:settings:set': {
+    req: [
+      {
+        harnessId: string
+        scope: HarnessSettingsScope
+        scopeId?: string
+        settings: HarnessSettings
+      }
+    ]
+    res: HarnessSettings
+  }
+  'harness:settings:resolved': {
+    req: [{ harnessId: string; projectId?: string }]
+    res: HarnessSettings
+  }
+  // H1 (support-multi-harness) — the project Settings drawer's write path,
+  // separate from the generic 'harness:settings:set' above. The drawer only
+  // ever patches THREE fields (model, effort, permission-mode) and — unlike
+  // the Settings > Harness page's whole-row-array save — each field is a
+  // single-control edit that must ALSO recompute every mounted workspace's
+  // dirty flag and broadcast fresh effective settings (the same side effects
+  // claudeProjectSettings:update already performs for model/effort, see
+  // src/main/ipc/claudeSettings.ts), which a bare setSettings() call has no
+  // way to trigger.
+  //
+  // TRI-STATE PATCH VALUES, EXPLICIT NULL FOR CLEAR — each field is
+  // `string | null | undefined`: an omitted key (`undefined`, i.e. the key
+  // absent from `patch`) means "leave this field's stored value alone";
+  // `null` means "clear the override, inherit from the scope below";  a
+  // string sets it. This mirrors the drawer's own OverrideField semantics
+  // (patch() in SettingsDrawer.tsx already uses `v === undefined` to
+  // delete a key) but deliberately does NOT reuse setCuratedModelEffort's
+  // bare `{ model?: string }` shape — that function treats an ABSENT key
+  // exactly like a present-but-`undefined` key (both fail its `!==
+  // undefined` guard), so it has no way to express "clear" at all; a
+  // caller wanting to clear would have needed to invent a magic string.
+  // The null/undefined split here removes that ambiguity at the type
+  // level instead.
+  'harness:settings:updateProjectDrawer': {
+    req: [
+      {
+        harnessId: string
+        projectId: string
+        patch: ProjectDrawerFieldPatch
+      }
+    ]
+    res: HarnessSettings
+  }
+  // Global Settings page (ClaudeToolsSection.tsx) write path for the two
+  // ORPHEUS_* wrapper-plumbing scalars — sibling to
+  // harness:settings:updateProjectDrawer above but for GLOBAL scope only
+  // (scopeId omitted means global — normalizeScopeId's '' sentinel, same as
+  // every other global-scope harness_settings write) and a narrower field
+  // set (this page has no model/effort/args/env controls of its own; those
+  // stay on window.api.claudeSettings). Also recomputes dirty + broadcasts,
+  // same as harness:settings:updateProjectDrawer — a sourceZshrc/
+  // preLaunchSnippet change alters the composed launch env (see
+  // composeClaudeHarnessLaunch), so every mounted workspace must be
+  // rechecked exactly like a model/effort change already is.
+  'harness:settings:updateShellInit': {
+    req: [
+      {
+        harnessId: string
+        patch: { preLaunchSnippet?: string | null; sourceZshrc?: boolean | null }
+      }
+    ]
+    res: HarnessSettings
+  }
+
   // Model-name aliasing (model-routing unit 08) — see
   // src/main/routingProxy/aliases.ts. 'aliases:list' returns the master
   // switch + every stored row; 'aliases:listTargets' returns only the
@@ -835,25 +939,6 @@ export interface InvokeChannelMap {
     res: { ok: true }
   }
   'actions:unsubscribe': { req: [{ subscriptionId: string }]; res: { ok: true } }
-  'footerActions:listMerged': { req: [{ workspaceId: string }]; res: FooterActionDescriptor[] }
-  'footerActions:listAtScope': {
-    req: [{ scope: FooterActionScope; scopeId?: string }]
-    res: FooterActionDescriptor[]
-  }
-  'footerActions:create': {
-    req: [{ scope: FooterActionScope; scopeId: string | null; draft: FooterActionDraft }]
-    res: FooterActionDescriptor
-  }
-  'footerActions:update': {
-    req: [{ id: string; patch: Partial<FooterActionDraft> }]
-    res: FooterActionDescriptor
-  }
-  'footerActions:remove': { req: [{ id: string }]; res: void }
-  'footerActions:reorder': {
-    req: [{ scope: FooterActionScope; scopeId: string | null; orderedIds: string[] }]
-    res: void
-  }
-  'footerActions:resetDefaults': { req: []; res: void }
   'keepAwake:get': { req: []; res: KeepAwakeState }
   'keepAwake:setMode': { req: [KeepAwakeBaseMode]; res: KeepAwakeState }
   'keepAwake:setDisplayOn': { req: [boolean]; res: KeepAwakeState }
@@ -872,7 +957,12 @@ export interface InvokeChannelMap {
     req: [{ workspaceId: string; rect: TerminalRect; scaleFactor: number }]
     res: void
   }
-  'terminal:destroy': { req: [{ workspaceId: string }]; res: void }
+  // `rehost` (support-multi-harness): also tear down the workspace's tmux
+  // SESSION, not just its libghostty surface. Default/absent = false, which
+  // is the long-standing behavior every archive/remove caller depends on
+  // (those paths run their own unhostWorkspace separately). Only the live
+  // RESTART path sets it — see WorkspaceView.handleRestart.
+  'terminal:destroy': { req: [{ workspaceId: string; rehost?: boolean }]; res: void }
   'terminal:sendInput': { req: [{ workspaceId: string; text: string }]; res: ActionResult }
   'terminal:sendKeys': {
     req: [{ workspaceId: string; keys: TerminalSendKeyDescriptor[] }]

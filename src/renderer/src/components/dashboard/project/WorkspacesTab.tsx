@@ -9,7 +9,7 @@ import {
   GitMerge
 } from '@phosphor-icons/react'
 import { WorktreeBadge } from '../WorktreeBadge'
-import type { WorkspaceRecord } from '@shared/types'
+import type { HarnessSummary, WorkspaceRecord } from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
@@ -22,6 +22,13 @@ import { useWorkspaceTitle, getTitleSnapshot } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { useDebouncedValue } from '@/lib/useDebouncedValue'
 import { useInlineRename } from '@/lib/useInlineRename'
+import { useHarnessList, useHarnessForWorkspace, resolveHarnessSummary } from '@/lib/harnessStore'
+import {
+  canMissingSessionIdImplyWaiting,
+  shouldClaimLiveActivity,
+  shouldUseTranscriptDerivedTitle,
+  messageCountForWorkspace
+} from '@shared/harness/capabilityGating'
 
 // ---------------------------------------------------------------------------
 // Project body — active workspaces on the left, sessions on the right, recent
@@ -53,8 +60,20 @@ const FILTER_OPTIONS: ReadonlyArray<{ value: ActivityFilterKey; label: string }>
  * activity data. Mirrors the persisted-status branch of deriveGroup in
  * WorkspacesView.tsx but intentionally excludes 'done' (not tracked in
  * persisted status — only known via live activity events).
+ *
+ * `harness` gates the "no claudeSessionId yet -> waiting" read the same way
+ * deriveGroup does: that inference is only honest for a transcript-capable
+ * harness (Claude), where an absent session id really does mean "hasn't
+ * started." A transcript-incapable harness can never populate
+ * claudeSessionId at all, so the same check would be a permanent, not
+ * transient, false read — canMissingSessionIdImplyWaiting short-circuits
+ * straight to 'waiting' for that case instead, without treating the missing
+ * id as a real signal. ActivityFilterKey has no fifth "unknown" option (that
+ * would be a filter-dropdown UI change, out of scope here), so the target
+ * value is unchanged — see src/shared/harness/capabilityGating.ts.
  */
-function statusToGroup(ws: WorkspaceRecord): ActivityFilterKey {
+function statusToGroup(ws: WorkspaceRecord, harness: HarnessSummary): ActivityFilterKey {
+  if (!canMissingSessionIdImplyWaiting(harness.capabilities)) return 'waiting'
   if (!ws.claudeSessionId) return 'waiting'
   if (ws.status === 'attention' || ws.status === 'awaiting_input') return 'in_review'
   if (ws.status === 'in_progress') return 'in_progress'
@@ -128,14 +147,28 @@ const WorkspaceNameCell = memo(function WorkspaceNameCell({
   commitRename,
   setRenamingId
 }: WorkspaceNameCellProps): React.JSX.Element {
-  // Subscribe to this workspace's key only — re-renders only when this key changes.
-  const activity = useWorkspaceActivity(ws.id)
+  // This workspace's harness descriptor — gates the activity dot and
+  // transcript-derived title below on real capabilities instead of assuming
+  // Claude (D1, support-multi-harness). See Sidebar.tsx's WorkspaceSubRow for
+  // the reference shape and src/shared/harness/capabilityGating.ts for the
+  // pure decisions.
+  const harness = useHarnessForWorkspace(ws.harnessId)
+  // Subscribe to this workspace's key only — re-renders only when this key
+  // changes. Falls back to this workspace's own persisted status while the
+  // live store has no entry yet (e.g. right after an app restart) — see
+  // useWorkspaceActivity's fallback param.
+  const rawActivity = useWorkspaceActivity(ws.id, ws.status)
+  const activity = shouldClaimLiveActivity(harness.capabilities) ? rawActivity : undefined
   const terminalTitle = useWorkspaceTitle(ws.id)
   const isPinned = ws.pinnedAt !== null
+  const sessionTitle =
+    ws.claudeSessionId && shouldUseTranscriptDerivedTitle(harness.capabilities)
+      ? (sessionStats[ws.claudeSessionId]?.title ?? null)
+      : null
   const dn = resolveWorkspaceName({
     workspace: ws,
     terminalTitle,
-    sessionTitle: ws.claudeSessionId ? (sessionStats[ws.claudeSessionId]?.title ?? null) : null
+    sessionTitle
   })
   return (
     <span className="flex items-center gap-2 min-w-0">
@@ -422,11 +455,6 @@ export function WorkspacesTab({
     }
   }, [projectId])
 
-  function messageCountForWorkspace(ws: WorkspaceRecord): number | null {
-    if (!ws.claudeSessionId) return null
-    return sessionStats[ws.claudeSessionId]?.messageCount ?? null
-  }
-
   function openMenu(e: React.MouseEvent, ws: WorkspaceRecord): void {
     e.stopPropagation()
     e.preventDefault()
@@ -500,11 +528,14 @@ export function WorkspacesTab({
   }, [menu, projectId, onArchiveWorkspace, onToggleWorkspacePin, beginRename])
 
   // Filter active workspaces by activity group and search term.
+  const { harnesses } = useHarnessList()
   const filtered = useMemo(() => {
     let out = active
 
     if (activityFilter !== 'all') {
-      out = out.filter((ws) => statusToGroup(ws) === activityFilter)
+      out = out.filter(
+        (ws) => statusToGroup(ws, resolveHarnessSummary(harnesses, ws.harnessId)) === activityFilter
+      )
     }
 
     if (debouncedSearch) {
@@ -514,12 +545,14 @@ export function WorkspacesTab({
       // which is the right trigger. Live title updates will apply on next search.
       const titleSnapshot = getTitleSnapshot()
       out = out.filter((ws) => {
+        const wsHarness = resolveHarnessSummary(harnesses, ws.harnessId)
         const dn = resolveWorkspaceName({
           workspace: ws,
           terminalTitle: titleSnapshot.get(ws.id) ?? null,
-          sessionTitle: ws.claudeSessionId
-            ? (sessionStats[ws.claudeSessionId]?.title ?? null)
-            : null
+          sessionTitle:
+            ws.claudeSessionId && shouldUseTranscriptDerivedTitle(wsHarness.capabilities)
+              ? (sessionStats[ws.claudeSessionId]?.title ?? null)
+              : null
         }).text.toLowerCase()
         const basename = ws.cwd.split('/').pop()?.toLowerCase() ?? ''
         return dn.includes(q) || basename.includes(q)
@@ -527,22 +560,32 @@ export function WorkspacesTab({
     }
 
     return out
-  }, [active, activityFilter, debouncedSearch, sessionStats])
+  }, [active, activityFilter, debouncedSearch, sessionStats, harnesses])
 
   const activeSorted = useMemo(() => {
     const copy = [...filtered]
     copy.sort((a, b) => {
       let cmp: number
       if (activeSortBy === 'messages') {
-        cmp = nullsLastCmp(messageCountForWorkspace(a), messageCountForWorkspace(b))
+        cmp = nullsLastCmp(
+          messageCountForWorkspace(
+            a,
+            sessionStats,
+            resolveHarnessSummary(harnesses, a.harnessId).capabilities
+          ),
+          messageCountForWorkspace(
+            b,
+            sessionStats,
+            resolveHarnessSummary(harnesses, b.harnessId).capabilities
+          )
+        )
       } else {
         cmp = nullsLastCmp(a.lastOpenedAt, b.lastOpenedAt)
       }
       return activeSortDir === 'asc' ? cmp : -cmp
     })
     return copy
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, activeSortBy, activeSortDir, sessionStats])
+  }, [filtered, activeSortBy, activeSortDir, sessionStats, harnesses])
 
   const activePaginated = useMemo(
     () => activeSorted.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE),
@@ -578,7 +621,15 @@ export function WorkspacesTab({
         width: '70px',
         align: 'right',
         sortable: true,
-        render: (ws) => <MessageCountCell count={messageCountForWorkspace(ws)} />
+        render: (ws) => (
+          <MessageCountCell
+            count={messageCountForWorkspace(
+              ws,
+              sessionStats,
+              resolveHarnessSummary(harnesses, ws.harnessId).capabilities
+            )}
+          />
+        )
       },
       {
         key: 'lastOpenedAt',
@@ -596,7 +647,7 @@ export function WorkspacesTab({
         render: (ws) => <WorkspaceActionsButton onClick={(e) => openMenu(e, ws)} />
       }
     ],
-    [renamingId, rename.value, rename.setValue, sessionStats, commitRename]
+    [renamingId, rename.value, rename.setValue, sessionStats, commitRename, harnesses]
   )
 
   // Whether the raw workspace list (before any filtering) has any entries.

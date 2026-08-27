@@ -12,6 +12,7 @@ import { DIAG_EVENTS } from '../shared/diagEvents'
 import { stageActivityUpdate } from './activitySink'
 import { UI_STATE_DEFAULTS } from '../shared/uiStateDefaults'
 import { redactErrorForLog, redactLogValue } from './logRedaction'
+import { statusToActivityDetail } from '../shared/activityDetail'
 
 export type WorkspaceActivityEvent =
   | 'session-start'
@@ -113,11 +114,7 @@ export function computeDetail(
   _workspaceId: string,
   status: WorkspaceStatus
 ): WorkspaceActivityDetail {
-  if (status === 'attention') return 'attention'
-  if (status === 'in_progress') return 'working'
-  if (status === 'awaiting_input') return 'ready'
-  if (status === 'idle') return 'idle'
-  return 'archived'
+  return statusToActivityDetail(status)
 }
 
 function broadcastDetailIfChanged(workspaceId: string): void {

@@ -22,9 +22,22 @@
 // path (it's neither hooks nor auth), and 3s is too aggressive for a proxy
 // hop that legitimately takes longer than a direct Anthropic call. This
 // module stays a leaf: it takes the boolean the caller already computed
-// (index.ts derives it from isRoutedMount/isRoutedModel) rather than
-// importing modelRouting.ts or any electron-touching module itself — nothing
-// here changes WHAT dismisses the overlay, only the slow-state copy/timing.
+// rather than importing modelRouting.ts or any electron-touching module
+// itself — nothing here changes WHAT dismisses the overlay, only the
+// slow-state copy/timing.
+//
+// CURRENT STATE (Phase 0): index.ts hardcodes `routed: false` at every call
+// site — launch-side routing injection was severed, so no mount is currently
+// classified as routed and this copy/timing branch is unreachable in
+// practice. The flag and branch are kept as the Phase 6 re-land hook (see
+// multi-harness roadmap) rather than deleted; do not remove them.
+//
+// shouldWaitForSessionReadiness (below) is a second, capability-gated leaf
+// decision index.ts's handlePostMountOverlay consumes: whether there is a
+// real session-readiness signal to wait on at all before dismissing the
+// overlay for a freshly created surface. Same "stay a leaf, take the
+// boolean the caller already computed" discipline as `routed` above — this
+// module never imports HarnessCapabilities or capabilityGating.ts itself.
 
 type OverlayState = 'idle' | 'showing' | 'slow' | 'error'
 
@@ -104,6 +117,34 @@ function clearTimers(e: Entry): void {
     clock.clearTimeout(e.pendingHide)
     e.pendingHide = null
   }
+}
+
+/**
+ * Post-mount overlay decision for a NEWLY CREATED surface (index.ts's
+ * handlePostMountOverlay, `created === true` branch): should the caller wait
+ * on `isWorkspaceSessionReady` (arming the 10s fallback timer as a backstop)
+ * before dismissing the overlay, or dismiss it promptly because there is no
+ * session-readiness signal this harness could ever produce?
+ *
+ * Gated on `hasStructuredStatus` — the caller passes
+ * `shouldClaimLiveActivity(capabilities)` from
+ * ../shared/harness/capabilityGating.ts, the SAME capability gate the
+ * sidebar's live-activity dot uses (capabilities.structuredStatus). Claude
+ * (structuredStatus: true) has a real signal (~/.claude/sessions/<pid>.json)
+ * to wait on — `true` here preserves the exact existing "check
+ * isWorkspaceSessionReady, else arm the 10s fallback" behavior. A harness
+ * with no structured-status source (e.g. Codex) has nothing to wait on —
+ * `false` here means the caller must dismiss promptly instead of riding the
+ * fixed 10s timer tuned for Claude's boot profile, which is the wrong shape
+ * for a harness this module cannot ever observe becoming "ready".
+ *
+ * Pure and exported so scripts/verify-loading-overlay.ts can assert this
+ * decision directly for Codex-shaped vs Claude-shaped capabilities, without
+ * booting Electron or importing index.ts (which pulls in the `electron`
+ * module and can't run under a plain script).
+ */
+export function shouldWaitForSessionReadiness(hasStructuredStatus: boolean): boolean {
+  return hasStructuredStatus
 }
 
 /** Slow-state copy shown once SLOW_THRESHOLD_MS(_ROUTED) elapses with no

@@ -24,6 +24,7 @@ import type {
 import { onWorkspaceStatusChange } from './orpheusNotify'
 import { getWorkspaceFileInfo } from './sessionState'
 import { resolveEffectiveModelAndEffort } from './claudeSettings'
+import { isKnownHarnessId } from './harness/registry'
 import { getCurrentBranch } from './git'
 import {
   hostWorkspace,
@@ -376,6 +377,21 @@ async function handleLegacyWorkspaceCreate(
 
   const mode = resolveLegacyCreateMode(args)
   const actor = commandWorkspaceActor(args, context)
+  // This legacy socket path calls workspaceOrchestration.create() directly
+  // rather than through the control-plane's 'workspaces.create' capability
+  // (registry.ts's invoke(), which runs isCreateInput for every OTHER
+  // consumer) — so an externally-supplied harnessId must be validated here,
+  // explicitly, the same way isCreateInput does for the modern surfaces.
+  if (args.harnessId !== undefined && typeof args.harnessId !== 'string') {
+    throw new Error('args.harnessId must be a string')
+  }
+  if (typeof args.harnessId === 'string' && !isKnownHarnessId(args.harnessId)) {
+    // See workspaces.ts's createWorkspace for why this rebinds through a
+    // plain `string` before interpolating — isKnownHarnessId's type
+    // predicate narrows the negated branch to `never` here.
+    const rejected: string = args.harnessId
+    throw new Error(`unknown harnessId: ${rejected}`)
+  }
   const created = await deps.workspaceOrchestration.create(
     {
       mode,
@@ -384,7 +400,8 @@ async function handleLegacyWorkspaceCreate(
         ? { parentWorkspaceId: args.parentWorkspaceId }
         : {}),
       ...(args.fork === true ? { fork: true } : {}),
-      ...(typeof args.branch === 'string' && args.branch !== '' ? { branch: args.branch } : {})
+      ...(typeof args.branch === 'string' && args.branch !== '' ? { branch: args.branch } : {}),
+      ...(typeof args.harnessId === 'string' ? { harnessId: args.harnessId } : {})
     },
     actor
   )
@@ -1115,11 +1132,34 @@ function makeDispatchTable(
     //                      any; passed straight through so a routed model
     //                      that's no longer healthy is still listed
     //                      (available: false) rather than silently dropped.
+    //   harnessId?/projectId?/currentEffort? — (B4, support-multi-harness)
+    //                      same optional scope context
+    //                      models:listSelectable's IPC handler accepts, so
+    //                      the TUI/CLI new-workspace wizard's model picker
+    //                      applies the SAME curatedOptions overlay the
+    //                      desktop pickers do rather than showing a
+    //                      different list — see resolveSelectableModels'
+    //                      own doc comment for the byte-identical-when-
+    //                      omitted contract. All optional; omitting them
+    //                      reproduces this action's pre-B4 behavior exactly.
     'models.list': async (args) => {
       if (args.currentModelId !== undefined && typeof args.currentModelId !== 'string') {
         throw new Error('args.currentModelId must be a string')
       }
-      const models = await resolveSelectableModels(args.currentModelId)
+      if (args.harnessId !== undefined && typeof args.harnessId !== 'string') {
+        throw new Error('args.harnessId must be a string')
+      }
+      if (args.projectId !== undefined && typeof args.projectId !== 'string') {
+        throw new Error('args.projectId must be a string')
+      }
+      if (args.currentEffort !== undefined && typeof args.currentEffort !== 'string') {
+        throw new Error('args.currentEffort must be a string')
+      }
+      const models = await resolveSelectableModels(args.currentModelId, {
+        harnessId: args.harnessId,
+        projectId: args.projectId,
+        currentEffort: args.currentEffort
+      })
       // Spread each entry into a plain object literal — NOT a reshape (same
       // keys/values, untouched order) — purely so this structurally satisfies
       // DispatchFn's JsonValue return type, which (unlike the type aliases

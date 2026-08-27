@@ -27,6 +27,8 @@ import {
 } from '../routingProxy/manager'
 import { listProviderConfigs } from '../routingProxy/providers/storage'
 import { PROVIDERS } from '../routingProxy/providers/registry'
+import { resolveHarnessSettings } from '../harness/settings'
+import { resolveHarness } from '../harness/registry'
 import { handle } from './handle'
 
 // Hard cap on the bounded first-call wait below. The measured cost of a full
@@ -37,8 +39,38 @@ import { handle } from './handle'
 // always resolves (never rejects) at or before this deadline.
 const FIRST_CALL_MODEL_CACHE_WAIT_MS = 250
 
-function collectSelectableInput(currentModelId: string | undefined): BuildSelectableModelsInput {
+/** Optional per-call scope context (B4, support-multi-harness) — see
+ *  models:listSelectable's own doc comment in src/shared/ipc.ts for the
+ *  byte-identical-when-omitted contract this type exists to carry. */
+export interface SelectableModelsScope {
+  harnessId?: string
+  projectId?: string
+  currentEffort?: string
+}
+
+function collectSelectableInput(
+  currentModelId: string | undefined,
+  scope?: SelectableModelsScope
+): BuildSelectableModelsInput {
   const snapshot = getRoutingProxySnapshot()
+  // Falls back to 'claude' — mirrors main's never-throws resolveHarness(id)
+  // (src/main/harness/registry.ts: `if (!id) return CLAUDE_DESCRIPTOR`) and
+  // resolveHarnessSettings' own "missing row -> {}" contract, so an omitted
+  // harnessId behaves EXACTLY like every pre-B4 call site (all of which only
+  // ever meant Claude — this is the sole registered harness today) rather
+  // than throwing or silently resolving an empty/wrong scope.
+  const harnessId = scope?.harnessId ?? 'claude'
+  const resolved = resolveHarnessSettings(harnessId, scope?.projectId)
+  // (C3, support-multi-harness) The BASE model catalog now comes from the
+  // resolved HARNESS DESCRIPTOR, not unconditionally from Claude's own
+  // constant — resolveHarness() never throws, always returns a usable
+  // descriptor (falls back to Claude for an unknown/stale id), mirroring
+  // every other resolveHarness call site in src/main/ipc/*.ts. selectable.ts
+  // must stay electron-free/DB-free, so only the resolved descriptor's
+  // PLAIN DATA (curated.model.options, its id, its label) crosses into
+  // BuildSelectableModelsInput — never the descriptor object itself.
+  const descriptor = resolveHarness(harnessId)
+  const isClaudeHarness = descriptor.id === 'claude'
   return {
     routingProxy: {
       enabled: snapshot.enabled,
@@ -55,7 +87,28 @@ function collectSelectableInput(currentModelId: string | undefined): BuildSelect
     // (model-routing unit 09-polish) Startup-window fallback — see
     // models/selectable.ts's persistedAvailabilityFor for the precedence
     // rule that keeps this from ever overriding live authFiles data.
-    persistedHealthyProviderIds: getPersistedHealthyProviderIds()
+    persistedHealthyProviderIds: getPersistedHealthyProviderIds(),
+    // User curation of the model/effort option lists (B4) — resolved HERE,
+    // not inside selectable.ts, because that module must stay
+    // electron-free/DB-free (see its own header + verify-model-picker.ts,
+    // which exercises it fully offline); resolveHarnessSettings touches
+    // SQLite. selectable.ts only ever sees the already-resolved plain
+    // overlay object, same as every other field on this input.
+    curatedModelOptions: resolved.curatedOptions?.model,
+    curatedEffortOptions: resolved.curatedOptions?.effort,
+    currentEffort: scope?.currentEffort,
+    // (C3) isClaudeHarness is left `undefined` for the Claude descriptor
+    // itself (not `true`) — selectable.ts's baseEntries() treats
+    // `!== false` as "Claude", so this preserves the exact pre-C3 code path
+    // (claudeEntries(), no new branch taken at all) whenever the resolved
+    // harness is Claude, which is the byte-identical regression net. Only a
+    // genuinely non-Claude descriptor sets this to `false` and threads the
+    // rest of the C3 fields.
+    isClaudeHarness: isClaudeHarness ? undefined : false,
+    harnessModelOptions: isClaudeHarness ? undefined : (descriptor.curated?.model?.options ?? []),
+    harnessLabel: isClaudeHarness ? undefined : descriptor.label,
+    harnessIcon: isClaudeHarness ? undefined : descriptor.icon,
+    harnessId: isClaudeHarness ? undefined : descriptor.id
   }
 }
 
@@ -83,7 +136,8 @@ function collectSelectableInput(currentModelId: string | undefined): BuildSelect
  * the Claude offline guarantee is never at risk.
  */
 export async function resolveSelectableModels(
-  currentModelId: string | undefined
+  currentModelId: string | undefined,
+  scope?: SelectableModelsScope
 ): Promise<SelectableModel[]> {
   if (listCliProxyModelCacheEntries().length === 0) {
     await waitForCliProxyModelCacheFresh(FIRST_CALL_MODEL_CACHE_WAIT_MS)
@@ -93,7 +147,7 @@ export async function resolveSelectableModels(
     // without a live proxy round trip; never awaited.
     ensureCliProxyModelCacheFresh()
   }
-  return buildSelectableModels(collectSelectableInput(currentModelId))
+  return buildSelectableModels(collectSelectableInput(currentModelId, scope))
 }
 
 export function registerModelsIpc(): void {
@@ -105,7 +159,10 @@ export function registerModelsIpc(): void {
     return labels
   })
 
-  handle('models:listSelectable', async (_e, { currentModelId }) => {
-    return resolveSelectableModels(currentModelId)
-  })
+  handle(
+    'models:listSelectable',
+    async (_e, { currentModelId, harnessId, projectId, currentEffort }) => {
+      return resolveSelectableModels(currentModelId, { harnessId, projectId, currentEffort })
+    }
+  )
 }

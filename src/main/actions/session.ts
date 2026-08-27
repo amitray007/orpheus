@@ -32,6 +32,7 @@ import { getClaudeGlobalSettings } from '../claudeSettings'
 import { encodePathToClaudeDir } from '../claudeProjectDir'
 import { getWorkspace } from '../workspaces'
 import { resolveModel, effectiveContext } from '../models/registry'
+import { getSessionUsageReader } from './sessionUsageReader'
 
 // ---------------------------------------------------------------------------
 // Parse cache — short-circuit repeated reads within the TTL window
@@ -732,10 +733,30 @@ export async function handleGetMeta(
   return { ok: true, value: parsed.meta }
 }
 
+/**
+ * Session usage — dispatches to the workspace's harness. Claude's path
+ * (the common case, and the pre-existing behavior, is inlined directly
+ * here rather than routed through a registry entry — see
+ * sessionUsageReader.ts's header for why Claude has no registry entry) reads
+ * the incremental JSONL accumulator exactly as before this seam existed. A
+ * non-Claude workspace with a registered reader (sessionUsageReader.ts)
+ * delegates to it instead; a harness with NO registered reader (including
+ * one that hasn't been wired yet even if its capabilities.usage is true —
+ * see that module's own doc comment on why capability-true doesn't imply
+ * "has a reader") returns the same empty/unknown shape a brand-new,
+ * session-less Claude workspace would.
+ */
 export async function handleGetUsage(
   _params: Record<string, unknown>,
   workspaceId: string
 ): Promise<ActionResult<SessionUsage>> {
+  const ws = getWorkspace(workspaceId)
+  const reader = getSessionUsageReader(ws?.harnessId)
+  if (reader) {
+    const usage = ws ? await reader.getUsage(ws) : null
+    return { ok: true, value: usage ?? emptyUsage(null) }
+  }
+
   const parsed = await getParsed(workspaceId)
   // Same fallback default ('sonnet') as getContextBudget in
   // src/main/sessions.ts, so the two paths agree when no model is known yet.
@@ -770,10 +791,19 @@ export async function handleGetUsage(
   }
 }
 
+/** Session cost — same harness dispatch as handleGetUsage above; see that
+ *  function's doc comment for the full rationale. */
 export async function handleGetCost(
   _params: Record<string, unknown>,
   workspaceId: string
 ): Promise<ActionResult<SessionCost>> {
+  const ws = getWorkspace(workspaceId)
+  const reader = getSessionUsageReader(ws?.harnessId)
+  if (reader) {
+    const cost = ws ? await reader.getCost(ws) : null
+    return { ok: true, value: cost ?? emptyCost() }
+  }
+
   const parsed = await getParsed(workspaceId)
   if (!parsed) return { ok: true, value: emptyCost() }
   return { ok: true, value: parsed.cost }

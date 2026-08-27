@@ -1,4 +1,10 @@
 import './safeConsole'
+// MUST stay at the top, before any module reads process.env: strips the
+// workspace-pane plumbing vars this process inherits when Orpheus is
+// launched from inside an Orpheus terminal. See the module header — this
+// fixes both the argv poisoning that fed Claude's flags to `codex` and a
+// cross-variant ORPHEUS_CMD_TOKEN leak into the tmux server's global env.
+import './scrubInheritedPaneEnv'
 import { APP_NAME, APP_ID, isDev } from './appMode'
 import {
   startSessionStateService,
@@ -7,6 +13,17 @@ import {
   isWorkspaceSessionReady,
   getWorkspaceFileInfo
 } from './sessionState'
+import {
+  startCodexStatusService,
+  hasObservedCodexStatus,
+  setCodexReadyObserver
+} from './harness/codex/statusState'
+import {
+  markTerminalTitleObserved,
+  hasObservedTerminalTitle,
+  pruneTerminalLivenessEntry,
+  resolveCodexOverlayReadiness
+} from './harness/codex/terminalLiveness'
 import { monitorEventLoopDelay } from 'perf_hooks'
 import {
   app,
@@ -67,7 +84,8 @@ import {
 } from './paneStore'
 import { getAppUiState, updateAppUiState } from './uiState'
 import { applyPersistedIconPack } from './iconPacks'
-import { onActivityBatch } from './activitySink'
+import { onActivityBatch, type ActivityUpdate } from './activitySink'
+import { ActivityBootBuffer } from './activityBootBuffer'
 import {
   startNotifyServer,
   ensureManagedHooks,
@@ -80,7 +98,8 @@ import {
 import {
   configureLoadingOverlay,
   show as showLoadingOverlay,
-  hide as hideLoadingOverlay
+  hide as hideLoadingOverlay,
+  shouldWaitForSessionReadiness
 } from './loadingOverlay'
 import type { Theme } from '../shared/types'
 import {
@@ -97,21 +116,23 @@ import type { WorkspaceRecord } from '../shared/types'
 import {
   loadOrpheusSurface,
   buildMountEnv,
-  isRoutedMount,
   composeLaunchForMount,
   buildTmuxAttachEnv
 } from './orpheusSurfaceAdapter'
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import { prepareTerminalLaunchEnv } from './terminalLaunchEnv'
 import { buildAppMenu } from './appMenu'
+import { HARNESSES, resolveHarness } from './harness/registry'
+import { shouldClaimLiveActivity } from '../shared/harness/capabilityGating'
+import type { HarnessCapabilities } from '../shared/harness/types'
 import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor } from '../shared/types'
 import type { SplitTree, PaneLayout, TerminalRect, TerminalMountResult } from '../shared/types'
 import { bootActions, setTerminalAddonRef, registerWebContentsCleanup } from './actions/index'
 import { evictAccumulator } from './actions/session'
-import { seedDefaultFooterActions } from './footerActions'
-import { refreshModelsDevCache } from './models/registry'
+import { refreshModelsDevCache, hydrateModelsDevCacheFromDisk } from './models/registry'
+import { installModelsDevPersistence } from './models/modelsDevPersistence'
 import {
   startDiagnostics,
   stopDiagnostics,
@@ -154,6 +175,7 @@ import {
   setOverlayFallbackTimer,
   clearOverlayFallbackTimer,
   takeOverlayFallbackTimer,
+  hasOverlayFallbackTimer,
   withInjectLock,
   teardownWorkspaceState
 } from './workspaceResources'
@@ -168,13 +190,13 @@ import { registerUpdatesIpc } from './ipc/updates'
 import { registerProdImportIpc } from './ipc/prodImport'
 import { registerRoutingProxyIpc } from './ipc/routingProxy'
 import { registerProvidersIpc } from './ipc/providers'
+import { registerHarnessSettingsIpc } from './ipc/harnessSettings'
 import { registerAliasesIpc } from './ipc/aliases'
 import { registerOAuthIpc } from './ipc/oauth'
 import {
   hydrateSnapshotAtBoot,
   reconcileRoutingProxy,
-  shutdownRoutingProxySync,
-  ensureHealthyForRouting
+  shutdownRoutingProxySync
 } from './routingProxy/manager'
 import { registerMcpIpc } from './ipc/mcp'
 import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
@@ -183,9 +205,12 @@ import { registerClaudeAuthIpc } from './ipc/claudeAuth'
 import { getClaudeAuthEnv } from './claudeAuth'
 import { registerClaudeUsageIpc } from './ipc/claudeUsage'
 import { registerClaudeActivityIpc } from './ipc/claudeActivity'
-import { registerFooterActionsIpc } from './ipc/footerActions'
 import { registerReviewsIpc } from './ipc/reviews'
-import { createRendererCommandTransport, registerWorkbenchControlIpc } from './ipc/workbenchControl'
+import {
+  createRendererCommandTransport,
+  registerWorkbenchControlIpc,
+  onRendererReady
+} from './ipc/workbenchControl'
 import { RendererCommandBroker } from './workbenchControl/rendererCommandBroker'
 import { WorkbenchControlService } from './workbenchControl/service'
 import { createMainPaneControlPort } from './workbenchControl/mainPaneAdapter'
@@ -248,6 +273,7 @@ let commandServer: {
   close: () => void
 } | null = null
 let sessionStateService: { stop: () => void } | null = null
+let codexStatusService: { stop: () => void } | null = null
 let powerAwakeCleanup: (() => void) | null = null
 const runtimeLeases = new RuntimeLeaseRegistry()
 let workspaceOrchestrationService: WorkspaceOrchestrationService | null = null
@@ -327,6 +353,17 @@ let mainWindowRef: BrowserWindow | null = null
 let rendererWorkspaceOpenReady = false
 let nativeWindowOcclusionVisible: boolean | null = null
 const workspaceOpenRequests = new WorkspaceOpenRequestQueue()
+
+// Boot-seed delivery fix for the activity-batch push channel: a reconciler
+// (e.g. Codex's statusState.ts) can dispatch a workspace's first-ever status
+// of the boot before the renderer's onActivityBatch listener is registered,
+// and webContents.send() silently drops any push made before that listener
+// exists. Buffer until control:rendererReady (the precise "listener is
+// definitely registered" signal — see activityBootBuffer.ts's header) and
+// flush the merged batch then; reset on 'did-start-loading' so a later
+// reload re-buffers instead of assuming the new renderer instance already
+// has everything. See activityBootBuffer.ts for the full rationale.
+const activityBootBuffer = new ActivityBootBuffer()
 
 function getMainWindow(): BrowserWindow | null {
   if (mainWindowRef && !mainWindowRef.isDestroyed()) return mainWindowRef
@@ -458,6 +495,16 @@ function ensureLoadingOverlayWiring(addon: GhosttySurfaceAddon): void {
   setSessionReadyHandler((workspaceId: string) => {
     hideLoadingOverlay(workspaceId)
   })
+  // Seam (b) of the loading-overlay early-dismissal fix (support-multi-
+  // harness Bug 1): statusState.ts's Codex equivalent of the Claude handler
+  // just above — fired the instant hasObservedCodexStatus flips false ->
+  // true for a workspace. Routed through attemptEarlyOverlayDismissal (not
+  // a direct hideLoadingOverlay call) so the harnessId dispatch and the
+  // "only if a fallback timer is actually armed" gate are shared with seam
+  // (a) rather than duplicated — see that function's doc comment.
+  setCodexReadyObserver((workspaceId: string) => {
+    attemptEarlyOverlayDismissal(workspaceId, getWorkspace(workspaceId)?.harnessId ?? 'claude')
+  })
 }
 
 function ensureTerminalCallbackWiring(addon: GhosttySurfaceAddon): void {
@@ -498,6 +545,24 @@ function ensureTerminalCallbackWiring(addon: GhosttySurfaceAddon): void {
     }
 
     const workspaceId = surfaceKey
+
+    // PROOF-OF-LIFE for the loading overlay (support-multi-harness): record
+    // that the native title callback fired for this workspace on EVERY
+    // invocation, regardless of whether the title text actually changed —
+    // see terminalLiveness.ts's header for why this must run before (and
+    // independent of) the dedupe-skip check right below, which is about
+    // whether to touch the DB/broadcast a title CHANGE, not about whether
+    // the terminal is alive. Populated for every workspace (Claude and
+    // Codex both); only ever consulted for codex-cli in
+    // isWorkspaceSessionReadyForHarness.
+    markTerminalTitleObserved(workspaceId)
+    // Seam (a) of the loading-overlay early-dismissal fix (support-multi-
+    // harness Bug 1): this may be the exact call that just flipped this
+    // workspace's readiness from false to true (hasObservedTerminalTitle),
+    // so re-check right here rather than waiting for the 10s fallback.
+    // Cheap no-op for every call after the first and for every Claude
+    // workspace — see attemptEarlyOverlayDismissal's own doc comment.
+    attemptEarlyOverlayDismissal(workspaceId, getWorkspace(workspaceId)?.harnessId ?? 'claude')
 
     // Skip if nothing changed — guards the per-frame spinner churn.
     if (getTitle(workspaceId) === (cleaned ?? undefined)) return
@@ -584,6 +649,10 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
   evictAccumulator(workspaceId)
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
   teardownWorkspaceState(workspaceId)
+  // Bound terminalLiveness.ts's proof-of-life set (support-multi-harness
+  // loading-overlay fix) — same idempotent-delete discipline as every other
+  // cleanup in this function.
+  pruneTerminalLivenessEntry(workspaceId)
   if (cwd) stopGitWatch(workspaceId, cwd)
   // Reap the Files tab's working-tree watcher too, if this workspace happened
   // to be the one watch instance active (no-op otherwise — stopFilesWatch is
@@ -963,6 +1032,11 @@ function createWindow(): void {
   })
   mainWindow.webContents.on('did-start-loading', () => {
     rendererWorkspaceOpenReady = false
+    // Re-arm the boot buffer for a reload (dev HMR, crash recovery): the
+    // fresh renderer instance hasn't registered its onActivityBatch listener
+    // yet either, so anything staged before its own control:rendererReady
+    // must buffer again rather than assume it's already covered.
+    activityBootBuffer.reset()
   })
   mainWindow.webContents.on('did-finish-load', () => {
     if (mainWindowRef !== mainWindow || mainWindow.webContents.isDestroyed()) return
@@ -1075,9 +1149,10 @@ function createWindow(): void {
   // active again (Cmd-Tab back, dock click, etc.). Without this the focus
   // stays on whatever HTML element it was on, and typing won't reach claude.
   mainWindow.on('focus', () => {
-    // Invalidate the checkClaude cache so the next doctor:check picks up any
-    // claude install/update that happened while the window was in the background.
-    cachedClaudeCheck = null
+    // Invalidate the harness-check cache so the next doctor:check picks up
+    // any harness install/update that happened while the window was in the
+    // background.
+    cachedHarnessChecks.clear()
     kickActiveTerminal()
   })
 
@@ -1131,54 +1206,51 @@ function createWindow(): void {
 // interactive subshell once on first check, capture its $PATH, and cache it.
 //
 // The resolution is async so the main thread doesn't block on the first call.
-// Cache for checkClaude — invalidated on app focus change (app:focus event).
-// 30s TTL guards against stale "not installed" results if the user installs
-// claude while Orpheus is open.
-let cachedClaudeCheck: {
-  result: { installed: boolean; version: string | null; path: string | null }
-  at: number
-} | null = null
+// Cache for checkHarnessBinary — invalidated on app focus change (app:focus
+// event). 30s TTL guards against stale "not installed" results if the user
+// installs a harness while Orpheus is open. Keyed by harness id so each
+// registered harness gets its own independent cache entry.
+type HarnessCheckResult = { installed: boolean; version: string | null; path: string | null }
 
-const CLAUDE_CHECK_TTL_MS = 30_000
+const cachedHarnessChecks = new Map<string, { result: HarnessCheckResult; at: number }>()
 
-async function checkClaude(): Promise<{
-  installed: boolean
-  version: string | null
-  path: string | null
-}> {
-  if (cachedClaudeCheck && Date.now() - cachedClaudeCheck.at < CLAUDE_CHECK_TTL_MS) {
-    return cachedClaudeCheck.result
+const HARNESS_CHECK_TTL_MS = 30_000
+
+async function checkHarnessBinary(binary: string): Promise<HarnessCheckResult> {
+  const cached = cachedHarnessChecks.get(binary)
+  if (cached && Date.now() - cached.at < HARNESS_CHECK_TTL_MS) {
+    return cached.result
   }
 
   // PATH comes from the user's actual shell (cached). No hardcoded fallbacks:
-  // if `claude` isn't on the user's shell PATH, it isn't installed for them.
+  // if the binary isn't on the user's shell PATH, it isn't installed for them.
   const userPath = await getUserShellPath()
   const env = { ...process.env, PATH: userPath || process.env['PATH'] || '' }
 
   const execFile = promisify(childProcess.execFile)
 
-  let claudePath: string
+  let binaryPath: string
   try {
-    const { stdout } = await execFile('which', ['claude'], {
+    const { stdout } = await execFile('which', [binary], {
       encoding: 'utf-8',
       env,
       timeout: 3000
     })
-    claudePath = stdout.trim()
-    if (!claudePath) {
+    binaryPath = stdout.trim()
+    if (!binaryPath) {
       const result = { installed: false, version: null, path: null }
-      cachedClaudeCheck = { result, at: Date.now() }
+      cachedHarnessChecks.set(binary, { result, at: Date.now() })
       return result
     }
   } catch {
     const result = { installed: false, version: null, path: null }
-    cachedClaudeCheck = { result, at: Date.now() }
+    cachedHarnessChecks.set(binary, { result, at: Date.now() })
     return result
   }
 
   let version: string | null = null
   try {
-    const { stdout: versionOutput } = await execFile('claude', ['--version'], {
+    const { stdout: versionOutput } = await execFile(binary, ['--version'], {
       encoding: 'utf-8',
       env,
       timeout: 3000
@@ -1188,9 +1260,28 @@ async function checkClaude(): Promise<{
   } catch {
     // `which` succeeded but `--version` failed; treat as installed, version unknown
   }
-  const result = { installed: true, version, path: claudePath }
-  cachedClaudeCheck = { result, at: Date.now() }
+  const result = { installed: true, version, path: binaryPath }
+  cachedHarnessChecks.set(binary, { result, at: Date.now() })
   return result
+}
+
+// Runs checkHarnessBinary across every registered harness (src/main/harness/
+// registry.ts) rather than hardcoding Claude — this is the doctor's actual
+// per-harness surface; doctor:check below just shapes the result for IPC.
+async function checkAllHarnesses(): Promise<DoctorResult> {
+  const harnesses = await Promise.all(
+    HARNESSES.map(async (descriptor) => {
+      const { installed, version, path: binaryPath } = await checkHarnessBinary(descriptor.binary)
+      return {
+        id: descriptor.id,
+        label: descriptor.label,
+        installed,
+        version,
+        path: binaryPath
+      }
+    })
+  )
+  return { harnesses }
 }
 
 // ---------------------------------------------------------------------------
@@ -1390,17 +1481,14 @@ registerRoutingProxyIpc()
 
 registerProvidersIpc()
 
+registerHarnessSettingsIpc()
+
 registerAliasesIpc()
 
 registerOAuthIpc()
 
 handle('doctor:check', async (): Promise<DoctorResult> => {
-  const { installed, version, path: claudePath } = await checkClaude()
-  return {
-    claudeInstalled: installed,
-    claudeVersion: version,
-    claudePath
-  }
+  return checkAllHarnesses()
 })
 
 registerGitIpc({ getWorkspaceCwd: (workspaceId) => getWorkspace(workspaceId)?.cwd ?? null })
@@ -1630,7 +1718,7 @@ async function traceTerminalMount(
 
     // Assemble the surface env as a child span nested under terminal.mount.
     // buildMountEnv is sync; use diag.span (not diag.trace). precomposedLaunch
-    // was already composed once by the caller (for the isRoutedMount gate) —
+    // was already composed once by the caller (composeLaunchForMount) —
     // passed through so this span does NOT re-run composeClaudeLaunch.
     let buildResult!: ReturnType<typeof buildMountEnv>
     try {
@@ -1790,21 +1878,167 @@ async function traceTerminalMountForTmuxAttach(
   })
 }
 
+/**
+ * Resolves "does this workspace's harness already have an observed
+ * session-readiness signal" for handlePostMountOverlay, branching by
+ * harnessId to each harness's OWN observation source rather than assuming
+ * Claude's. Claude's signal is isWorkspaceSessionReady (sessionState.ts,
+ * unmodified by this branch — byte-for-byte, no OR, no new condition) — it
+ * reads whether ~/.claude/sessions/<pid>.json already reports a concrete
+ * status.
+ *
+ * Codex has no such file. Its readiness is now an OR of TWO independent
+ * signals (resolveCodexOverlayReadiness, harness/codex/terminalLiveness.ts):
+ *   1. hasObservedCodexStatus (harness/codex/statusState.ts) — true once
+ *      that service's reconcile loop has evaluated this workspace at least
+ *      once (rollout task-event + thread-writer-lock liveness), regardless
+ *      of which status resulted. This is the PREFERRED signal when
+ *      available — richer than proof-of-life alone — but it can only ever
+ *      fire once the workspace's `claude_session_id` is bound, which is
+ *      DISCOVERED ASYNCHRONOUSLY from Codex's own on-disk rollout file on a
+ *      short, bounded retry schedule (scheduleCodexSessionDiscovery,
+ *      harness/codex/session.ts). No first prompt (or a slow-to-flush
+ *      Codex) means no rollout, means no binding within that schedule, means
+ *      this signal never fires — not "fires late", genuinely never, since
+ *      hasObservedCodexStatus's underlying reconcile loop only ever
+ *      evaluates already-bound workspaces.
+ *   2. hasObservedTerminalTitle (harness/codex/terminalLiveness.ts) — true
+ *      once the native terminal surface's title callback has fired at least
+ *      once for this workspace. This is direct, harness-independent proof
+ *      the pane is alive and drawing output, entirely independent of
+ *      whether Codex has ever written a rollout. Verified against real boot
+ *      logs: for a Codex workspace, this fires twice well within the first
+ *      couple of seconds, long before the 10s overlay fallback below would
+ *      trip.
+ * Gating readiness on signal 1 alone can deadlock a workspace behind the
+ * full 10s fallback on every mount whenever binding hasn't happened yet
+ * (which can be indefinite); ORing in signal 2 means a NULL-sid Codex
+ * workspace with a live, drawing terminal still resolves ready promptly,
+ * without ever loosening what makes Claude's own branch report ready.
+ *
+ * Kept local to index.ts (not exported from either status module) — this is
+ * purely a call-site dispatch, not a decision either module needs to know
+ * about the other for.
+ */
+function isWorkspaceSessionReadyForHarness(workspaceId: string, harnessId: string): boolean {
+  if (harnessId === 'codex-cli') {
+    return resolveCodexOverlayReadiness(
+      hasObservedCodexStatus(workspaceId),
+      hasObservedTerminalTitle(workspaceId)
+    )
+  }
+  return isWorkspaceSessionReady(workspaceId)
+}
+
+/**
+ * Early-dismissal seam for Bug 1 (support-multi-harness): handlePostMountOverlay
+ * only checks isWorkspaceSessionReadyForHarness ONCE, at mount time — for a
+ * brand-new Codex workspace that check is almost always still false then
+ * (neither hasObservedCodexStatus nor hasObservedTerminalTitle has had a
+ * chance to fire yet), so the 10s fallback timer always arms, and nothing
+ * previously re-checked readiness after mount. Contrast with Claude, whose
+ * setSessionReadyHandler wiring above (ensureLoadingOverlayWiring) calls
+ * hideLoadingOverlay the instant its OWN session file reports a concrete
+ * status. This function is Codex's structural equivalent, called from both
+ * seams where a Codex readiness signal can flip false -> true after mount:
+ * the title callback (ensureTerminalCallbackWiring, right after
+ * markTerminalTitleObserved) and statusState.ts's reconcileOneWorkspace (via
+ * setCodexReadyObserver, wired below).
+ *
+ * Harness-agnostic in MECHANISM: this does not hardcode `harnessId ===
+ * 'codex-cli'` as the dismissal gate. It re-runs the same
+ * isWorkspaceSessionReadyForHarness dispatch handlePostMountOverlay itself
+ * uses, gated only on "is a fallback timer actually armed for this
+ * workspace" (hasOverlayFallbackTimer). In practice only Codex workspaces
+ * ever have a fallback timer armed while their readiness signals are still
+ * false at call time (Claude's own branch of isWorkspaceSessionReadyForHarness
+ * is driven by setSessionReadyHandler instead, which already dismisses via a
+ * SEPARATE path and is untouched by this function), but nothing here assumes
+ * that — a future harness that reaches this seam would be handled the same
+ * way, automatically.
+ *
+ * hasOverlayFallbackTimer is checked FIRST specifically so this is a cheap
+ * no-op on the hot per-frame title-callback path for the overwhelming
+ * majority of calls (every title update after the first, and every Claude
+ * workspace ever) — isWorkspaceSessionReadyForHarness is only ever evaluated
+ * once a timer is confirmed armed.
+ *
+ * clearOverlayFallbackTimer (NOT takeOverlayFallbackTimer) is required here:
+ * the timer has NOT fired yet at this call site (we're preempting it), so
+ * takeOverlayFallbackTimer's "already fired, just remove the stale map
+ * entry" semantics would be wrong — clearOverlayFallbackTimer both cancels
+ * the pending setTimeout and removes the entry, which is exactly what's
+ * needed to guarantee the stale timer can never later fire and hide a
+ * DIFFERENT overlay mounted for the same workspaceId after this one.
+ */
+function attemptEarlyOverlayDismissal(workspaceId: string, harnessId: string): void {
+  if (!hasOverlayFallbackTimer(workspaceId)) return
+  if (!isWorkspaceSessionReadyForHarness(workspaceId, harnessId)) return
+  clearOverlayFallbackTimer(workspaceId)
+  hideLoadingOverlay(workspaceId)
+}
+
 /** Post-mount overlay handling: show the "Starting workspace" overlay only when a
  *  new surface was actually created (re-attach/resize of an already-running
- *  workspace has no boot to mask), and arm the 10s fallback dismissal timer.
- *  `routed` (from isRoutedMount(precomposedLaunch), already computed by the
- *  caller for the health-gate check above) picks the slow-watchdog copy and
- *  threshold inside loadingOverlay.ts — a routed mount waits on a proxy
- *  round-trip before claude registers its session file, so the generic
- *  "hooks/auth" slow copy would be wrong and 3s too aggressive for it. */
-function handlePostMountOverlay(workspaceId: string, created: boolean, routed: boolean): void {
+ *  workspace has no boot to mask), and arm the 10s fallback dismissal timer —
+ *  but ONLY for a harness that has a real session-readiness signal to wait
+ *  on in the first place (`capabilities.structuredStatus`, via
+ *  shouldClaimLiveActivity/shouldWaitForSessionReadiness). Claude has one
+ *  (~/.claude/sessions/<pid>.json, read by isWorkspaceSessionReady); Codex
+ *  now has its own OR of two signals (harness/codex/statusState.ts's
+ *  hasObservedCodexStatus, ORed with harness/codex/terminalLiveness.ts's
+ *  hasObservedTerminalTitle) — see isWorkspaceSessionReadyForHarness above,
+ *  which dispatches to each harness's own source(s) by `harnessId`, and
+ *  that function's own doc comment for WHY the OR exists: Codex's
+ *  session-binding-based signal is prompt-dependent and can be delayed
+ *  indefinitely (no first prompt from the user = no rollout = never bound =
+ *  that signal never fires), so gating readiness on it alone can deadlock a
+ *  workspace behind this function's own 10s fallback timer below on every
+ *  mount. The title callback firing is direct proof the pane is alive and
+ *  producing output, independent of Codex ever writing a rollout, so ORing
+ *  it in fixes the deadlock without weakening Claude's branch at all
+ *  (unchanged, and never consults either Codex signal). A harness with
+ *  neither (structuredStatus: false) would otherwise ALWAYS ride the full,
+ *  fixed 10s fallback — tuned for Claude's boot profile — on every single
+ *  mount, since it has nothing any observation source could ever report
+ *  ready. That harness dismisses promptly instead: see the `else` arm
+ *  below. The 10s fallback timer itself is UNCHANGED by this fix — it
+ *  remains a real backstop for a genuinely failed launch (auth failure, the
+ *  codex binary missing, a crash before ever drawing a prompt or a title),
+ *  cases where neither signal will ever fire.
+ *  `routed` picks the slow-watchdog copy and threshold inside
+ *  loadingOverlay.ts — a routed mount waits on a proxy round-trip before
+ *  claude registers its session file, so the generic "hooks/auth" slow copy
+ *  would be wrong and 3s too aggressive for it. Every call site currently
+ *  passes `false` (launch-side routing was severed in Phase 0); the
+ *  parameter itself stays live as the Phase 6 re-land hook — see
+ *  multi-harness roadmap. */
+function handlePostMountOverlay(
+  workspaceId: string,
+  created: boolean,
+  routed: boolean,
+  capabilities: HarnessCapabilities,
+  harnessId: string
+): void {
   if (created) {
     showLoadingOverlay(workspaceId, { title: 'Starting workspace' }, routed)
 
+    if (!shouldWaitForSessionReadiness(shouldClaimLiveActivity(capabilities))) {
+      // No structured-status source exists for this harness — there is
+      // nothing any observation source could ever report ready, so don't
+      // arm the Claude-tuned 10s fallback timer at all. Dismiss promptly
+      // instead (mirrors the "surface already existed" else-branch below's
+      // unconditional immediate hideLoadingOverlay — hide() applies its own
+      // MIN_SHOW_MS anti-flash debounce, so this still shows briefly rather
+      // than never appearing).
+      hideLoadingOverlay(workspaceId)
+      return
+    }
+
     // If the session is already past its starting phase (re-mount of a
-    // running workspace), dismiss the overlay immediately.
-    if (isWorkspaceSessionReady(workspaceId)) {
+    // running workspace, or — for Codex — a workspace this tick's reconcile
+    // has already observed), dismiss the overlay immediately.
+    if (isWorkspaceSessionReadyForHarness(workspaceId, harnessId)) {
       hideLoadingOverlay(workspaceId)
     } else {
       // Fallback: ensure the overlay is always dismissed after 10s even if
@@ -1888,10 +2122,10 @@ function willMountCreateSurface(addon: GhosttySurfaceAddon, workspaceId: string)
 }
 
 /** Discriminated pre-decision for whether this mount should go through tmux
- *  at all — resolved once, before either tmux or the routed-model gate is
- *  touched, so downstream code branches on a plain value instead of
- *  re-deriving availability. See resolveMountStrategy() (tmuxHost.ts) for
- *  the pure decision this wraps with the actual ensureTmuxVersion() I/O. */
+ *  at all — resolved once, before tmux is touched, so downstream code
+ *  branches on a plain value instead of re-deriving availability. See
+ *  resolveMountStrategy() (tmuxHost.ts) for the pure decision this wraps
+ *  with the actual ensureTmuxVersion() I/O. */
 async function resolveTmuxMountAvailability(): Promise<
   ReturnType<typeof resolveMountStrategy> extends infer T ? T : never
 > {
@@ -2035,13 +2269,16 @@ async function finishTmuxAttachMount(
     })
   }
 
-  // Routed-model health gate deliberately NOT run here — see the
-  // isRoutedMount(precomposedLaunch) call in the native path below, which
-  // only runs on the native/create path. Re-attaching to an already-running
-  // tmux session must never re-probe proxy health: that gate exists to fail
-  // fast before spawning a NEW `claude` process against an unreachable
-  // routing proxy, and no new `claude` process is spawned here.
-  handlePostMountOverlay(workspaceId, result.created, false)
+  // Routed-model health gate: severed repo-wide in Phase 0 (launch-side
+  // routing injection), so there is currently nothing to (deliberately not)
+  // run here at all — see multi-harness roadmap (Phase 6) for the re-land.
+  handlePostMountOverlay(
+    workspaceId,
+    result.created,
+    false,
+    resolveHarness(runtimeWorkspace.harnessId).capabilities,
+    runtimeWorkspace.harnessId
+  )
 
   // Snapshot handling on the tmux-attach path — subtle, documented in full
   // here since this is the exact decision point:
@@ -2183,35 +2420,20 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
   // re-attach of an already-live surface, or the tmux-missing/too-old
   // fallback for a fresh create) ──────────────────────────────────────────
 
-  // Compose claude settings -> ClaudeLaunch ONCE for this mount. Both the
-  // routed-model health gate below and traceTerminalMount's env assembly
-  // need the composed launch; previously each called composeClaudeLaunch
-  // independently (a real DB read of global/project/workspace settings rows
-  // every time), so every single mount — including Claude-only ones — paid
-  // for settings composition twice. Composing once here and threading the
-  // result through both call sites halves that cost for every workspace.
+  // Compose claude settings -> ClaudeLaunch ONCE for this mount.
+  // traceTerminalMount's env assembly below needs the composed launch;
+  // previously it (plus a now-removed routed-model health gate) each called
+  // composeClaudeLaunch independently (a real DB read of
+  // global/project/workspace settings rows every time), so every single
+  // mount — including Claude-only ones — paid for settings composition
+  // twice. Composing once here and threading the result through keeps that
+  // cost to one composition per mount.
   const precomposedLaunch = composeLaunchForMount(projectId, workspaceId)
 
-  // Fail-closed gate (model-routing unit 04): an unreachable routing proxy
-  // makes Claude Code hang ~44-128s silently (measured) once addon.mount
-  // spawns the wrapper script against it. Check reachability BEFORE spawning
-  // for routed-model workspaces only — this is a strict no-op (zero extra
-  // network calls, zero added latency, zero extra composition) for
-  // Claude-model workspaces, mirroring computeRoutingEnv's own no-op
-  // guarantee for the Claude path. Also correctly skipped for a plain
-  // re-attach of an already-live surface: hostWorkspace/tmuxAttach is never
-  // set in that case (willMountCreateSurface was false), so this whole
-  // native path only runs for either a genuine re-attach OR a fresh native
-  // (tmux-fallback) create — the gate itself is still keyed off whether
-  // addon.mount will actually create a new entry, exactly as before.
-  if (isRoutedMount(precomposedLaunch)) {
-    try {
-      await ensureHealthyForRouting()
-    } catch (err) {
-      hideLoadingOverlay(workspaceId)
-      throw err
-    }
-  }
+  // Phase-0: the routed-model health gate that used to run here (fail-closed
+  // check of the routing proxy before addon.mount spawns the wrapper script)
+  // is severed along with launch-side routing injection — re-lands
+  // harness-aware, see multi-harness roadmap (Phase 6).
 
   const launchBox: {
     launch?: ReturnType<typeof buildMountEnv>['launch']
@@ -2245,7 +2467,13 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     })
   }
 
-  handlePostMountOverlay(workspaceId, result.created, isRoutedMount(precomposedLaunch))
+  handlePostMountOverlay(
+    workspaceId,
+    result.created,
+    false,
+    resolveHarness(runtimeWorkspace.harnessId).capabilities,
+    runtimeWorkspace.harnessId
+  )
 
   // Snapshot the composed launch (+ auth env layer) so we can detect settings
   // AND auth drift later — see LaunchSnapshot in workspaceResources.ts.
@@ -2903,13 +3131,42 @@ handle('terminal:resize', (_e, { workspaceId, rect, scaleFactor }): void => {
   }
 })
 
-handle('terminal:destroy', (_e, { workspaceId }): void => {
+handle('terminal:destroy', async (_e, { workspaceId, rehost }): Promise<void> => {
   // NOTE: terminal:destroy is called in two distinct scenarios:
   //   1. Workspace death (archive / project-remove) — full teardown happens in
   //      the archive/remove handlers via teardownWorkspaceResources; this path
   //      only handles the surface + transient mount state.
   //   2. Live restart (WorkspaceView.handleRestart) — workspace stays alive;
   //      activity/accumulator/session state must NOT be evicted here.
+  //
+  // `rehost` (support-multi-harness) distinguishes them where it MATTERS.
+  // Destroying the libghostty surface is a no-op for a tmux-hosted workspace
+  // (the default hosting mode): the session, and the harness process inside
+  // it, keep running. So a "restart" that only destroyed the surface then
+  // remounted would hit hostWorkspace()'s idempotent has-session branch and
+  // REATTACH to the same live process — which is why changing a Codex
+  // workspace's model appeared to do nothing until the user closed and
+  // reopened it (close DOES unhost). Callers wanting a genuinely fresh
+  // harness process must pass rehost: true. Archive/remove deliberately do
+  // NOT — they run their own unhostWorkspace in their own handlers, and
+  // double-unhosting here would just be redundant work on a dying workspace.
+  if (rehost === true) {
+    const wsForRehost = getWorkspace(workspaceId)
+    if (wsForRehost != null) {
+      // AWAITED, unlike the fire-and-forget unhosts on the close/archive
+      // paths: the renderer remounts as soon as this resolves, and a mount
+      // racing a still-dying session would reattach to exactly the process
+      // we are trying to replace. Failure is tolerated (unhostWorkspace is
+      // idempotent and tolerates a missing tmux/session) — a workspace that
+      // cannot be unhosted still gets its surface rebuilt, i.e. today's
+      // behavior, rather than a failed restart.
+      try {
+        await unhostWorkspace({ workspaceId, workspaceName: wsForRehost.name })
+      } catch (err) {
+        console.warn('[terminal:destroy] tmux rehost teardown failed for %s:', workspaceId, err)
+      }
+    }
+  }
   //
   // Clean up surface-level mount state that is always safe to evict — it is
   // re-seeded by the next terminal:mount call in both scenarios.
@@ -3059,8 +3316,6 @@ handle('terminal:canInject', (_e, { workspaceId }): boolean => {
 // ---------------------------------------------------------------------------
 
 registerActionsIpc()
-
-registerFooterActionsIpc()
 
 registerReviewsIpc()
 
@@ -3413,15 +3668,25 @@ if (!app.requestSingleInstanceLock()) {
       const controlToolExposure = controlPlaneLifecycle.toolExposure
       bootActions(workspaceControlAdapter)
 
-      // Seed default footer actions on first install (idempotent: no-op if rows exist).
+      // Model context/pricing from models.dev, in two steps.
+      //
+      // FIRST hydrate synchronously from the last persisted catalog, so model
+      // facts resolve immediately on a cold launch. The network path below
+      // downloads 3.8 MB and parses 3202 models — measured at ~2 s before any
+      // fact resolved plus a ~400 ms main-thread stall, on EVERY launch, for a
+      // catalog that changes rarely. Reading the derived form back from SQLite
+      // (~456 KB, no network) removes that from the common path entirely.
+      //
+      // THEN refresh over the network anyway — fire-and-forget, never blocks
+      // boot — so genuine catalog changes still land, and the refresh
+      // re-persists for the next launch. Hydrate never overwrites a cache the
+      // refresh already populated, so ordering between the two is safe.
       try {
-        seedDefaultFooterActions()
+        installModelsDevPersistence()
+        hydrateModelsDevCacheFromDisk()
       } catch (err) {
-        console.error('[footerActions] failed to seed defaults:', redactErrorForLog(err))
+        console.error('[startup] models.dev hydrate failed (continuing)', err)
       }
-
-      // Refresh model context/pricing from models.dev — fire-and-forget, never
-      // blocks boot. See src/main/models/registry.ts.
       refreshModelsDevCache().catch(() => {})
 
       // Clear stale in_progress / attention statuses left over from a prior
@@ -3503,9 +3768,12 @@ if (!app.requestSingleInstanceLock()) {
       // command server is still created before createWindow below, so no
       // renderer can race its first terminal mount ahead of the control socket.
       async function startDeferredServices(): Promise<void> {
-        // Wire up the activity batch channel regardless of hook integration state —
-        // the batch listener is always needed for file-based status updates.
-        onActivityBatch((updates) => {
+        // Deliver one already-decided-to-send activity batch to the
+        // renderer: the workspaceActivityBatch push plus the per-workspace
+        // canInject follow-up. Shared by the live (post-ready) send path
+        // below and the boot-buffer flush so both stay identical.
+        function deliverActivityBatch(updates: readonly ActivityUpdate[]): void {
+          if (updates.length === 0) return
           const win = getMainWindow()
           // Guard webContents itself, not just the BrowserWindow: a renderer
           // reload (HMR in dev, or a real crash-recovery reload) can leave
@@ -3529,6 +3797,22 @@ if (!app.requestSingleInstanceLock()) {
               })
             }
           }
+        }
+
+        // The instant the renderer is DEFINITELY ready (its onActivityBatch
+        // listener is registered — see activityBootBuffer.ts's header),
+        // flush anything staged before that point as one merged batch. A
+        // reload re-arms this (workbenchControl.ts's rendererReadyListeners
+        // fire on every control:rendererReady, not just the first).
+        onRendererReady(() => {
+          deliverActivityBatch(activityBootBuffer.markReady())
+        })
+
+        // Wire up the activity batch channel regardless of hook integration state —
+        // the batch listener is always needed for file-based status updates.
+        onActivityBatch((updates) => {
+          const toSendNow = updates.filter((update) => activityBootBuffer.stage(update) != null)
+          deliverActivityBatch(toSendNow)
         })
 
         // Declarative hook reconcile: enabled → start server + install hooks;
@@ -3860,6 +4144,19 @@ if (!app.requestSingleInstanceLock()) {
           console.error('[sessionState] failed to start:', redactErrorForLog(err))
         }
 
+        // Codex's own status-reconciliation service (support-multi-harness) —
+        // sibling to sessionState's above, but Codex-scoped: watches
+        // ~/.codex/thread-writer-locks + reads Codex's own
+        // ~/.codex/thread_history_1.sqlite thread-history DB instead of
+        // ~/.claude/sessions/<pid>.json. See harness/codex/statusState.ts's
+        // header for why this is a separate service rather than a branch
+        // inside sessionState.ts.
+        try {
+          codexStatusService = startCodexStatusService()
+        } catch (err) {
+          console.error('[codexStatusState] failed to start:', redactErrorForLog(err))
+        }
+
         try {
           powerAwakeCleanup = startPowerAwake(getMainWindow)
         } catch (err) {
@@ -3915,6 +4212,7 @@ if (!app.requestSingleInstanceLock()) {
     notifyServer?.close()
     commandServer?.close()
     sessionStateService?.stop()
+    codexStatusService?.stop()
     terminalObservationCleanup?.()
     terminalObservationCleanup = null
     terminalObservationService = null

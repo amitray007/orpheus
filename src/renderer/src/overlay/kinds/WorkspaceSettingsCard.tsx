@@ -35,7 +35,7 @@ import type { OverlayKindProps } from '../registry'
 
 export function WorkspaceSettingsCard({ props, emit }: OverlayKindProps): React.JSX.Element {
   const data = props as unknown as WorkspaceSettingsCardProps
-  const { locoEnabled, flags, inheritedFlags, envVars, loading, isDirty } = data
+  const { locoVisible, locoEnabled, flags, inheritedFlags, envVars, loading, isDirty } = data
 
   return (
     <div className="w-80 rounded-md border border-border-default bg-surface-overlay shadow-lg p-3 font-[family-name:var(--font-sans)]">
@@ -44,17 +44,21 @@ export function WorkspaceSettingsCard({ props, emit }: OverlayKindProps): React.
         aria-label="Workspace Settings"
         className={loading ? 'opacity-50 pointer-events-none' : undefined}
       >
-        <Eyebrow className="mb-2">Plugins</Eyebrow>
-        <div className="flex items-center justify-between gap-6 py-1">
-          <span className="text-xs text-text-primary select-none">Enable Loco Channel</span>
-          <Toggle
-            value={locoEnabled}
-            onChange={(value) => emit('toggleLoco', { value })}
-            ariaLabel="Enable Loco Channel"
-          />
-        </div>
+        {locoVisible && (
+          <>
+            <Eyebrow className="mb-2">Plugins</Eyebrow>
+            <div className="flex items-center justify-between gap-6 py-1">
+              <span className="text-xs text-text-primary select-none">Enable Loco Channel</span>
+              <Toggle
+                value={locoEnabled}
+                onChange={(value) => emit('toggleLoco', { value })}
+                ariaLabel="Enable Loco Channel"
+              />
+            </div>
 
-        <div className="my-3 border-t border-border-default/60" />
+            <div className="my-3 border-t border-border-default/60" />
+          </>
+        )}
 
         <Eyebrow className="mb-2">Custom CLI flags</Eyebrow>
         <CliFlagsEditor

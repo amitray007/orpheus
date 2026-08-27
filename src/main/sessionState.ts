@@ -26,6 +26,7 @@ import {
   RuntimeObservationDeduper
 } from './sessionStateObservation'
 import { SessionStateFreshnessGate } from './sessionStateFreshness'
+import { resolveHarness } from './harness/registry'
 export { _mapFileStatus } from './sessionStatusMap'
 
 // ---------------------------------------------------------------------------
@@ -33,7 +34,12 @@ export { _mapFileStatus } from './sessionStatusMap'
 // ---------------------------------------------------------------------------
 
 const SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions')
-const KNOWN_GOOD_VERSIONS = new Set(['2.1.190', '2.1.198', '2.1.207'])
+// Known-good claude versions now live on the Claude harness descriptor
+// (src/main/harness/registry.ts) — moved there in Phase 1's P1.2 so a future
+// second harness can carry its own set. resolveHarness('claude') never
+// throws and always returns the Claude descriptor here, matching this
+// module's prior direct-Set behavior exactly.
+const KNOWN_GOOD_VERSIONS = resolveHarness('claude').knownGoodVersions
 
 // ---------------------------------------------------------------------------
 // Types
@@ -838,10 +844,17 @@ async function _startupCrossCheck(): Promise<void> {
   try {
     const resolvedPath = await getUserShellPath()
 
+    // App-global startup check — no workspace in scope to read a harness id
+    // from, so resolve the Claude descriptor explicitly. Behavior-identical
+    // (resolveHarness('claude').binary === 'claude') by construction.
+    // TODO(Phase 3): once a second harness exists, this must iterate
+    // HARNESSES rather than hardcoding the Claude descriptor.
+    const claudeBinary = resolveHarness('claude').binary
+
     // Find claude binary
     let claudePath: string
     try {
-      claudePath = await _which('claude', resolvedPath)
+      claudePath = await _which(claudeBinary, resolvedPath)
     } catch {
       console.log('[sessionState] startup cross-check skipped (claude not found)')
       return

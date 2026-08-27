@@ -61,13 +61,33 @@
 //   didSelectableModelsChange below), not array identity — notify() now only
 //   fires when the model list (or the loading flag) actually changed.
 //
-// Cache key is `currentModelId ?? ''` — the server-side gating result only
-// depends on (a) proxy/provider health, which is process-global and doesn't
-// vary per caller, and (b) currentModelId, which is threaded through solely
-// to keep an already-selected-but-now-unavailable model represented (see
-// models:listSelectable's own doc comment). Invalidated on every
+// Cache key joins ALL FOUR params the server-side resolution depends on:
+// `${harnessId}|${projectId}|${currentModelId}|${currentEffort}` (empty
+// string for each absent part — see cacheKey() below). Invalidated on every
 // routingProxy:onSnapshot push (proxy/provider health changed) rather than
-// polled, reusing the existing push mechanism from src/main/routingProxy/manager.ts.
+// polled, reusing the existing push mechanism from
+// src/main/routingProxy/manager.ts.
+//
+// WHY ALL FOUR JOINED THE KEY (not just currentModelId, pre-B4): two
+// different callers asking for the SAME currentModelId used to always want
+// the SAME answer — the gating inputs (proxy health, provider config) are
+// process-global. That stopped being true the moment the resolved list could
+// also depend on a per-(harness,project)-scope curatedOptions overlay
+// (B4, support-multi-harness — see models:listSelectable's own doc comment
+// in src/shared/ipc.ts): a DropdownChip in project A and one in project B,
+// both with no model selected yet (currentModelId === ''), now legitimately
+// want DIFFERENT lists if either project has its own overlay. currentEffort
+// joins for the SAME reason at the effort-ladder level, not the model-list
+// level: selectable.ts's claudeEntries() resolves EVERY returned model's
+// effortLevels against curatedEffortOptions with currentEffort as the
+// hidden-but-selected value, so two requests differing only in
+// currentEffort can legitimately return different effortLevels content for
+// the SAME model id — collapsing them onto one cache entry would leak one
+// workspace's hidden-but-selected effort reinstatement into a sibling
+// workspace's picker. Any field omitted from all four positions collapses
+// to the SAME '' segment as before B4, so a caller passing none of them
+// still gets the identical single shared cache entry pre-B4 callers keyed
+// on `currentModelId ?? ''` alone.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useSyncExternalStore } from 'react'
@@ -126,7 +146,28 @@ export interface Entry {
   loading: boolean
 }
 
-const cacheKey = (currentModelId?: string): string => currentModelId ?? ''
+/** Everything the server-side resolution depends on for one cache entry —
+ *  see this file's own header comment for why all four joined the cache
+ *  key together in B4 (support-multi-harness), not just currentModelId. */
+export interface SelectableModelsParams {
+  currentModelId?: string
+  harnessId?: string
+  projectId?: string
+  currentEffort?: string
+}
+
+/** Joins all four params into one cache-key string, empty segment for each
+ *  absent part. Exported so scripts/verify-model-picker.ts can assert the
+ *  no-collision property directly rather than only through the store's
+ *  public surface. */
+export function cacheKey(params: SelectableModelsParams): string {
+  return [
+    params.harnessId ?? '',
+    params.projectId ?? '',
+    params.currentModelId ?? '',
+    params.currentEffort ?? ''
+  ].join('|')
+}
 
 const store = new Map<string, Entry>()
 const listeners = new Map<string, Set<() => void>>()
@@ -138,6 +179,14 @@ const inFlight = new Map<string, Promise<void>>()
 // flight — see shouldStartFetchNow/shouldRefetchAfterSettle below for why
 // this exists (the cold-boot picker-staleness bug's renderer-side half).
 const pendingRefetch = new Set<string>()
+// The full params bundle that produced each currently-known cache key —
+// needed because, unlike before B4, a key can no longer be reverse-derived
+// from `key === '' ? undefined : key` (that trick only worked when the key
+// WAS currentModelId verbatim). invalidateAll() below needs the original
+// params to re-fetch a key it doesn't otherwise have components for. Kept
+// in lockstep with `store`/`listeners` — every code path that creates a new
+// key (fetchKey, getEntry, disabledSnapshot) records its params here first.
+const paramsByKey = new Map<string, SelectableModelsParams>()
 
 // ---------------------------------------------------------------------------
 // shouldStartFetchNow / shouldRefetchAfterSettle — the coalescing decision
@@ -222,8 +271,9 @@ export function resolveDisabledSnapshot(
   return entry
 }
 
-function disabledSnapshot(key: string, currentModelId?: string): Entry {
-  return resolveDisabledSnapshot(store, disabledSnapshots, key, currentModelId)
+function disabledSnapshot(key: string, params: SelectableModelsParams): Entry {
+  paramsByKey.set(key, params)
+  return resolveDisabledSnapshot(store, disabledSnapshots, key, params.currentModelId)
 }
 
 function notify(key: string): void {
@@ -243,10 +293,11 @@ function subscribe(key: string, fn: () => void): () => void {
   }
 }
 
-function getEntry(key: string, currentModelId?: string): Entry {
+function getEntry(key: string, params: SelectableModelsParams): Entry {
+  paramsByKey.set(key, params)
   const existing = store.get(key)
   if (existing) return existing
-  const seeded: Entry = { models: claudeFallbackModels(currentModelId), loading: true }
+  const seeded: Entry = { models: claudeFallbackModels(params.currentModelId), loading: true }
   store.set(key, seeded)
   return seeded
 }
@@ -297,7 +348,8 @@ function setEntry(key: string, entry: Entry): void {
   notify(key)
 }
 
-function fetchKey(key: string, currentModelId?: string): void {
+function fetchKey(key: string, params: SelectableModelsParams): void {
+  paramsByKey.set(key, params)
   if (!shouldStartFetchNow(inFlight.has(key))) {
     // A fetch for this key is already in flight and started against
     // whatever state existed at THAT moment — this newer request knows
@@ -307,8 +359,9 @@ function fetchKey(key: string, currentModelId?: string): void {
     pendingRefetch.add(key)
     return
   }
+  const { currentModelId, harnessId, projectId, currentEffort } = params
   const request = window.api.models
-    .listSelectable(currentModelId)
+    .listSelectable(currentModelId, harnessId, projectId, currentEffort)
     .then((list) => {
       setEntry(key, { models: list, loading: false })
     })
@@ -325,24 +378,32 @@ function fetchKey(key: string, currentModelId?: string): void {
       // no further requests can't loop.
       const wasPending = pendingRefetch.delete(key)
       if (shouldRefetchAfterSettle(wasPending)) {
-        fetchKey(key, currentModelId)
+        fetchKey(key, params)
       }
     })
   inFlight.set(key, request)
 }
 
 /**
- * Imperative refetch for `currentModelId`'s cache entry — defense-in-depth
+ * Imperative refetch for one params bundle's cache entry — defense-in-depth
  * for the cold-boot/background-refresh picker-staleness bug: even if a
  * routingProxy:onSnapshot push is ever missed for some reason, the moment a
  * caller actually needs fresh data (DropdownChip's open handler) it can ask
  * directly instead of relying purely on push timing. Reuses fetchKey
  * verbatim — same coalescing, not a parallel fetch path — so a concurrent
  * push-triggered invalidation and this call for the same key still produce
- * at most one round-trip at a time.
+ * at most one round-trip at a time. Overload matches useSelectableModels'
+ * existing `(currentModelId?: string)` call shape for backward compatibility
+ * (harnessId/projectId/currentEffort are extra, all optional).
  */
-export function refetchSelectableModels(currentModelId?: string): void {
-  fetchKey(cacheKey(currentModelId), currentModelId)
+export function refetchSelectableModels(
+  currentModelId?: string,
+  harnessId?: string,
+  projectId?: string,
+  currentEffort?: string
+): void {
+  const params: SelectableModelsParams = { currentModelId, harnessId, projectId, currentEffort }
+  fetchKey(cacheKey(params), params)
 }
 
 /** Invalidate every cached entry and refetch the ones with active
@@ -352,13 +413,27 @@ export function refetchSelectableModels(currentModelId?: string): void {
  *  not be able to outlive a proxy/health change any more than a real entry
  *  can — the next read re-derives it (and, per disabledSnapshot()'s own
  *  live-data check, immediately prefers a fresh `store` entry once one
- *  exists for that key). */
+ *  exists for that key). Re-fetches using paramsByKey rather than
+ *  re-deriving params from the key string — the pre-B4 `key === '' ?
+ *  undefined : key` trick only worked when the key WAS currentModelId
+ *  verbatim; a joined composite key cannot be reverse-parsed the same way. */
 function invalidateAll(): void {
   for (const key of store.keys()) {
     if ((listeners.get(key)?.size ?? 0) > 0) {
-      fetchKey(key, key === '' ? undefined : key)
+      // A key can only reach `store` via fetchKey/getEntry/setEntry, all of
+      // which record it in paramsByKey first — a miss here would mean a
+      // code path created a store entry without going through one of those,
+      // which is itself the bug to fix, not something to paper over with a
+      // silent `?? {}` that would refetch with the WRONG (empty) params.
+      const params = paramsByKey.get(key)
+      if (!params) {
+        console.error('[selectableModelsStore] invalidateAll: no params recorded for key', key)
+        continue
+      }
+      fetchKey(key, params)
     } else {
       store.delete(key)
+      paramsByKey.delete(key)
     }
   }
   disabledSnapshots.clear()
@@ -387,9 +462,13 @@ export interface UseSelectableModelsResult {
  */
 export function useSelectableModelsStore(
   currentModelId: string | undefined,
-  enabled: boolean
+  enabled: boolean,
+  harnessId?: string,
+  projectId?: string,
+  currentEffort?: string
 ): UseSelectableModelsResult {
-  const key = cacheKey(currentModelId)
+  const params: SelectableModelsParams = { currentModelId, harnessId, projectId, currentEffort }
+  const key = cacheKey(params)
 
   // Stable across renders (only changes identity when key/enabled actually
   // change) so useSyncExternalStore doesn't tear down + resubscribe on every
@@ -399,15 +478,17 @@ export function useSelectableModelsStore(
     (fn: () => void): (() => void) => {
       if (!enabled) return () => {}
       ensurePushSubscribed()
-      fetchKey(key, currentModelId)
+      fetchKey(key, params)
       return subscribe(key, fn)
     },
-    [enabled, key, currentModelId]
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `params` is a fresh object every render; `key` already encodes its full content, so re-deriving it from `key` deps alone (not the object) keeps this callback's identity stable across renders where nothing actually changed
+    [enabled, key]
   )
   const getSnapshot = useCallback((): Entry => {
-    if (!enabled) return disabledSnapshot(key, currentModelId)
-    return getEntry(key, currentModelId)
-  }, [enabled, key, currentModelId])
+    if (!enabled) return disabledSnapshot(key, params)
+    return getEntry(key, params)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- same rationale as subscribeFn above
+  }, [enabled, key])
 
   const entry = useSyncExternalStore(subscribeFn, getSnapshot, getSnapshot)
   return { models: entry.models, loading: entry.loading }

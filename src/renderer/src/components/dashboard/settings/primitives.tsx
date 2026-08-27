@@ -1,7 +1,7 @@
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { Overlay } from '@/components/ui/Overlay'
-import { X, Plus, CaretDown, Check, Trash } from '@phosphor-icons/react'
+import { X, Plus, CaretDown, Check, Trash, Eye, EyeSlash } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS, CLAUDE_MODEL_VERSIONED_START_INDEX } from '@shared/types'
 import { parseFlagEntry, mergeFlagScopes, isFlagParseError, flagName } from '@shared/cliFlags'
 import { isValidEnvVarKey } from '@shared/envVars'
@@ -1302,6 +1302,63 @@ export function ModelPicker({ value, onChange }: ModelPickerProps): React.JSX.El
           className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus:border-accent/50 transition-colors duration-150 font-mono"
         />
       )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// SecretInput — masked-by-default text input with an eye-icon reveal toggle
+// (R7/KTD4). Storage stays exactly as-is (plaintext, same as every other
+// HarnessSettingRow value) — this component only changes DISPLAY, never
+// introduces encryption or a different persistence path. Used by the harness
+// Env editor for rows whose key looks secret-bearing (see
+// harnessSettingsLogic.ts's isSecretLikeKey), the same way ClaudeAuthSection's
+// ApiKeyInput masks by default but WITHOUT a reveal toggle — this component is
+// the reveal-capable sibling that gap was missing, not a modification of that
+// file.
+// ---------------------------------------------------------------------------
+
+export interface SecretInputProps {
+  value: string
+  onChange: (v: string) => void
+  onBlur?: () => void
+  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  placeholder?: string
+  ariaLabel?: string
+  className?: string
+}
+
+export function SecretInput({
+  value,
+  onChange,
+  onBlur,
+  onKeyDown,
+  placeholder,
+  ariaLabel,
+  className
+}: SecretInputProps): React.JSX.Element {
+  const [revealed, setRevealed] = useState(false)
+  return (
+    <div className={['relative flex-1 min-w-0', className ?? ''].join(' ')}>
+      <input
+        type={revealed ? 'text' : 'password'}
+        aria-label={ariaLabel}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
+        onKeyDown={onKeyDown}
+        placeholder={placeholder}
+        className="w-full pl-2.5 pr-8 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text"
+      />
+      <button
+        type="button"
+        onClick={() => setRevealed((r) => !r)}
+        aria-label={revealed ? 'Hide value' : 'Reveal value'}
+        aria-pressed={revealed}
+        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary transition-colors flex items-center justify-center w-5 h-5"
+      >
+        {revealed ? <EyeSlash size={13} /> : <Eye size={13} />}
+      </button>
     </div>
   )
 }

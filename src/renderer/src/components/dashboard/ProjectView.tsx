@@ -1,10 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import type React from 'react'
-import type { ClaudeProjectSettings, ProjectRecord, WorkspaceRecord } from '@shared/types'
+import type { HarnessSummary, ProjectRecord, WorkspaceRecord } from '@shared/types'
 import { ProjectHeader } from './project/ProjectHeader'
 import { WorkspacesTab } from './project/WorkspacesTab'
 import { SettingsDrawer } from './project/SettingsDrawer'
 import { nextWorkspaceName } from './dashboard.helpers'
+import {
+  harnessesPresentInProject,
+  countProjectHarnessOverrides,
+  projectOverrideChipInfo
+} from '@shared/harness/projectDrawerSettings'
+import { CLAUDE_PERMISSION_MODE_ARG_KEY } from './project/claudePermissionModeArgKey'
 
 // ---------------------------------------------------------------------------
 // ProjectView — header + project body (workspaces, sessions, commits)
@@ -20,7 +26,7 @@ interface ProjectViewProps {
   workspaces: WorkspaceRecord[] | null
   onRequestRemove: () => void
   onSelectWorkspace: (workspaceId: string) => void
-  onAddWorkspace: (projectId: string, modelId?: string) => void | Promise<void>
+  onAddWorkspace: (projectId: string, modelId?: string, harnessId?: string) => void | Promise<void>
   onRenameWorkspace: (
     workspaceId: string,
     projectId: string,
@@ -47,22 +53,67 @@ export function ProjectView({
   fetchGithubAvatars = true
 }: ProjectViewProps): React.JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [projectSettings, setProjectSettings] = useState<ClaudeProjectSettings | null>(null)
+  // H1 (support-multi-harness) — the header override chip now counts
+  // harness_settings (project scope) rather than claude_project_settings:
+  // that is the storage the live launch emitter actually reads, and
+  // claude_project_settings' model/permissionMode/effort keys no longer
+  // reflect what the drawer edits (see SettingsDrawer.tsx's own header).
+  // `harnessOverrideCounts` maps harness id -> its own count, one fetch per
+  // harness actually present in the project (harnessesInProject below) —
+  // NOT one fetch per registered harness, so a project with zero workspaces
+  // on a harness shows no chip contribution from settings nobody's
+  // workspace would ever read.
+  const [harnesses, setHarnesses] = useState<HarnessSummary[]>([])
+  const [harnessOverrideCounts, setHarnessOverrideCounts] = useState<Record<string, number>>({})
 
-  // Project-scope override count (for header chip).
+  const harnessesInProject = useMemo(() => harnessesPresentInProject(workspaces), [workspaces])
+
   useEffect(() => {
     let cancelled = false
-    window.api.claudeProjectSettings
-      .get(project.id)
-      .then((s) => {
-        if (!cancelled) setProjectSettings(s)
+    window.api.harness
+      .list()
+      .then((list) => {
+        if (!cancelled) setHarnesses(list)
       })
-      .catch((err) => console.error('[project-view] failed to load project settings', err))
+      .catch((err) => console.error('[project-view] failed to load harnesses', err))
     return () => {
       cancelled = true
     }
-    // Re-pull when the drawer closes so the header chip reflects fresh edits.
-  }, [project.id, settingsOpen])
+  }, [])
+
+  // Re-pull when the drawer closes so the header chip reflects fresh edits,
+  // and whenever project membership (which harnesses are present) changes.
+  // The empty-membership case is routed through the SAME async-callback
+  // shape as the fetch branch (a resolved-microtask setState, not a direct
+  // call in the effect body) — mirrors HarnessSection.tsx's own project-scope
+  // reset for the identical react-hooks/set-state-in-effect reason.
+  useEffect(() => {
+    let cancelled = false
+    const fetchOrReset =
+      harnessesInProject.length === 0
+        ? Promise.resolve({})
+        : Promise.all(
+            harnessesInProject.map((harnessId) =>
+              window.api.harness
+                .getSettings(harnessId, 'project', project.id)
+                .then(
+                  (s) =>
+                    [
+                      harnessId,
+                      countProjectHarnessOverrides(s, CLAUDE_PERMISSION_MODE_ARG_KEY)
+                    ] as const
+                )
+            )
+          ).then((entries) => Object.fromEntries(entries))
+    fetchOrReset
+      .then((counts) => {
+        if (!cancelled) setHarnessOverrideCounts(counts)
+      })
+      .catch((err) => console.error('[project-view] failed to load harness settings', err))
+    return () => {
+      cancelled = true
+    }
+  }, [project.id, settingsOpen, harnessesInProject])
 
   // Background GitHub refresh on mount. Two cadences based on prior result:
   //  - Never checked → always refresh
@@ -108,7 +159,31 @@ export function ProjectView({
     return max
   }, [workspaces])
 
-  const overrideCount = projectSettings ? Object.keys(projectSettings.overrides).length : 0
+  // Sum of every harness's OWN override count. With only Claude registered,
+  // harnessesInProject is at most ['claude'], so this is always exactly
+  // countProjectHarnessOverrides for Claude — unchanged in effect from the
+  // pre-H1 count, just sourced from the storage that is actually live.
+  const overrideCount = Object.values(harnessOverrideCounts).reduce((sum, n) => sum + n, 0)
+
+  // Honesty check (H1) — does this chip's count apply to every workspace in
+  // the project, or only to one harness among several present? See
+  // projectOverrideChipInfo's own doc comment. Evaluated per harness that
+  // HAS overrides (not just the first in the project) — if more than one
+  // harness contributes, there is no single harness name that would be
+  // accurate, so the chip falls back to no qualifier rather than naming an
+  // arbitrary one; that case cannot arise with only Claude registered.
+  const harnessesWithOverrides = harnessesInProject.filter(
+    (id) => (harnessOverrideCounts[id] ?? 0) > 0
+  )
+  const soleOverrideHarnessId =
+    harnessesWithOverrides.length === 1 ? harnessesWithOverrides[0] : undefined
+  const chipInfo = soleOverrideHarnessId
+    ? projectOverrideChipInfo(soleOverrideHarnessId, overrideCount, harnessesInProject)
+    : null
+  const overrideHarnessLabel =
+    chipInfo && !chipInfo.appliesToEveryWorkspace
+      ? (harnesses.find((h) => h.id === soleOverrideHarnessId)?.label ?? soleOverrideHarnessId)
+      : null
 
   return (
     <div className="flex flex-col gap-6">
@@ -117,8 +192,9 @@ export function ProjectView({
         workspaceCount={workspaceCount}
         lastActivityAt={lastActivityAt}
         overrideCount={overrideCount}
+        overrideHarnessLabel={overrideHarnessLabel}
         workspaceDefaultName={nextWorkspaceName(activeWorkspaces)}
-        onNewWorkspace={(modelId) => onAddWorkspace(project.id, modelId)}
+        onNewWorkspace={(modelId, harnessId) => onAddWorkspace(project.id, modelId, harnessId)}
         onWorktreeCreated={(ws) => onSelectWorkspace(ws.id)}
         onOpenSettings={() => setSettingsOpen(true)}
         onRequestRemove={onRequestRemove}
@@ -141,6 +217,7 @@ export function ProjectView({
         projectName={project.name}
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        workspaces={workspaces}
       />
     </div>
   )

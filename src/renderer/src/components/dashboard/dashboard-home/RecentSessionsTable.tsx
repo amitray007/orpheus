@@ -36,14 +36,14 @@ export function RecentSessionsTable({
 
   if (loading) {
     return (
-      <DashboardCard title="Claude Sessions" meta={cardMeta} className="h-full min-h-72">
+      <DashboardCard title="Recent Sessions" meta={cardMeta} className="h-full min-h-72">
         <TableRowsSkeleton rows={5} cols={1} />
       </DashboardCard>
     )
   }
 
   return (
-    <DashboardCard title="Claude Sessions" meta={cardMeta} className="h-full min-h-72">
+    <DashboardCard title="Recent Sessions" meta={cardMeta} className="h-full min-h-72">
       {sessions.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
           <ClockCounterClockwise
@@ -54,7 +54,7 @@ export function RecentSessionsTable({
           />
           <div className="text-[12px] font-medium text-text-primary">No recent sessions</div>
           <div className="text-[11px] text-text-muted">
-            Recent top-level Claude sessions will appear here.
+            Recent top-level sessions will appear here.
           </div>
         </div>
       ) : (

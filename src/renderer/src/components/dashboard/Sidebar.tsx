@@ -22,11 +22,21 @@ import type { ContextMenuItem } from '../ContextMenu'
 import { ActivityIndicator } from './ActivityIndicator'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import { SidebarBoundsContext, useSidebarBounds } from './SidebarBoundsContext'
-import { useWorkspaceActivity, useActiveIdsKey, getActivitySnapshot } from '@/lib/activityStore'
+import {
+  useWorkspaceActivity,
+  useActiveIdsKey,
+  getActivityDetailWithFallback
+} from '@/lib/activityStore'
 import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
+import { useHarnessForWorkspace } from '@/lib/harnessStore'
+import {
+  shouldUseTranscriptDerivedTitle,
+  shouldUseTranscriptDerivedFreshness,
+  shouldClaimLiveActivity
+} from '@shared/harness/capabilityGating'
 import { useUiState } from '@/lib/uiStateStore'
 import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { useInlineRename } from '@/lib/useInlineRename'
@@ -240,8 +250,17 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   onClose,
   onTogglePin
 }: WorkspaceRowProps): React.JSX.Element {
-  // Subscribe to this workspace's key only — no re-render on other workspaces
-  const activity = useWorkspaceActivity(workspace.id)
+  // This workspace's harness descriptor — gates every transcript-derived /
+  // structured-status readout below on real capabilities instead of
+  // assuming Claude (C4, support-multi-harness). See
+  // src/shared/harness/capabilityGating.ts for the pure decisions.
+  const harness = useHarnessForWorkspace(workspace.harnessId)
+  // Subscribe to this workspace's key only — no re-render on other workspaces.
+  // Falls back to this workspace's own persisted status while the live store
+  // has no entry yet (e.g. right after an app restart, before the first
+  // push for this workspace) — see useWorkspaceActivity's fallback param.
+  const rawActivity = useWorkspaceActivity(workspace.id, workspace.status)
+  const activity = shouldClaimLiveActivity(harness.capabilities) ? rawActivity : undefined
   const isBusy = activity === 'working'
   const isClosed = workspace.closedAt !== null
   const liveActivityAt = useWorkspaceActivityTime(workspace.id)
@@ -253,9 +272,10 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const sidebarBoundsRef = useSidebarBounds()
 
-  const sessionTitle = workspace.claudeSessionId
-    ? (sessionTitleBySessionId.get(workspace.claudeSessionId) ?? null)
-    : null
+  const sessionTitle =
+    workspace.claudeSessionId && shouldUseTranscriptDerivedTitle(harness.capabilities)
+      ? (sessionTitleBySessionId.get(workspace.claudeSessionId) ?? null)
+      : null
 
   const dn = resolveWorkspaceName({ workspace, terminalTitle, sessionTitle })
   const displayName = dn.text
@@ -298,9 +318,10 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     if (!willCommit) onCancelRename()
   }
 
-  const mtimeActivityAt = workspace.claudeSessionId
-    ? (sessionMtimeBySessionId.get(workspace.claudeSessionId) ?? null)
-    : null
+  const mtimeActivityAt =
+    workspace.claudeSessionId && shouldUseTranscriptDerivedFreshness(harness.capabilities)
+      ? (sessionMtimeBySessionId.get(workspace.claudeSessionId) ?? null)
+      : null
   const { relativeTime, isVeryOld } = computeWorkspaceFreshness(
     liveActivityAt,
     mtimeActivityAt,
@@ -503,7 +524,11 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
             visually colliding with the archive button's hover fill. */}
         <span className="absolute right-0.5 top-1/2 -translate-y-1/2 flex items-center gap-1 h-8">
           <span className="flex items-center justify-center w-[11px] h-8 flex-shrink-0 pointer-events-none">
-            <WorkspaceProviderIcon workspaceId={workspace.id} size={11} />
+            <WorkspaceProviderIcon
+              workspaceId={workspace.id}
+              size={11}
+              harnessIconFallback={harness.icon}
+            />
           </span>
           {/* Time/archive slot — ALWAYS reserves w-8 (32px), even when
               nothing renders inside it (renaming, or no relativeTime yet,
@@ -577,9 +602,22 @@ const PinnedRow = memo(function PinnedRow({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const sidebarBoundsRef = useSidebarBounds()
 
+  // This workspace's harness descriptor — gates the live-activity claim
+  // below on real capabilities instead of assuming Claude, matching
+  // WorkspaceSubRow above. PRE-EXISTING GAP FIXED HERE (support-multi-
+  // harness status-indicator unit): this row previously called
+  // useWorkspaceActivity raw, with no shouldClaimLiveActivity gate at all —
+  // harmless while every non-Claude harness's activityMap entry was empty,
+  // but wrong in principle, and no longer harmless now that Codex genuinely
+  // populates real status via statusState.ts/orpheusNotify.
+  const harness = useHarnessForWorkspace(workspace.harnessId)
+
   // Subscribe to this workspace's data from per-key stores — re-renders only
   // when THIS pinned row's key changes, not when any other workspace changes.
-  const activity = useWorkspaceActivity(workspace.id)
+  // Falls back to this workspace's own persisted status while the live store
+  // has no entry yet — see useWorkspaceActivity's fallback param.
+  const rawActivity = useWorkspaceActivity(workspace.id, workspace.status)
+  const activity = shouldClaimLiveActivity(harness.capabilities) ? rawActivity : undefined
   const terminalTitle = useWorkspaceTitle(workspace.id)
 
   // Session title is per-project; we don't pull it for cross-project pinned
@@ -699,7 +737,9 @@ interface ProjectRowProps {
   onFinishRename: (newName: string) => void
   onCancelRename: () => void
   onRequestRemove: () => void
-  onAddWorkspace: (modelId?: string) => void
+  // harnessId (support-multi-harness) — the new-workspace popover's harness
+  // row passes which harness to launch; it MUST be forwarded, not dropped.
+  onAddWorkspace: (modelId?: string, harnessId?: string) => void
   renamingWorkspaceId: string | null
   onBeginRenameWorkspace: (workspaceId: string) => void
   onFinishRenameWorkspace: (workspaceId: string, newName: string) => void
@@ -839,11 +879,15 @@ const ProjectRow = memo(function ProjectRow({
   // leaves the count unchanged), so the partition below is recomputed from a
   // fresh snapshot instead of going stale on same-count membership changes.
   useActiveIdsKey(workspaceIds)
-  const snap = getActivitySnapshot()
   const actives: WorkspaceRecord[] = []
   const idles: WorkspaceRecord[] = []
   for (const ws of workspaces) {
-    const detail = snap.get(ws.id)
+    // Falls back to this workspace's own persisted status while the live
+    // store has no entry yet (e.g. right after an app restart, before the
+    // first push for this workspace) — see getActivityDetailWithFallback's
+    // doc comment. Not inside a per-workspace hook call (plain for-loop
+    // over an array), so use the non-hook snapshot-based twin.
+    const detail = getActivityDetailWithFallback(ws.id, ws.status)
     if (detail === 'working' || detail === 'attention' || detail === 'ready') {
       actives.push(ws)
     } else {
@@ -988,7 +1032,7 @@ const ProjectRow = memo(function ProjectRow({
               <NewWorkspaceMenu
                 projectId={project.id}
                 defaultName={nextWorkspaceName(workspaces)}
-                onCreateLocal={(modelId) => onAddWorkspace(modelId)}
+                onCreateLocal={(modelId, harnessId) => onAddWorkspace(modelId, harnessId)}
                 onCreated={(ws) => onSelectWorkspace(ws.id)}
                 className="w-0 shrink-0 overflow-hidden opacity-0 pointer-events-none group-hover:w-8 group-hover:mr-0.5 group-hover:overflow-visible group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:w-8 group-focus-within:mr-0.5 group-focus-within:overflow-visible group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
               >
@@ -1062,7 +1106,7 @@ const ProjectRow = memo(function ProjectRow({
         <NewWorkspaceMenu
           projectId={project.id}
           defaultName={nextWorkspaceName(workspaces)}
-          onCreateLocal={(modelId) => onAddWorkspace(modelId)}
+          onCreateLocal={(modelId, harnessId) => onAddWorkspace(modelId, harnessId)}
           onCreated={(ws) => onSelectWorkspace(ws.id)}
           className="w-full mt-0.5"
           // This project's "+" trigger above is ALSO always mounted, so both
@@ -1239,7 +1283,7 @@ interface ProjectsSectionProps {
   onFinishRename: (id: string, newName: string) => void
   onCancelRename: () => void
   onRequestRemoveProject: (project: ProjectRecord) => void
-  onAddWorkspace: (projectId: string, modelId?: string) => void | Promise<void>
+  onAddWorkspace: (projectId: string, modelId?: string, harnessId?: string) => void | Promise<void>
   renamingWorkspaceId: string | null
   onBeginRenameWorkspace: (id: string) => void
   onFinishRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void
@@ -1414,7 +1458,9 @@ function ProjectsSection({
                       onFinishRename={(name) => onFinishRename(p.id, name)}
                       onCancelRename={onCancelRename}
                       onRequestRemove={() => onRequestRemoveProject(p)}
-                      onAddWorkspace={(modelId) => onAddWorkspace(p.id, modelId)}
+                      onAddWorkspace={(modelId, harnessId) =>
+                        onAddWorkspace(p.id, modelId, harnessId)
+                      }
                       renamingWorkspaceId={renamingWorkspaceId}
                       onBeginRenameWorkspace={onBeginRenameWorkspace}
                       onFinishRenameWorkspace={(wsId, name) =>

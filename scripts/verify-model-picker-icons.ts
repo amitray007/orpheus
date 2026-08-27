@@ -17,25 +17,10 @@
 //      -> providerId) ?? null) — verified here as a standalone lookup so the
 //      "unknown model id -> no provider, never throws" contract is asserted
 //      without needing React/useSyncExternalStore.
-//   3. buildModelDropdownGroups (the footer Model chip's provider -> model
-//      FLYOUT redesign's grouping helper, ChipGroupedDropdown.tsx's data
-//      source) — groups EVERY provider the server returned (unlike
-//      creationProviderMenu.ts's groupModelsForCreation, which curates a
-//      fixed subset for the creation-time menu only), in first-seen/server
-//      order, with labels taken verbatim from providerLabel rather than a
-//      second hardcoded short-label table. This module takes providerId/
-//      providerLabel as opaque strings off the server-provided
-//      SelectableModel — it does not know or care about registry.ts's
-//      PROVIDERS list, so the synthetic 'acme' provider id used below is
-//      just a stand-in for "some routed provider", not a claim that ollama
-//      (removed from PROVIDERS in unit 10-creation) is still supported.
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert'
-import {
-  buildModelDropdownItems,
-  buildModelDropdownGroups
-} from '../src/renderer/src/lib/modelPickerOptions.ts'
+import { buildModelDropdownItems } from '../src/renderer/src/lib/modelPickerOptions.ts'
 import type { SelectableModel } from '../src/shared/types.ts'
 
 function model(partial: Partial<SelectableModel> & { id: string }): SelectableModel {
@@ -149,67 +134,53 @@ function resolveProviderId(modelId: string | null, models: SelectableModel[]): s
   )
 }
 
-// ---------------------------------------------------------------------------
-// 4. buildModelDropdownGroups — groups EVERY provider the server returns
-//    (including one this module has never heard of, e.g. a future provider
-//    or a still-live routed model from a provider Settings no longer lists),
-//    first-seen order, labels from providerLabel verbatim. Uses a synthetic
-//    'acme' provider id to prove this grouping is generic over whatever
-//    providerId/providerLabel the server sends — not a hardcoded id list.
-// ---------------------------------------------------------------------------
-
-{
-  const models: SelectableModel[] = [
-    model({ id: 'claude-sonnet-4-5', providerId: 'claude', providerLabel: 'Claude' }),
-    model({
-      id: 'gpt-5-codex',
-      providerId: 'codex',
-      providerLabel: 'Codex (OpenAI)',
-      isClaude: false
-    }),
-    model({
-      id: 'gpt-5-codex-mini',
-      providerId: 'codex',
-      providerLabel: 'Codex (OpenAI)',
-      isClaude: false
-    }),
-    model({
-      id: 'grok-4.5',
-      providerId: 'xai',
-      providerLabel: 'Grok (xAI)',
-      isClaude: false
-    }),
-    model({
-      id: 'acme-model-1',
-      providerId: 'acme',
-      providerLabel: 'Acme',
-      isClaude: false
-    })
-  ]
-
-  const groups = buildModelDropdownGroups(models)
-  assert.deepEqual(
-    groups.map((g) => g.providerId),
-    ['claude', 'codex', 'xai', 'acme'],
-    'every provider must be grouped, in first-seen/server order — this module does not filter by a known-id list'
-  )
-  assert.equal(groups[1].models.length, 2, 'codex group must contain both its models')
-  assert.equal(
-    groups[1].label,
-    'Codex (OpenAI)',
-    'group label comes verbatim from providerLabel, never a second hardcoded short-label table'
-  )
-  assert.equal(groups[1].models[0].value, 'gpt-5-codex')
-  assert.equal(groups[1].models[0].providerId, 'codex', 'group rows still carry providerId')
-  console.log(
-    '✓ buildModelDropdownGroups groups EVERY provider the server returns in first-seen order, with labels taken verbatim from providerLabel'
-  )
-}
-
-{
-  // Empty input never throws and yields an empty group list.
-  assert.deepEqual(buildModelDropdownGroups([]), [])
-  console.log('✓ buildModelDropdownGroups on an empty model list returns [] without throwing')
-}
-
 console.log('\nAll model-picker-icon assertions passed.')
+
+// ---------------------------------------------------------------------------
+// HARNESS ICON ID != HARNESS ID (support-multi-harness)
+//
+// A harness-sourced model carries its HARNESS id as providerId — Codex's is
+// 'codex-cli' — but ProviderIcon only knows 'claude' | 'codex' | 'xai' |
+// 'antigravity'. Passing providerId straight to the icon therefore rendered
+// NOTHING for every Codex model in the picker, while Claude worked fine.
+// SelectableModel.providerIconId carries the descriptor's own `icon` so the
+// icon and the harness id can differ: rows must render the icon id while
+// anything keyed by provider (e.g. useWorkspaceProviderIcon's lookup) stays
+// on the real harness id.
+// ---------------------------------------------------------------------------
+{
+  const harnessModel = {
+    id: 'gpt-5.6-terra',
+    label: 'GPT-5.6-Terra',
+    providerId: 'codex-cli',
+    providerIconId: 'codex',
+    providerLabel: 'Codex',
+    isClaude: false,
+    available: true,
+    contextWindow: null,
+    effortLevels: null,
+    provisional: false
+  }
+
+  const [row] = buildModelDropdownItems([harnessModel as never])
+  assert.equal(
+    row?.providerId,
+    'codex',
+    "a picker ROW must receive the ICON id ('codex'), not the harness id ('codex-cli') which ProviderIcon cannot render"
+  )
+
+  // Absent providerIconId must behave exactly as before — Claude and routed
+  // entries already carry a valid icon id in providerId.
+  const claudeModel = { ...harnessModel, id: 'opus', providerId: 'claude', isClaude: true }
+  delete (claudeModel as { providerIconId?: string }).providerIconId
+  const [claudeRow] = buildModelDropdownItems([claudeModel as never])
+  assert.equal(
+    claudeRow?.providerId,
+    'claude',
+    'without providerIconId the row must fall back to providerId — Claude is unchanged'
+  )
+
+  console.log(
+    '✓ harness-sourced models render their descriptor icon in picker rows, while provider lookup stays keyed on the harness id'
+  )
+}

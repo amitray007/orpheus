@@ -28,7 +28,11 @@ export const DASHBOARD_CACHE_KEYS = {
   githubAccount: 'github_account',
   claudeUsage: 'claude_usage',
   providerUsage: 'provider_usage',
-  claudeActivity: 'claude_activity'
+  claudeActivity: 'claude_activity',
+  // models.dev's DERIVED catalog (see models/sources/modelsDev.ts). Same
+  // rationale as every key above — paint/resolve from the last good fetch
+  // immediately on a cold launch instead of waiting on a 3.8 MB download.
+  modelsDevCatalog: 'models_dev_catalog'
 } as const
 
 export type DashboardCacheKey = (typeof DASHBOARD_CACHE_KEYS)[keyof typeof DASHBOARD_CACHE_KEYS]

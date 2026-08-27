@@ -139,9 +139,27 @@ function baseInput(
 //    and for buildSelectableModels' Claude entries staying consistent with
 //    CLAUDE_BUILTIN_EFFORT_LEVELS (no entry silently falls through to null
 //    unless the table itself says so).
+//
+// RE-LAND(routing): the routed-model half of this section (a synthetic
+// 'gpt-5-mini-image' cliProxyModels entry, expected back from
+// buildSelectableModels with effortLevels: null) is broken by construction
+// since commit d14115fb (Phase 0, multi-harness migration) —
+// buildSelectableModels now returns claudeEntries() only
+// (src/main/models/selectable.ts's PHASE0_ROUTING_SEVERED guard), so no
+// routed id is ever present to .find(). The Claude-only half (every
+// CLAUDE_BUILTIN_EFFORT_LEVELS entry has a real, non-empty array) still
+// covers live behavior and stays live below, unskipped.
 // ---------------------------------------------------------------------------
 
-{
+const SKIP_SECTION_2_ROUTED_NULL_LEVELS = true
+
+if (SKIP_SECTION_2_ROUTED_NULL_LEVELS) {
+  console.log(
+    '⊘ SKIPPED (RE-LAND(routing)): §2 routed-model null-effortLevels assertion — ' +
+      'buildSelectableModels no longer returns routed entries (Phase 0 cut, commit d14115fb); ' +
+      're-enable when routing returns harness-aware in Phase 6'
+  )
+} else {
   const withNullLevels = buildSelectableModels(
     baseInput({
       routingProxy: {
@@ -160,10 +178,14 @@ function baseInput(
     null,
     'a model with no reported thinking.levels must yield effortLevels: null'
   )
+  console.log('✓ a routed model with no reported thinking.levels yields effortLevels: null')
+}
 
+{
   // Every Claude entry must have a real (non-fabricated, table-sourced) array
   // — none of them are null today, and none should silently become null by
-  // omission from the table.
+  // omission from the table. Unaffected by the routing cut: reads
+  // CLAUDE_BUILTIN_EFFORT_LEVELS directly, no buildSelectableModels call.
   for (const option of CLAUDE_MODEL_OPTIONS) {
     const levels = CLAUDE_BUILTIN_EFFORT_LEVELS[option.value]
     assert.ok(
@@ -171,9 +193,7 @@ function baseInput(
       `CLAUDE_BUILTIN_EFFORT_LEVELS must have a real, non-empty array for '${option.value}'`
     )
   }
-  console.log(
-    '✓ a model with effortLevels: null yields no effort options; every Claude entry has real, non-fabricated levels'
-  )
+  console.log('✓ every Claude entry has real, non-fabricated effort levels')
 }
 
 // ---------------------------------------------------------------------------
@@ -183,9 +203,24 @@ function baseInput(
 //    - claude-sonnet-4-6 (the CLAUDE_MODEL_OPTIONS entry matching the
 //      "opus-4.6/sonnet-4.6 have no xhigh" shape from the spec) -> no 'xhigh'
 //    - gemini-3.1-flash-image -> exactly [minimal, high] (the documented HOLE)
+//
+// RE-LAND(routing): the grok-4.5/gpt-5.5/gemini-3.1-flash-image lookups
+// below all go through buildSelectableModels(cliProxyModels: [...]) and are
+// broken by construction since commit d14115fb — see §2's comment above for
+// the same root cause. The claude-sonnet-4-6 check reads
+// CLAUDE_BUILTIN_EFFORT_LEVELS directly (no buildSelectableModels call) and
+// stays live below, unskipped.
 // ---------------------------------------------------------------------------
 
-{
+const SKIP_SECTION_3_ROUTED_LIVE_DATA = true
+
+if (SKIP_SECTION_3_ROUTED_LIVE_DATA) {
+  console.log(
+    '⊘ SKIPPED (RE-LAND(routing)): §3 routed live-per-model-data assertions (grok-4.5/gpt-5.5/' +
+      'gemini-3.1-flash-image) — buildSelectableModels no longer returns routed entries ' +
+      '(Phase 0 cut, commit d14115fb); re-enable when routing returns harness-aware in Phase 6'
+  )
+} else {
   const running = buildSelectableModels(
     baseInput({
       routingProxy: {
@@ -240,6 +275,23 @@ function baseInput(
   )
   assert.ok(!gpt55!.effortLevels!.includes('max'), 'gpt-5.5 must never offer max')
 
+  const geminiImage = running.find((m) => m.id === 'gemini-3.1-flash-image')
+  assert.deepEqual(
+    geminiImage!.effortLevels,
+    ['minimal', 'high'],
+    'gemini-3.1-flash-image must report exactly [minimal, high] — the documented hole in the ladder'
+  )
+
+  console.log(
+    '✓ live per-model data verified: grok-4.5=[low,medium,high], gpt-5.5 has no max, ' +
+      'gemini-3.1-flash-image=[minimal,high]'
+  )
+}
+
+{
+  // claude-sonnet-4-6 (the "no xhigh" Claude shape from the spec). Reads
+  // CLAUDE_BUILTIN_EFFORT_LEVELS directly, no buildSelectableModels call —
+  // unaffected by the routing cut.
   const sonnet46 = CLAUDE_BUILTIN_EFFORT_LEVELS['claude-sonnet-4-6']
   assert.ok(
     sonnet46 && !sonnet46.includes('xhigh'),
@@ -250,18 +302,7 @@ function baseInput(
     ['low', 'medium', 'high', 'max'],
     'claude-sonnet-4-6 must be exactly [low, medium, high, max]'
   )
-
-  const geminiImage = running.find((m) => m.id === 'gemini-3.1-flash-image')
-  assert.deepEqual(
-    geminiImage!.effortLevels,
-    ['minimal', 'high'],
-    'gemini-3.1-flash-image must report exactly [minimal, high] — the documented hole in the ladder'
-  )
-
-  console.log(
-    '✓ live per-model data verified: grok-4.5=[low,medium,high], gpt-5.5 has no max, ' +
-      'claude-sonnet-4-6 has no xhigh, gemini-3.1-flash-image=[minimal,high]'
-  )
+  console.log('✓ claude-sonnet-4-6 has no xhigh — exactly [low, medium, high, max]')
 }
 
 // ---------------------------------------------------------------------------
@@ -373,9 +414,24 @@ function baseInput(
 //    work (a purely additive data table + UI wiring) must not alter
 //    computeRoutingEnv's output for a Claude model in any way. This is the
 //    ToS invariant the spec explicitly forbids touching.
+//
+// RE-LAND(routing): computeRoutingEnv itself is untouched and this section's
+// assertions about it remain literally true, but since commit d14115fb
+// (Phase 0, multi-harness migration) buildMountEnv no longer calls
+// computeRoutingEnv at all — the "ToS invariant" this guards no longer has
+// a live production call site to protect. Kept (not deleted) as the Phase 6
+// reconnection checklist. Re-enable once launch-side routing re-lands.
 // ---------------------------------------------------------------------------
 
-{
+const SKIP_SECTION_5_ROUTING_NOOP = true
+
+if (SKIP_SECTION_5_ROUTING_NOOP) {
+  console.log(
+    '⊘ SKIPPED (RE-LAND(routing)): §5 Claude-routing-no-op assertions — buildMountEnv no longer ' +
+      'calls computeRoutingEnv (Phase 0 cut, commit d14115fb); re-enable when routing returns ' +
+      'harness-aware in Phase 6'
+  )
+} else {
   const env = computeRoutingEnv('claude-opus-4-8', {
     proxyUrl: 'http://127.0.0.1:18765',
     authToken: 'test-token'
@@ -482,8 +538,19 @@ function baseInput(
 {
   assert.deepEqual(
     [...EFFORT],
-    ['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    ['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'schema.ts’s EFFORT enum must exactly match the widened ClaudeEffort union'
+  )
+  // 'ultra' is CODEX's top rung, added to this SHARED validator vocabulary
+  // because claude_workspace_settings/claude_project_settings are the storage
+  // every harness's per-workspace override writes through (Claude-branded
+  // name, harness-agnostic storage). Without it, picking Ultra on a Codex
+  // workspace threw `Invalid effort: ultra` in overridesStore.ts, was
+  // rejected again by this CHECK constraint, and would have been coerced to
+  // 'auto' by enumCoerce — the chip silently did nothing.
+  assert.ok(
+    EFFORT.includes('ultra'),
+    "the shared override tables must ACCEPT 'ultra' — a non-Claude harness's level still writes here"
   )
 
   const db = new Database(':memory:')
@@ -569,7 +636,12 @@ function baseInput(
     'medium',
     'high',
     'xhigh',
-    'max'
+    'max',
+    // Codex's top rung — see CLAUDE_EFFORT_VALUES' own comment. This mirror
+    // is hand-maintained ON PURPOSE (a TS union has no runtime members to
+    // enumerate), so it must grow with the union or this guard silently
+    // stops guarding.
+    'ultra'
   ]
   for (const member of EVERY_CLAUDE_EFFORT_MEMBER) {
     assert.ok(

@@ -577,9 +577,23 @@ function alias(
 //    model id, aliases or no aliases (aliases are a proxy-side config-
 //    generation concern; computeRoutingEnv has no aliases parameter at all,
 //    so this simply re-confirms the invariant still holds post-unit-08).
+//
+// RE-LAND(routing): computeRoutingEnv itself is untouched and this remains
+// true, but since commit d14115fb (Phase 0, multi-harness migration)
+// buildMountEnv no longer calls computeRoutingEnv — the invariant has no
+// live production call site to protect right now. Kept as the Phase 6
+// reconnection checklist rather than deleted.
 // ---------------------------------------------------------------------------
 
-{
+const SKIP_SECTION_8_ROUTING_NOOP = true
+
+if (SKIP_SECTION_8_ROUTING_NOOP) {
+  console.log(
+    '⊘ SKIPPED (RE-LAND(routing)): §8 Claude-routing-no-op-under-aliases assertions — ' +
+      'buildMountEnv no longer calls computeRoutingEnv (Phase 0 cut, commit d14115fb); ' +
+      're-enable when routing returns harness-aware in Phase 6'
+  )
+} else {
   for (const claudeId of ['sonnet', 'opus', 'claude-sonnet-5', 'claude-opus-4-8']) {
     const env = computeRoutingEnv(claudeId, { proxyUrl: 'http://127.0.0.1:18765' })
     assert.deepEqual(
@@ -1220,9 +1234,25 @@ function alias(
 //     upstream id. This locks that in explicitly so a future change to
 //     buildSelectableModels can't silently start treating a
 //     claude-*-<digits> shaped routed id as Claude by string-matching it.
+//
+// RE-LAND(routing): this whole section depends on buildSelectableModels
+// surfacing a routed cliProxyModels entry. Since commit d14115fb (Phase 0,
+// multi-harness migration) buildSelectableModels returns claudeEntries()
+// only (src/main/models/selectable.ts's PHASE0_ROUTING_SEVERED guard), so
+// the stamped-name-collision entry this section synthesizes is never
+// present to filter/assert on. Kept (not deleted) as the Phase 6
+// reconnection checklist. Re-enable once launch-side routing re-lands.
 // ---------------------------------------------------------------------------
 
-{
+const SKIP_SECTION_17_ROUTED_STAMPED_COLLISION = true
+
+if (SKIP_SECTION_17_ROUTED_STAMPED_COLLISION) {
+  console.log(
+    '⊘ SKIPPED (RE-LAND(routing)): §17 routed stamped-name-collision assertions — ' +
+      'buildSelectableModels no longer returns routed entries (Phase 0 cut, commit d14115fb); ' +
+      're-enable when routing returns harness-aware in Phase 6'
+  )
+} else {
   const withStampedNameCollision = buildSelectableModels({
     routingProxy: {
       enabled: true,

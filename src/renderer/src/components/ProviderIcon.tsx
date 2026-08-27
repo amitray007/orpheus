@@ -65,7 +65,7 @@ interface ProviderIconProps {
   className?: string
 }
 
-export function ProviderIcon({
+function ProviderIcon({
   providerId,
   size = 12,
   className
@@ -122,3 +122,12 @@ export function ProviderIcon({
     />
   )
 }
+
+// Component + type-guard exported together (mirrors ui/button.tsx's
+// component+cva-variants convention): isKnownProviderIconId is a helper
+// callers need to decide whether to render ProviderIcon at all (e.g.
+// HarnessSection.tsx's picker falling back to a generic icon for a harness
+// id with no asset), and splitting one predicate into its own module would
+// be pure ceremony.
+// eslint-disable-next-line react-refresh/only-export-components
+export { ProviderIcon, isKnownProviderIconId }

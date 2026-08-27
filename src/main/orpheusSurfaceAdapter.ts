@@ -7,7 +7,6 @@
 // Exports:
 //   loadOrpheusSurface()     — resolve the correct .node path and load the addon
 //   composeLaunchForMount()  — compose settings -> ClaudeLaunch ONCE per mount
-//   isRoutedMount()          — pure check over an already-composed ClaudeLaunch
 //   buildMountEnv()          — assemble the surfaceEnv + command for terminal:mount
 //                              (accepts the same ClaudeLaunch via precomposedLaunch
 //                              so a mount never composes settings twice)
@@ -19,18 +18,19 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { loadGhosttySurface, type GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
-import { composeClaudeLaunch, type ClaudeLaunch } from './claudeSettings'
+import { type ClaudeLaunch } from './claudeSettings'
 import { getClaudeAuthEnv } from './claudeAuth'
-import { computeRoutingEnv, isRoutedModel } from './modelRouting'
 import { shimPath } from './orpheusNotify'
 import { getCachedShellPath } from './shellHelpers'
 import { writeGhosttyConfigFile } from './ghosttyConfig'
 import { getAppUiState } from './uiState'
-import { getRoutingProxyRuntime } from './routingProxy/runtime'
 import { isDev, isWorktreeBuild, isNightly } from './appMode'
 import { buildManagedMcpFlagsString } from './controlPlane/managedMcpLaunch'
 import type { ClaudeRuntimeBinding } from './controlPlane/runtimeLeases'
 import { FLAG_DELIMITER } from '../shared/cliFlags'
+import { getWorkspace } from './workspaces'
+import { resolveHarness } from './harness/registry'
+import { resolveAuthEnvForDescriptor } from './harness/authScope'
 
 // Which data dir the bundled CLI should target, mirroring APP_NAME in
 // appMode.ts. Resolved once at module load — the build variant is a
@@ -119,18 +119,37 @@ export function buildMountEnv(
   precomposedLaunch?: ClaudeLaunch,
   runtimeLease?: RuntimeMountLease
 ): MountEnvResult {
-  // Compose claude settings → flags, settingsJson, base env vars. Callers on
-  // the terminal:mount hot path (index.ts) already composed this once for
-  // the isRoutedMount gate check and pass it back in via precomposedLaunch —
-  // composeClaudeLaunch is a DB read (global/project/workspace settings rows)
+  // Resolve the workspace's harness descriptor. resolveHarness() NEVER
+  // throws — a missing workspace row or an unknown/stale harnessId both fall
+  // back to the Claude descriptor, so this lookup can't change behavior for
+  // any workspace that predates the harness_id column (all of which read
+  // back as 'claude' — see workspaces.ts's row→record mapping).
+  const workspace = getWorkspace(workspaceId)
+  const descriptor = resolveHarness(workspace?.harnessId)
+
+  // Compose the harness's launch payload → flags, settingsJson, base env
+  // vars. Callers on the terminal:mount hot path (index.ts) AND the tmux
+  // hosting path (tmuxHost.ts's hostWorkspace) already composed this once
+  // via composeLaunchForMount and pass it back in via precomposedLaunch —
+  // composing is a DB read (global/project/workspace harness_settings rows)
   // per call, so reusing it here halves the settings-layering work paid on
-  // EVERY mount (see the isRoutedMount doc comment for the fuller story).
-  const launch = precomposedLaunch ?? composeClaudeLaunch(projectId, workspaceId)
+  // EVERY mount (see composeLaunchForMount's doc comment for the fuller
+  // story). precomposedLaunch is ALWAYS produced by composeLaunchForMount
+  // (never by claudeSettings.ts's older composeClaudeLaunch, which reads
+  // the pre-cutover claude_global_settings columns and is a genuinely
+  // different, stale source — see fcb579cc / 1d214b05), so it is always the
+  // same function's output as the descriptor.composeLaunch fallback below
+  // would produce. That equivalence held only once every real caller was
+  // migrated onto composeLaunchForMount; the tmux path was the last
+  // straggler still calling composeClaudeLaunch directly until it was fixed
+  // to call composeLaunchForMount like every other caller.
+  const launch = precomposedLaunch ?? descriptor.composeLaunch(projectId, workspaceId)
 
   // Auth env vars (ANTHROPIC_API_KEY, provider routing flags, etc.).
   // Merged AFTER launch.env so auth always wins on conflict.
   // NEVER log authEnv values — they contain plaintext secrets.
-  const authEnv = getClaudeAuthEnv()
+  // Scoped to Claude ONLY — see resolveAuthEnvForDescriptor's doc comment.
+  const authEnv = resolveAuthEnvForDescriptor(descriptor.id, getClaudeAuthEnv)
 
   // User's full shell PATH captured once at app start (login+interactive shell).
   // Omitted if the promise hasn't settled yet; wrapper falls back to .zshrc.
@@ -159,8 +178,43 @@ export function buildMountEnv(
   const env: Record<string, string> = {
     ...launch.env,
     ...authEnv, // auth env wins on conflict
-    ...(effectiveFlags ? { ORPHEUS_CLAUDE_FLAGS: effectiveFlags } : {}),
-    ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {}),
+    // Dual-emit under BOTH the legacy ORPHEUS_CLAUDE_* names and the new
+    // ORPHEUS_HARNESS_* names, with identical values. A tmux session created
+    // by the PREVIOUS build is still running the OLD wrapper script, which
+    // only reads ORPHEUS_CLAUDE_*; emitting only the new names would break
+    // every in-flight session across an app upgrade (the wrapper isn't
+    // re-run — the tmux session just keeps its original env). Keep both
+    // until Phase 5, at least one release after every wrapper script reads
+    // the new names exclusively. Do NOT "simplify" this to one pair.
+    // ALWAYS emitted, even when empty — deliberately NOT conditional.
+    // These vars must SHADOW whatever the tmux server's global environment
+    // holds. That global env is the env of the client that first spawned the
+    // server (tmuxSpawnEnv passes {...process.env}), so if Orpheus was itself
+    // launched from inside an Orpheus workspace pane it can carry that pane's
+    // ORPHEUS_CLAUDE_FLAGS. Omitting the key on an empty compose left nothing
+    // to shadow it, and harness-common.sh's rollback fallback
+    // (`: "${ORPHEUS_HARNESS_FLAGS:=${ORPHEUS_CLAUDE_FLAGS:-}}"`) then fed the
+    // OUTER app's Claude argv to `codex` — which rejected it with
+    // "unexpected argument '--permission-mode'". Emitting the empty string
+    // shadows it (zsh's `:=` substitutes on empty, so BOTH names must be set,
+    // which they are). scrubInheritedPaneEnv.ts fixes the leak at its source;
+    // this is the belt-and-braces half, and it also protects a tmux server
+    // that some OTHER client spawned.
+    ORPHEUS_CLAUDE_FLAGS: effectiveFlags,
+    ORPHEUS_HARNESS_FLAGS: effectiveFlags,
+    ...(launch.settingsJson
+      ? {
+          ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson,
+          ORPHEUS_HARNESS_SETTINGS_JSON: launch.settingsJson
+        }
+      : {}),
+    // Executable name the shared wrapper (resources/harness-common.sh) probes
+    // for on PATH before falling back to sourcing ~/.zshrc. Sourced from the
+    // resolved descriptor so a non-Claude harness's wrapper probes for its
+    // OWN binary (e.g. 'codex'), not 'claude'. harness-common.sh defaults to
+    // 'claude' when this is absent, so an old tmux session / old wrapper
+    // build that predates this var keeps working unchanged.
+    ORPHEUS_HARNESS_BINARY: descriptor.binary,
     ORPHEUS_WORKSPACE_ID: workspaceId, // always present — load-bearing for CLI guardrails
     ...(sockPath ? { ORPHEUS_SOCK: sockPath } : {}),
     ...(hooksEnabled ? { ORPHEUS_NOTIFY: shimPath() } : {}),
@@ -185,39 +239,13 @@ export function buildMountEnv(
     ...(cmdServer ? { ORPHEUS_CMD_TOKEN: cmdServer.token } : {})
   }
 
-  // ---------------------------------------------------------------------
-  // Model routing (unit 03) — MUST be applied strictly AFTER the `env`
-  // object above is fully assembled, in particular after the `...authEnv`
-  // spread on line ~131.
-  //
-  // WHY HERE, AFTER authEnv: authEnv (getClaudeAuthEnv()) is merged after
-  // launch.env specifically so a user's configured secrets/base URL always
-  // win over typed launch settings (see the module doc comment above). For
-  // the 'anthropic' cloud provider, authEnv CAN itself set
-  // ANTHROPIC_BASE_URL (from auth_base_url — claudeAuth.ts buildAnthropicEnv).
-  // If the routing overlay were merged BEFORE that spread, a configured
-  // custom Anthropic base URL would silently clobber the proxy URL for a
-  // routed workspace, defeating routing. Applying computeRoutingEnv() here,
-  // strictly after `env` is finalized, makes it win deterministically for
-  // routed workspaces regardless of what authEnv contributed.
-  //
-  // WHY THIS IS A STRICT NO-OP FOR CLAUDE MODELS: computeRoutingEnv returns
-  // `{}` whenever isRoutedModel(launch.model) is false (see
-  // src/main/modelRouting.ts). Spreading an empty object adds/overwrites
-  // nothing, so `env` here is byte-for-byte identical to what it was before
-  // this block for every Claude-model workspace — this is the ToS-critical
-  // invariant: Claude traffic must reach real api.anthropic.com via the
-  // official binary, never through this proxy. `cloud_provider: 'routed'`
-  // is also structurally exclusive with bedrock/vertex/foundry (see
-  // ClaudeCloudProvider in src/shared/types.ts), so a routed model can never
-  // collide with a CLAUDE_CODE_USE_* env var from those providers either.
-  if (isRoutedModel(launch.model)) {
-    const proxyUrl = getRoutingProxyRuntime(getAppUiState).url
-    if (proxyUrl === null) {
-      throw new Error('Routing proxy automatic port has no effective port allocated')
-    }
-    Object.assign(env, computeRoutingEnv(launch.model, { proxyUrl }))
-  }
+  // Phase-0: routing env injection severed here; re-lands harness-aware —
+  // see multi-harness roadmap (Phase 6). Re-land site rationale, preserved:
+  // the routing overlay must be applied strictly AFTER the `...authEnv`
+  // spread above, because for cloud_provider 'anthropic' authEnv can itself
+  // set ANTHROPIC_BASE_URL (from auth_base_url — claudeAuth.ts
+  // buildAnthropicEnv), which would otherwise silently clobber the proxy URL
+  // for a routed workspace and defeat routing.
 
   // Runtime identity is server-owned launch metadata. Merge it last so neither
   // custom Claude env nor provider-routing layers can spoof the trusted binding.
@@ -242,12 +270,14 @@ export function buildMountEnv(
     })
   }
 
-  // Resolve the wrapper script path.
-  // Packaged: Contents/Resources/orpheus-claude.sh
-  // Dev:      <repo>/resources/orpheus-claude.sh
+  // Resolve the wrapper script path from the harness descriptor.
+  // Packaged: Contents/Resources/<descriptor.wrapperScript>
+  // Dev:      <repo>/resources/<descriptor.wrapperScript>
+  // Phase 1 has one descriptor (Claude, wrapperScript: 'orpheus-claude.sh'),
+  // so this resolves identically to the prior hardcoded path.
   const command = app.isPackaged
-    ? join(process.resourcesPath, 'orpheus-claude.sh')
-    : join(__dirname, '../../resources/orpheus-claude.sh')
+    ? join(process.resourcesPath, descriptor.wrapperScript)
+    : join(__dirname, '../../resources', descriptor.wrapperScript)
 
   return { command, env, launch, authEnv }
 }
@@ -313,41 +343,29 @@ export function buildTmuxAttachEnv(socketName: string, sessionName: string): Tmu
 // ---------------------------------------------------------------------------
 // composeLaunchForMount
 //
-// The terminal:mount hot path (index.ts) needs the composed ClaudeLaunch for
-// TWO reasons that used to each call composeClaudeLaunch independently: (1)
-// isRoutedMount's fail-closed routing-health gate, which must run BEFORE the
-// surface is spawned, and (2) buildMountEnv's own env assembly a few lines
-// later in the same handler. composeClaudeLaunch does a real DB read
-// (global/project/workspace settings rows) on every call, so calling it
-// twice per mount doubled that cost for EVERY workspace, including
-// Claude-only ones. index.ts now calls this ONCE, uses the result for the
-// isRoutedMount check, then threads the same ClaudeLaunch into buildMountEnv
-// via its precomposedLaunch param — so a mount now pays exactly one
-// composition, never two.
+// The terminal:mount hot path (index.ts) needs the composed ClaudeLaunch
+// before spawning the surface, then again for buildMountEnv's own env
+// assembly a few lines later in the same handler. Composing is a real DB
+// read (global/project/workspace settings rows) on every call, so calling it
+// twice per mount doubled that cost for EVERY workspace. index.ts calls this
+// ONCE and threads the same ClaudeLaunch into buildMountEnv via its
+// precomposedLaunch param — so a mount pays exactly one composition, never
+// two. (This used to also feed the isRoutedMount routing-health gate,
+// severed in Phase 0 — see multi-harness roadmap Phase 6 for the re-land.)
+//
+// Resolves the workspace's harness descriptor itself (mirroring
+// buildMountEnv's own lookup) so the precomposed value it hands back is
+// exactly what buildMountEnv's own `descriptor.composeLaunch(...)` fallback
+// would have produced — today that's always the Claude descriptor (Phase 1
+// has one), but keeping the two lookups in lockstep now avoids a
+// precomposedLaunch/descriptor mismatch once a second harness exists.
 // ---------------------------------------------------------------------------
 
 export function composeLaunchForMount(
   projectId: string | undefined,
   workspaceId: string
 ): ClaudeLaunch {
-  return composeClaudeLaunch(projectId, workspaceId)
-}
-
-// ---------------------------------------------------------------------------
-// isRoutedMount
-//
-// Fail-closed gate hook point (model-routing unit 04): resolves whether a
-// workspace's ALREADY-COMPOSED launch model is routed (non-Claude), so the
-// terminal:mount handler (index.ts) can call routingProxy's
-// ensureHealthyForRouting() BEFORE spawning the surface for a routed
-// workspace. Takes the ClaudeLaunch produced by composeLaunchForMount above
-// (the SAME composition buildMountEnv reuses) rather than recomposing —
-// this is a pure in-memory check now, zero I/O, zero DB read.
-//
-// An unreachable proxy makes Claude Code hang ~44-128s silently (measured) —
-// this is the one check standing between that and a clear, immediate error.
-// ---------------------------------------------------------------------------
-
-export function isRoutedMount(launch: ClaudeLaunch): boolean {
-  return isRoutedModel(launch.model)
+  const workspace = getWorkspace(workspaceId)
+  const descriptor = resolveHarness(workspace?.harnessId)
+  return descriptor.composeLaunch(projectId, workspaceId)
 }

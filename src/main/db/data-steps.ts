@@ -594,8 +594,257 @@ const dataSteps: DataStep[] = [
            )`
       ).run()
     }
+  },
+
+  // -------------------------------------------------------------------------
+  // A0 (support-multi-harness) — unify model/effort storage into
+  // harness_settings.curated, the new single source of truth (see U2's
+  // settings.ts / U4's launch.ts). Before this step, model/effort had THREE
+  // independent read paths (resolveEffectiveModelAndEffort,
+  // workspace:getEffectiveModel/Effort, and the live launch emitter
+  // composeClaudeHarnessLaunch) but only ONE write path
+  // (claude_global_settings / claude_project_settings.overrides_json), which
+  // never touched harness_settings at all. A settings UI that shipped in
+  // a6d8929c wrote harness_settings.curated directly and was removed in
+  // 00b0d668, orphaning whatever it had written — those orphaned values are
+  // real user data and must not be discarded by this migration.
+  //
+  // MERGE, NEVER CLOBBER: an existing harness_settings row's args/env and any
+  // other keys are preserved untouched; only curated.model/curated.effort are
+  // filled in, and only when ABSENT. If curated.model or curated.effort is
+  // already present (e.g. the orphaned a6d8929c-era write), the EXISTING
+  // value wins — never overwritten by the migration.
+  //
+  // ADDITIVE ONLY: claude_global_settings / claude_project_settings are read
+  // but never modified or cleared. Rollback is "revert the code" — the old
+  // columns are left fully intact as a fallback of last resort.
+  //
+  // 'auto' EFFORT DECISION: in the legacy schema, effort='auto' is the
+  // column's own default and composeFlagTokens's own emission rule treats it
+  // as "no override, let claude pick" (claudeSettings.ts: `if (s.effort &&
+  // s.effort !== 'auto')`) — it is never actually emitted as `--effort auto`.
+  // harness_settings.curated has no such reserved sentinel: an ABSENT
+  // curated.effort key is what means "no override" there (see
+  // composeClaudeHarnessLaunch's `curated.effort ?? ''`, and
+  // buildCuratedArgs's own skip-if-empty contract). So migrating a literal
+  // 'auto' string into curated.effort would flip its meaning from "no
+  // override" to "an explicit effort value named auto" — which
+  // buildCuratedArgs would then try to emit as `--effort auto`, a flag value
+  // claude does not accept. Correct translation is therefore to OMIT
+  // curated.effort entirely when the legacy value is 'auto', not carry the
+  // string across. A non-'auto' effort value (low/medium/high, whatever this
+  // release's CLAUDE_EFFORT_VALUES allows) migrates verbatim.
+  //
+  // Runs before AND after the CHECK-tightening rebuild is irrelevant here —
+  // this step only reads claude_global_settings/claude_project_settings and
+  // writes harness_settings, none of which have a changing CHECK in this
+  // change, so it is NOT marked preRebuild and simply runs in the normal
+  // post-rebuild pass alongside the other alwaysRun steps.
+  //
+  // Tolerates a missing harness_settings/claude_global_settings/
+  // claude_project_settings table (fresh installs mid-bootstrap, or a
+  // hypothetical future where one of these tables is dropped) and corrupt
+  // per-row JSON without throwing — a single bad project's overrides_json
+  // must not roll back the whole step and block every other project's
+  // migration.
+  // -------------------------------------------------------------------------
+  {
+    name: 'unify-model-effort-into-harness-settings',
+    legacyThroughVersion: 0,
+    alwaysRun: true,
+    run: (db) => {
+      const tables = listTables(db)
+      if (!tables.includes('harness_settings')) return
+
+      const getRow = db.prepare(
+        `SELECT settings_json FROM harness_settings WHERE harness_id = 'claude' AND scope = ? AND scope_id = ?`
+      )
+      const upsert = db.prepare(
+        `INSERT INTO harness_settings (id, harness_id, scope, scope_id, settings_json, updated_at)
+         VALUES (?, 'claude', ?, ?, ?, ?)
+         ON CONFLICT(harness_id, scope, scope_id) DO UPDATE SET
+           settings_json = excluded.settings_json,
+           updated_at = excluded.updated_at`
+      )
+
+      // Applies mergeCuratedModelEffort (below) to the (scope, scopeId) row
+      // and writes it back ONLY when the merge actually changed something —
+      // an unconditional upsert would bump every row's updated_at on every
+      // boot even when idempotent, which is needless churn on a table other
+      // code treats updated_at as meaningful for.
+      function migrateRow(
+        scope: 'global' | 'project',
+        scopeId: string,
+        legacy: LegacyModelEffort
+      ): void {
+        const existingRaw = getRow.get(scope, scopeId) as { settings_json: string } | undefined
+        const existing = parseHarnessSettingsJson(existingRaw?.settings_json)
+        const merged = mergeCuratedModelEffort(existing, legacy)
+        if (merged === existing) return // no-op: nothing new to fill in
+        upsert.run(randomUUID(), scope, scopeId, JSON.stringify(merged), Date.now())
+      }
+
+      if (tables.includes('claude_global_settings')) {
+        const globalRow = db
+          .prepare(`SELECT model, effort FROM claude_global_settings WHERE id = 1`)
+          .get() as { model?: string; effort?: string } | undefined
+        if (globalRow) {
+          migrateRow('global', '', { model: globalRow.model, effort: globalRow.effort })
+        }
+      }
+
+      if (tables.includes('claude_project_settings')) {
+        const projectRows = db
+          .prepare(`SELECT project_id, overrides_json FROM claude_project_settings`)
+          .all() as Array<{ project_id: string; overrides_json: string }>
+        for (const row of projectRows) {
+          let overrides: { model?: string; effort?: string } = {}
+          try {
+            const parsed: unknown = JSON.parse(row.overrides_json)
+            if (parsed && typeof parsed === 'object') {
+              overrides = parsed
+            }
+          } catch {
+            // Corrupt overrides_json for this one project — skip just this
+            // row rather than throwing and rolling back every other
+            // project's migration.
+            continue
+          }
+          if (overrides.model === undefined && overrides.effort === undefined) continue
+          migrateRow('project', row.project_id, {
+            model: overrides.model,
+            effort: overrides.effort
+          })
+        }
+      }
+    }
+  },
+
+  // -------------------------------------------------------------------------
+  // Reorder an EXISTING install's seeded Codex footer rows to Model -> Effort
+  // -> Fork.
+  //
+  // Codex's defaults originally seeded in the reverse order, which put the
+  // least-used chip first and read as broken beside a Claude workspace's
+  // footer. Fixing CODEX_DEFAULT_ACTIONS only helps a FRESH install: the
+  // per-harness seeder is insert-only and skips a harness that already has
+  // rows, so an install that already seeded keeps the old order forever.
+  //
+  // ONLY touches rows still in the exact original seeded order (Fork, Effort,
+  // Model at three ascending positions). A user who has since reordered,
+  // renamed, or deleted any of them fails that check and is left completely
+  // alone — reordering someone's deliberate arrangement would be worse than
+  // the wrong default. Rewrites only the three `position` values, reusing the
+  // same three slots so nothing else in the table shifts.
+  // -------------------------------------------------------------------------
+  {
+    name: 'codex-footer-actions-order',
+    // legacyThroughVersion: 0 + alwaysRun: true — the pairing every recent
+    // step here uses, and it is REQUIRED, not stylistic. seedLedgerFromLegacy
+    // pre-marks a non-alwaysRun step as applied whenever
+    // `legacyVersion >= step.legacyThroughVersion`, which 0 satisfies for
+    // EVERY existing DB — so a run-once step with version 0 would be recorded
+    // as already-applied and never actually run on the installs it exists to
+    // repair. alwaysRun skips that pre-marking entirely (see its `continue`).
+    //
+    // Safe to re-run: the shape check below only matches rows still in the
+    // exact original seeded order, so once reordered (or once a user has
+    // touched them) every later pass is a no-op.
+    legacyThroughVersion: 0,
+    alwaysRun: true,
+    run: (db) => {
+      const tables = listTables(db)
+      if (!tables.includes('footer_actions_global')) return
+      // The table can EXIST while predating harness_id — this step also runs
+      // against partial-schema fixtures and against a DB mid-upgrade, where
+      // querying the column outright throws "no such column: harness_id" and
+      // (because runDataSteps rolls back and rethrows) would take the whole
+      // migration down. Probe the column, don't assume it.
+      const hasHarnessId = (
+        db.prepare(`PRAGMA table_info("footer_actions_global")`).all() as Array<{ name: string }>
+      ).some((c) => c.name === 'harness_id')
+      if (!hasHarnessId) return
+
+      const rows = db
+        .prepare(
+          `SELECT id, action_id, position FROM footer_actions_global
+             WHERE harness_id = 'codex-cli' ORDER BY position ASC`
+        )
+        .all() as Array<{ id: string; action_id: string; position: number }>
+
+      // Exactly the three seeded rows, still in the original order.
+      const seededOrder = ['workspace.fork', 'footer.effortSelect', 'footer.modelSelect']
+      if (rows.length !== seededOrder.length) return
+      if (!rows.every((r, i) => r.action_id === seededOrder[i])) return
+
+      const desired = ['footer.modelSelect', 'footer.effortSelect', 'workspace.fork']
+      const slots = rows.map((r) => r.position)
+      const update = db.prepare('UPDATE footer_actions_global SET position = ? WHERE id = ?')
+      desired.forEach((actionId, idx) => {
+        const row = rows.find((r) => r.action_id === actionId)
+        if (row) update.run(slots[idx], row.id)
+      })
+    }
   }
 ]
+
+type LegacyModelEffort = { model?: string; effort?: string }
+
+/** Parses a harness_settings.settings_json cell defensively — corrupt or
+ *  absent JSON resolves to `{}`, the same "nothing configured" value a
+ *  missing row gets, matching settings.ts's getHarnessSettings behavior. */
+function parseHarnessSettingsJson(raw: string | undefined): Record<string, unknown> {
+  if (!raw) return {}
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Pure merge logic for the unify-model-effort-into-harness-settings data
+ * step, factored out so scripts/ can assert against the REAL function
+ * rather than a restatement of its logic (see CLAUDE.md's "assert behaviour,
+ * not source text").
+ *
+ * Contract:
+ *  - Preserves every existing top-level key (args, env, curated, and any
+ *    future key this module doesn't know about) untouched.
+ *  - Fills in curated.model only if ABSENT from the existing row.
+ *  - Fills in curated.effort only if ABSENT from the existing row, and only
+ *    when the legacy value is defined AND not the 'auto' sentinel (see the
+ *    step's own header comment for why 'auto' is never carried across).
+ *  - Returns the SAME object reference (by ===) when nothing changes, so
+ *    callers can cheaply detect a no-op merge without a deep-equal check.
+ */
+export function mergeCuratedModelEffort(
+  existing: Record<string, unknown>,
+  legacy: LegacyModelEffort
+): Record<string, unknown> {
+  const existingCurated = (existing.curated ?? {}) as { model?: string; effort?: string }
+  const hasModel = existingCurated.model !== undefined
+  const hasEffort = existingCurated.effort !== undefined
+
+  const nextModel = hasModel ? existingCurated.model : legacy.model
+  const legacyEffortUsable = legacy.effort !== undefined && legacy.effort !== 'auto'
+  const nextEffort = hasEffort
+    ? existingCurated.effort
+    : legacyEffortUsable
+      ? legacy.effort
+      : undefined
+
+  const modelChanged = !hasModel && nextModel !== undefined
+  const effortChanged = !hasEffort && nextEffort !== undefined
+  if (!modelChanged && !effortChanged) return existing
+
+  const nextCurated: { model?: string; effort?: string } = { ...existingCurated }
+  if (nextModel !== undefined) nextCurated.model = nextModel
+  if (nextEffort !== undefined) nextCurated.effort = nextEffort
+
+  return { ...existing, curated: nextCurated }
+}
 
 function ensureLedger(db: DbLike): void {
   db.exec(

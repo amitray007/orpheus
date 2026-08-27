@@ -1,3 +1,10 @@
+import type { HarnessId, HarnessCapabilities, CuratedField, HarnessArgRow } from './harness/types'
+// Re-exported so src/shared/ipc.ts (which imports ONLY from this file, never
+// from ./harness/types directly — see that file's own header comment) can
+// reference HarnessId in channel signatures, e.g. workspaces:create's
+// optional harnessId (support-multi-harness C1).
+export type { HarnessId }
+
 // ---------------------------------------------------------------------------
 // Updates
 // ---------------------------------------------------------------------------
@@ -297,10 +304,26 @@ export type GitCommit = {
   deletions: number
 }
 
+// Per-harness install-check result. One entry per HARNESSES descriptor (see
+// src/main/harness/registry.ts) — the doctor no longer hardcodes Claude.
+// `id`/`label` mirror the descriptor so the renderer can show install
+// guidance for a harness without importing main-process code.
+export type HarnessDoctorEntry = {
+  id: string
+  label: string
+  installed: boolean
+  version: string | null // e.g. "1.2.3" extracted from `<binary> --version`
+  path: string | null // e.g. "/usr/local/bin/claude"
+}
+
+// Doctor result across every registered harness. Kept as an array (not a
+// map) so it round-trips through JSON/IPC without key-order surprises and
+// stays trivially iterable for "list every harness's status" UI. Use
+// isAnyHarnessInstalled/isHarnessInstalled (src/shared/harness/doctor.ts)
+// rather than reaching into `harnesses` by hand — those are the two
+// questions this type exists to answer.
 export type DoctorResult = {
-  claudeInstalled: boolean
-  claudeVersion: string | null // e.g. "1.2.3" extracted from `claude --version`
-  claudePath: string | null // e.g. "/usr/local/bin/claude"
+  harnesses: HarnessDoctorEntry[]
 }
 
 // ---------------------------------------------------------------------------
@@ -351,6 +374,12 @@ export type WorkspaceRecord = {
   worktreeParentCwd: string | null
   /** Branch checked out in this worktree; null for a plain workspace (v64). */
   worktreeBranch: string | null
+  /** Which coding-agent CLI this workspace runs (Phase 1, P1.3). Defaults to
+   *  'claude' for every pre-existing row. Read on the live launch path —
+   *  orpheusSurfaceAdapter.ts resolves the workspace's harness descriptor
+   *  from this field on every mount. See HarnessId in
+   *  src/shared/harness/types.ts. */
+  harnessId: HarnessId
 }
 
 /**
@@ -375,8 +404,10 @@ export type WorkspaceOpenRequest =
     }>
 
 /** Params for creating a worktree-backed workspace (v64). When `branch` is
- *  omitted/blank, the handler defaults it to `worktree-<slug-of-name>`. */
-export type CreateWorktreeParams = { name: string; branch?: string }
+ *  omitted/blank, the handler defaults it to `worktree-<slug-of-name>`.
+ *  `harnessId` (support-multi-harness C1) picks which harness the new
+ *  workspace runs; omitted defaults to Claude, same as workspaces:create. */
+export type CreateWorktreeParams = { name: string; branch?: string; harnessId?: HarnessId }
 
 /**
  * DIPs rect used to mount/resize a workspace's libghostty surface. Mirrors
@@ -738,7 +769,6 @@ export type AppUiState = {
   // Dashboard "Usage" card background poll interval (Dashboard D3)
   usagePollIntervalSec: number // 300 | 600 | 900 | 1800 | 3600; default 600
   // Workspace footer visibility (v45)
-  showWorkspaceFooter: boolean
   // Files-tab editor save mode (v62) — false = manual (Cmd/Ctrl+S only);
   // true = debounced auto-save on idle. Default false (manual).
   filesAutoSave: boolean
@@ -817,6 +847,13 @@ export type AppUiState = {
   // 'legacy'; falls back to 'legacy' then the first valid pack at read time
   // if the persisted id's pack no longer exists on disk.
   iconPackId: string
+  // Worktree base-ref preference (support-multi-harness follow-up) — see
+  // src/main/worktrees.ts's readWorktreeBaseRef for the fallback-read
+  // rationale (this Orpheus-owned home vs. the legacy ~/.claude/settings.json
+  // location). null = no preference stored HERE yet — resolution falls
+  // through to the legacy location, then to 'fresh'. Never 'auto' or any
+  // other value; only ever 'fresh' or 'head'.
+  worktreeBaseRef: 'fresh' | 'head' | null
   updatedAt: number
 }
 
@@ -833,7 +870,26 @@ export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassP
 // values some routed providers report (an off-ladder disable and the lowest
 // standard rung respectively) — kept distinct from each other and from
 // 'low', never conflated (model-routing unit 11).
-export type ClaudeEffort = 'auto' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+// 'ultra' is CODEX's top rung (gpt-5.6-sol/-terra advertise it via
+// `codex debug models`), not a Claude level. It lives on this union because
+// this union is the VALIDATOR vocabulary for the shared
+// claude_workspace_settings/claude_project_settings override tables, which
+// every harness's per-workspace model/effort override writes through — the
+// name is Claude-branded for historical reasons, the storage is not. Without
+// it, picking Ultra on a Codex workspace threw `Invalid effort: ultra` at
+// overridesStore.ts's validator, was rejected again by schema.ts's CHECK
+// constraint, and would have been silently coerced to 'auto' by enumCoerce —
+// so the chip appeared to do nothing at all.
+export type ClaudeEffort =
+  | 'auto'
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra'
 // The single canonical value list for ClaudeEffort (model-routing unit 11)
 // — every validator that needs to check "is this a legal effort value"
 // (schema.ts's EFFORT CHECK constraint, claudeSettings.ts's validatePatch,
@@ -858,8 +914,36 @@ export const CLAUDE_EFFORT_VALUES: readonly ClaudeEffort[] = [
   'medium',
   'high',
   'xhigh',
+  'max',
+  // See ClaudeEffort's own comment: Codex's top rung, present so the
+  // SHARED override tables accept it. Deliberately absent from
+  // CLAUDE_PICKER_EFFORT_VALUES below — a Claude picker must not offer it.
+  'ultra'
+]
+/**
+ * The effort levels the `claude` BINARY itself documents for `--effort`:
+ * "low, medium, high, xhigh, max" (verified against `claude --help`, not
+ * assumed). This is the PICKER list — what a user should be offered for a
+ * Claude workspace.
+ *
+ * Deliberately a SUBSET of CLAUDE_EFFORT_VALUES above, which stays wider
+ * because it is the VALIDATOR list: 'auto' is a CLI-level "reset to model
+ * default", and 'none'/'minimal' are real values some ROUTED providers
+ * report. Those must keep passing validation (the DB CHECK constraint, the
+ * CLI arg validator, stored rows that already hold them) — they are simply
+ * not things to offer in a menu for Claude's own binary, which would reject
+ * them. Narrowing the validator to match this list would break routed
+ * workspaces and reject existing rows; widening the picker to match the
+ * validator is what put 'auto'/'none'/'minimal' in front of users.
+ */
+export const CLAUDE_PICKER_EFFORT_VALUES: readonly ClaudeEffort[] = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
   'max'
 ]
+
 export type ClaudeOutputStyle = 'default' | 'explanatory' | 'proactive' | 'learning'
 export type ClaudeTuiMode = 'default' | 'fullscreen'
 export type ClaudeEditorMode = 'normal' | 'vim'
@@ -2162,55 +2246,6 @@ export type WorkspaceForkParams = {
   name?: string
 }
 
-// ---------------------------------------------------------------------------
-// Footer actions — phase 3a storage types
-// ---------------------------------------------------------------------------
-
-export type FooterActionScope = 'global' | 'project' | 'workspace'
-export type FooterActionVisibility = 'always' | 'idle' | 'awaitingInput'
-
-/**
- * A single user-facing prompt that an action needs before it can execute.
- * Used by workspace.rename to ask for the new name inline in the footer.
- */
-export type PromptDescriptor = {
-  /** The param key the value fills (e.g. 'name'). */
-  key: string
-  /** User-visible label shown above the input (e.g. 'New name'). */
-  label: string
-  /** Placeholder text inside the input. */
-  placeholder?: string
-  /**
-   * Pre-fill value — supports {workspaceName}, {sessionId}, {workspaceId},
-   * {cwd} placeholder tokens that are expanded at display time.
-   */
-  default?: string
-}
-
-export type FooterActionDescriptor = {
-  id: string
-  scope: FooterActionScope
-  scopeId: string | null // null for global; projectId or workspaceId otherwise
-  label: string
-  icon: string | null // Phosphor PascalCase icon name (e.g. 'GitFork', 'Clipboard'), optional
-  actionId: string // 'terminal.sendInput' | 'workspace.fork' | 'session.getUsage' | etc.
-  params: Record<string, unknown> // {} or { text: '/copy', submit: true } etc.
-  visibleWhen: FooterActionVisibility
-  position: number
-  createdAt: number
-  updatedAt: number
-  /** Prompts to show before invoking (e.g. ask for new workspace name). */
-  prompts?: PromptDescriptor[]
-}
-
-export type FooterActionDraft = Omit<
-  FooterActionDescriptor,
-  'id' | 'createdAt' | 'updatedAt' | 'scope' | 'scopeId' | 'position'
-> & {
-  /** When omitted on create, the backend assigns max(position)+1 for the scope. */
-  position?: number
-}
-
 export type DiagCategory = 'error' | 'lifecycle' | 'perf' | 'anomaly' | 'trace'
 export type DiagLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal'
 export type DiagProcess = 'main' | 'renderer' | 'native'
@@ -2444,28 +2479,17 @@ export type NoticeBannerProps = {
 }
 
 // ---------------------------------------------------------------------------
-// Overlay kinds: chipTooltip / chipPrompt — U9 React migration of the footer
-// ActionChip's two in-page `Overlay` usages (`ChipTooltip` component,
-// `PromptPopover` component in ActionChip.tsx), both of which opened
-// bottom-full (upward into the terminal rect) and were occluded by the live
-// terminal. Anchored to the chip element, preferredSide 'top', matching the
-// original upward-opening placement.
+// Overlay kind: chipTooltip — U9 React migration of the footer ActionChip's
+// in-page `Overlay` usage (`ChipTooltip` component in ActionChip.tsx), which
+// opened bottom-full (upward into the terminal rect) and was occluded by the
+// live terminal. Anchored to the chip element, preferredSide 'top', matching
+// the original upward-opening placement.
 // ---------------------------------------------------------------------------
 
 /** Transient hover-label card — non-interactive, matches today's tooltip styling. */
 export type ChipTooltipProps = {
   text: string
 }
-
-/** Interactive prompt popover — same fields/labels/order as PromptDescriptor[]. */
-export type ChipPromptProps = {
-  prompts: PromptDescriptor[]
-  /** Pre-filled default values (already placeholder-expanded by the caller). */
-  values: Record<string, string>
-}
-
-/** Resolves on Apply/Enter; caller resolves `null` on Cancel/Escape/outside-click/IPC failure. */
-export type ChipPromptResult = { values: Record<string, string> } | null
 
 /** One selectable item in a chip dropdown (e.g. a model option). `destructive`
  *  is optional and additive — only PanesView's ⋯ layout-options menu sets it
@@ -2496,98 +2520,6 @@ export type ChipDropdownProps = {
 export type ChipDropdownResult = { kind: 'select'; value: string } | null
 
 // ---------------------------------------------------------------------------
-// Overlay kind: chipGroupedDropdown — the footer Model chip's provider ->
-// model FLYOUT variant of chipDropdown (model-routing unit 10-creation,
-// footer follow-up). Deliberately a SEPARATE overlay kind rather than a mode
-// flag on chipDropdown/ChipDropdownProps: chipDropdown is shared by
-// footer.effortSelect and footer.dropdown (author-configured custom options),
-// neither of which has a provider concept at all, and its flat single-panel
-// contract (ChipDropdownProps/ChipDropdownResult above) stays completely
-// untouched by this addition. The flyout mechanics (single-hovered-row,
-// genuine-hover gate, left/right flip, diagonal-traversal close-delay) are
-// NOT reimplemented here — the kind (ChipGroupedDropdown.tsx) imports the
-// SAME pure reducers newWorkspaceMenuLogic.ts already exports
-// (computeSubmenuSide/reduceHoverGate/isGenuineHover/reduceRowHover), proven
-// by scripts/verify-new-workspace-menu.ts, rather than re-deriving them.
-// ---------------------------------------------------------------------------
-
-/** One provider group in the grouped dropdown's provider list — a thin,
- *  serializable projection the call site computes (DropdownChip.tsx via
- *  buildModelDropdownGroups); the kind never groups/filters models itself. */
-export type ChipDropdownGroup = {
-  providerId: string
-  label: string
-  models: ChipDropdownItem[]
-}
-
-/**
- * Serializable display state for the pinned "Refresh models" button
- * (RefreshModelsButton.tsx, model-routing unit 12) — lives in shared/types.ts
- * (not the renderer-only lib it's driven from) because it crosses the
- * overlay props/patch boundary: the MAIN window computes it (via
- * useRefreshModelsController.ts, which owns the actual window.api calls and
- * the reduceRefreshButtonState state machine) and pushes it down into the
- * overlay window as a plain prop, exactly like `groups`/`routingProxyEnabled`
- * below. RefreshModelsButton.tsx itself is a PURE render component — it
- * lives INSIDE the overlay's own separate BrowserWindow (see that file's own
- * header comment for the crash this fixes: that window's preload
- * (src/preload/overlay.ts) exposes ONLY `window.overlayApi`, never
- * `window.api` — a component rendered there can never call window.api.* or
- * any lib function that does, directly or transitively).
- */
-export interface RefreshButtonProgress {
-  done: number
-  total: number
-}
-
-export type RefreshButtonState =
-  | { kind: 'idle' }
-  | { kind: 'refreshing'; progress: RefreshButtonProgress | null }
-  | { kind: 'updated' }
-
-/** Interactive provider -> model flyout popover — opens upward from its
- *  anchor chip (same anchoring contract as ChipDropdownProps), but the
- *  top-level list is providers; picking one opens a submenu of that
- *  provider's models beside it (mirrors NewWorkspaceMenuProps' groups/view
- *  shape, minus the creation-only isolation/branch fields this chip has no
- *  use for). */
-export type ChipGroupedDropdownProps = {
-  groups: ChipDropdownGroup[]
-  /** Currently-selected model value — drives both the provider row's
-   *  submenu-open state (whichever group contains it) and the `●`/checkmark
-   *  inside that group's model list. */
-  selectedValue?: string
-  title?: string
-  /** True when the routing proxy is enabled (multiple providers possible) —
-   *  gates the pinned "Refresh models" footer (RefreshModelsButton.tsx,
-   *  model-routing unit 12). A Claude-only flyout has nothing to refresh, so
-   *  this is false/undefined when routing is disabled. Threaded through as a
-   *  prop (computed by the call site via routingProxyEnabledStore.ts) rather
-   *  than the overlay kind reaching into a new IPC/store subscription
-   *  itself — same "props down" contract as `groups`. */
-  routingProxyEnabled?: boolean
-  /** The "Refresh models" button's current display state — see
-   *  RefreshButtonState's own doc comment above. Always supplied by the call
-   *  site (DropdownChip.tsx), including at open() time (`{kind:'idle'}`),
-   *  and kept in sync via the SAME overlay:update push that keeps `groups`
-   *  current while the popover is open. */
-  refreshState: RefreshButtonState
-}
-
-/** Partial props pushed via `overlay:update` as the call site's own live
- *  selectable-model subscription changes — same shallow-merge contract
- *  NewWorkspaceMenuPatch/WorkspaceSettingsCardPatch use. Lets the footer
- *  Model chip's flyout (unlike the flat ChipDropdown it's a sibling of)
- *  reflect a background catalog refresh — including one triggered by its
- *  OWN "Refresh models" button — without the user closing and reopening it. */
-export type ChipGroupedDropdownPatch = Partial<ChipGroupedDropdownProps>
-
-/** Resolves on a model row click/Enter; caller resolves `null` on
- *  Cancel/Escape/outside-click/IPC failure — same settle contract as
- *  ChipDropdownResult. */
-export type ChipGroupedDropdownResult = { kind: 'select'; value: string } | null
-
-// ---------------------------------------------------------------------------
 // Overlay kind: workspaceSettingsCard — the workspace title bar's Settings
 // gear popover (WorkspaceSettingsPopover.tsx), migrated off the in-page
 // `Overlay` component because it opens downward off a title-bar anchor,
@@ -2607,6 +2539,13 @@ export type ChipGroupedDropdownResult = { kind: 'select'; value: string } | null
  *  CustomEnvVarsEditorProps' `value` shapes exactly so the kind can pass them
  *  straight through without reshaping. */
 export type WorkspaceSettingsCardProps = {
+  /** Whether the Plugins/"Enable Loco Channel" section should render at
+   *  all — false for a harness that doesn't own the underlying Claude CLI
+   *  flag (see shouldShowLocoToggle in
+   *  src/shared/harness/footerChipGating.ts). Computed by the caller from
+   *  the workspace's harnessId, same "derived, never independent state"
+   *  rule as locoEnabled below. */
+  locoVisible: boolean
   /** Derived Loco-channel toggle state — `flags.some(flagName(e) === LOCO_FLAG_NAME)`,
    *  computed by the caller (never independent state) and passed down read-only. */
   locoEnabled: boolean
@@ -2629,85 +2568,52 @@ export type WorkspaceSettingsCardPatch = Partial<WorkspaceSettingsCardProps>
 
 // ---------------------------------------------------------------------------
 // Overlay kind: newWorkspaceMenu — the "+ new workspace" popover
-// (NewWorkspaceMenu.tsx), migrated off the in-page `Overlay` component
-// (model-routing unit 10-creation) so it can paint OVER the terminal instead
-// of being clipped inside the sidebar. Long-lived + focusable + hover- AND
-// keyboard-driven, closest in shape to workspaceSettingsCard: props down,
-// events up. The call site keeps every window.api.* call (offeredModes,
-// worktrees.branchExists, workspaces.createWorktree/setModel) and all
-// selectable-model/last-used data hooks; this props bag is a pure
-// serializable snapshot, and the kind emits intent events the call site turns
-// back into state changes + a follow-up updateNewWorkspaceMenu push.
+// (NewWorkspaceMenu.tsx), rendered in the native overlay layer so it can
+// paint OVER the terminal instead of being clipped inside the sidebar.
+// Long-lived + focusable, closest in shape to workspaceSettingsCard: props
+// down, events up. The call site keeps every window.api.* call
+// (offeredModes, worktrees.branchExists, workspaces.createWorktree/
+// harness:list) and this props bag is a pure serializable snapshot; the kind
+// emits intent events the call site turns back into state changes + a
+// follow-up updateNewWorkspaceMenu push.
 //
-// Inverted create-flow (per the approved redesign): the top line (provider
-// icon + selected model name + an Enter-key affordance) is now the SOLE
-// create action — click or Enter creates immediately with the
-// currently-selected model + currently-selected isolation mode. Local/
-// Worktree became a two-way isolation TOGGLE (never creates by itself);
-// selecting Worktree reveals the branch input in the SAME card (no separate
-// overlay swap), and creating from the top line while Worktree is selected
-// creates the worktree workspace using whatever branch text is currently in
-// that field.
+// HARNESS-SELECTOR REBUILD (support-multi-harness — replaces the old
+// provider/model creation flow entirely, see NewWorkspaceMenu.tsx's own
+// header comment for the full story): the popover no longer picks a model
+// at creation time. It shows every registered HARNESS (Claude Code, Codex,
+// ...) as chips; clicking one BOTH selects it AND creates immediately — one
+// click, no separate confirm/create step. Local/Worktree stays exactly as
+// it was: a two-way isolation TOGGLE (never creates by itself); selecting
+// Worktree reveals the branch input in the same card, and clicking a
+// harness while Worktree is selected creates the worktree workspace using
+// whatever branch text is currently in that field. The launched workspace's
+// model comes from that harness's OWN settings resolution
+// (composeClaudeLaunch), not a per-creation pick.
 // ---------------------------------------------------------------------------
-
-/** One provider group in the creation menu's provider list — a thin,
- *  serializable projection of CreationProviderGroup (creationProviderMenu.ts)
- *  that the call site computes; the kind never groups/filters models itself. */
-export type NewWorkspaceMenuGroup = {
-  providerId: string
-  label: string
-  models: SelectableModel[]
-}
-
-export type NewWorkspaceMenuView = 'providers' | 'models'
 
 export type NewWorkspaceMenuIsolation = 'local' | 'worktree'
 
 export type NewWorkspaceMenuProps = {
-  /** True while offeredModes (Local/Worktree availability) is still loading —
-   *  selectableModels never gates the picker (see NewWorkspaceMenu.tsx's own
-   *  doc comment: the Claude-only fallback is synchronous). */
+  /** True while offeredModes (Local/Worktree availability) or harness:list
+   *  is still loading. */
   loading: boolean
-  /** Every provider group the popover can show — Claude always present. */
-  groups: NewWorkspaceMenuGroup[]
-  /** 'providers' (top-level list) or 'models' (a specific provider's models,
-   *  shown when the user hovers/clicks a provider row). */
-  view: NewWorkspaceMenuView
-  /** The provider whose model list is showing in the 'models' view — undefined
-   *  while on the 'providers' view. */
-  activeProviderId?: string
-  /** The currently-selected provider/model — drives the top line AND what
-   *  Local/Worktree create with. Undefined selectedModelId means "use the
-   *  global/project default" (Claude's unchanged pre-existing behavior). */
-  selectedProviderId?: string
-  selectedModelId?: string
   /** Which isolation mode is currently toggled — drives whether the branch
    *  panel is shown. Defaults to 'local' when the popover first opens. */
   isolation: NewWorkspaceMenuIsolation
   /** Local/Worktree availability for this project (see app:offeredModes) —
    *  undefined while `loading` is true. */
   modes?: { local: boolean; worktree: boolean }
-  /** Per-provider "last used" marker (session-scoped) so the model list can
-   *  show a `●` next to the right row without the kind computing it itself. */
-  lastUsedModelIdByProvider: Record<string, string>
+  /** Every registered harness (harness:list) — support-multi-harness. ALWAYS
+   *  the full list, rendered as one chip per harness; clicking a chip both
+   *  selects AND creates (see this file's own header comment). With today's
+   *  Claude + Codex descriptors this is at least length 2. */
+  harnesses: HarnessSummary[]
   // --- Worktree/branch-panel fields (only rendered when isolation === 'worktree') ---
   branchValue: string
   /** null = not checked yet/empty input, true/false = debounced check result. */
   branchExists: boolean | null
   branchCreating: boolean
   branchError?: string
-  /** True when the routing proxy is enabled (multiple providers possible) —
-   *  gates the pinned "Refresh models" row (RefreshModelsButton.tsx,
-   *  model-routing unit 12), same contract as
-   *  ChipGroupedDropdownProps.routingProxyEnabled above. */
-  routingProxyEnabled?: boolean
-  /** The "Refresh models" row's current display state — see
-   *  RefreshButtonState's own doc comment (above ChipGroupedDropdownProps).
-   *  Always supplied by the call site (components/dashboard/NewWorkspaceMenu.tsx),
-   *  including at showNewWorkspaceMenu() time (`{kind:'idle'}`), and kept in
-   *  sync via the SAME updateNewWorkspaceMenu push that keeps `groups`
-   *  current while the popover is open. */
-  refreshState: RefreshButtonState
 }
 
 /** Partial props pushed via `overlay:update` — same shallow-merge contract
@@ -3173,6 +3079,16 @@ export interface SelectableModel {
   providerId: string
   /** Human-readable group label for the picker, e.g. "Claude" or "Grok (xAI)". */
   providerLabel: string
+  /** (support-multi-harness) The id ProviderIcon.tsx should render, when it
+   *  differs from `providerId`. A HARNESS-sourced model carries its harness
+   *  id as providerId (e.g. 'codex-cli'), but ProviderIcon only knows
+   *  'claude' | 'codex' | 'xai' | 'antigravity' — so the picker rendered no
+   *  icon at all for Codex models. The descriptor's own `icon` ('codex') is
+   *  threaded here instead of overloading providerId, which is also the
+   *  GROUPING key and must stay the harness id so two harnesses can never
+   *  collapse into one group. Absent for Claude/routed entries, whose
+   *  providerId is already a valid icon id. */
+  providerIconId?: string
   isClaude: boolean
   available: boolean
   /** Native context window in tokens, or null when unknown — never fabricated. */
@@ -3188,9 +3104,13 @@ export interface SelectableModel {
    *  false for Claude and for any routed entry backed by real live authFiles
    *  data. The picker MAY show a subtle "connecting…" affordance for a
    *  provisional entry; it must never be treated as less real for selection
-   *  purposes — the actual safety backstop is ensureHealthyForRouting's
-   *  fail-closed gate at mount time, which still runs regardless of this
-   *  flag. */
+   *  purposes. NOTE (Phase 0): the mount-time fail-closed backstop this used
+   *  to describe (ensureHealthyForRouting's pre-mount health gate) was
+   *  severed along with the rest of launch-side routing injection — it no
+   *  longer runs at mount time at all. The function itself still exists in
+   *  routingProxy/ and the proxy server lifecycle is untouched; only the
+   *  pre-spawn call from the launch path is gone. A harness-aware pre-mount
+   *  gate is expected to return in Phase 6 — see multi-harness roadmap. */
   provisional: boolean
 }
 
@@ -3377,4 +3297,96 @@ export interface IconPackSummary {
 export interface IconPackCatalogResult {
   packs: IconPackSummary[]
   selectedId: string
+}
+
+// ---------------------------------------------------------------------------
+// Harness settings (U8) — renderer-safe mirror of src/main/harness/settings.ts
+// and src/main/harness/registry.ts's descriptor shape.
+//
+// src/main cannot be imported from the renderer (check:arch), so these types
+// deliberately re-declare the SAME shapes those main-only modules define,
+// rather than importing them. HarnessSettingRow/HarnessSettings/
+// HarnessCuratedSettings below are kept field-for-field identical to their
+// src/main/harness/settings.ts namesakes on purpose — see that file if either
+// drifts, and update both together.
+// ---------------------------------------------------------------------------
+
+export type HarnessSettingsScope = 'global' | 'project'
+
+export type HarnessSettingRow = {
+  key: string
+  value?: string
+  enabled: boolean
+}
+
+export type HarnessCuratedSettings = {
+  model?: string
+  effort?: string
+  permissionMode?: string
+}
+
+/** Renderer-safe mirror of CuratedFieldOptionsOverlay
+ *  (src/main/harness/settings.ts) — kept field-for-field identical on
+ *  purpose, see that file for the overlay-not-replacement rationale and the
+ *  hidden-but-selected invariant. */
+export type CuratedFieldOptionsOverlay = {
+  add?: string[]
+  hide?: string[]
+  order?: string[]
+}
+
+/** Renderer-safe mirror of HarnessCuratedOptionsSettings
+ *  (src/main/harness/settings.ts). */
+export type HarnessCuratedOptionsSettings = {
+  model?: CuratedFieldOptionsOverlay
+  effort?: CuratedFieldOptionsOverlay
+}
+
+export type HarnessSettings = {
+  args?: HarnessSettingRow[]
+  env?: HarnessSettingRow[]
+  curated?: HarnessCuratedSettings
+  curatedOptions?: HarnessCuratedOptionsSettings
+  /** Free-text shell run in the harness's own wrapper script right before
+   *  the harness binary starts (H1, support-multi-harness) — see
+   *  src/main/harness/settings.ts's HarnessSettings for the full rationale
+   *  (kept field-for-field identical to that type on purpose). */
+  preLaunchSnippet?: string
+  /** Whether to source the user's full interactive shell rc before the
+   *  harness starts — see src/main/harness/settings.ts's HarnessSettings
+   *  for the full rationale (kept field-for-field identical). */
+  sourceZshrc?: boolean
+}
+
+/** Renderer-safe projection of a HarnessDescriptor (src/main/harness/registry.ts)
+ *  — everything the Settings UI needs to render a harness picker and its
+ *  curated-field pickers, with no function references (composeLaunch) or
+ *  non-serializable fields (knownGoodVersions is a Set) crossing the IPC
+ *  boundary. */
+export interface HarnessSummary {
+  id: HarnessId
+  label: string
+  /** Executable name probed on PATH, e.g. 'claude' — see
+   *  HarnessDescriptor.binary. Used by the Settings UI's harness picker to
+   *  render the resolved command preview (binary + enabled default args). */
+  binary: string
+  capabilities: HarnessCapabilities
+  /** Phosphor icon name for the harness picker — see HarnessDescriptor.icon
+   *  in src/shared/harness/types.ts. Absent means the picker falls back to a
+   *  generic icon. */
+  icon?: string
+  /** Harness-provided default CLI args (e.g. Claude's `--permission-mode`),
+   *  seeded into the args editor as visibly-marked, user-editable rows — see
+   *  HarnessDescriptor.defaultArgs. Never written into a user's stored
+   *  settings just for being displayed; the renderer merges these with the
+   *  user's own rows at read time (see harnessSettingsLogic.ts's
+   *  mergeDefaultArgs). */
+  defaultArgs?: HarnessArgRow[]
+  curated?: { model?: CuratedField; effort?: CuratedField }
+  /** Which Settings UI section ids this harness's own settings live in —
+   *  see HarnessDescriptor.settingsSections in src/shared/harness/types.ts.
+   *  Used by SettingsView.tsx (via src/shared/harness/
+   *  settingsSectionGating.ts's isSectionIdApplicable) to hide a
+   *  Claude-only section for a harness that doesn't declare it. */
+  settingsSections: string[]
 }

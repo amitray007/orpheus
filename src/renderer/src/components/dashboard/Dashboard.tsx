@@ -21,8 +21,6 @@ import { removeWorkbenchTerminalsEntry } from '@/lib/workbenchTerminalsStore'
 import { removeFilesTabEntry } from '@/lib/filesTabStore'
 import { useUiState, updateUiState } from '@/lib/uiStateStore'
 import { mapWithConcurrency } from '@/lib/concurrency'
-import { clearFooterActionsCache } from './footer/useFooterActions'
-import { clearLiveChipCache } from './footer/liveChipCache'
 import { clearContextBudgetCache } from './workspaceTitleBar.helpers'
 import {
   viewToSidebarActiveView,
@@ -52,12 +50,7 @@ const MainContent = memo(MainContentBase)
 // Timed reveal duration for a classified project's "Reveal this project" peek.
 const PEEK_MS = 60_000
 
-interface DashboardProps {
-  claudeInstalled: boolean
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- prop forwarded from App.tsx but not yet used in this component
-export function Dashboard(_: DashboardProps): React.JSX.Element {
+export function Dashboard(): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   // UI state — live subscription via the shared store (single get() + single
@@ -489,8 +482,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       removeWorkbenchTerminalsEntry(workspaceId)
       removeFilesTabEntry(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
-      clearFooterActionsCache(workspaceId)
-      clearLiveChipCache(workspaceId)
       clearContextBudgetCache(workspaceId)
     })
   }, [])
@@ -1368,7 +1359,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   )
 
   const handleAddWorkspace = useCallback(
-    async (projectId: string, modelId?: string): Promise<void> => {
+    async (projectId: string, modelId?: string, harnessId?: string): Promise<void> => {
       // Read synchronously from refs — setState updaters are not guaranteed to
       // run synchronously in React 18+ createRoot, so reading state via a
       // functional updater callback is unreliable here.
@@ -1384,7 +1375,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         const newWs = await window.api.workspaces.create({
           projectId,
           name: defaultName,
-          cwd: finalPath
+          cwd: finalPath,
+          ...(harnessId ? { harnessId } : {})
         })
         playSound('pop')
         // Creation-time model routing (unit 10): when the creation popover
@@ -1492,8 +1484,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       removeWorkbenchTerminalsEntry(workspaceId)
       removeFilesTabEntry(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
-      clearFooterActionsCache(workspaceId)
-      clearLiveChipCache(workspaceId)
       clearContextBudgetCache(workspaceId)
       try {
         // "Archive" is a hard delete now (v34+). The DB row is gone after this.
@@ -1536,8 +1526,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       removeWorkbenchTerminalsEntry(workspaceId)
       removeFilesTabEntry(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
-      clearFooterActionsCache(workspaceId)
-      clearLiveChipCache(workspaceId)
       clearContextBudgetCache(workspaceId)
       playSound('archive')
       await fetchWorkspacesForProject(projectId)
@@ -1662,8 +1650,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         removeWorkbenchTerminalsEntry(ws.id)
         removeFilesTabEntry(ws.id)
         hasFetchedRef.current!.delete(ws.id)
-        clearFooterActionsCache(ws.id)
-        clearLiveChipCache(ws.id)
         clearContextBudgetCache(ws.id)
       }
       setProjects((arr) => arr.filter((p) => p.id !== target.id))

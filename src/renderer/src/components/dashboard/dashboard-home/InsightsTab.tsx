@@ -384,7 +384,7 @@ export function InsightsTab({
         <div className="min-w-0">
           <div className="text-sm font-semibold text-text-primary">Activity Insights</div>
           <div className="mt-0.5 truncate text-[11px] text-text-muted">
-            Your recent Claude rhythm and GitHub contribution mix.
+            Your recent agent activity and GitHub contribution mix.
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -412,7 +412,7 @@ export function InsightsTab({
       ) : null}
 
       <div className="grid grid-cols-1 items-stretch gap-4 min-[840px]:grid-cols-2">
-        <DashboardCard title="Claude Activity" className="h-full min-h-72">
+        <DashboardCard title="Agent Activity" className="h-full min-h-72">
           <ActivityChart
             days={weeklyActivity}
             loading={selectedClaudePreparing}

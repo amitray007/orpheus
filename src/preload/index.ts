@@ -80,6 +80,9 @@ import type {
   ProviderDescriptorSummary,
   ProviderConfigSummary,
   ProviderApiKeyEntrySummary,
+  HarnessSummary,
+  HarnessSettings,
+  HarnessSettingsScope,
   ModelAliasesState,
   ModelAliasTargetOption,
   OAuthStartResult,
@@ -90,9 +93,6 @@ import type {
   ActionAuditEntry,
   ActionKind,
   TerminalSendKeyDescriptor,
-  FooterActionDescriptor,
-  FooterActionDraft,
-  FooterActionScope,
   GhosttyUserConfig,
   DiagEvent,
   HealthReport,
@@ -116,6 +116,7 @@ import type {
   IconPackCatalogResult
 } from '../shared/types'
 import type { RendererControlAck, RendererControlRequest } from '../shared/workbenchControl'
+import type { ProjectDrawerFieldPatch } from '../shared/harness/projectDrawerSettings'
 
 // ---------------------------------------------------------------------------
 // Generic typed IPC helpers. `invoke` and `subscribe` are typed against the
@@ -224,7 +225,12 @@ const api = {
     hide: (workspaceId: string): Promise<void> => invoke('terminal:hide', { workspaceId }),
     resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number): Promise<void> =>
       invoke('terminal:resize', { workspaceId, rect, scaleFactor }),
-    destroy: (workspaceId: string): Promise<void> => invoke('terminal:destroy', { workspaceId }),
+    /** `rehost: true` ALSO kills the workspace's tmux session, so the next
+     *  mount spawns a fresh harness process instead of reattaching to the
+     *  live one. Required for a settings change (model/effort) to actually
+     *  reach the process — see WorkspaceView.handleRestart. */
+    destroy: (workspaceId: string, rehost?: boolean): Promise<void> =>
+      invoke('terminal:destroy', { workspaceId, ...(rehost ? { rehost: true } : {}) }),
     sendInput: (workspaceId: string, text: string): Promise<ActionResult> =>
       invoke('terminal:sendInput', { workspaceId, text }),
     sendKeys: (workspaceId: string, keys: TerminalSendKeyDescriptor[]): Promise<ActionResult> =>
@@ -484,8 +490,13 @@ const api = {
   models: {
     resolveLabels: (modelIds: string[]): Promise<Record<string, string>> =>
       invoke('models:resolveLabels', { modelIds }),
-    listSelectable: (currentModelId?: string): Promise<SelectableModel[]> =>
-      invoke('models:listSelectable', { currentModelId })
+    listSelectable: (
+      currentModelId?: string,
+      harnessId?: string,
+      projectId?: string,
+      currentEffort?: string
+    ): Promise<SelectableModel[]> =>
+      invoke('models:listSelectable', { currentModelId, harnessId, projectId, currentEffort })
   },
   claudeSettings: {
     get: (): Promise<ClaudeGlobalSettings> => invoke('claudeSettings:get'),
@@ -980,6 +991,38 @@ const api = {
     setBaseUrl: (providerId: string, baseUrl: string | null): Promise<ProviderConfigSummary[]> =>
       invoke('providers:setBaseUrl', { providerId, baseUrl })
   },
+  harness: {
+    list: (): Promise<HarnessSummary[]> => invoke('harness:list'),
+    getSettings: (
+      harnessId: string,
+      scope: HarnessSettingsScope,
+      scopeId?: string
+    ): Promise<HarnessSettings> => invoke('harness:settings:get', { harnessId, scope, scopeId }),
+    setSettings: (
+      harnessId: string,
+      scope: HarnessSettingsScope,
+      scopeId: string | undefined,
+      settings: HarnessSettings
+    ): Promise<HarnessSettings> =>
+      invoke('harness:settings:set', { harnessId, scope, scopeId, settings }),
+    getResolvedSettings: (harnessId: string, projectId?: string): Promise<HarnessSettings> =>
+      invoke('harness:settings:resolved', { harnessId, projectId }),
+    // H1 (support-multi-harness) — project Settings drawer write path. See
+    // harness:settings:updateProjectDrawer's own doc comment (shared/ipc.ts)
+    // for the tri-state (omit/null/string) patch contract.
+    updateProjectDrawerSettings: (
+      harnessId: string,
+      projectId: string,
+      patch: ProjectDrawerFieldPatch
+    ): Promise<HarnessSettings> =>
+      invoke('harness:settings:updateProjectDrawer', { harnessId, projectId, patch }),
+    // Global Settings page write path. See
+    // harness:settings:updateShellInit's own doc comment (shared/ipc.ts).
+    updateShellInit: (
+      harnessId: string,
+      patch: { preLaunchSnippet?: string | null; sourceZshrc?: boolean | null }
+    ): Promise<HarnessSettings> => invoke('harness:settings:updateShellInit', { harnessId, patch })
+  },
   aliases: {
     list: (): Promise<ModelAliasesState> => invoke('aliases:list'),
     listTargets: (): Promise<ModelAliasTargetOption[]> => invoke('aliases:listTargets'),
@@ -1068,32 +1111,6 @@ const api = {
         }
       }
     }
-  },
-  footerActions: {
-    listMerged: (workspaceId: string): Promise<FooterActionDescriptor[]> =>
-      invoke('footerActions:listMerged', { workspaceId }),
-
-    listAtScope: (scope: FooterActionScope, scopeId?: string): Promise<FooterActionDescriptor[]> =>
-      invoke('footerActions:listAtScope', { scope, scopeId }),
-
-    create: (
-      scope: FooterActionScope,
-      scopeId: string | null,
-      draft: FooterActionDraft
-    ): Promise<FooterActionDescriptor> => invoke('footerActions:create', { scope, scopeId, draft }),
-
-    update: (id: string, patch: Partial<FooterActionDraft>): Promise<FooterActionDescriptor> =>
-      invoke('footerActions:update', { id, patch }),
-
-    remove: (id: string): Promise<void> => invoke('footerActions:remove', { id }),
-
-    reorder: (
-      scope: FooterActionScope,
-      scopeId: string | null,
-      orderedIds: string[]
-    ): Promise<void> => invoke('footerActions:reorder', { scope, scopeId, orderedIds }),
-
-    resetDefaults: (): Promise<void> => invoke('footerActions:resetDefaults')
   },
   hooks: {
     setEnabled: (enabled: boolean): Promise<{ enabled: boolean }> =>

@@ -9,6 +9,7 @@ import { getAddonRef } from '../actions/addonSurface'
 import type { GhosttySurfaceAddon } from '../../../packages/ghostty-surface/index'
 import type { NativeSurfacePhase } from './types'
 import { createNativeOutputProvider } from './nativeOutputProvider'
+import { resolveHarness } from '../harness/registry'
 import {
   TerminalObservationService,
   type PaneTerminalSnapshot,
@@ -28,10 +29,17 @@ export type MainTerminalObservationDeps = {
   getNativePhase: (surfaceId: string) => NativeSurfacePhase
 }
 
-function workspaceClaudeCommand(): string {
+// harnessId is optional: some callers of workspaceClaudeCommand (see
+// service.ts's other TerminalConfigurationModel branches, if any are added
+// later) may not have a workspace/harness in scope. resolveHarness(undefined)
+// falls back to the Claude descriptor, so omitting it reproduces today's
+// hardcoded 'orpheus-claude.sh' behavior exactly — Phase 1 is zero-behavior-
+// change, so this default matters.
+function workspaceClaudeCommand(harnessId?: string): string {
+  const descriptor = resolveHarness(harnessId)
   return app.isPackaged
-    ? path.join(process.resourcesPath, 'orpheus-claude.sh')
-    : path.join(__dirname, '../../resources/orpheus-claude.sh')
+    ? path.join(process.resourcesPath, descriptor.wrapperScript)
+    : path.join(__dirname, '../../resources', descriptor.wrapperScript)
 }
 
 function getPaneTerminal(layoutId: string, paneId: string): PaneTerminalSnapshot | null {

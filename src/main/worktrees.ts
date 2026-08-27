@@ -2,7 +2,10 @@
  * Git worktree operations, per-repo mutex, and slug helper.
  *
  * Mirrors Claude Code's worktree convention so Orpheus-made worktrees are
- * indistinguishable from claude-made ones.
+ * indistinguishable from claude-made ones (Claude specifically — see
+ * worktreeDirSegment's own header for why each harness now gets its OWN
+ * worktree directory, `.<harness>/worktrees/`, rather than every harness
+ * sharing Claude's `.claude/worktrees/`).
  */
 
 import * as childProcess from 'node:child_process'
@@ -11,6 +14,12 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { promisify } from 'node:util'
+import {
+  worktreeDirSegment,
+  worktreeGitignoreEntry,
+  resolveWorktreeBaseRef
+} from '../shared/harness/worktreePaths'
+import { getAppUiState } from './uiState'
 
 const execFile = promisify(childProcess.execFile)
 
@@ -193,22 +202,52 @@ export async function resolveMainWorktree(cwd: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 /**
- * Read ~/.claude/settings.json and return the worktree base ref preference.
- * Returns 'head' if settings.worktree.baseRef === 'head', else 'fresh'.
+ * Returns the worktree base-ref preference: 'head' or 'fresh'.
+ *
+ * MOVED (support-multi-harness follow-up) to Orpheus's OWN app_ui_state
+ * (worktreeBaseRef column) — `worktree.baseRef` was never a real Claude
+ * Code setting. It does not appear in .claude/snapshots/env-vars.json, is
+ * unknown to src/main/claudeSettings.ts, and Claude Code itself does not
+ * create or manage worktrees; Orpheus had invented this key and stored it
+ * in ANOTHER PRODUCT's config file (~/.claude/settings.json).
+ *
+ * RESOLUTION ORDER — app_ui_state first, then the legacy ~/.claude/
+ * settings.json location as a FALLBACK (not a supported place to configure
+ * this going forward), then 'fresh':
+ *   1. app_ui_state.worktreeBaseRef, if set (non-null) — the new, owned
+ *      home. Once ANY write happens through the new path (e.g. a future
+ *      settings UI for this), this value takes over permanently and step 2
+ *      is never consulted again for this installation.
+ *   2. ~/.claude/settings.json's worktree.baseRef, if the app_ui_state
+ *      column is still unset — preserves a value someone already set there
+ *      (this repo's own dev DB has one) without a data migration: the file
+ *      is never modified or deleted by this function, so the fallback
+ *      stays correct indefinitely, and nothing ever needs to remove it.
+ *   3. 'fresh' — the ultimate default when neither location has an opinion.
  */
 export async function readWorktreeBaseRef(): Promise<'fresh' | 'head'> {
+  const appUiStateValue = getAppUiState().worktreeBaseRef
+
+  // Legacy fallback read — see this function's own doc comment for why this
+  // stays a permanent read rather than a one-time migration. Only actually
+  // needs to run when app_ui_state has no opinion, but reading it
+  // unconditionally keeps this function simple; the file read is cheap and
+  // this is not a hot path (called once per worktree creation/resume, not
+  // per keystroke).
+  let legacyValue: 'fresh' | 'head' | null = null
   try {
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json')
     const raw = await fs.readFile(settingsPath, 'utf8')
     const parsed = JSON.parse(raw) as Record<string, unknown>
     const worktree = parsed['worktree'] as Record<string, unknown> | undefined
     if (worktree && worktree['baseRef'] === 'head') {
-      return 'head'
+      legacyValue = 'head'
     }
   } catch {
-    // Missing file, parse error, or missing key → default to fresh
+    // Missing file, parse error, or missing key → legacyValue stays null
   }
-  return 'fresh'
+
+  return resolveWorktreeBaseRef(appUiStateValue, legacyValue)
 }
 
 // ---------------------------------------------------------------------------
@@ -301,12 +340,25 @@ export async function listWorktreePaths(repoRoot: string): Promise<string[]> {
 // ---------------------------------------------------------------------------
 
 /**
- * Ensure `.claude/worktrees/` is present in <repoRoot>/.gitignore.
+ * Ensure `.<harnessId>/worktrees/` is present in <repoRoot>/.gitignore.
  * Idempotent; uses atomic write (tmp + rename).
+ *
+ * `harnessId` defaults to 'claude' — every EXISTING call site pre-dates
+ * per-harness directories and continues to write exactly the same
+ * `.claude/worktrees/` line it always has (worktreeGitignoreEntry('claude')
+ * produces the identical string the old hardcoded literal did, so no
+ * existing repo's .gitignore changes as a side effect of this refactor).
+ * A caller creating a worktree for a DIFFERENT harness passes that
+ * harness's id explicitly and gets its OWN line added alongside — never in
+ * place of — Claude's, and only as a consequence of that harness actually
+ * creating a worktree in this repo, never pre-emptively.
  */
-export async function ensureWorktreesGitignored(repoRoot: string): Promise<void> {
+export async function ensureWorktreesGitignored(
+  repoRoot: string,
+  harnessId = 'claude'
+): Promise<void> {
   const gitignorePath = path.join(repoRoot, '.gitignore')
-  const entry = '.claude/worktrees/'
+  const entry = worktreeGitignoreEntry(harnessId)
 
   let existing = ''
   try {
@@ -342,6 +394,12 @@ export interface CreateWorktreeOpts {
   branch: string
   mode: 'new' | 'existing'
   baseRef: 'fresh' | 'head'
+  /** Which harness this workspace runs (support-multi-harness follow-up) —
+   *  decides the worktree's PARENT directory (worktreeDirSegment: e.g.
+   *  `.claude/worktrees` for 'claude'). Defaults to 'claude' so every
+   *  existing call site keeps creating worktrees at the exact same path it
+   *  always has. */
+  harnessId?: string
 }
 
 export interface CreateWorktreeResult {
@@ -350,7 +408,9 @@ export interface CreateWorktreeResult {
 }
 
 /**
- * Create a git worktree at <repoRoot>/.claude/worktrees/<slug>.
+ * Create a git worktree at <repoRoot>/.<harnessId>/worktrees/<slug>
+ * (`.claude/worktrees/<slug>` for the default/omitted harnessId — see
+ * CreateWorktreeOpts.harnessId's own doc comment).
  *
  * If that path is already registered or non-empty, appends -2, -3, … until free.
  * Calls ensureWorktreesGitignored before adding.
@@ -363,7 +423,7 @@ export interface CreateWorktreeResult {
  *     cannot use (only surfaces if the collision logic fails, which shouldn't happen)
  */
 export async function createWorktree(opts: CreateWorktreeOpts): Promise<CreateWorktreeResult> {
-  const { repoRoot, slug, branch, mode, baseRef } = opts
+  const { repoRoot, slug, branch, mode, baseRef, harnessId = 'claude' } = opts
 
   // Guard against git option injection: reject empty or dash-prefixed branch names.
   if (!branch || branch.length === 0) {
@@ -376,11 +436,11 @@ export async function createWorktree(opts: CreateWorktreeOpts): Promise<CreateWo
     )
   }
 
-  await ensureWorktreesGitignored(repoRoot)
+  await ensureWorktreesGitignored(repoRoot, harnessId)
 
   // Determine a free path
   const existingPaths = new Set(await listWorktreePaths(repoRoot))
-  const baseWorktreePath = path.join(repoRoot, '.claude', 'worktrees', slug)
+  const baseWorktreePath = path.join(repoRoot, worktreeDirSegment(harnessId), slug)
 
   let worktreePath = baseWorktreePath
   let suffix = 2

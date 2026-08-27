@@ -187,6 +187,203 @@ const { sync, planSync } = await import('../src/main/db/engine.ts')
   console.log('✓ engine')
 }
 
+// addColumn against a POPULATED table with a NOT NULL non-empty-string
+// DEFAULT (the exact shape workspaces.harness_id uses, Phase 1 P1.3): SQLite
+// allows this as a plain ALTER TABLE ADD COLUMN (no rebuild needed, unlike a
+// CHECK/type/NOT-NULL-without-DEFAULT change), and every pre-existing row
+// must silently backfill to the default with zero data loss and zero
+// explicit data step. Neither the 'diff' case above (asserts the op shape
+// only, in-memory desired/live structs, no real ALTER) nor 'engine' above
+// (empty table) actually applies this against real rows, so this closes
+// that gap.
+{
+  const hdb = new Database(':memory:')
+  const initialSchema = {
+    workspaces: {
+      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT NOT NULL' }
+    }
+  }
+  sync(hdb, initialSchema, { dbPath: ':memory:', legacyVersion: 0 })
+  hdb.exec(`INSERT INTO workspaces (id, name) VALUES ('w1', 'first'), ('w2', 'second')`)
+
+  const withHarnessId = {
+    workspaces: {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        name: 'TEXT NOT NULL',
+        harness_id: { type: 'TEXT', notNull: true, default: "'claude'" }
+      }
+    }
+  }
+  sync(hdb, withHarnessId, { dbPath: ':memory:', legacyVersion: 0 })
+
+  const rows = hdb.prepare('SELECT id, harness_id FROM workspaces ORDER BY id').all()
+  assert.deepEqual(
+    rows,
+    [
+      { id: 'w1', harness_id: 'claude' },
+      { id: 'w2', harness_id: 'claude' }
+    ],
+    'pre-existing rows must backfill harness_id to the schema DEFAULT with no data step'
+  )
+
+  const colInfo = (
+    hdb.prepare('PRAGMA table_info("workspaces")').all() as Array<{
+      name: string
+      type: string
+      notnull: number
+      dflt_value: string | null
+    }>
+  ).find((c) => c.name === 'harness_id')
+  assert.deepEqual(
+    colInfo && { type: colInfo.type, notnull: colInfo.notnull, dflt_value: colInfo.dflt_value },
+    { type: 'TEXT', notnull: 1, dflt_value: "'claude'" },
+    "harness_id must materialize as TEXT NOT NULL DEFAULT 'claude'"
+  )
+
+  // idempotent: re-syncing the same target schema plans no further ops.
+  assert.deepEqual(planSync(hdb, withHarnessId), [])
+  console.log('✓ engine-add-column-backfill (harness_id)')
+}
+
+// harness_settings (U1, multi-harness architecture plan) — a fresh DB gets
+// the table with the right columns/types/NOT-NULLs/defaults, rows at all
+// three scopes coexist without collision (including two DIFFERENT harnesses
+// both at 'global' scope, proving the key is harness_id-scoped and not just
+// scope-scoped), and a second planSync is empty.
+{
+  const { schema: harnessSchema } = await import('../src/main/db/schema.ts')
+  const hsdb = new Database(':memory:')
+  sync(hsdb, harnessSchema, { dbPath: ':memory:', legacyVersion: 0 })
+
+  const tableInfo = hsdb.prepare('PRAGMA table_info("harness_settings")').all() as Array<{
+    name: string
+    type: string
+    notnull: number
+    dflt_value: string | null
+    pk: number
+  }>
+  const byName = Object.fromEntries(tableInfo.map((c) => [c.name, c]))
+  assert.deepEqual(
+    Object.keys(byName).sort(),
+    ['harness_id', 'id', 'scope', 'scope_id', 'settings_json', 'updated_at'].sort(),
+    'harness_settings must declare exactly these columns'
+  )
+  assert.deepEqual(
+    { type: byName.id.type, pk: byName.id.pk },
+    { type: 'TEXT', pk: 1 },
+    'id must be the TEXT PRIMARY KEY'
+  )
+  assert.deepEqual(
+    { type: byName.harness_id.type, notnull: byName.harness_id.notnull },
+    { type: 'TEXT', notnull: 1 },
+    'harness_id must be TEXT NOT NULL'
+  )
+  assert.deepEqual(
+    { type: byName.scope.type, notnull: byName.scope.notnull },
+    { type: 'TEXT', notnull: 1 },
+    'scope must be TEXT NOT NULL'
+  )
+  assert.deepEqual(
+    {
+      type: byName.scope_id.type,
+      notnull: byName.scope_id.notnull,
+      dflt_value: byName.scope_id.dflt_value
+    },
+    { type: 'TEXT', notnull: 1, dflt_value: "''" },
+    "scope_id must be TEXT NOT NULL DEFAULT '' (sentinel for global scope — NULL can't dedupe in a composite key)"
+  )
+  assert.deepEqual(
+    {
+      type: byName.settings_json.type,
+      notnull: byName.settings_json.notnull,
+      dflt_value: byName.settings_json.dflt_value
+    },
+    { type: 'TEXT', notnull: 1, dflt_value: "'{}'" },
+    "settings_json must be TEXT NOT NULL DEFAULT '{}'"
+  )
+  assert.deepEqual(
+    { type: byName.updated_at.type, notnull: byName.updated_at.notnull },
+    { type: 'INTEGER', notnull: 1 },
+    'updated_at must be INTEGER NOT NULL'
+  )
+
+  // the scope CHECK constraint actually rejects an out-of-vocabulary value
+  assert.throws(
+    () =>
+      hsdb
+        .prepare(
+          `INSERT INTO harness_settings (id, harness_id, scope, scope_id, updated_at) VALUES ('bad', 'claude', 'bogus', '', 1)`
+        )
+        .run(),
+    /CHECK constraint failed/,
+    'scope must be constrained to global|project'
+  )
+
+  // insert rows at both scopes (global uses the '' sentinel, per the schema
+  // comment) for TWO different harnesses, and assert they all coexist.
+  // Workspace scope was deliberately removed — two layers, not three.
+  hsdb
+    .prepare(
+      `INSERT INTO harness_settings (id, harness_id, scope, scope_id, settings_json, updated_at) VALUES
+        ('g1', 'claude', 'global', '', '{"a":1}', 1),
+        ('p1', 'claude', 'project', 'proj-1', '{"b":2}', 2),
+        ('g2', 'other-harness', 'global', '', '{"d":4}', 4)`
+    )
+    .run()
+  const rows = hsdb
+    .prepare('SELECT harness_id, scope, scope_id, settings_json FROM harness_settings ORDER BY id')
+    .all()
+  assert.deepEqual(
+    rows,
+    [
+      { harness_id: 'claude', scope: 'global', scope_id: '', settings_json: '{"a":1}' },
+      { harness_id: 'other-harness', scope: 'global', scope_id: '', settings_json: '{"d":4}' },
+      { harness_id: 'claude', scope: 'project', scope_id: 'proj-1', settings_json: '{"b":2}' }
+    ],
+    'rows at both scopes, across two harnesses, must coexist'
+  )
+
+  // the unique index enforces the real (harness_id, scope, scope_id) key —
+  // a second 'global' row for the SAME harness must collide even with a
+  // different synthetic id, proving the '' sentinel actually dedupes where a
+  // NULL scope_id could not have.
+  assert.throws(
+    () =>
+      hsdb
+        .prepare(
+          `INSERT INTO harness_settings (id, harness_id, scope, scope_id, updated_at) VALUES ('g1-dup', 'claude', 'global', '', 99)`
+        )
+        .run(),
+    /UNIQUE constraint failed/,
+    'a second row at the same (harness_id, scope, scope_id) key must collide'
+  )
+
+  // settings_json defaults to '{}' when unspecified
+  hsdb
+    .prepare(
+      `INSERT INTO harness_settings (id, harness_id, scope, scope_id, updated_at) VALUES ('w2', 'claude', 'project', 'proj-2', 5)`
+    )
+    .run()
+  assert.equal(
+    (
+      hsdb.prepare('SELECT settings_json FROM harness_settings WHERE id = ?').get('w2') as {
+        settings_json: string
+      }
+    ).settings_json,
+    '{}',
+    "settings_json must default to '{}' when unspecified"
+  )
+
+  // idempotent: a second planSync against the same target schema is empty
+  assert.deepEqual(
+    planSync(hsdb, harnessSchema),
+    [],
+    'harness_settings must be idempotent on a second planSync'
+  )
+  console.log('✓ engine (harness_settings materializes, scopes coexist, idempotent)')
+}
+
 const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
 
 {
@@ -597,6 +794,28 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
     assert.equal(w2.parent_workspace_id, 'w1')
     assert.equal(w2.worktree_parent_cwd, '/tmp/w1')
     assert.equal(w2.worktree_branch, 'feature/worktree-branch')
+
+    // (iv) Multi-harness migration (Phase 1, P1.3): the hand-built v66
+    // workspaces table above has no harness_id column at all, so sync()
+    // above must have reconciled it via a plain addColumn op (schema.ts
+    // declares harness_id TEXT NOT NULL DEFAULT 'claude'). Both pre-existing
+    // rows (inserted before sync ran) must read back 'claude' — proving
+    // ALTER TABLE ... ADD COLUMN honors the schema's NOT NULL + DEFAULT
+    // rather than silently adding the column nullable/undefaulted (which
+    // would leave existing rows NULL and violate the NOT NULL the very same
+    // statement declares).
+    const harnessRows = vdb.prepare('SELECT id, harness_id FROM workspaces ORDER BY id').all() as {
+      id: string
+      harness_id: string
+    }[]
+    assert.deepEqual(
+      harnessRows,
+      [
+        { id: 'w1', harness_id: 'claude' },
+        { id: 'w2', harness_id: 'claude' }
+      ],
+      'addColumn must backfill harness_id to its schema DEFAULT (claude) on pre-existing workspace rows'
+    )
 
     const settings = vdb
       .prepare(
@@ -1089,6 +1308,77 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
     dsdb3.prepare('SELECT COUNT(*) c FROM keep_awake_settings').get() as { c: number }
   ).c
   assert.equal(rowCountBefore, rowCountAfter)
+
+  // -------------------------------------------------------------------------
+  // codex-footer-actions-order — repairs an install whose Codex footer rows
+  // seeded in the original (reversed) order, WITHOUT touching a set the user
+  // has since arranged themselves.
+  // -------------------------------------------------------------------------
+  {
+    const codexStep = dataSteps.find((st) => st.name === 'codex-footer-actions-order')
+    assert.ok(codexStep, 'the codex-footer-actions-order step must exist')
+
+    const mk = (rows: Array<[string, string, number]>): InstanceType<typeof Database> => {
+      const d = new Database(':memory:')
+      d.exec(
+        `CREATE TABLE footer_actions_global (id TEXT PRIMARY KEY, label TEXT, action_id TEXT, position INTEGER, harness_id TEXT)`
+      )
+      for (const [id, actionId, pos] of rows) {
+        d.prepare('INSERT INTO footer_actions_global VALUES (?,?,?,?,?)').run(
+          id,
+          id,
+          actionId,
+          pos,
+          'codex-cli'
+        )
+      }
+      return d
+    }
+    const order = (d: InstanceType<typeof Database>): string =>
+      (
+        d
+          .prepare(
+            `SELECT action_id FROM footer_actions_global WHERE harness_id='codex-cli' ORDER BY position ASC`
+          )
+          .all() as Array<{ action_id: string }>
+      )
+        .map((r) => r.action_id)
+        .join(',')
+
+    // The originally-seeded (wrong) order is repaired to Model -> Effort -> Fork.
+    const wrong = mk([
+      ['a', 'workspace.fork', 8],
+      ['b', 'footer.effortSelect', 9],
+      ['c', 'footer.modelSelect', 10]
+    ])
+    codexStep.run(wrong)
+    assert.equal(
+      order(wrong),
+      'footer.modelSelect,footer.effortSelect,workspace.fork',
+      'seeded-in-reverse Codex rows must be reordered to Model -> Effort -> Fork'
+    )
+    // Idempotent — the shape check no longer matches, so a rerun changes nothing.
+    codexStep.run(wrong)
+    assert.equal(
+      order(wrong),
+      'footer.modelSelect,footer.effortSelect,workspace.fork',
+      're-running the step must be a no-op'
+    )
+
+    // A user-arranged set must be left completely alone.
+    const userArranged = mk([
+      ['a', 'footer.effortSelect', 8],
+      ['b', 'workspace.fork', 9],
+      ['c', 'footer.modelSelect', 10]
+    ])
+    const before = order(userArranged)
+    codexStep.run(userArranged)
+    assert.equal(
+      order(userArranged),
+      before,
+      "a user's own footer arrangement must never be rewritten by this step"
+    )
+  }
 
   console.log('✓ data-steps')
 }

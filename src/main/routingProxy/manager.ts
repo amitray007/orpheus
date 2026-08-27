@@ -652,10 +652,14 @@ function refreshAuthFiles(
   return work
 }
 
-/** IPC-facing manual refresh (RefreshModelsButton.tsx) — returns the updated
- *  snapshot AND broadcasts step-progress on routingProxy:refreshProgress as
- *  each step completes (see this section's own header comment for why this
- *  is the ONLY caller that supplies a real progress callback). */
+/** IPC-facing manual refresh — used by OrpheusModelRoutingSection.tsx's
+ *  Settings > Model Routing page (the "Refresh models" footer button that
+ *  used to call this directly, via RefreshModelsButton.tsx, was removed —
+ *  this handler's still-live consumer is the settings page). Returns the
+ *  updated snapshot AND broadcasts step-progress on
+ *  routingProxy:refreshProgress as each step completes (see this section's
+ *  own header comment for why this is the ONLY caller that supplies a real
+ *  progress callback). */
 export async function refreshAuthFilesNow(): Promise<RoutingProxySnapshot> {
   await refreshAuthFiles((done, total) => {
     broadcast(PUSH_CHANNELS.routingProxyRefreshProgress, { done, total })

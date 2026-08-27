@@ -105,10 +105,12 @@ function extractDefinitions(data: unknown): CliProxyModelDefinition[] {
  * (success OR failure; a failed/unreachable channel still counts as "this
  * step is done", never leaves the caller's progress stuck waiting on a step
  * that will never report). Only routingProxy/manager.ts's MANUAL refresh
- * path (refreshAuthFilesNow, behind the pinned "Refresh models" button)
- * supplies a real callback here; the automatic 30s tick calls this with no
- * callback at all, so it can never become a second source of progress-push
- * churn — see that module's own doc comment.
+ * path (refreshAuthFilesNow — called from OrpheusModelRoutingSection.tsx's
+ * Maintenance section; the model-picker's own pinned "Refresh models"
+ * button was removed, support-multi-harness) supplies a real callback
+ * here; the automatic 30s tick calls this with no callback at all, so it
+ * can never become a second source of progress-push churn — see that
+ * module's own doc comment.
  */
 export async function refreshCliProxyModelCache(
   baseUrl: string,

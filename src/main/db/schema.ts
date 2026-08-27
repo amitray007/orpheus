@@ -38,6 +38,15 @@ const LOG_LEVEL = ['debug', 'info', 'warn', 'error'] as const
 // routing_proxy_providers.provider_id, which is deliberately free-text so
 // adding a new PROVIDER never requires a schema change.
 const PROVIDER_AUTH_METHOD = ['oauth', 'apiKey', 'openaiCompatible'] as const
+// harness_settings.scope (U1, multi-harness architecture plan) — the same
+// three-tier layering as claude_global_settings/claude_project_settings/
+// claude_workspace_settings, but generalized to any harness_id rather than
+// one fixed Claude table per scope.
+// Global + project only — deliberately NOT workspace. Three layers was more
+// than the product needs: per-workspace launch config is rare, and each extra
+// layer costs a merge step, a UI scope, and a provenance case. Adding it back
+// later is a schema change plus a merge case, not a redesign.
+const HARNESS_SETTINGS_SCOPE = ['global', 'project'] as const
 const AUTOMATION_TRIGGER_KIND = ['schedule', 'event'] as const
 const AUTOMATION_SCOPE_KIND = ['app', 'project', 'workspace'] as const
 const AUTOMATION_IDEMPOTENCY = ['none', 'keyed', 'natural'] as const
@@ -240,7 +249,26 @@ export const schema: SchemaDef = {
       parent_workspace_id: 'TEXT',
       // worktree-native workspaces (v64)
       worktree_parent_cwd: 'TEXT',
-      worktree_branch: 'TEXT'
+      worktree_branch: 'TEXT',
+      // Multi-harness migration (Phase 1, P1.3). Every existing row is
+      // implicitly Claude today, so the DEFAULT backfills them with zero
+      // data migration — see HarnessId in src/shared/harness/types.ts for
+      // why 'claude' (not 'claude-cli') is the bare default value.
+      harness_id: { type: 'TEXT', notNull: true, default: "'claude'" },
+      // Codex title-generation tracking (support-multi-harness). NOT the
+      // same question as "does last_title have a value" — last_title can
+      // already be non-null for a Codex workspace from an UNRELATED source
+      // (a user manually renamed it, or index.ts's performClose captured the
+      // live terminal title before this generator ever ran) — see
+      // titleGeneration.ts's header for the full reasoning. This column
+      // tracks ONLY "has this workspace's own generation attempt already
+      // run", independent of what last_title currently holds, so a
+      // user-renamed or terminal-captured title is both (a) never
+      // overwritten by a later generation attempt and (b) never mistaken for
+      // "already generated" and used to skip the one attempt this workspace
+      // is entitled to. 0/1 boolean-as-INTEGER, same convention as
+      // name_is_auto above.
+      codex_title_generated: { type: 'INTEGER', notNull: true, default: '0' }
     },
     foreignKeys: [{ columns: ['project_id'], ref: 'projects(id)', onDelete: 'CASCADE' }],
     indexes: {
@@ -480,6 +508,59 @@ export const schema: SchemaDef = {
   },
 
   // ---------------------------------------------------------------------
+  // harness_settings — U1 (multi-harness architecture plan). Generic,
+  // per-harness settings storage layered by scope, generalizing the
+  // claude_global_settings / claude_project_settings / claude_workspace_settings
+  // three-tier split above to any harness_id rather than a fixed Claude-only
+  // table per scope. `settings_json` is an opaque JSON blob — each harness
+  // module owns its own shape; this table only owns identity + layering.
+  //
+  // Composite-PK-with-nullable-column note: the conceptual key is
+  // (harness_id, scope, scope_id) with scope_id NULL for the 'global' scope.
+  // This schema DSL (see TableDef in ./types.ts, and renderCreateTable in
+  // ./render.ts) has NO table-level composite PRIMARY KEY support at all —
+  // `primaryKey` only renders inline on a single column — so a literal
+  // "PRIMARY KEY (harness_id, scope, scope_id)" isn't expressible here in the
+  // first place. Even if it were, SQLite treats NULL as distinct from every
+  // other NULL in a PK/UNIQUE, so a NULL scope_id would never be deduplicated
+  // by such a constraint anyway — every "global" row would silently insert as
+  // a new row instead of colliding. `automation_runs.idx_automation_runs_idempotency`
+  // is this file's existing precedent for a composite natural key: a
+  // synthetic single-column TEXT PRIMARY KEY id plus a `unique: true` index
+  // over the real key columns. Followed here, with one addition: scope_id
+  // uses the sentinel '' (not NULL) for the 'global' scope specifically so
+  // the unique index's own NULL-distinctness gap can't bite either — every
+  // row's key columns are always non-NULL and therefore actually enforce
+  // one-row-per-(harness_id, scope, scope_id). Callers must normalize a
+  // missing/undefined scope_id to '' before every read/write for 'global'
+  // scope; this is an honest, explicit tradeoff (a reserved sentinel value)
+  // rather than a silently-broken dedup guarantee.
+  // ---------------------------------------------------------------------
+  harness_settings: {
+    columns: {
+      id: TEXT_PK,
+      harness_id: TEXT_NOT_NULL,
+      scope: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('scope', HARNESS_SETTINGS_SCOPE)
+      },
+      // '' sentinel for global scope — see the table-level comment above for
+      // why NULL cannot be used here despite 'global' conceptually having no
+      // scope_id.
+      scope_id: { type: 'TEXT', notNull: true, default: "''" },
+      settings_json: { type: 'TEXT', notNull: true, default: "'{}'" },
+      updated_at: INTEGER_NOT_NULL
+    },
+    indexes: {
+      idx_harness_settings_key: {
+        columns: ['harness_id', 'scope', 'scope_id'],
+        unique: true
+      }
+    }
+  },
+
+  // ---------------------------------------------------------------------
   // app_ui_state (33 columns in the fresh-install constant + drift columns
   // that were also folded back into it)
   // ---------------------------------------------------------------------
@@ -554,8 +635,6 @@ export const schema: SchemaDef = {
       // Dashboard "Usage" card background poll interval (D3)
       // mirrors UI_STATE_DEFAULTS.usagePollIntervalSec in src/shared/uiStateDefaults.ts
       usage_poll_interval_sec: { type: 'INTEGER', notNull: true, default: '600' },
-      // Workspace footer visibility (v45)
-      show_workspace_footer: bool('show_workspace_footer', '1'),
       // Diagnostics capture toggles (v56) — plain INTEGER, no CHECK in source
       diag_error: { type: 'INTEGER', notNull: true, default: '1' },
       diag_lifecycle: { type: 'INTEGER', notNull: true, default: '0' },
@@ -705,6 +784,18 @@ export const schema: SchemaDef = {
       // the persisted id is unknown or its pack was removed. Default
       // 'legacy' so existing users keep today's icon on upgrade.
       icon_pack_id: { type: 'TEXT', notNull: true, default: "'legacy'" },
+      // Worktree base-ref preference (support-multi-harness follow-up) —
+      // moved here from ~/.claude/settings.json's invented `worktree.baseRef`
+      // key (readWorktreeBaseRef in worktrees.ts), which was never a real
+      // Claude Code setting (Claude does not create or manage worktrees;
+      // confirmed absent from .claude/snapshots/env-vars.json and
+      // claudeSettings.ts). Nullable, no default: NULL means "no preference
+      // stored here yet" — readWorktreeBaseRef falls back to reading the
+      // legacy ~/.claude/settings.json location (so a value someone already
+      // set there keeps applying), then to 'fresh' if that is ALSO unset.
+      // Only 'fresh'/'head' are ever written; no CHECK enum since this is a
+      // two-value app-internal preference, not user-facing free text.
+      worktree_base_ref: 'TEXT',
       updated_at: INTEGER_NOT_NULL
     },
     // workbench_enabled (Workbench feature flag) was removed once the
@@ -712,7 +803,15 @@ export const schema: SchemaDef = {
     // `columns` above) so the declarative engine actually drops it via
     // ALTER TABLE ... DROP COLUMN on existing DBs — omitting a column from
     // `columns` alone leaves it as a tolerated stray live column forever.
-    dropColumns: ['workbench_enabled']
+    // show_workspace_footer joins workbench_enabled here for the same reason:
+    // the quick-actions footer it toggled no longer exists, so the column is
+    // dead. Listed (not merely omitted from `columns`) so the engine actually
+    // ALTER TABLE ... DROP COLUMNs it — omitting it alone would leave a
+    // tolerated stray live column forever. Unlike the footer_actions_* TABLES,
+    // which hold user rows and must stay declared-but-dead, this column holds
+    // one boolean per install with no recoverable meaning once the feature is
+    // gone, so dropping it loses nothing.
+    dropColumns: ['workbench_enabled', 'show_workspace_footer']
   },
 
   // ---------------------------------------------------------------------
@@ -766,7 +865,33 @@ export const schema: SchemaDef = {
   },
 
   // ---------------------------------------------------------------------
-  // footer_actions_global
+  // footer_actions_global / footer_actions_project / footer_actions_workspace
+  // — RETIRED (footer-actions removal, sub-step 3). The quick-actions footer
+  // feature is being removed from Orpheus in stages: the renderer UI,
+  // components, and overlay kinds it opened are already gone (prior
+  // commits), and this sub-step retires the main-process machinery that
+  // read/wrote these three tables — src/main/footerActions.ts (the
+  // listGlobal/listForProject/listForWorkspace/listMerged/create/update/
+  // remove/reorder/seed* API), src/main/ipc/footerActions.ts (the
+  // footerActions:* IPC surface), and the two harness descriptors'
+  // `defaultActions` seed data (src/main/harness/claude/actions.ts,
+  // src/main/harness/codex/actions.ts). Nothing in the app reads or writes
+  // these tables any more.
+  //
+  // KEPT DECLARED (not deleted) for the exact reason panes above is kept
+  // declared: the declarative engine has no whole-TABLE drop op —
+  // `planSync` (src/main/db/engine.ts) only diffs tables that are still
+  // keys of `schema` above, so a table dropped from `schema` simply stops
+  // being reconciled, it is never DROPped. Removing these TableDefs would
+  // leave any pre-existing footer_actions_* tables permanently orphaned
+  // (undeclared, unreconciled, silently retained) rather than actually
+  // retired, and CLAUDE.md's migration rule forbids hand-writing a
+  // destructive `DROP TABLE`. A user's existing rows (including any
+  // deliberately-curated footer they built by hand) stay on disk, inert —
+  // silently orphaning them would be worse than a dead table. So these
+  // three tables stay declared-but-dead: structurally reconciled (harmless
+  // — no code reads/writes them anymore) until a future `dropTable`-capable
+  // engine pass can retire them for real.
   // ---------------------------------------------------------------------
   footer_actions_global: {
     columns: {
@@ -779,12 +904,25 @@ export const schema: SchemaDef = {
       position: INTEGER_NOT_NULL,
       created_at: INTEGER_NOT_NULL,
       updated_at: INTEGER_NOT_NULL,
-      prompts_json: 'TEXT'
+      prompts_json: 'TEXT',
+      // C5 (support-multi-harness): provenance for a SEEDED row — which
+      // harness's descriptor.defaultActions produced it. Nullable, no
+      // default, and deliberately bare 'TEXT' (not notNull) so the engine's
+      // plain ADD COLUMN backfills every pre-existing row with NULL — no
+      // data step required for the backfill itself (see engine.ts's
+      // addColumn: a nullable column with no default is filled NULL by
+      // SQLite automatically). NULL was the load-bearing meaning here, not
+      // an absent/TODO value: "user-authored, or seeded before this column
+      // existed — applies to every harness, filtered by no gate." This
+      // column, like the rest of the table, is now dead: the seeder and
+      // gate table that gave it meaning (footerActions.ts) are gone (see
+      // this table's header above).
+      harness_id: 'TEXT'
     }
   },
 
   // ---------------------------------------------------------------------
-  // footer_actions_project
+  // footer_actions_project — see footer_actions_global's header above.
   // ---------------------------------------------------------------------
   footer_actions_project: {
     columns: footerActionsColumns('project_id'),
@@ -795,7 +933,7 @@ export const schema: SchemaDef = {
   },
 
   // ---------------------------------------------------------------------
-  // footer_actions_workspace
+  // footer_actions_workspace — see footer_actions_global's header above.
   // ---------------------------------------------------------------------
   footer_actions_workspace: {
     columns: footerActionsColumns('workspace_id'),
@@ -1346,6 +1484,7 @@ export {
   CLOUD_PROVIDER,
   LOG_LEVEL,
   PROVIDER_AUTH_METHOD,
+  HARNESS_SETTINGS_SCOPE,
   AUTOMATION_TRIGGER_KIND,
   AUTOMATION_SCOPE_KIND,
   AUTOMATION_IDEMPOTENCY,
