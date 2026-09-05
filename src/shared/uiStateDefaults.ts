@@ -6,6 +6,18 @@
 // NOTE: This file must import nothing from main/preload/renderer — it is a leaf
 // in the shared layer (dependency-cruiser enforces the layering).
 
+// Icon pack id that new installs, missing selections, and self-healed rows
+// converge on. Declared before UI_STATE_DEFAULTS so the object below can
+// reference it instead of repeating the literal. This is NOT the SQL column
+// default in schema.ts (icon_pack_id's SQL DEFAULT stays 'legacy' on purpose
+// — see that column's comment: flipping it would force a full 12-step table
+// rebuild via diffColumnDefinition for every existing user's DB, just to
+// change a singleton settings row). iconPacks.ts's resolveSelectedPack/
+// getIconPackCatalog, uiState.ts's row->record mapping and self-heal insert,
+// and the app-ui-state-seed data step all read this single constant so they
+// can't drift from each other or from UI_STATE_DEFAULTS again.
+export const DEFAULT_ICON_PACK_ID = 'axolotl'
+
 export const UI_STATE_DEFAULTS = {
   staleAfterMinutes: 60,
   statusPollIntervalSec: 1800,
@@ -65,10 +77,14 @@ export const UI_STATE_DEFAULTS = {
   // SQL default (none/NULL) in schema.ts. Null until the first successful
   // `gh api user` refresh.
   githubUsername: null,
-  // App icon pack (Settings > General) — mirrors app_ui_state's
-  // icon_pack_id SQL DEFAULT in schema.ts. 'legacy' keeps existing users on
-  // today's icon after upgrade.
-  iconPackId: 'legacy'
+  // App icon pack (Settings > General) — the non-DB-column default used by
+  // fallback/self-heal call sites (see DEFAULT_ICON_PACK_ID above). Distinct
+  // from app_ui_state's icon_pack_id SQL DEFAULT ('legacy'), which is
+  // deliberately NOT updated in schema.ts — it only ever applies to a
+  // pre-migration row that bypassed the app-ui-state-seed data step, and
+  // existing users' persisted choices (including a real 'legacy' selection)
+  // are never touched by this constant.
+  iconPackId: DEFAULT_ICON_PACK_ID
 } as const
 
 // Draggable tree-pane width clamp bounds (px), shared by FilesTab and GitTab.

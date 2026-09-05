@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="64"
+  height="64"
+  viewBox="0 0 64 64"
+  role="img"
+  aria-labelledby="axolotl-nightly-menubar-title axolotl-nightly-menubar-description"
+>
+  <title id="axolotl-nightly-menubar-title">Nightly Axolotl menu-bar icon</title>
+  <desc id="axolotl-nightly-menubar-description">A compact axolotl glyph with frilled gills.</desc>
+  <path d="M18 23C12 20 6 21 3 26C7 25 10 27 11 31C7 31 4 34 4 38C8 36 11 37 13 40C16 33 17 28 18 23Z" fill="#8f1d3f"/>
+  <path d="M42 19C46 13 52 11 58 14C54 15 52 19 53 23C57 22 61 24 62 28C58 28 56 31 56 35C50 30 45 25 42 19Z" fill="#8f1d3f"/>
+  <path d="M20 46C13 40 12 30 18 23C24 16 34 14 42 19C50 24 53 34 48 42C44 49 36 52 28 50C25 49 22 48 20 46Z" fill="#f4a191"/>
+  <circle cx="22" cy="39" r="3.2" fill="#f4877a" opacity=".55"/>
+  <ellipse cx="25" cy="32" rx="2.6" ry="3.4" fill="#2a0f14"/>
+  <ellipse cx="37" cy="30" rx="3.4" ry="4.4" fill="#2a0f14"/>
+  <circle cx="24.2" cy="30.8" r="0.7" fill="#fff8f4"/>
+  <circle cx="36" cy="28.4" r="0.9" fill="#fff8f4"/>
+  <path d="M28 40C30 42 33 42 35 40" fill="none" stroke="#5c1220" stroke-width="1.6" stroke-linecap="round"/>
+</svg>

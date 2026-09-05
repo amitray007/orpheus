@@ -25,8 +25,8 @@
 // other pack) keeps that choice forever; the fallback below only ever
 // triggers for a genuinely unknown/missing id (e.g. a brand-new install with
 // no row yet, or an id that no longer resolves to a real pack). That
-// fallback lands on 'wisp' (the default pack), then the first valid pack if
-// 'wisp' itself is somehow absent from the catalog.
+// fallback lands on DEFAULT_ICON_PACK_ID (the default pack), then the first
+// valid pack if the default itself is somehow absent from the catalog.
 //
 // Live apply: app.dock.setIcon() (macOS-only, guarded) updates the running
 // Dock icon immediately from the variant's app/app.png (the manifest's
@@ -38,6 +38,7 @@ import { app, nativeImage } from 'electron'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { isDev, isWorktreeBuild, isNightly } from './appMode'
+import { DEFAULT_ICON_PACK_ID } from '../shared/uiStateDefaults'
 
 // ---------------------------------------------------------------------------
 // Manifest shape (schemaVersion 2) — mirrors resources/icon-sets/pack.schema.json
@@ -381,8 +382,8 @@ export async function discoverIconPacksAt(catalogRoot: string): Promise<Resolved
 // Fallback resolution — a persisted id that matches a real pack wins,
 // verbatim, no matter what it is (this is how a user's deliberate choice of
 // 'legacy' survives forever). Only a genuinely unknown/missing persisted id
-// falls back — to 'wisp' (the default pack), then to the first valid pack if
-// 'wisp' itself is absent from the catalog.
+// falls back — to DEFAULT_ICON_PACK_ID (the default pack), then to the first
+// valid pack if the default itself is absent from the catalog.
 // ---------------------------------------------------------------------------
 
 export function resolveSelectedPack(
@@ -391,8 +392,8 @@ export function resolveSelectedPack(
 ): ResolvedIconPack | null {
   const exact = packs.find((p) => p.id === persistedId)
   if (exact) return exact
-  const wisp = packs.find((p) => p.id === 'wisp')
-  if (wisp) return wisp
+  const defaultPack = packs.find((p) => p.id === DEFAULT_ICON_PACK_ID)
+  if (defaultPack) return defaultPack
   return packs[0] ?? null
 }
 
@@ -416,7 +417,13 @@ async function loadPreviewDataUri(pngPath: string): Promise<string | null> {
  *  preview (as a data URI) + name/description, plus which id is selected
  *  (already fallback-resolved). */
 export async function getIconPackCatalog(persistedId: string): Promise<{
-  packs: { id: string; name: string; description: string; previewDataUri: string | null }[]
+  packs: {
+    id: string
+    name: string
+    description: string
+    previewDataUri: string | null
+    isDefault: boolean
+  }[]
   selectedId: string
 }> {
   const packs = await discoverIconPacks()
@@ -428,11 +435,12 @@ export async function getIconPackCatalog(persistedId: string): Promise<{
       id: pack.id,
       name: pack.name,
       description: pack.description,
-      previewDataUri: await loadPreviewDataUri(pack.variants[variantKind].previews.png2x)
+      previewDataUri: await loadPreviewDataUri(pack.variants[variantKind].previews.png2x),
+      isDefault: pack.id === DEFAULT_ICON_PACK_ID
     }))
   )
 
-  return { packs: summaries, selectedId: selected?.id ?? 'wisp' }
+  return { packs: summaries, selectedId: selected?.id ?? DEFAULT_ICON_PACK_ID }
 }
 
 // ---------------------------------------------------------------------------

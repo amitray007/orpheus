@@ -104,3 +104,13 @@ The catalog is intentionally data-only for now. Nothing here changes current
 build icons or enables the Settings picker by itself.
 
 The Dreamer pack is available at [`dreamer`](dreamer/manifest.json).
+
+The Axolotl pack is available at [`axolotl`](axolotl/manifest.json) and is the
+default pack for new installs and self-healed rows (see `DEFAULT_ICON_PACK_ID`
+in `src/shared/uiStateDefaults.ts`). Its app-icon source SVGs wrap approved
+production raster artwork (committed at `axolotl/sources/<variant>.png`) as a
+base64 `<image>` data URI clipped to the same rounded-rect shape as the
+hand-drawn vector packs, rather than hand-drawn vector paths. Regenerate them
+with `node scripts/generate-axolotl-pack-sources.mjs` if the source PNGs
+under `axolotl/sources/` ever change, then rebuild with
+`node scripts/build-icon-pack.mjs axolotl`.

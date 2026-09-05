@@ -69,9 +69,9 @@ extraResources:
   - from: packages/orpheus-mcp/dist/mcp.cjs
     to: mcp/mcp.cjs
 mac:
-  # Wisp nightly variant's committed .icns, so the baked Finder/Applications
+  # Axolotl nightly variant's committed .icns, so the baked Finder/Applications
   # icon matches the nightly runtime Dock icon applied by applyIconPackToDock.
-  icon: resources/icon-sets/wisp/nightly/app/app.icns
+  icon: resources/icon-sets/axolotl/nightly/app/app.icns
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
