@@ -42,7 +42,7 @@ const VARIANTS = {
   production: {
     sourcePng: path.join(SOURCES_ROOT, 'production.png'),
     label: 'Production',
-    description: 'A smiling pink axolotl mascot on a muted teal field.',
+    description: 'A smiling pink axolotl mascot on a dark charcoal field with a plum tint.',
     bodyColor: '#f4a191',
     gillColor: '#8f1d3f',
     cheekColor: '#f4877a'
