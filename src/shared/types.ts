@@ -3370,6 +3370,10 @@ export interface IconPackSummary {
   /** Data URI of previews/preview@2x.png for the resolved variant, or null if
    *  the preview asset failed to read (pack still selectable, just no image). */
   previewDataUri: string | null
+  /** True for the pack new installs/self-healed rows converge on (see
+   *  DEFAULT_ICON_PACK_ID in src/shared/uiStateDefaults.ts) — informational
+   *  only, does not affect selection or persistence. */
+  isDefault: boolean
 }
 
 /** Everything the Settings picker needs in one round trip: the list of valid

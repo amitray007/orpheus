@@ -30,3 +30,6 @@ tmp/
 docs/superpowers/
 .superpowers/
 .gstack/
+
+# Local scratch state (.remember tooling)
+.remember/

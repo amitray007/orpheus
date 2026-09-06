@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createHash } from 'node:crypto'
 import type { DbLike } from './types'
 import { listTables } from './introspect'
+import { DEFAULT_ICON_PACK_ID } from '../../shared/uiStateDefaults'
 
 // ---------------------------------------------------------------------------
 // Named, run-once data transforms + ledger.
@@ -442,16 +443,17 @@ const dataSteps: DataStep[] = [
   // flipping the column DEFAULT would trigger a full 12-step table rebuild
   // via diffColumnDefinition on every existing user's DB, not worth it for a
   // singleton settings table). iconPacks.ts's resolveSelectedPack/
-  // getIconPackCatalog fall back to 'wisp' at read time, so relying on the
-  // SQL default here would seed brand-new installs with icon_pack_id =
-  // 'legacy' baked into the row — which getAppUiState().iconPackId would
-  // then read back verbatim (row.icon_pack_id ?? 'legacy' never falls
-  // through, since 'legacy' is a real non-nullish string), reintroducing the
-  // exact boot-time icon flash the wisp default was meant to eliminate
-  // (index.ts calls applyPersistedIconPack(getAppUiState().iconPackId) at
-  // startup). Set it explicitly to 'wisp' so a fresh row matches the
-  // fallback default everywhere else. INSERT OR IGNORE means this can never
-  // touch an existing user's already-seeded row, however they set it.
+  // getIconPackCatalog fall back to DEFAULT_ICON_PACK_ID at read time, so
+  // relying on the SQL default here would seed brand-new installs with
+  // icon_pack_id = 'legacy' baked into the row — which
+  // getAppUiState().iconPackId would then read back verbatim (row.icon_pack_id
+  // ?? DEFAULT_ICON_PACK_ID never falls through, since 'legacy' is a real
+  // non-nullish string), reintroducing the exact boot-time icon flash the
+  // default pack was meant to eliminate (index.ts calls
+  // applyPersistedIconPack(getAppUiState().iconPackId) at startup). Set it
+  // explicitly to DEFAULT_ICON_PACK_ID so a fresh row matches the fallback
+  // default everywhere else. INSERT OR IGNORE means this can never touch an
+  // existing user's already-seeded row, however they set it.
   // -------------------------------------------------------------------------
   {
     name: 'app-ui-state-seed',
@@ -459,8 +461,8 @@ const dataSteps: DataStep[] = [
     alwaysRun: true,
     run: (db) => {
       db.prepare(
-        `INSERT OR IGNORE INTO app_ui_state (id, icon_pack_id, updated_at) VALUES (1, 'wisp', ?)`
-      ).run(Date.now())
+        `INSERT OR IGNORE INTO app_ui_state (id, icon_pack_id, updated_at) VALUES (1, ?, ?)`
+      ).run(DEFAULT_ICON_PACK_ID, Date.now())
     }
   },
 

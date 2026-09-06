@@ -31,6 +31,7 @@ register('data:text/javascript,' + encodeURIComponent(extensionFallbackHook), im
 class Database extends DatabaseSync {}
 import { enumCheck, renderCreateTable, renderIndex } from '../src/main/db/render.ts'
 import { introspectTable } from '../src/main/db/introspect.ts'
+import { DEFAULT_ICON_PACK_ID } from '../src/shared/uiStateDefaults.ts'
 
 // enumCheck renders a canonical IN(...) clause from a shared array
 assert.equal(
@@ -985,19 +986,19 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
     dsdb3.prepare('SELECT 1 FROM app_ui_state WHERE id = 1').get(),
     'the seeded app_ui_state row must have id = 1'
   )
-  // icon_pack_id is seeded explicitly as 'wisp' rather than relying on the
-  // (deliberately still-'legacy') SQL DEFAULT — see the long comment on the
-  // data step. A fresh row must match iconPacks.ts's own 'wisp' fallback so
-  // applyPersistedIconPack(getAppUiState().iconPackId) never boots a fresh
-  // install into the legacy icon.
+  // icon_pack_id is seeded explicitly as DEFAULT_ICON_PACK_ID rather than
+  // relying on the (deliberately still-'legacy') SQL DEFAULT — see the long
+  // comment on the data step. A fresh row must match iconPacks.ts's own
+  // default-pack fallback so applyPersistedIconPack(getAppUiState().iconPackId)
+  // never boots a fresh install into the legacy icon.
   assert.equal(
     (
       dsdb3.prepare('SELECT icon_pack_id FROM app_ui_state WHERE id = 1').get() as {
         icon_pack_id: string
       }
     ).icon_pack_id,
-    'wisp',
-    'app-ui-state-seed must seed icon_pack_id as wisp, not the legacy SQL DEFAULT'
+    DEFAULT_ICON_PACK_ID,
+    `app-ui-state-seed must seed icon_pack_id as ${DEFAULT_ICON_PACK_ID}, not the legacy SQL DEFAULT`
   )
   assert.ok(
     dsdb3.prepare("SELECT 1 FROM applied_data_steps WHERE name='app-ui-state-seed'").get(),

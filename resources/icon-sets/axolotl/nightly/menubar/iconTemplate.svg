@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="64"
+  height="64"
+  viewBox="0 0 64 64"
+  role="img"
+  aria-labelledby="axolotl-nightly-template-title axolotl-nightly-template-description"
+>
+  <title id="axolotl-nightly-template-title">Nightly Axolotl macOS template icon</title>
+  <desc id="axolotl-nightly-template-description">A monochrome axolotl silhouette with eye and smile cutouts.</desc>
+  <defs>
+    <mask id="axolotl-nightly-template-cutouts" x="0" y="0" width="64" height="64" maskUnits="userSpaceOnUse">
+      <rect width="64" height="64" fill="#fff"/>
+      <ellipse cx="25" cy="32" rx="2.1" ry="2.9" fill="#000"/>
+      <ellipse cx="37" cy="30" rx="2.8" ry="3.8000000000000003" fill="#000"/>
+      <path d="M28 40C30 42 33 42 35 40" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <path d="M18 23C12 20 6 21 3 26C7 25 10 27 11 31C7 31 4 34 4 38C8 36 11 37 13 40C16 33 17 28 18 23Z" fill="#000" mask="url(#axolotl-nightly-template-cutouts)"/>
+  <path d="M42 19C46 13 52 11 58 14C54 15 52 19 53 23C57 22 61 24 62 28C58 28 56 31 56 35C50 30 45 25 42 19Z" fill="#000" mask="url(#axolotl-nightly-template-cutouts)"/>
+  <path d="M20 46C13 40 12 30 18 23C24 16 34 14 42 19C50 24 53 34 48 42C44 49 36 52 28 50C25 49 22 48 20 46Z" fill="#000" mask="url(#axolotl-nightly-template-cutouts)"/>
+</svg>

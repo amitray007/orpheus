@@ -19,7 +19,8 @@ import {
   SIDEBAR_WIDTH_MIN,
   SIDEBAR_WIDTH_MAX,
   WORKBENCH_TREE_WIDTH_MIN,
-  WORKBENCH_TREE_WIDTH_MAX
+  WORKBENCH_TREE_WIDTH_MAX,
+  DEFAULT_ICON_PACK_ID
 } from '../shared/uiStateDefaults'
 
 // ---------------------------------------------------------------------------
@@ -278,11 +279,11 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     modelAliasesEnabled: (row.model_aliases_enabled ?? 0) === 1,
     // Privacy mode (v66) — default false
     privacyMode: (row.privacy_mode ?? 0) === 1,
-    // App icon pack — default 'wisp' when column absent (pre-migration reads).
-    // Mirrors iconPacks.ts's resolveSelectedPack/getIconPackCatalog fallback
-    // (both switched legacy → wisp when wisp became the default pack) so this
-    // row→record mapping can't disagree with the catalog's own default.
-    iconPackId: row.icon_pack_id ?? 'wisp',
+    // App icon pack — default DEFAULT_ICON_PACK_ID when column absent
+    // (pre-migration reads). Mirrors iconPacks.ts's resolveSelectedPack/
+    // getIconPackCatalog fallback so this row→record mapping can't disagree
+    // with the catalog's own default.
+    iconPackId: row.icon_pack_id ?? DEFAULT_ICON_PACK_ID,
     updatedAt: row.updated_at
   }
 }
@@ -591,9 +592,18 @@ export function getAppUiState(): AppUiState {
   if (!row) {
     // The app-ui-state-seed data step (data-steps.ts) should always have
     // inserted this singleton row by the time we get here. Self-heal instead
-    // of trusting that: insert it now and re-select.
+    // of trusting that: insert it now and re-select. icon_pack_id is seeded
+    // explicitly here too (mirroring that data step) rather than left to the
+    // SQL DEFAULT ('legacy', kept for existing-row migration compatibility —
+    // see DEFAULT_ICON_PACK_ID's comment in uiStateDefaults.ts) — otherwise
+    // this rare self-heal path would silently boot into the legacy icon
+    // instead of the current default pack. INSERT OR IGNORE means this can
+    // never overwrite an existing user's already-seeded row or persisted
+    // choice, however they set it.
     console.warn('[uiState] app_ui_state row missing at id=1 — self-healing by inserting default')
-    db.prepare(`INSERT OR IGNORE INTO app_ui_state (id, updated_at) VALUES (1, ?)`).run(Date.now())
+    db.prepare(
+      `INSERT OR IGNORE INTO app_ui_state (id, icon_pack_id, updated_at) VALUES (1, ?, ?)`
+    ).run(DEFAULT_ICON_PACK_ID, Date.now())
     row = db.prepare('SELECT * FROM app_ui_state WHERE id = 1').get() as AppUiStateRow | undefined
   }
   if (!row) {

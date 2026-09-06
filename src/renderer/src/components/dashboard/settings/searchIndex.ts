@@ -1391,6 +1391,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
       'dock icon',
       'dock',
       'mascot',
+      'axolotl',
       'wisp',
       'dreamer',
       'legacy'

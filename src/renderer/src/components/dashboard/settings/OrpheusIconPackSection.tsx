@@ -218,7 +218,14 @@ function IconPackGrid({ catalog, pendingId, onSelect }: IconPackGridProps): Reac
               )}
             </div>
             <div className="flex flex-col gap-0.5 min-w-0">
-              <span className="text-xs font-medium text-text-primary truncate">{pack.name}</span>
+              <span className="flex items-center gap-1.5 min-w-0">
+                <span className="text-xs font-medium text-text-primary truncate">{pack.name}</span>
+                {pack.isDefault && (
+                  <span className="shrink-0 text-[10px] leading-none font-medium text-text-muted bg-surface-overlay border border-border-default rounded-full px-1.5 py-0.5">
+                    Default
+                  </span>
+                )}
+              </span>
               <span className="text-xs text-text-muted line-clamp-2">{pack.description}</span>
             </div>
           </button>
